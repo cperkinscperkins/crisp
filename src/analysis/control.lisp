@@ -1926,6 +1926,16 @@
     ;; Analyze stride if provided
     (let ((stride-node (when stride-form
                              (analyze-expression stride-form env context (append location '(0 1))))))
+      ;; Endeavour 172: a literal stride of 0 (or negative) can never advance the loop variable
+      ;; -- that is an unbounded loop, which Crisp forbids.  (A stride computed at runtime is
+      ;; caught by the codegen guard instead: it runs ZERO iterations.)
+      (when (and stride-node (semantic-literal-p stride-node)
+                 (integerp (semantic-literal-value stride-node))
+                 (< (semantic-literal-value stride-node) 1))
+        (error 'crisp-compiler-error
+          :message (format nil "dotimes: stride must be greater than 0, got ~a"
+                           (semantic-literal-value stride-node))
+          :source-location location))
       ;; Check uniformity
       (let* ((limit-uniformity (calculate-uniformity-state limit-node env))
              (stride-uniformity (if stride-node (calculate-uniformity-state stride-node env) :uniform))
@@ -1957,6 +1967,162 @@
         :source-location location))
     (analyze-dotimes-expression expr env context location)))
 
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 172 -- the dotimes family: dec-times, dec-times-by-half / -by-factor,
+;;; do-times-by-doubling / -by-multiply, do-power-step, dec-power-step, each with a +
+;;; variant.  Decisions D1-D7: tests/spec/172-do-times-variants/do-times-variants.md
+;;; ---------------------------------------------------------------------------
+(defparameter *loop-variant-specs*
+  ;; head                   kind           operand roles (in binding order)
+  '(("DEC-TIMES"            :dec-times     (:n &optional :stride))
+    ("DEC-TIMES-BY-HALF"    :dec-by-factor (:n))
+    ("DEC-TIMES-BY-FACTOR"  :dec-by-factor (:n :factor))
+    ("DO-TIMES-BY-DOUBLING" :multiply      (:init :n))
+    ("DO-TIMES-BY-MULTIPLY" :multiply      (:init :n :factor))
+    ("DO-POWER-STEP"        :power-up      (:n))
+    ("DEC-POWER-STEP"       :power-down    (:n)))
+  "Endeavour 172: per-head lowering kind and operand roles.  The + variant of each head
+   shares its entry (the trailing + is stripped before lookup).")
+
+(defun %loop-variant-role-name (role)
+  "Display name of a loop-variant operand role: N, init, stride or factor."
+  (if (eq role :n) "N" (string-downcase (symbol-name role))))
+
+(defun %loop-variant-usage (head-name roles)
+  "The usage text for a loop-variant head, e.g. (dec-times (i N [stride]) body...)."
+  (let ((parts (loop with opt = nil
+                     for r in roles
+                     if (eq r '&optional)
+                       do (setf opt t)
+                     else
+                       collect (let ((nm (%loop-variant-role-name r)))
+                                 (if opt (format nil "[~a]" nm) nm)))))
+    (format nil "(~(~a~) (i~{ ~a~}) body...)" head-name parts)))
+
+(defun %analyze-loop-variant-operand (form role head-name env context location)
+  "Analyzes one loop-variant operand and enforces D2 and the literal half of D3.
+   A non-negative integer literal becomes a ulong literal node; a negative literal, a signed
+   or a float operand is an error.  Literal gates: init and stride must be greater than 0,
+   factor greater than 1.  Returns the analyzed node."
+  (let ((role-name (%loop-variant-role-name role))
+        (node nil))
+    (cond
+      ((integerp form)
+       (when (minusp form)
+         (error 'crisp-compiler-error
+                :message (format nil "~(~a~): ~a must be an unsigned integer (a non-negative literal), got ~a"
+                                 head-name role-name form)
+                :source-location location))
+       (setf node (make-semantic-literal :value-type 'ulong :value form :source-location location)))
+      (t
+       (setf node (analyze-expression form env context location))
+       (let* ((ty (get-single-value-type node))
+              (ct (gethash ty *crisp-types*)))
+         (unless (and ct (eq (crisp-type-category ct) :unsigned-int))
+           (error 'crisp-compiler-error
+                  :message (format nil "~(~a~): ~a must be an unsigned integer type, got ~a"
+                                   head-name role-name ty)
+                  :source-location location)))))
+    ;; D3, literal half.  (The runtime half is the codegen guard: zero iterations.)
+    (when (and (semantic-literal-p node) (integerp (semantic-literal-value node)))
+      (let ((v (semantic-literal-value node)))
+        (when (and (member role '(:init :stride)) (< v 1))
+          (error 'crisp-compiler-error
+                 :message (format nil "~(~a~): ~a must be greater than 0, got ~a" head-name role-name v)
+                 :source-location location))
+        (when (and (eq role :factor) (< v 2))
+          (error 'crisp-compiler-error
+                 :message (format nil "~(~a~): factor must be greater than 1, got ~a" head-name v)
+                 :source-location location))))
+    node))
+
+(defun analyze-loop-variant-expression (expr env context location)
+  "Analyzes every dotimes variant and its + form (endeavour 172):
+     (dec-times            (i N [stride]) body...)    i = ((N-1)/s)*s ... 0, the exact reverse of dotimes
+     (dec-times-by-half    (i N) body...)             i = N, N/2, ... 1
+     (dec-times-by-factor  (i N factor) body...)      i = N, N/f, ... >= 1
+     (do-times-by-doubling (i init N) body...)        i = init, 2*init, ... <= N
+     (do-times-by-multiply (i init N factor) body...) i = init, init*f, ... <= N
+     (do-power-step        (i N) body...)             i = 1, 2, 4, ... < N
+     (dec-power-step       (i N) body...)             i = largest power of 2 below N, ... 1
+   Operands must be unsigned (D2); literal gates per D3.  A + form requires every operand to
+   be provably uniform (D5).  The loop variable takes N's type and the combined uniformity of
+   all operands.  Returns a semantic-loop-variant."
+  (let* ((head (car expr))
+         (head-name (symbol-name head))
+         (plus-p (and (> (length head-name) 1)
+                      (char= (cl:char head-name (1- (length head-name))) #\+)))
+         (base-name (if plus-p (subseq head-name 0 (1- (length head-name))) head-name))
+         (spec (find base-name *loop-variant-specs* :key #'first :test #'string-equal))
+         (kind (second spec))
+         (roles (third spec))
+         (required (loop for r in roles until (eq r '&optional) collect r))
+         (all-roles (remove '&optional roles))
+         (binding (and (consp (cdr expr)) (second expr))))
+    (unless spec
+      (error 'crisp-compiler-error
+             :message (format nil "Internal: no loop-variant spec for ~a" head-name)
+             :source-location location))
+    (unless (and (consp binding) (symbolp (first binding))
+                 (<= (1+ (length required)) (length binding) (1+ (length all-roles))))
+      (error 'crisp-compiler-error
+             :message (format nil "Malformed ~(~a~): expected ~a"
+                              head-name (%loop-variant-usage base-name roles))
+             :source-location location))
+    (let* ((var-name (first binding))
+           (operand-forms (rest binding))
+           (nodes (loop for form in operand-forms
+                        for role in all-roles
+                        for k from 1
+                        collect (cons role (%analyze-loop-variant-operand
+                                            form role base-name env context
+                                            (append location (list 0 k))))))
+           (n-node (cdr (assoc :n nodes)))
+           (var-type (get-single-value-type n-node))
+           (states (mapcar (lambda (p) (cons (car p) (calculate-uniformity-state (cdr p) env)))
+                           nodes))
+           (combined (cond ((some (lambda (s) (eq (cdr s) :divergent)) states) :divergent)
+                           ((some (lambda (s) (eq (cdr s) :unknown)) states) :unknown)
+                           (t :uniform))))
+      (log:debug "~a: kind ~s, var ~a : ~a, operand uniformity ~s" head-name kind var-name var-type states)
+      (when plus-p
+        (let ((bad (find-if-not (lambda (s) (eq (cdr s) :uniform)) states)))
+          (when bad
+            (error 'crisp-compiler-error
+                   :message (format nil "~(~a~) requires every operand to be provably uniform; ~a is ~(~a~).~@[ ~a~]"
+                                    head-name (%loop-variant-role-name (car bad)) (cdr bad)
+                                    (when (eq (cdr bad) :unknown)
+                                      "Use (declare (uniform ...)) if it is uniform."))
+                   :source-location location))))
+      (let* ((body-env (cons (make-parameter-def :name var-name :type var-type :kind :local
+                                                 :uniformity combined)
+                             env))
+             (*divergent-scope-depth* (if (eq combined :uniform)
+                                          *divergent-scope-depth*
+                                          (1+ *divergent-scope-depth*)))
+             (body-nodes (analyze-body-expressions (cddr expr) body-env context (append location '(1)))))
+        (make-semantic-loop-variant :type 'void
+                                    :var-name var-name
+                                    :var-type var-type
+                                    :kind kind
+                                    :limit-node n-node
+                                    :stride-node (cdr (assoc :stride nodes))
+                                    :init-node (cdr (assoc :init nodes))
+                                    :factor-node (cdr (assoc :factor nodes))
+                                    :body body-nodes
+                                    :source-location location)))))
+
+(defun register-loop-variant-analyzers ()
+  "Endeavour 172: registers analyze-loop-variant-expression for every dotimes variant and its
+   + form, under BOTH :crisp-language and :crisp.compiler (as dotimes is).  Called from
+   register-control-analyzers, so it survives initialize-compiler's clrhash."
+  (dolist (name (remove-if (lambda (n) (member n '("DOTIMES" "DOTIMES+") :test #'string=))
+                           *dotimes-family-names*))
+    (dolist (pkg (list (find-package :crisp-language) (find-package :crisp.compiler)))
+      (when pkg
+        (setf (gethash (intern name pkg) *expression-analyzers*) #'analyze-loop-variant-expression))))
+  (log:debug "registered ~d loop-variant analyzers" (- (length *dotimes-family-names*) 2)))
 
 (defun analyze-while-expression (expr env context location)
   "Analyzes (while condition body...).
@@ -4673,6 +4839,9 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-dotimes-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-dotimes-expression)))
+  ;; Endeavour 172: dec-times, dec-times-by-half/-by-factor, do-times-by-doubling/-by-multiply,
+  ;; do-power-step, dec-power-step, and every + form.
+  (register-loop-variant-analyzers)
   (let ((sym-cl (intern "WHILE" (find-package :crisp-language)))
         (sym-cc (intern "WHILE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-while-expression)

@@ -4022,6 +4022,11 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (stride-val  (if stride-node
                           (generate-node-ir stride-node builder module var-env di-builder di-scope location-map)
                           (llvm-const-int llvm-type 1 0)))
+         ;; Endeavour 172 -- BUG: (dotimes (i n 0) ...) never terminated.  A stride that cannot
+         ;; advance the loop variable runs ZERO iterations rather than spinning forever.  Folds
+         ;; away for the constant strides that every existing dotimes has.
+         (stride-ok   (llvm-build-icmp builder (if is-unsigned +llvm-int-ne+ +llvm-int-sgt+)
+                                       stride-val (llvm-const-int llvm-type 0 0) "dt_stride_ok"))
          ;; Alloca for the loop variable; initialize to 0
          (i-alloca    (llvm-build-alloca builder llvm-type (string-downcase (symbol-name var-name))))
          (_           (llvm-build-store builder (llvm-const-int llvm-type 0 0) i-alloca))
@@ -4030,8 +4035,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
          (body-block  (llvm-append-basic-block current-fn "dt_body"))
          (exit-block  (llvm-append-basic-block current-fn "dt_exit")))
     (declare (ignore _))
-    ;; Branch from current block into loop check
-    (llvm-build-br builder check-block)
+    ;; Branch from current block into loop check -- but only if the stride can advance it
+    (llvm-build-cond-br builder stride-ok check-block exit-block)
     ;; --- Check Block: if i < limit goto body else goto exit ---
     (llvm-position-builder-at-end builder check-block)
     (let* ((i-val   (llvm-build-load2 builder llvm-type i-alloca "i"))
@@ -4056,6 +4061,116 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
     (llvm-position-builder-at-end builder exit-block)
     ;; dotimes returns void
     (values nil nil)))
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 172 -- the dotimes family: dec-times, dec-times-by-half / -by-factor,
+;;; do-times-by-doubling / -by-multiply, do-power-step, dec-power-step, each with a +
+;;; variant.  Decisions D1-D7: tests/spec/172-do-times-variants/do-times-variants.md
+;;; ---------------------------------------------------------------------------
+(defun %loop-variant-coerce (builder value llvm-type)
+  "Zero-extends or truncates the unsigned integer VALUE to LLVM-TYPE (the loop variable's type)."
+  (let ((from (crisp.llvm-bindings::llvm-get-int-type-width (llvm-type-of value)))
+        (to (crisp.llvm-bindings::llvm-get-int-type-width llvm-type)))
+    (cond ((= from to) value)
+          ((< from to) (llvm-build-zext builder value llvm-type "lv_zext"))
+          (t (llvm-build-trunc builder value llvm-type "lv_trunc")))))
+
+(defmethod generate-node-ir ((node semantic-loop-variant) builder module var-env di-builder di-scope location-map)
+  "Generates a dotimes-variant loop (endeavour 172) as a GUARDED, BOTTOM-TESTED loop:
+     entry:  operands; GUARD -> pre | exit      (runtime D3 gates: bad operands = zero trips)
+     pre:    start value, loop invariants; -> body   (divisions happen only past the guard)
+     body:   BODY; next = step(i); cont = test(i) -> body | exit
+   Every step is overflow-safe, so termination does not depend on the operand values:
+     :dec-times      guard N/=0, s/=0   start ((N-1)/s)*s      cont i >= s       next i - s
+     :dec-by-factor  guard N/=0, f>1    start N                cont next /= 0    next i / f
+     :multiply       guard init/=0, f>1, init<=N; lim = N/f;   cont i <= lim     next i * f
+     :power-up       guard N>1          start 1, lim=(N-1)/2   cont i <= lim     next i * 2
+     :power-down     guard N>1          start 2^(W-1-clz(N-1)) cont next /= 0    next i / 2
+   The loop variable lives in an alloca (mem2reg promotes it), as in dotimes."
+  (let* ((kind (semantic-loop-variant-kind node))
+         (var-name (semantic-loop-variant-var-name node))
+         (llvm-type (crisp-type-to-llvm-type (semantic-loop-variant-var-type node) module))
+         (width (crisp.llvm-bindings::llvm-get-int-type-width llvm-type))
+         (current-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder))))
+    (flet ((gen (n) (when n
+                      (%loop-variant-coerce
+                       builder
+                       (generate-node-ir n builder module var-env di-builder di-scope location-map)
+                       llvm-type)))
+           (k (v) (llvm-const-int llvm-type v 0))
+           (cmp (pred a b) (llvm-build-icmp builder pred a b "lv_cmp"))
+           (all (&rest cs) (reduce (lambda (a b) (crisp.llvm-bindings::llvm-build-and builder a b "lv_guard")) cs)))
+      (let* ((n-val (gen (semantic-loop-variant-limit-node node)))
+             (s-val (or (gen (semantic-loop-variant-stride-node node)) (k 1)))
+             (init-val (or (gen (semantic-loop-variant-init-node node)) (k 1)))
+             (f-val (or (gen (semantic-loop-variant-factor-node node)) (k 2)))
+             (guard (ecase kind
+                      (:dec-times (all (cmp +llvm-int-ne+ n-val (k 0)) (cmp +llvm-int-ne+ s-val (k 0))))
+                      (:dec-by-factor (all (cmp +llvm-int-ne+ n-val (k 0)) (cmp +llvm-int-ugt+ f-val (k 1))))
+                      (:multiply (all (cmp +llvm-int-ne+ init-val (k 0)) (cmp +llvm-int-ugt+ f-val (k 1))
+                                      (cmp +llvm-int-ule+ init-val n-val)))
+                      ((:power-up :power-down) (cmp +llvm-int-ugt+ n-val (k 1)))))
+             (i-alloca (llvm-build-alloca builder llvm-type (string-downcase (symbol-name var-name))))
+             (pre-block (llvm-append-basic-block current-fn "lv_pre"))
+             (body-block (llvm-append-basic-block current-fn "lv_body"))
+             (exit-block (llvm-append-basic-block current-fn "lv_exit"))
+             (lim nil))
+        (log:debug "loop-variant codegen: ~s var ~a i~d" kind var-name width)
+        (llvm-build-cond-br builder guard pre-block exit-block)
+        ;; --- pre: start value + loop invariants (divisions are safe past the guard) ---
+        (llvm-position-builder-at-end builder pre-block)
+        (let ((start
+                (ecase kind
+                  (:dec-times
+                   (llvm-build-mul builder
+                                   (llvm-build-udiv builder (llvm-build-sub builder n-val (k 1) "lv_nm1")
+                                                    s-val "lv_q")
+                                   s-val "lv_start"))
+                  (:dec-by-factor n-val)
+                  (:multiply
+                   (setf lim (llvm-build-udiv builder n-val f-val "lv_lim"))
+                   init-val)
+                  (:power-up
+                   (setf lim (crisp.llvm-bindings::llvm-build-l-shr builder (llvm-build-sub builder n-val (k 1) "lv_nm1")
+                                               (k 1) "lv_lim"))
+                   (k 1))
+                  (:power-down
+                   (let* ((nm1 (llvm-build-sub builder n-val (k 1) "lv_nm1"))
+                          (clz (%hw-call builder module (format nil "llvm.ctlz.i~d" width) llvm-type
+                                         (list nm1 (llvm-const-int (llvm-int1-type) 0 0)) "lv_clz"))
+                          (sh (llvm-build-sub builder (k (1- width)) clz "lv_sh")))
+                     (crisp.llvm-bindings::llvm-build-shl builder (k 1) sh "lv_start"))))))
+          (llvm-build-store builder start i-alloca))
+        (llvm-build-br builder body-block)
+        ;; --- body ---
+        (llvm-position-builder-at-end builder body-block)
+        (let ((body-env (alexandria:copy-hash-table var-env)))
+          (setf (gethash var-name body-env) i-alloca)
+          (dolist (body-node (semantic-loop-variant-body node))
+            (generate-node-ir body-node builder module body-env di-builder di-scope location-map)))
+        ;; --- latch: step + continue test, overflow-safe ---
+        (unless (terminator-p (llvm-get-insert-block builder))
+          (let* ((i-cur (llvm-build-load2 builder llvm-type i-alloca "i_cur"))
+                 (next nil)
+                 (cont nil))
+            (ecase kind
+              (:dec-times
+               (setf next (llvm-build-sub builder i-cur s-val "i_next")
+                     cont (cmp +llvm-int-uge+ i-cur s-val)))
+              ((:dec-by-factor :power-down)
+               (setf next (if (eq kind :power-down)
+                              (crisp.llvm-bindings::llvm-build-l-shr builder i-cur (k 1) "i_next")
+                              (llvm-build-udiv builder i-cur f-val "i_next"))
+                     cont (cmp +llvm-int-ne+ next (k 0))))
+              ((:multiply :power-up)
+               (setf next (if (eq kind :power-up)
+                              (crisp.llvm-bindings::llvm-build-shl builder i-cur (k 1) "i_next")
+                              (llvm-build-mul builder i-cur f-val "i_next"))
+                     cont (cmp +llvm-int-ule+ i-cur lim))))
+            (llvm-build-store builder next i-alloca)
+            (llvm-build-cond-br builder cont body-block exit-block)))
+        (llvm-position-builder-at-end builder exit-block)
+        (values nil nil)))))
 
 (defmethod generate-node-ir ((node semantic-while) builder module var-env di-builder di-scope location-map)
   "Generates IR for (while condition body...)."

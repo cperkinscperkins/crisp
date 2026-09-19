@@ -1,0 +1,52 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER s1: 50403020100
+;; HOIST-EXPECT: BUFFER c1: 6
+;; HOIST-EXPECT: BUFFER s2: 40200
+;; HOIST-EXPECT: BUFFER c2: 3
+;; HOIST-EXPECT: BUFFER s3: 40200
+;; HOIST-EXPECT: BUFFER c3: 3
+;; HOIST-EXPECT: BUFFER s4: 0
+;; HOIST-EXPECT: BUFFER c4: 0
+;; HOIST-EXPECT: BUFFER s5: 60300
+;; HOIST-EXPECT: BUFFER c5: 3
+;;
+;; Endeavour 172 ON-METAL: dec-times / dec-times+ iteration sequence (decision D4).
+;; dec-times is the EXACT reverse of dotimes: it starts at ((N-1)/s)*s, NOT N-1 or N-s.
+;;
+;; Each case records   sN = sN*100 + i   (order-sensitive, two decimal digits per value)
+;; and cN = iteration count (the count disambiguates a trailing 0).
+;;   1: (dec-times  (i 6))      5 4 3 2 1 0   s=50403020100  c=6
+;;   2: (dec-times  (i 6 2))    4 2 0         s=40200        c=3   (dotimes: 0 2 4)
+;;   3: (dec-times  (i 5 2))    4 2 0         s=40200        c=3   (dotimes: 0 2 4; N-s would give 3 1)
+;;   4: (dec-times  (i 0))      --            s=0            c=0
+;;   5: (dec-times+ (i 7 3))    6 3 0         s=60300        c=3   (dotimes: 0 3 6)
+;; z = workgroup id = 0 at runtime: keeps N away from the constant folder, and is uniform
+;; so dec-times+ accepts it.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel dec_times_metal (&out s1 c1 s2 c2 s3 c3 s4 c4 s5 c5)
+  (declare #'(&out u-c u-c u-c u-c u-c u-c u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ s1) 0ul) (set! (~ c1) 0ul)
+    (set! (~ s2) 0ul) (set! (~ c2) 0ul)
+    (set! (~ s3) 0ul) (set! (~ c3) 0ul)
+    (set! (~ s4) 0ul) (set! (~ c4) 0ul)
+    (set! (~ s5) 0ul) (set! (~ c5) 0ul)
+    (dec-times (i (+ z 6ul))
+      (set! (~ s1) (+ (* (~ s1) 100ul) i))
+      (set! (~ c1) (+ (~ c1) 1ul)))
+    (dec-times (i (+ z 6ul) 2)
+      (set! (~ s2) (+ (* (~ s2) 100ul) i))
+      (set! (~ c2) (+ (~ c2) 1ul)))
+    (dec-times (i (+ z 5ul) 2)
+      (set! (~ s3) (+ (* (~ s3) 100ul) i))
+      (set! (~ c3) (+ (~ c3) 1ul)))
+    (dec-times (i z)
+      (set! (~ s4) (+ (* (~ s4) 100ul) i))
+      (set! (~ c4) (+ (~ c4) 1ul)))
+    (dec-times+ (i (+ z 7ul) 3)
+      (set! (~ s5) (+ (* (~ s5) 100ul) i))
+      (set! (~ c5) (+ (~ c5) 1ul)))))

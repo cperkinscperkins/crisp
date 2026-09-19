@@ -111,6 +111,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp
 - - - - - (REGISTER-CONTROL-ANALYZERS)  analysis/control.lisp
 - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
+- - - - - - (REGISTER-LOOP-VARIANT-ANALYZERS)  analysis/control.lisp
 - - - - - - (REGISTER-WARP-BUILTINS)  analysis/core.lisp
 - - - - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
 - - - - - - - - (%WARP-SPEC-CHECK-SYNC BUILTIN-KW NAME-STR LOCATION)  analysis/control.lisp
@@ -518,6 +519,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%LOOP-VARIANT-COERCE BUILDER VALUE LLVM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                             hw_tmp))  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-MBAR-GLOBAL MODULE &OPTIONAL (COUNT
                                                                                    1))  codegen.lisp
@@ -1181,6 +1185,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%CT-RESOLVE-VALUE VALUE)  macros.lisp
 
+- (%DOTIMES-BACKWARD-HEAD HEAD)  anf-transform.lisp
+
 - (%EMIT-ONE-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF)  mma.lisp
 - - (%WGMMA-MAKE-DESC BUILDER BASE-PTR &OPTIONAL SWIZZLE-P (KSLICE-BYTE-OFF 0))  mma.lisp [See above]
 - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
@@ -1425,7 +1431,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%AD-REPLAY-BARRIER-P FORM)  autodiff.lisp
 - - - - - - - (%AD-REPLAY-OP-NAME-P FORM NAME)  autodiff.lisp [See above]
 - - - - - (%AD-REPLAY-CHECK-SAFE SLICE TILES)  autodiff.lisp
+- - - (%DOTIMES-FAMILY-HEAD-P HEAD)  anf-transform.lisp
 - - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
+- - - - (%DOTIMES-FAMILY-HEAD-P HEAD)  anf-transform.lisp [See above]
 - - - (%GFW-PROCESS-DOTIMES FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP INTERMEDIATE-ZERO)  autodiff.lisp
 - - - - (%AD-REPLAY-FORMS-FOR-SCOPE FORMS &OPTIONAL INHERITED)  autodiff.lisp [See above]
 - - - (%GFW-PROCESS-IF FORM EMIT-FN PROCESS-FORM-FN COND-FORM THEN-FORM ELSE-FORM)  autodiff.lisp
@@ -1976,6 +1984,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%CLUSTER-AXIS-STRIDES DIMS)  analysis/control.lisp [See above]
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
 
+- (ANALYZE-LOOP-VARIANT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (%LOOP-VARIANT-USAGE HEAD-NAME ROLES)  analysis/control.lisp
+- - - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp
+- - (%ANALYZE-LOOP-VARIANT-OPERAND FORM ROLE HEAD-NAME ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp [See above]
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp [See above]
+- - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+
 - (ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%EXPAND-LOOP-VECTOR-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp [See above]
@@ -2399,6 +2419,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
 - - - - - (ANF-FRESH-TEMP)  anf-transform.lisp [See above]
 - - - - (ANF-NORMALIZE-ARGS ARGS)  anf-transform.lisp [See above]
+- - - - (%DOTIMES-FAMILY-HEAD-P HEAD)  anf-transform.lisp [See above]
 - - - - (%ANF-NORMALIZE-DOTIMES OP EXPR IS-NESTED?)  anf-transform.lisp
 - - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
 - - - - - (ANF-FRESH-TEMP)  anf-transform.lisp [See above]

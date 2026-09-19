@@ -138,66 +138,79 @@
 - [map 📝](17_higher_order_function_operations/03_map.md)
 - [Invoking Functions: `funcall` ✅](17_higher_order_function_operations/04_invoking_functions_funcall.md)
 
-## Shop Local, Act Global
+## **Reductions: Shop Local, Act Global 📝**
 
-## Reduce Variants 📝
-- [reduce vector 📝](19_reduce_variants/01_reduce_vector.md)
+## **Phase 1: The Micro Strategies (Intra-Workgroup)**
+- [`reduce-warp` 📝](19_phase_1_the_micro_strategies_intra_workgroup/01_reduce_warp.md)
+- [`reduce-workgroup` 📝](19_phase_1_the_micro_strategies_intra_workgroup/02_reduce_workgroup.md)
+
+## **Phase 2: The Macro Strategies (Inter-Workgroup)**
+- [**Phase 2 Trade-off Matrix**](20_phase_2_the_macro_strategies_inter_workgroup/01_phase_2_trade_off_matrix.md)
+- [`grid-reduce-atomic!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/02_grid_reduce_atomic.md)
+- [`grid-reduce-cas!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/03_grid_reduce_cas.md)
+- [`grid-reduce-last-man!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/04_grid_reduce_last_man.md)
+- [`grid-reduce-dual-pass!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/05_grid_reduce_dual_pass.md)
+- [`Strategy D: Cooperative Grid Sync (Hardware Dependent)`](20_phase_2_the_macro_strategies_inter_workgroup/06_strategy_d_cooperative_grid_sync_hardware_dependent.md)
+
+## **Matchy Matchy: Putting it Together**
+- [**The Vector API**](21_matchy_matchy_putting_it_together/01_the_vector_api.md)
+- [**Binop-Type and Commutativity 📝**](21_matchy_matchy_putting_it_together/02_binop_type_and_commutativity.md)
 
 ## Boolean Reductions 📝
-- [`all?` / `none?` 📝](20_boolean_reductions/01_all_none.md)
-- [`any?` 📝](20_boolean_reductions/02_any.md)
+- [`all?` / `none?` 📝](22_boolean_reductions/01_all_none.md)
+- [`any?` 📝](22_boolean_reductions/02_any.md)
 
 ## Segmented Reduction 📝
 
 ## Filtering / Prefix-Sum Scan 📝
-- [`prepare-for-scan--value` 📝](22_filtering_prefix_sum_scan/01_prepare_for_scan_value.md)
-- [`prepare-for-scan--index`](22_filtering_prefix_sum_scan/02_prepare_for_scan_index.md)
-- [`exclusive-scan-workgroup` 📝](22_filtering_prefix_sum_scan/03_exclusive_scan_workgroup.md)
-- [`inclusive-scan-workgroup` 📝](22_filtering_prefix_sum_scan/04_inclusive_scan_workgroup.md)
-- [global-exclusive-scan 📝](22_filtering_prefix_sum_scan/05_global_exclusive_scan.md)
-- [global-inclusive-scan 📝](22_filtering_prefix_sum_scan/06_global_inclusive_scan.md)
-- [Word Count With Exclusive Scan](22_filtering_prefix_sum_scan/07_word_count_with_exclusive_scan.md)
-- [`filter` 📝](22_filtering_prefix_sum_scan/08_filter.md)
+- [`prepare-for-scan--value` 📝](24_filtering_prefix_sum_scan/01_prepare_for_scan_value.md)
+- [`prepare-for-scan--index`](24_filtering_prefix_sum_scan/02_prepare_for_scan_index.md)
+- [`exclusive-scan-workgroup` 📝](24_filtering_prefix_sum_scan/03_exclusive_scan_workgroup.md)
+- [`inclusive-scan-workgroup` 📝](24_filtering_prefix_sum_scan/04_inclusive_scan_workgroup.md)
+- [global-exclusive-scan 📝](24_filtering_prefix_sum_scan/05_global_exclusive_scan.md)
+- [global-inclusive-scan 📝](24_filtering_prefix_sum_scan/06_global_inclusive_scan.md)
+- [Word Count With Exclusive Scan](24_filtering_prefix_sum_scan/07_word_count_with_exclusive_scan.md)
+- [`filter` 📝](24_filtering_prefix_sum_scan/08_filter.md)
 
 ## Gather / Scatter 📝
 
 ## Sorting 📝
-- [Bitonic Sort 📝](24_sorting/01_bitonic_sort.md)
-- [Radix Sort 📝](24_sorting/02_radix_sort.md)
+- [Bitonic Sort 📝](26_sorting/01_bitonic_sort.md)
+- [Radix Sort 📝](26_sorting/02_radix_sort.md)
 
 ## Atomics ⚠️
-- [Atomic Operations ⚠️](25_atomics/01_atomic_operations.md)
+- [Atomic Operations ⚠️](27_atomics/01_atomic_operations.md)
 
 ## Vector and Tensor Operations 📝
-- [`fill` and `iota` 📝](26_vector_and_tensor_operations/01_fill_and_iota.md)
-- [`copy` 📝](26_vector_and_tensor_operations/02_copy.md)
-- [dot product 📝](26_vector_and_tensor_operations/03_dot_product.md)
-- [matrix multiplication (matmul) 📝](26_vector_and_tensor_operations/04_matrix_multiplication_matmul.md)
-- [Matrix Vector Multiply `(m*v M v)` 📝](26_vector_and_tensor_operations/05_matrix_vector_multiply_mv_m_v.md)
-- [Convolution 📝](26_vector_and_tensor_operations/06_convolution.md)
+- [`fill` and `iota` 📝](28_vector_and_tensor_operations/01_fill_and_iota.md)
+- [`copy` 📝](28_vector_and_tensor_operations/02_copy.md)
+- [dot product 📝](28_vector_and_tensor_operations/03_dot_product.md)
+- [matrix multiplication (matmul) 📝](28_vector_and_tensor_operations/04_matrix_multiplication_matmul.md)
+- [Matrix Vector Multiply `(m*v M v)` 📝](28_vector_and_tensor_operations/05_matrix_vector_multiply_mv_m_v.md)
+- [Convolution 📝](28_vector_and_tensor_operations/06_convolution.md)
 
 ## Math Operations & Arithmetic ✅
-- [Floating Point Precision ✅](27_math_operations_arithmetic/01_floating_point_precision.md)
-- [Floating Point Only Operations ⚠️](27_math_operations_arithmetic/02_floating_point_only_operations.md)
-- [Transcendental Functions ✅](27_math_operations_arithmetic/03_transcendental_functions.md)
-- [Floating Point and Integer Operations ✅](27_math_operations_arithmetic/04_floating_point_and_integer_operations.md)
-- [Integer Only Operations 📝](27_math_operations_arithmetic/05_integer_only_operations.md)
-- [Integer Division ✅](27_math_operations_arithmetic/06_integer_division.md)
-- [Hardware Supported Math Operations ✅](27_math_operations_arithmetic/07_hardware_supported_math_operations.md)
+- [Floating Point Precision ✅](29_math_operations_arithmetic/01_floating_point_precision.md)
+- [Floating Point Only Operations ⚠️](29_math_operations_arithmetic/02_floating_point_only_operations.md)
+- [Transcendental Functions ✅](29_math_operations_arithmetic/03_transcendental_functions.md)
+- [Floating Point and Integer Operations ✅](29_math_operations_arithmetic/04_floating_point_and_integer_operations.md)
+- [Integer Only Operations 📝](29_math_operations_arithmetic/05_integer_only_operations.md)
+- [Integer Division ✅](29_math_operations_arithmetic/06_integer_division.md)
+- [Hardware Supported Math Operations ✅](29_math_operations_arithmetic/07_hardware_supported_math_operations.md)
 
 ## Quantized Integers 📝
-- [Quantized Integer Types 📝](28_quantized_integers/01_quantized_integer_types.md)
+- [Quantized Integer Types 📝](30_quantized_integers/01_quantized_integer_types.md)
 
 ## Low Precision Floats ("microfloats") 📝
-- [Format Wars](29_low_precision_floats_microfloats/01_format_wars.md)
-- [Micro Float Types 📝](29_low_precision_floats_microfloats/02_micro_float_types.md)
-- [def-microfloat-block 📝](29_low_precision_floats_microfloats/03_def_microfloat_block.md)
-- [blockwise operations 📝](29_low_precision_floats_microfloats/04_blockwise_operations.md)
-- [Vector Conversion Operations 📝](29_low_precision_floats_microfloats/05_vector_conversion_operations.md)
-- [element-wise access 📝](29_low_precision_floats_microfloats/06_element_wise_access.md)
+- [Format Wars](31_low_precision_floats_microfloats/01_format_wars.md)
+- [Micro Float Types 📝](31_low_precision_floats_microfloats/02_micro_float_types.md)
+- [def-microfloat-block 📝](31_low_precision_floats_microfloats/03_def_microfloat_block.md)
+- [blockwise operations 📝](31_low_precision_floats_microfloats/04_blockwise_operations.md)
+- [Vector Conversion Operations 📝](31_low_precision_floats_microfloats/05_vector_conversion_operations.md)
+- [element-wise access 📝](31_low_precision_floats_microfloats/06_element_wise_access.md)
 
 ## Complex Numbers 📝
-- [soa-vector and complex 📝](30_complex_numbers/01_soa_vector_and_complex.md)
+- [soa-vector and complex 📝](32_complex_numbers/01_soa_vector_and_complex.md)
 
 ## Fast Fourier Transform (FFT) 📝
 
@@ -208,24 +221,24 @@
 ## Forgotten 📝
 
 ## Strings - Compile Time and Run Time 📝
-- [Compile Time Strings 📝](35_strings_compile_time_and_run_time/01_compile_time_strings.md)
-- [Runtime Strings 📝](35_strings_compile_time_and_run_time/02_runtime_strings.md)
+- [Compile Time Strings 📝](37_strings_compile_time_and_run_time/01_compile_time_strings.md)
+- [Runtime Strings 📝](37_strings_compile_time_and_run_time/02_runtime_strings.md)
 
 ## Logging and Debugging 📝
-- [Compile Time Output and Assert ✅](36_logging_and_debugging/01_compile_time_output_and_assert.md)
-- [`(die "disaster")` ⚠️](36_logging_and_debugging/02_die_disaster.md)
-- [Runtime Asserts ⚠️](36_logging_and_debugging/03_runtime_asserts.md)
-- [Runtime Logging 📝](36_logging_and_debugging/04_runtime_logging.md)
-- [Logging Utilities 📝](36_logging_and_debugging/05_logging_utilities.md)
+- [Compile Time Output and Assert ✅](38_logging_and_debugging/01_compile_time_output_and_assert.md)
+- [`(die "disaster")` ⚠️](38_logging_and_debugging/02_die_disaster.md)
+- [Runtime Asserts ⚠️](38_logging_and_debugging/03_runtime_asserts.md)
+- [Runtime Logging 📝](38_logging_and_debugging/04_runtime_logging.md)
+- [Logging Utilities 📝](38_logging_and_debugging/05_logging_utilities.md)
 
 ## Debugging Implementation 📝
-- [So You Want Debug Logging](37_debugging_implementation/01_so_you_want_debug_logging.md)
-- [Subdivide Subdivide Subdivide - the "other" debug flags](37_debugging_implementation/02_subdivide_subdivide_subdivide_the_other_debug_flags.md)
-- [Common Debug Flag Configurations 📝](37_debugging_implementation/03_common_debug_flag_configurations.md)
+- [So You Want Debug Logging](39_debugging_implementation/01_so_you_want_debug_logging.md)
+- [Subdivide Subdivide Subdivide - the "other" debug flags](39_debugging_implementation/02_subdivide_subdivide_subdivide_the_other_debug_flags.md)
+- [Common Debug Flag Configurations 📝](39_debugging_implementation/03_common_debug_flag_configurations.md)
 
 ## Conditional Compilation ✅
-- [defmacro ✅](38_conditional_compilation/01_defmacro.md)
-- [target-has / device-has 📝](38_conditional_compilation/02_target_has_device_has.md)
+- [defmacro ✅](40_conditional_compilation/01_defmacro.md)
+- [target-has / device-has 📝](40_conditional_compilation/02_target_has_device_has.md)
 
 ## Assist defmacro Development 📝
 
@@ -234,133 +247,133 @@
 ## `defmacro` and `T`
 
 ## Static Analysys 📝
-- [declaim ⚠️](42_static_analysys/01_declaim.md)
-- [check-coalesce 📝](42_static_analysys/02_check_coalesce.md)
-- [check-bank-conflicts 📝](42_static_analysys/03_check_bank_conflicts.md)
-- [check-divergence 📝](42_static_analysys/04_check_divergence.md)
-- [max-registers / warn-max-registers 📝](42_static_analysys/05_max_registers_warn_max_registers.md)
-- [check-barriers 📝](42_static_analysys/06_check_barriers.md)
-- [miscellaneous ⚠️](42_static_analysys/07_miscellaneous.md)
+- [declaim ⚠️](44_static_analysys/01_declaim.md)
+- [check-coalesce 📝](44_static_analysys/02_check_coalesce.md)
+- [check-bank-conflicts 📝](44_static_analysys/03_check_bank_conflicts.md)
+- [check-divergence 📝](44_static_analysys/04_check_divergence.md)
+- [max-registers / warn-max-registers 📝](44_static_analysys/05_max_registers_warn_max_registers.md)
+- [check-barriers 📝](44_static_analysys/06_check_barriers.md)
+- [miscellaneous ⚠️](44_static_analysys/07_miscellaneous.md)
 
 ## Auto Differentiation (AD) ✅
-- [`--differentiate` ✅](43_auto_differentiation_ad/01_differentiate.md)
+- [`--differentiate` ✅](45_auto_differentiation_ad/01_differentiate.md)
 
 ## Foreign Function Interface (FFI) ✅
-- [`def-foreign-function` ✅](44_foreign_function_interface_ffi/01_def_foreign_function.md)
-- [pointers and handles: `c-pointer` ✅](44_foreign_function_interface_ffi/02_pointers_and_handles_c_pointer.md)
-- [`base-ptr~` accessor ✅](44_foreign_function_interface_ffi/03_base_ptr_accessor.md)
-- [handles ✅](44_foreign_function_interface_ffi/04_handles.md)
-- [basic invocation ✅](44_foreign_function_interface_ffi/05_basic_invocation.md)
-- [deferred invocation 📝](44_foreign_function_interface_ffi/06_deferred_invocation.md)
+- [`def-foreign-function` ✅](46_foreign_function_interface_ffi/01_def_foreign_function.md)
+- [pointers and handles: `c-pointer` ✅](46_foreign_function_interface_ffi/02_pointers_and_handles_c_pointer.md)
+- [`base-ptr~` accessor ✅](46_foreign_function_interface_ffi/03_base_ptr_accessor.md)
+- [handles ✅](46_foreign_function_interface_ffi/04_handles.md)
+- [basic invocation ✅](46_foreign_function_interface_ffi/05_basic_invocation.md)
+- [deferred invocation 📝](46_foreign_function_interface_ffi/06_deferred_invocation.md)
 
 ## Automatic Differentiation over the FFI Boundary
-- [The VJP Signature Rule (vetted)](45_automatic_differentiation_over_the_ffi_boundary/01_the_vjp_signature_rule_vetted.md)
-- [Signature mapping examples](45_automatic_differentiation_over_the_ffi_boundary/02_signature_mapping_examples.md)
-- [Example 1 — A transcendental, no buffers](45_automatic_differentiation_over_the_ffi_boundary/03_example_1_a_transcendental_no_buffers.md)
-- [Example 2 — A buffer op with shadow accumulation (the aggressive case)](45_automatic_differentiation_over_the_ffi_boundary/04_example_2_a_buffer_op_with_shadow_accumulation_the_aggressive_case.md)
+- [The VJP Signature Rule (vetted)](47_automatic_differentiation_over_the_ffi_boundary/01_the_vjp_signature_rule_vetted.md)
+- [Signature mapping examples](47_automatic_differentiation_over_the_ffi_boundary/02_signature_mapping_examples.md)
+- [Example 1 — A transcendental, no buffers](47_automatic_differentiation_over_the_ffi_boundary/03_example_1_a_transcendental_no_buffers.md)
+- [Example 2 — A buffer op with shadow accumulation (the aggressive case)](47_automatic_differentiation_over_the_ffi_boundary/04_example_2_a_buffer_op_with_shadow_accumulation_the_aggressive_case.md)
 
 ## Topologically Aware Compilation ✅
 
 ## Hardware Profiles ✅
-- [`def-hardware-profile`  ✅](47_hardware_profiles/01_def_hardware_profile.md)
-- [`:mma-shapes` ✅](47_hardware_profiles/02_mma_shapes.md)
-- [`:mma-lowerings` ✅](47_hardware_profiles/03_mma_lowerings.md)
-- [Crisp predefined hardware profiles](47_hardware_profiles/04_crisp_predefined_hardware_profiles.md)
-- [Probing Hardware Profile ✅](47_hardware_profiles/05_probing_hardware_profile.md)
+- [`def-hardware-profile`  ✅](49_hardware_profiles/01_def_hardware_profile.md)
+- [`:mma-shapes` ✅](49_hardware_profiles/02_mma_shapes.md)
+- [`:mma-lowerings` ✅](49_hardware_profiles/03_mma_lowerings.md)
+- [Crisp predefined hardware profiles](49_hardware_profiles/04_crisp_predefined_hardware_profiles.md)
+- [Probing Hardware Profile ✅](49_hardware_profiles/05_probing_hardware_profile.md)
 
 ## Topologically Aware Async
-- [`make-async-barrier` ✅](48_topologically_aware_async/01_make_async_barrier.md)
-- [`load-tile` ✅](48_topologically_aware_async/02_load_tile.md)
-- [`load-tile-at` ✅](48_topologically_aware_async/03_load_tile_at.md)
-- [`store-tile` ✅](48_topologically_aware_async/04_store_tile.md)
-- [`store-tile-at` ✅](48_topologically_aware_async/05_store_tile_at.md)
-- [`await` ✅](48_topologically_aware_async/06_await.md)
-- [`signal` ✅](48_topologically_aware_async/07_signal.md)
-- [More Tile helpers ✅](48_topologically_aware_async/08_more_tile_helpers.md)
-- [Crisp Terminology](48_topologically_aware_async/09_crisp_terminology.md)
-- [Sync Operations ✅](48_topologically_aware_async/10_sync_operations.md)
-- [Semaphore Operations 📝](48_topologically_aware_async/11_semaphore_operations.md)
-- [semaphore-acquire](48_topologically_aware_async/12_semaphore_acquire.md)
-- [semaphore-release](48_topologically_aware_async/13_semaphore_release.md)
+- [`make-async-barrier` ✅](50_topologically_aware_async/01_make_async_barrier.md)
+- [`load-tile` ✅](50_topologically_aware_async/02_load_tile.md)
+- [`load-tile-at` ✅](50_topologically_aware_async/03_load_tile_at.md)
+- [`store-tile` ✅](50_topologically_aware_async/04_store_tile.md)
+- [`store-tile-at` ✅](50_topologically_aware_async/05_store_tile_at.md)
+- [`await` ✅](50_topologically_aware_async/06_await.md)
+- [`signal` ✅](50_topologically_aware_async/07_signal.md)
+- [More Tile helpers ✅](50_topologically_aware_async/08_more_tile_helpers.md)
+- [Crisp Terminology](50_topologically_aware_async/09_crisp_terminology.md)
+- [Sync Operations ✅](50_topologically_aware_async/10_sync_operations.md)
+- [Semaphore Operations 📝](50_topologically_aware_async/11_semaphore_operations.md)
+- [semaphore-acquire](50_topologically_aware_async/12_semaphore_acquire.md)
+- [semaphore-release](50_topologically_aware_async/13_semaphore_release.md)
 
 ## Clusters and Distributed Shared Memory
-- [Semantics and multicasting](49_clusters_and_distributed_shared_memory/01_semantics_and_multicasting.md)
+- [Semantics and multicasting](51_clusters_and_distributed_shared_memory/01_semantics_and_multicasting.md)
 
 ## Rings ✅
-- [`ring-get` ✅](50_rings/01_ring_get.md)
-- [`make-register-tile-ring` ✅](50_rings/02_make_register_tile_ring.md)
-- [`make-async-barrier-ring` ✅](50_rings/03_make_async_barrier_ring.md)
+- [`ring-get` ✅](52_rings/01_ring_get.md)
+- [`make-register-tile-ring` ✅](52_rings/02_make_register_tile_ring.md)
+- [`make-async-barrier-ring` ✅](52_rings/03_make_async_barrier_ring.md)
 
 ## Warp Specialization ✅
 
 ## Matrix Multiplication ✅
-- [`mma-lowering` ✅](52_matrix_multiplication/01_mma_lowering.md)
-- [`make-register-tile` ✅](52_matrix_multiplication/02_make_register_tile.md)
-- [matrix-multiply-tile-stride ✅](52_matrix_multiplication/03_matrix_multiply_tile_stride.md)
-- [inner-dimension ✅](52_matrix_multiplication/04_inner_dimension.md)
-- [outer-dimensions ✅](52_matrix_multiplication/05_outer_dimensions.md)
-- [fill-tile ✅](52_matrix_multiplication/06_fill_tile.md)
-- [Autodiff ✅](52_matrix_multiplication/07_autodiff.md)
+- [`mma-lowering` ✅](54_matrix_multiplication/01_mma_lowering.md)
+- [`make-register-tile` ✅](54_matrix_multiplication/02_make_register_tile.md)
+- [matrix-multiply-tile-stride ✅](54_matrix_multiplication/03_matrix_multiply_tile_stride.md)
+- [inner-dimension ✅](54_matrix_multiplication/04_inner_dimension.md)
+- [outer-dimensions ✅](54_matrix_multiplication/05_outer_dimensions.md)
+- [fill-tile ✅](54_matrix_multiplication/06_fill_tile.md)
+- [Autodiff ✅](54_matrix_multiplication/07_autodiff.md)
 
 ## Matrix Multiplication Optimization — Two Vendor Arcs
 
 ## Optimizing NVIDIA MMA
-- [Chapter 1 — Basic Matrix Multiply with async tile loading](54_optimizing_nvidia_mma/01_chapter_1_basic_matrix_multiply_with_async_tile_loading.md)
-- [mma-accumulate-via-tile ✅](54_optimizing_nvidia_mma/02_mma_accumulate_via_tile.md)
-- [map-elements! ✅ — fusing your own code into the epilogue](54_optimizing_nvidia_mma/03_map_elements_fusing_your_own_code_into_the_epilogue.md)
-- [Fragment primitives (the low-level building blocks)](54_optimizing_nvidia_mma/04_fragment_primitives_the_low_level_building_blocks.md)
-- [Matrix Multiply with pipelining ✅](54_optimizing_nvidia_mma/05_matrix_multiply_with_pipelining.md)
-- [Matrix Multiply with Pipelining via Warp Specialization ✅](54_optimizing_nvidia_mma/06_matrix_multiply_with_pipelining_via_warp_specialization.md)
+- [Chapter 1 — Basic Matrix Multiply with async tile loading](56_optimizing_nvidia_mma/01_chapter_1_basic_matrix_multiply_with_async_tile_loading.md)
+- [mma-accumulate-via-tile ✅](56_optimizing_nvidia_mma/02_mma_accumulate_via_tile.md)
+- [map-elements! ✅ — fusing your own code into the epilogue](56_optimizing_nvidia_mma/03_map_elements_fusing_your_own_code_into_the_epilogue.md)
+- [Fragment primitives (the low-level building blocks)](56_optimizing_nvidia_mma/04_fragment_primitives_the_low_level_building_blocks.md)
+- [Matrix Multiply with pipelining ✅](56_optimizing_nvidia_mma/05_matrix_multiply_with_pipelining.md)
+- [Matrix Multiply with Pipelining via Warp Specialization ✅](56_optimizing_nvidia_mma/06_matrix_multiply_with_pipelining_via_warp_specialization.md)
 
 ## Optimizing Intel MMA
-- [Operand layout: Intel MMA operands must be `:row-major` ✅](55_optimizing_intel_mma/01_operand_layout_intel_mma_operands_must_be_row_major.md)
-- [Reusing the "Ring" Meme](55_optimizing_intel_mma/02_reusing_the_ring_meme.md)
-- [The Optimal Intel Pipelined MMA](55_optimizing_intel_mma/03_the_optimal_intel_pipelined_mma.md)
-- [Why this is the optimal shape for Intel](55_optimizing_intel_mma/04_why_this_is_the_optimal_shape_for_intel.md)
-- [Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile` ✅](55_optimizing_intel_mma/05_hopper_warpgroup_mma_make_wgmma_accumulator_wgmma_accumulate_via_tile.md)
+- [Operand layout: Intel MMA operands must be `:row-major` ✅](57_optimizing_intel_mma/01_operand_layout_intel_mma_operands_must_be_row_major.md)
+- [Reusing the "Ring" Meme](57_optimizing_intel_mma/02_reusing_the_ring_meme.md)
+- [The Optimal Intel Pipelined MMA](57_optimizing_intel_mma/03_the_optimal_intel_pipelined_mma.md)
+- [Why this is the optimal shape for Intel](57_optimizing_intel_mma/04_why_this_is_the_optimal_shape_for_intel.md)
+- [Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile` ✅](57_optimizing_intel_mma/05_hopper_warpgroup_mma_make_wgmma_accumulator_wgmma_accumulate_via_tile.md)
 
 ## Deferred: cluster-scale topology (`def-topology` / `def-orchestration`)
 
 ## Hoisting and `def-orchestration` ⚠️
-- [`def-orchestration` 📝](57_hoisting_and_def_orchestration/01_def_orchestration.md)
-- [launch-sequential 📝](57_hoisting_and_def_orchestration/02_launch_sequential.md)
-- [launch-kernel 📝](57_hoisting_and_def_orchestration/03_launch_kernel.md)
-- [launch-parallel 📝](57_hoisting_and_def_orchestration/04_launch_parallel.md)
+- [`def-orchestration` 📝](59_hoisting_and_def_orchestration/01_def_orchestration.md)
+- [launch-sequential 📝](59_hoisting_and_def_orchestration/02_launch_sequential.md)
+- [launch-kernel 📝](59_hoisting_and_def_orchestration/03_launch_kernel.md)
+- [launch-parallel 📝](59_hoisting_and_def_orchestration/04_launch_parallel.md)
 
 ## Compiler Invocation and Options ✅
-- [Output Targeting Options 📝](58_compiler_invocation_and_options/01_output_targeting_options.md)
-- [Other Flags ⚠️](58_compiler_invocation_and_options/02_other_flags.md)
-- [Compiliation Flags ✅](58_compiler_invocation_and_options/03_compiliation_flags.md)
-- [Fast Compilation ✅](58_compiler_invocation_and_options/04_fast_compilation.md)
-- [Compiler Invocations and Files ✅](58_compiler_invocation_and_options/05_compiler_invocations_and_files.md)
+- [Output Targeting Options 📝](60_compiler_invocation_and_options/01_output_targeting_options.md)
+- [Other Flags ⚠️](60_compiler_invocation_and_options/02_other_flags.md)
+- [Compiliation Flags ✅](60_compiler_invocation_and_options/03_compiliation_flags.md)
+- [Fast Compilation ✅](60_compiler_invocation_and_options/04_fast_compilation.md)
+- [Compiler Invocations and Files ✅](60_compiler_invocation_and_options/05_compiler_invocations_and_files.md)
 
 ## Hoisting Code ✅
 
 ## In-Memory Compilation API 📝
-- [C API 📝](60_in_memory_compilation_api/01_c_api.md)
-- [Status Codes ✅](60_in_memory_compilation_api/02_status_codes.md)
-- [Flags](60_in_memory_compilation_api/03_flags.md)
+- [C API 📝](62_in_memory_compilation_api/01_c_api.md)
+- [Status Codes ✅](62_in_memory_compilation_api/02_status_codes.md)
+- [Flags](62_in_memory_compilation_api/03_flags.md)
 
 ## APPENDIX #1 - Summary: set / get vars, storage handles, and structs
 
 ## APPENDIX #2 - Math with Quantized Ints and Microfloat
-- [dot product and matmul 📝](62_appendix_2_math_with_quantized_ints_and_microfloat/01_dot_product_and_matmul.md)
+- [dot product and matmul 📝](64_appendix_2_math_with_quantized_ints_and_microfloat/01_dot_product_and_matmul.md)
 
 ## Acknowledgements ✅
 
 ## INDECES
-- [def-](64_indeces/01_def.md)
-- [control flow](64_indeces/02_control_flow.md)
-- [Higher Order Function Operations](64_indeces/03_higher_order_function_operations.md)
-- [Sorting](64_indeces/04_sorting.md)
-- [Algorithms](64_indeces/05_algorithms.md)
-- [Atomics](64_indeces/06_atomics.md)
-- [Type Constraints](64_indeces/07_type_constraints.md)
-- [other](64_indeces/08_other.md)
-- [Hardware Operations](64_indeces/09_hardware_operations.md)
-- [logging and debugging](64_indeces/10_logging_and_debugging.md)
-- [static analysis](64_indeces/11_static_analysis.md)
-- [hoisting and def-orchestration](64_indeces/12_hoisting_and_def_orchestration.md)
-- [lisp](64_indeces/13_lisp.md)
-- [To Do](64_indeces/14_to_do.md)
-- [Memory](64_indeces/15_memory.md)
+- [def-](66_indeces/01_def.md)
+- [control flow](66_indeces/02_control_flow.md)
+- [Higher Order Function Operations](66_indeces/03_higher_order_function_operations.md)
+- [Sorting](66_indeces/04_sorting.md)
+- [Algorithms](66_indeces/05_algorithms.md)
+- [Atomics](66_indeces/06_atomics.md)
+- [Type Constraints](66_indeces/07_type_constraints.md)
+- [other](66_indeces/08_other.md)
+- [Hardware Operations](66_indeces/09_hardware_operations.md)
+- [logging and debugging](66_indeces/10_logging_and_debugging.md)
+- [static analysis](66_indeces/11_static_analysis.md)
+- [hoisting and def-orchestration](66_indeces/12_hoisting_and_def_orchestration.md)
+- [lisp](66_indeces/13_lisp.md)
+- [To Do](66_indeces/14_to_do.md)
+- [Memory](66_indeces/15_memory.md)

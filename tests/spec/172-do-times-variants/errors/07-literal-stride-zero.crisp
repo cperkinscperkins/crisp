@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be greater than 0"
+;; Endeavour 172: Literal stride 0 is a compile error (D3): the start ((N-1)/s)*s divides by zero.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_literal_stride_zero (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (dec-times (i 64 0)
+    (set! (~ out) (+ (~ out) i))))

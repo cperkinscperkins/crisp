@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "unsigned"
+;; Endeavour 172: A signed variable operand is rejected (D2: unsigned only).
+;; dotimes still accepts signed limits; the variants do not.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_signed_operand (n &out out)
+  (declare #'(int &out u-c => nil)
+           (global-size :set-to 1))
+  (dec-times (i n)
+    (set! (~ out) (+ (~ out) i))))

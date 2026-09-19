@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "uniform"
+;; Endeavour 172: do-times-by-doubling+ checks INIT too, not just N (D5).
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_init (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (do-times-by-doubling+ (i (+ (get-local-id 0) 1ul) 64)
+    (set! (~ out) (+ (~ out) i))))

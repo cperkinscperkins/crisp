@@ -16,8 +16,9 @@
 ;;;;     the prose becomes BODY FORMS -- the first bare word is then an unbound variable, and the
 ;;;;     build emits no warning.  It fails only when the function is CALLED.  Cost: a red CI.
 ;;;;
-;;;; Emptied 2026-09-18: everything folded into src/ (endeavour 167 sections --
-;;;; :let / :prologue / :body / :epilogue -- into src/analysis/control.lisp and
-;;;; src/autodiff.lisp).  Previously emptied 2026-09-16 (endeavour 170 + BUG 060).
+;;;; Emptied 2026-09-19: everything folded into src/ (endeavour 172 -- the dotimes family,
+;;;; semantic-loop-variant + BUG 065's dotimes stride gate -- into src/semantic.lisp,
+;;;; src/anf-transform.lisp, src/analysis/control.lisp, src/autodiff.lisp and
+;;;; src/codegen.lisp).  Previously emptied 2026-09-18 (endeavour 167).
 
 (in-package :crisp.compiler)

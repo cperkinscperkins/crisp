@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-19T01:33:52.895033Z
+Generated on 2026-09-19T22:52:52.897486Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -507,6 +507,46 @@ Generated on 2026-09-19T01:33:52.895033Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Strictly checks that the limit (and stride) are workgroup-uniform.
+
+
+---
+### DEFPARAMETER `*LOOP-VARIANT-SPECS*`
+
+  > Endeavour 172: per-head lowering kind and operand roles.  The + variant of each head  >    shares its entry (the trailing + is stripped before lookup).
+
+
+---
+### DEFUN `%LOOP-VARIANT-ROLE-NAME`
+- **Args**: `(ROLE)`
+
+  > Display name of a loop-variant operand role: N, init, stride or factor.
+
+
+---
+### DEFUN `%LOOP-VARIANT-USAGE`
+- **Args**: `(HEAD-NAME ROLES)`
+
+  > The usage text for a loop-variant head, e.g. (dec-times (i N [stride]) body...).
+
+
+---
+### DEFUN `%ANALYZE-LOOP-VARIANT-OPERAND`
+- **Args**: `(FORM ROLE HEAD-NAME ENV CONTEXT LOCATION)`
+
+  > Analyzes one loop-variant operand and enforces D2 and the literal half of D3.  >    A non-negative integer literal becomes a ulong literal node; a negative literal, a signed  >    or a float operand is an error.  Literal gates: init and stride must be greater than 0,  >    factor greater than 1.  Returns the analyzed node.
+
+
+---
+### DEFUN `ANALYZE-LOOP-VARIANT-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes every dotimes variant and its + form (endeavour 172):  >      (dec-times            (i N [stride]) body...)    i = ((N-1)/s)*s ... 0, the exact reverse of dotimes  >      (dec-times-by-half    (i N) body...)             i = N, N/2, ... 1  >      (dec-times-by-factor  (i N factor) body...)      i = N, N/f, ... >= 1  >      (do-times-by-doubling (i init N) body...)        i = init, 2*init, ... <= N  >      (do-times-by-multiply (i init N factor) body...) i = init, init*f, ... <= N  >      (do-power-step        (i N) body...)             i = 1, 2, 4, ... < N  >      (dec-power-step       (i N) body...)             i = largest power of 2 below N, ... 1  >    Operands must be unsigned (D2); literal gates per D3.  A + form requires every operand to  >    be provably uniform (D5).  The loop variable takes N's type and the combined uniformity of  >    all operands.  Returns a semantic-loop-variant.
+
+
+---
+### DEFUN `REGISTER-LOOP-VARIANT-ANALYZERS`
+
+  > Endeavour 172: registers analyze-loop-variant-expression for every dotimes variant and its  >    + form, under BOTH :crisp-language and :crisp.compiler (as dotimes is).  Called from  >    register-control-analyzers, so it survives initialize-compiler's clrhash.
 
 
 ---
@@ -2300,8 +2340,31 @@ Generated on 2026-09-19T01:33:52.895033Z
 - **Args**: `(EXPR IS-NESTED?)`
 
 ---
+### DEFPARAMETER `*DOTIMES-FAMILY-NAMES*`
+
+  > Endeavour 172: the head names of the counted-loop family.  Every member has the shape  >    (HEAD (VAR OPERAND...) BODY...): VAR is bound in BODY, the operands are evaluated once  >    before the loop.  ANF and the AD walker treat all of them exactly like dotimes.
+
+
+---
+### DEFUN `%DOTIMES-FAMILY-HEAD-P`
+- **Args**: `(HEAD)`
+
+  > True when HEAD names a counted-loop family member (dotimes, dec-times, ... and their  >    + variants), compared by symbol name so the reading package does not matter.
+
+
+---
+### DEFUN `%DOTIMES-BACKWARD-HEAD`
+- **Args**: `(HEAD)`
+
+  > The head the AD backward walk emits for a forward counted loop HEAD: the plain (non +)  >    form, since the backward kernel re-checks nothing about uniformity.  DOTIMES and DOTIMES+  >    map to the dotimes symbol exactly as before endeavour 172.
+
+
+---
 ### DEFUN `%ANF-NORMALIZE-DOTIMES`
 - **Args**: `(OP EXPR IS-NESTED?)`
+
+  > ANF-normalizes a counted-loop family form (OP (VAR OPERAND...) BODY...).  Each operand is  >    normalized to an atom (its bindings hoisted ahead of the loop, in order); the body is  >    transformed in place, never hoisted.  When IS-NESTED? the loop is bound to a fresh temp.
+
 
 ---
 ### DEFUN `%ANF-NORMALIZE-WHILE`
@@ -2679,7 +2742,7 @@ Generated on 2026-09-19T01:33:52.895033Z
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP
               INTERMEDIATE-ZERO)`
 
-  > Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the  >    body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A  >    pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the  >    forward's load sites record other stages' origins.  >   >    ENDEAVOUR 149: a tile re-staged each iteration has no single primal value, so its replay  >    belongs HERE -- inside the loop body, ahead of the consumers, evaluated afresh for each  >    value of the loop variable.  That falls out of emitting at this scope: the replayed  >    statements close over BINDING exactly as the forward's did.
+  > Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the  >    body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A  >    pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the  >    forward's load sites record other stages' origins.  >   >    ENDEAVOUR 149: a tile re-staged each iteration has no single primal value, so its replay  >    belongs HERE -- inside the loop body, ahead of the consumers, evaluated afresh for each  >    value of the loop variable.  That falls out of emitting at this scope: the replayed  >    statements close over BINDING exactly as the forward's did.  >   >    ENDEAVOUR 172: emits the forward loop's own head (less any +), so a dec-times / by-factor /  >    power-step loop replays with its own iteration sequence rather than as a dotimes.
 
 
 ---
@@ -4522,6 +4585,13 @@ Generated on 2026-09-19T01:33:52.895033Z
 - **Args**: `(BUILDER MODULE)`
 
   > Synthesizes the STABLE block-local warp index on PTX: local-linear-id / 32.  Endeavor 139  >    FIX: warp-id previously read %warpid, the volatile PHYSICAL-SM warp register the PTX ISA warns  >    'may change during execution ... should not be used for work scheduling'.  Warp specialization  >    IS work scheduling and needs a stable per-block index — which is exactly SPV's SubgroupId.  >    local-linear-id is %tid-derived and stable; /32 gives the block-local warp index.  i32 (uint).
+
+
+---
+### DEFUN `%LOOP-VARIANT-COERCE`
+- **Args**: `(BUILDER VALUE LLVM-TYPE)`
+
+  > Zero-extends or truncates the unsigned integer VALUE to LLVM-TYPE (the loop variable's type).
 
 
 ---
@@ -9640,6 +9710,12 @@ Generated on 2026-09-19T01:33:52.895033Z
 ### DEFSTRUCT `SEMANTIC-DOTIMES`
 
   > Represents (dotimes (var limit [stride]) body...).  >    var is bound to 0, stride, 2*stride, ... while var < limit.  >    stride-node is NIL when the stride was omitted (emit constant 1).  >    Always returns void.
+
+
+---
+### DEFSTRUCT `SEMANTIC-LOOP-VARIANT`
+
+  > Endeavour 172: a dotimes-family loop other than dotimes itself.  >    KIND is one of :dec-times :dec-by-factor :multiply :power-up :power-down.  >    Inherited slots: LIMIT-NODE is N (or the limit), STRIDE-NODE the dec-times stride (NIL = 1).  >    INIT-NODE is the multiply start (NIL = 1), FACTOR-NODE the factor (NIL = 2).  >    VAR-TYPE is the loop variable's type: N's type.
 
 
 ---

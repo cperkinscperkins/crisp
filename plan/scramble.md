@@ -854,11 +854,21 @@ issues having it explicit avoid:
 - no need to juggle precision to get speed.
 - widening
 
+MISC
+====
+- [ ] split_docs.lisp -- less granular.  Simplify?
+- [ ] refactor:
+- - [ ] overly long functions
+- - [ ] compiler warnings in tests.  most fixable in compiler, no?
+- - [ ] warnings when building compiler
+
 
 Reductions
 ==========
-- [ ] revisit Phase 1 vs Phase 2.
-- [ ] need to compose correctly
+- [x] revisit Phase 1 vs Phase 2.
+- [x] need to compose correctly
+- [ ] implement
+- [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )
 
 Async Ops \ Named Barriers \ Rings
