@@ -688,11 +688,11 @@ A|D issues
 
 Looping Constructs
 ==================
-- [ ] dotimes 
-- - [ ]  dotimes+
-- [ ] dec-times / dec-times+
-- [ ] do-times-by-doubling
-- [ ] &c.
+- [x] dotimes 
+- - [x]  dotimes+
+- [x] dec-times / dec-times+
+- [x] do-times-by-doubling
+- [x] &c.
 
 FFI
 ===
