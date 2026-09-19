@@ -16,6 +16,8 @@
 ;;;;     the prose becomes BODY FORMS -- the first bare word is then an unbound variable, and the
 ;;;;     build emits no warning.  It fails only when the function is CALLED.  Cost: a red CI.
 ;;;;
-;;;; Emptied 2026-09-16: everything folded into src/ (endeavour 170 + BUG 060).
+;;;; Emptied 2026-09-18: everything folded into src/ (endeavour 167 sections --
+;;;; :let / :prologue / :body / :epilogue -- into src/analysis/control.lisp and
+;;;; src/autodiff.lisp).  Previously emptied 2026-09-16 (endeavour 170 + BUG 060).
 
 (in-package :crisp.compiler)

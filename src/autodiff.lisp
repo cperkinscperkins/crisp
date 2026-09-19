@@ -4645,20 +4645,45 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 
 (defun %mma-ad-expand-mmts-in-form (form reg-map)
   "Recursively lower every matrix-multiply-tile-stride in FORM (endeavor 145 P8: the AD path
-   must do this before ANF).  BUG 036: forwards the register tile's declared INIT as the
-   per-output-tile reset value; a scratch C-tile resets to the 0.0 default."
+   must do this before ANF).
+
+   THE THIRD CALLER.  %mmts-lower has three: the scratch analyzer in analysis/control.lisp,
+   the register pre-lowering in mma.lisp, and this one.  All three destructure through
+   %mmts-parse, so 167's sections reach all three -- but each one independently decides the
+   TILE-SPEC, and this one decided it from REG-MAP alone (the enclosing let's register-tile
+   bindings).  A C-tile declared in the macro's own :let is not in that map, so the spec fell
+   back to the C-tile SYMBOL, which the emitted lowering then binds INSIDE the let that
+   tile-stride's spec is read outside of:
+
+     Crisp compilation failed ... Unknown variable C-TILE
+
+   under --differentiate only, while the forward pass compiled clean.  So the :let binding is
+   consulted first here, exactly as analyze-matrix-multiply-tile-stride-expression does, and
+   REG-MAP remains the fallback for the pre-167 enclosing-let shape."
   (cond
     ((not (consp form)) form)
     ((%mmts-head-p form)
      (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
          (%mmts-parse form nil)
-       (let ((entry (assoc c-tile reg-map)))
-         (%mmts-lower c-form c-tile
-                      (if entry (second entry) c-tile)
-                      k-form k-step gy gx gk
+       (let* ((entry     (assoc c-tile reg-map))
+              (let-entry (%mmts-let-accumulator-entry c-tile body nil))
+              (ctor      (and let-entry (second let-entry)))
+              (reg-ctor  (and ctor (%register-tile-init-form-p ctor) ctor))
+              (tile-spec (cond
+                           ;; Declared in :let -- take the dims from the constructor.
+                           ((and ctor (consp ctor) (listp (third ctor))
+                                 (every #'integerp (third ctor)))
+                            (third ctor))
+                           ;; Pre-167: a register tile in the enclosing let.
+                           (entry (second entry))
+                           (t c-tile)))
+              (reset-val (cond (reg-ctor (fourth reg-ctor))
+                               (entry    (third entry))
+                               (t        0.0))))
+         (%mmts-lower c-form c-tile tile-spec k-form k-step gy gx gk
                       (mapcar (lambda (f) (%mma-ad-expand-mmts-in-form f reg-map)) body)
                       nil
-                      (if entry (third entry) 0.0)))))
+                      reset-val))))
     (t (mapcar (lambda (f) (%mma-ad-expand-mmts-in-form f reg-map)) form))))
 
 ;;; ===================================================================

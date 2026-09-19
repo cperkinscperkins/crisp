@@ -1,0 +1,58 @@
+;; Endeavor 167 — the macro owns the reset for a SCRATCH accumulator too.
+;;
+;; BEHAVIOUR CHANGE, not a bug fix.  Today's contract is stated in 135/01: "the macro does
+;; NOT auto-reset a scratch C-tile -- the user owns init", and the code agrees --
+;; %mmts-lower gates its reset on REGISTER-P, so a scratch C-tile gets nothing.  Every
+;; scratch call site compensates by hand with (when (= grid-k 0) (fill-tile C-tile 0.0)).
+;;
+;; The BUG 036 commentary at src/mma.lisp:2570 and 135/11's header both describe the
+;; opposite in the present tense -- scratch resets to 0.0 and gets a sync-workgroup because
+;; its fill is workgroup-collective -- and %mmts-lower binds SYNC-SYM only to declare it
+;; IGNORABLE.  So the intent was written down and never wired.  This spec wires it.
+;;
+;; Unlike a register tile, a scratch tile has no declared init to fall back on
+;; (make-scratch-matrix takes none), so the :let binding does NOT self-reset the way 03's
+;; register tile does.  That makes the macro's fill load-bearing here, and the barrier
+;; mandatory: fill-tile on scratch is a workgroup-collective write that inserts no barrier
+;; of its own.
+;;
+;; C is 8x32 over an 8x16 tile, so the stride body runs twice and an unreset accumulator
+;; doubles the second tile.  Note the body carries NO hand-written reset -- that absence is
+;; the whole point of the spec.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; MMA-DIMS: 8 32 16
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel scratch_accumulator_reset (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      :let ((A-tile (make-scratch-matrix float (8 8)))
+            (B-tile (make-scratch-matrix float (8 16)))
+            (C-tile (make-scratch-matrix float (8 16))))
+      :body
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (dotimes (i 8)
+        (dotimes (j 16)
+          (dotimes (kk 8)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j)))))))
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

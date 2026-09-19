@@ -24,13 +24,13 @@
            (local-size :set-to 16))
   (let ((K (inner-dimension A B))
         (n-k-steps (/ (inner-dimension A B) (to-ulong 16))))
-    (tile-stride C (32 32) (grid-y grid-x)
-      (let ((A-tile (make-register-tile bfloat16 (32 16) 0.0 :operand :a))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 16 (grid-y grid-x grid-k)
+      :let ((A-tile (make-register-tile bfloat16 (32 16) 0.0 :operand :a))
             (B-tile (make-register-tile bfloat16 (16 32) 0.0 :operand :b))
             (C-tile (make-register-tile float (32 32) 0.0)))
-        (dotimes (grid-k n-k-steps)
-          (load-tile A A-tile (grid-y grid-k))
-          (load-tile B B-tile (grid-k grid-x))
-          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
-        :epilogue
-        (store-tile C-tile C (grid-y grid-x))))))
+      :body
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

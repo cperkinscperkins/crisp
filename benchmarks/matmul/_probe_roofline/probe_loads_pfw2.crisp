@@ -32,14 +32,12 @@
         (B-tile (make-register-tile half (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
         (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
         (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
-    (tile-stride C (128 256) (grid-y grid-x)
-      (progn
-        (dotimes (grid-k n-k-steps)
-          (let ((prefetch-k (+ grid-k (to-ulong 2))))
-            (when (< prefetch-k n-k-steps)
-              (prefetch-tile A (grid-y prefetch-k) :size (128 32) :warp-partitioned true)
-              (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
-            (load-tile A A-tile (grid-y grid-k))
-            (load-tile B B-tile (grid-k grid-x))))
-        :epilogue
-        (store-tile C-tile C (grid-y grid-x))))))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 32 (grid-y grid-x grid-k)
+      (let ((prefetch-k (+ grid-k (to-ulong 2))))
+      (when (< prefetch-k n-k-steps)
+        (prefetch-tile A (grid-y prefetch-k) :size (128 32) :warp-partitioned true)
+        (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x)))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

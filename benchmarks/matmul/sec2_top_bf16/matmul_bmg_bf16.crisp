@@ -117,11 +117,9 @@
         (B-tile (make-register-tile bfloat16 (32 256) 0.0 :operand :b :warps '(true true true true true true true true true true true true true true true true)))
         (C-tile (make-register-tile float (128 256) 0.0 :warps '(true true true true true true true true true true true true true true true true)))
         (K (inner-dimension A B)))
-    (tile-stride C (128 256) (grid-y grid-x)
-      (progn
-        (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
-          (load-tile A A-tile (grid-y grid-k))
-          (load-tile B B-tile (grid-k grid-x))
-          (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile))
-        :epilogue
-        (store-tile C-tile C (grid-y grid-x))))))
+    (matrix-multiply-tile-stride C C-tile K 32 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 16) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

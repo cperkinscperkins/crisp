@@ -1,0 +1,34 @@
+;; Endeavor 167 — REGRESSION GUARD: the pre-167 form still compiles, untouched.
+;;
+;; :body is optional when neither :let nor :prologue appears, so the 41 existing call sites
+;; (17 in benchmarks/matmul, 24 under tests/spec) keep working with an unmarked leading body
+;; and a trailing :epilogue.  This is 135/01's shape verbatim -- accumulator and staging
+;; tiles in the ENCLOSING let, no section markers at all except :epilogue.
+;;
+;; If adding the new sections ever forces a marker on the body, this spec fails and the
+;; migration stops being optional.  That matters: the sections are meant to unlock the
+;; kernels that could not use the macro, not to invalidate the ones that already do.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel legacy_shape (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((A-tile (make-scratch-matrix float (4 4)))
+        (B-tile (make-scratch-matrix float (4 4)))
+        (C-tile (make-scratch-matrix float (4 4)))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0))
+        (fill-tile C-tile 0.0))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j)))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

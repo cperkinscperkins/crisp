@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-17T04:19:16.034130Z
+Generated on 2026-09-19T01:33:52.895033Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -953,13 +953,6 @@ Generated on 2026-09-17T04:19:16.034130Z
 
 
 ---
-### DEFUN `%MMTS-SPLIT-EPILOGUE`
-- **Args**: `(BODY)`
-
-  > Endeavor 137: split a matrix-multiply-tile-stride body at the :epilogue marker into  >    (values reduction-body epilogue-body).  Forms before :epilogue run once per K-step  >    (the reduction); forms after run once per tile, post-reduction (grid-y/grid-x in scope,  >    C-tile complete) — that is where the user's store-tile (and any fusion) go.  No :epilogue  >    -> (values body nil).
-
-
----
 ### DEFUN `%FORM-TREE-MENTIONS-STORE-TILE-P`
 - **Args**: `(FORMS)`
 
@@ -967,18 +960,59 @@ Generated on 2026-09-17T04:19:16.034130Z
 
 
 ---
+### DEFPARAMETER `*MMTS-SECTIONS*`
+
+  > The section markers of matrix-multiply-tile-stride, in their REQUIRED order.  >    Closed set: a keyword in section position that is not here is an error, because the  >    pre-167 behaviour for a typo'd marker was to silently fold it into the reduction body.
+
+
+---
+### DEFUN `%MMTS-SECTION-ERROR`
+- **Args**: `(MESSAGE LOCATION)`
+
+  > Signal a section-grammar error for matrix-multiply-tile-stride.
+
+
+---
+### DEFUN `%MMTS-SPLIT-SECTIONS`
+- **Args**: `(BODY &OPTIONAL LOCATION)`
+
+  > Split a matrix-multiply-tile-stride BODY into its four sections.  >    Returns (values LET-BINDINGS PROLOGUE-FORMS REDUCTION-FORMS EPILOGUE-FORMS).  >   >    GRAMMAR.  Sections are introduced by a bare keyword at the top level of the body and run  >    until the next marker, so every section but :let holds an implicit progn.  :let holds  >    exactly one binding group.  The markers must appear in the order given by *mmts-sections*  >    and at most once each.  >   >    ORDER IS ENFORCED, NOT ENCOURAGED.  The split is positional, so a :prologue written after  >    :epilogue would still lower to code that runs BEFORE the K loop -- the text would read one  >    way and execute another with nothing to warn you.  >   >    LEGACY SHAPE.  With neither :let nor :prologue present the body may stay unmarked and the  >    reduction is simply everything before :epilogue, exactly as %mmts-split-epilogue did.  That  >    is what keeps the 41 pre-167 call sites compiling untouched.  Once :let or :prologue appears  >    the boundary between prologue and reduction is no longer inferable, so :body is required.
+
+
+---
+### DEFUN `%MMTS-RESET-FORMS`
+- **Args**: `(C-TILE LET-BINDINGS TILE-SPEC RESET-VALUE FILL-SYM SYNC-SYM)`
+
+  > The per-OUTPUT-TILE accumulator reset (BUG 036), decided by WHERE the C-tile is bound.  >   >    Measured 2026-09-17 by compiling both shapes and reading the LLVM IR: a register tile  >    bound INSIDE tile-stride emits its zero CompositeConstruct + store in the grid-x loop  >    body, after grid-x is stored and before the K loop is entered -- precisely the slot this  >    function's fill would occupy.  Bound in the ENCLOSING let it lands in the kernel entry  >    block instead, once per WORKGROUP, which is the BUG 036 exposure.  >   >    So:  >      * register tile in :let      -> NOTHING.  The binding already is the per-tile reset;  >                                     a fill here would be a redundant full-tile zero-write on  >                                     the hot path, correct and invisible to MMA_CORRECT.  >      * register tile outside      -> fill to its DECLARED INIT (pre-167 behaviour, kept).  >      * scratch tile, either place -> fill to 0.0 PLUS a barrier.  make-scratch-matrix takes  >                                     no init, so a scratch tile never self-resets wherever it  >                                     is bound; and fill-tile on scratch is a workgroup-  >                                     collective write that inserts no barrier of its own, so  >                                     the macro (its caller) supplies one.  Endeavour 167  >                                     behaviour change: before this, %mmts-lower gated the  >                                     reset on REGISTER-P and scratch got nothing, leaving  >                                     every scratch call site to hand-write it.
+
+
+---
 ### DEFUN `%MMTS-LOWER`
 - **Args**: `(C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY
               LOCATION &OPTIONAL (RESET-VALUE 0.0))`
 
-  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  Endeavor 137: NO  >    auto-store — the body's :epilogue section (post-reduction, per tile) holds the explicit  >    store + any fusion.  Warns if the C-tile is never stored.  >   >    BUG 036: emits a per-OUTPUT-TILE reset of the accumulator to RESET-VALUE before the K-loop.  >   >    Endeavor 150: REFUSES a map-elements! on the accumulator inside the reduction body, where  >    the accumulator is a partial sum.
+  > The tile-stride (over TILE-SPEC) + grid-k K/k-step reduction loop.  >   >    Endeavor 167 shape:  >   >      (tile-stride C TILE-SPEC (grid-y grid-x)  >        [ (let (:let BINDINGS)      ; only when :let is present  >            RESET  >            PROLOGUE...  >            (dotimes (grid-k (/ K k-step)) BODY...)  >            EPILOGUE...) ])  >   >    With no :let the wrapping let is omitted entirely, so the legacy call sites lower to  >    byte-identical IR.  RESET comes BEFORE the prologue deliberately: that is what lets a  >    prologue seed the accumulator (a bias tile) instead of being clobbered by the macro.  >   >    Endeavor 137: no auto-store -- the :epilogue holds the explicit store + any fusion.  >    Endeavor 150: refuses a map-elements! on the accumulator inside the reduction body,  >    where the accumulator is only a partial sum.
+
+
+---
+### DEFUN `%MMTS-LET-ACCUMULATOR-ENTRY`
+- **Args**: `(C-TILE BODY LOCATION)`
+
+  > The :let binding of C-TILE in a matrix-multiply-tile-stride BODY, or NIL.  >   >    With :let the accumulator's dims and declared init sit INSIDE the macro form, so the  >    lowering reads its own argument instead of peeking at the enclosing let the way  >    %mmts-register-dims-map has to.  That is what lifts the pre-167 constraint that a  >    register accumulator be bound in the directly-enclosing let.
 
 
 ---
 ### DEFUN `ANALYZE-MATRIX-MULTIPLY-TILE-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Scratch-tensor path for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) BODY...).  >    Lowers with the tile-tensor C-tile (tile-stride reads its extents~).  Register-tile C-tiles  >    are pre-lowered in analyze-let-with-tile-explosion, before SROA explosion, so never reach here.
+  > Analyzer for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) SECTIONS...).  >   >    A register C-tile needs a COMPILE-TIME (M N) size-list tile-spec (a register tile has no  >    extents), a scratch C-tile is a real tensor and passes itself as the spec.  Pre-167 the  >    register case could only be recognised by the pre-lowering in src/mma.lisp, which reads  >    the ENCLOSING let; when the tile is bound in :let the constructor is right here, so this  >    path handles it and the emitted inner let trips the SROA explosion on its own.
+
+
+---
+### DEFUN `%MMTS-SCAN-SECTIONS`
+- **Args**: `(ARGS)`
+
+  > Pass-1 scan for a matrix-multiply-tile-stride form's ARGS (the form's cdr).  >   >    WHY THIS EXISTS.  Pass 1 lifts every make-scratch-matrix / make-scratch-cell into an  >    implicit kernel argument named <binding>_FROM_<kernel>_<n>, taking <binding> from  >    compiler-context-current-binding-name -- which only the LET scanner ever sets.  A macro  >    form is not a let, so a scratch tile declared in :let was scanned with no binding name,  >    registered as __STORAGE_FROM_<kernel>_<n>, and then codegen went looking for  >    A-TILE_FROM_<kernel>_<n> and found nothing:  >   >      Missing implicit argument A-TILE_FROM_MM_LET_ENVELOPE_1 for (TENSOR FLOAT 2 LOCAL ...)  >   >    The storage was allocated -- it was simply allocated under the wrong name.  So the scan  >    has to walk :let the way scan-operator walks a let's bindings.  >   >    Mirrors that scanner exactly, including its rule that a MULTIPLE-VALUE binding sets no  >    current-binding-name (there is no single variable to name the storage after).
 
 
 ---
@@ -3300,7 +3334,7 @@ Generated on 2026-09-17T04:19:16.034130Z
 ### DEFUN `%MMA-AD-EXPAND-MMTS-IN-FORM`
 - **Args**: `(FORM REG-MAP)`
 
-  > Recursively lower every matrix-multiply-tile-stride in FORM (endeavor 145 P8: the AD path  >    must do this before ANF).  BUG 036: forwards the register tile's declared INIT as the  >    per-output-tile reset value; a scratch C-tile resets to the 0.0 default.
+  > Recursively lower every matrix-multiply-tile-stride in FORM (endeavor 145 P8: the AD path  >    must do this before ANF).  >   >    THE THIRD CALLER.  %mmts-lower has three: the scratch analyzer in analysis/control.lisp,  >    the register pre-lowering in mma.lisp, and this one.  All three destructure through  >    %mmts-parse, so 167's sections reach all three -- but each one independently decides the  >    TILE-SPEC, and this one decided it from REG-MAP alone (the enclosing let's register-tile  >    bindings).  A C-tile declared in the macro's own :let is not in that map, so the spec fell  >    back to the C-tile SYMBOL, which the emitted lowering then binds INSIDE the let that  >    tile-stride's spec is read outside of:  >   >      Crisp compilation failed ... Unknown variable C-TILE  >   >    under --differentiate only, while the forward pass compiled clean.  So the :let binding is  >    consulted first here, exactly as analyze-matrix-multiply-tile-stride-expression does, and  >    REG-MAP remains the fallback for the pre-167 enclosing-let shape.
 
 
 ---

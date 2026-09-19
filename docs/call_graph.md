@@ -855,6 +855,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
                                                             (EQL
                                                              'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SCAN-SECTIONS ARGS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SPLIT-SECTIONS BODY &OPTIONAL LOCATION)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SECTION-ERROR MESSAGE LOCATION)  analysis/control.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - (%SCAN-REGISTER-TMA-DESCRIPTOR ARGS)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp
@@ -1490,12 +1494,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%MMA-AD-EXPAND-MMTS-IN-FORM FORM REG-MAP)  autodiff.lisp
 - - - (%MMTS-HEAD-P FORM)  mma.lisp
 - - - (%MMTS-PARSE EXPR LOCATION)  analysis/control.lisp
+- - - (%MMTS-LET-ACCUMULATOR-ENTRY C-TILE BODY LOCATION)  analysis/control.lisp
+- - - - (%MMTS-SPLIT-SECTIONS BODY &OPTIONAL LOCATION)  analysis/control.lisp [See above]
+- - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 - - - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY LOCATION &OPTIONAL (RESET-VALUE
                                                                                                        0.0))  analysis/control.lisp
-- - - - (%MMTS-SPLIT-EPILOGUE BODY)  analysis/control.lisp
+- - - - (%MMTS-SPLIT-SECTIONS BODY &OPTIONAL LOCATION)  analysis/control.lisp [See above]
 - - - - (%MMTS-ACCUMULATOR-MAP-TARGET REDUCTION-BODY C-TILE)  analysis/control.lisp
 - - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
 - - - - (%FORM-TREE-MENTIONS-STORE-TILE-P FORMS)  analysis/control.lisp
+- - - - (%MMTS-RESET-FORMS C-TILE LET-BINDINGS TILE-SPEC RESET-VALUE FILL-SYM SYNC-SYM)  analysis/control.lisp
+- - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 - - - (%MMA-AD-EXPAND-MMTS-IN-FORM FORM REG-MAP)  autodiff.lisp [RECURSION]
 
 - (%MMA-AD-REGISTER-TILE-P SYM FLAT-ANF)  autodiff.lisp
@@ -2074,6 +2083,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-MATRIX-MULTIPLY-TILE-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%MMTS-PARSE EXPR LOCATION)  analysis/control.lisp [See above]
+- - (%MMTS-LET-ACCUMULATOR-ENTRY C-TILE BODY LOCATION)  analysis/control.lisp [See above]
+- - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%MMTS-LOWER C-FORM C-TILE TILE-SPEC K-FORM K-STEP GRID-Y GRID-X GRID-K BODY LOCATION &OPTIONAL (RESET-VALUE
                                                                                                      0.0))  analysis/control.lisp [See above]

@@ -28,7 +28,9 @@
     ;; k-step = 4 (the shared K-extent of the (4 4) staging tiles); loops K/4 times.
     (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
       ;; Reset the accumulator on the first K-step of each spatial tile.
-      ;; (The macro does NOT auto-reset a scratch C-tile — the user owns init.)
+      ;; (Endeavour 167 made the macro own this: a scratch C-tile is now reset per output
+      ;;  tile, with a barrier.  This hand-written reset is therefore redundant, and is kept
+      ;;  only because it is what the spec shipped with and it is still correct.)
       (when (= grid-k (to-ulong 0))
         (dotimes (i 4)
           (dotimes (j 4)

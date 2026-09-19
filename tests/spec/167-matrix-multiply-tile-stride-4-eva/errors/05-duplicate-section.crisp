@@ -1,0 +1,29 @@
+;; Endeavor 167 — negative: a section may appear at most once.
+;;
+;; A repeated marker has no sensible reading.  Taking the first silently discards the
+;; second's forms; taking the last discards the first's; concatenating them reorders code
+;; across the K loop, which is the one thing the section grammar exists to make explicit.
+;;
+;; The likely way to arrive here is a merge or a copy-paste between two kernels, which is
+;; also how the inert :epilogue spread across 84 benchmark files -- so it is worth catching
+;; rather than resolving by rule.
+;;
+;; CHECK-FAIL: ":prologue"
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel duplicate_section (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      :let ((C-tile (make-scratch-matrix float (4 4))))
+      :prologue
+      (fill-tile C-tile 0.0)
+      :prologue                                  ; <-- second :prologue
+      (sync-workgroup)
+      :body
+      (set! (~ C-tile 0 0) (+ (~ C-tile 0 0) 1.0))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

@@ -1,0 +1,41 @@
+;; Endeavor 167 — the new sections survive --differentiate.
+;;
+;; %mmts-lower has THREE callers, and they are easy to fix one at a time and forget the
+;; third: the scratch analyzer at src/analysis/control.lisp:4399, the register pre-lowering
+;; at src/mma.lisp:2617, and the AD pre-pass at src/autodiff.lisp:4656 (endeavor 145 P8,
+;; which lowers the macro ahead of the AD walk).  All three destructure through %mmts-parse,
+;; so the section grammar has to reach all three or the AD path sees a body it cannot read.
+;;
+;; This is the 03 kernel with a :prologue added and run under --differentiate.  A failure
+;; here most likely means the AD-side expander is still splitting the body on :epilogue
+;; alone and is now treating :let / :prologue / :body as ordinary forms to differentiate.
+;;
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8)))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel let_prologue_diff (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 8 (grid-y grid-x grid-k)
+      :let ((A-tile (make-scratch-matrix float (8 8)))
+            (B-tile (make-scratch-matrix float (8 16)))
+            (C-tile (make-register-tile float (8 16) 0.0)))
+      :prologue
+      (prefetch-tile A (grid-y 0) :size (8 8))
+      :body
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

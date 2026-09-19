@@ -12255,16 +12255,71 @@ the compiler warns** (a matmul that discards its result is almost always a bug).
 > Fusing on `my-accum` here is a compile-time **error**, not merely bad practice — see the
 > partial-sum warning under `map-elements!` for why even a linear function is wrong.
 
+**Sections — `:let`, `:prologue`, `:body`, `:epilogue`.** `:epilogue` is one of four section
+markers. Most kernels need only it; the other three exist for the two things the bare envelope
+could not express — a binding scoped over the K-loop, and per-tile setup that runs before it.
+
+```
+(matrix-multiply-tile-stride C C-tile K k-step (grid-y grid-x grid-k)
+  :let      ((A-ring (make-register-tile-ring float (32 8) :ring-count 2 :operand :a))
+             (B-ring (make-register-tile-ring float (8 64) :ring-count 2 :operand :b))
+             (C-tile (make-register-tile float (32 64) 0.0)))
+  :prologue (prefetch-tile A (grid-y 0) :size (32 8))      ; once per output tile,
+            (load-tile A (ring-get A-ring 0) (grid-y 0))   ;   BEFORE the K-loop
+  :body     (load-tile A A-tile (grid-y grid-k))           ; once per K-step
+            (load-tile B B-tile (grid-k grid-x))
+            (mma-accumulate-via-tile (8 16 8) C-tile A-tile B-tile)
+  :epilogue (store-tile C-tile C (grid-y grid-x)))         ; once per tile, post-reduction
+```
+
+`:let` takes one binding group and is an ordinary Crisp `let` — sequential, and it destructures
+multiple values, so `(q r (truncate x))` works exactly as it does anywhere else. Its bindings
+are entered **per output tile**, inside the stride loop, and they scope over the prologue, the
+K-loop and the epilogue. That is what lets a register tile or a ring live where it belongs; before
+sections, a kernel that needed one had to abandon the macro and hand-write its expansion.
+
+`:prologue`, `:body` and `:epilogue` each hold one or more forms (an implicit `progn`). `:let`
+does not — it holds bindings, not statements.
+
+Three rules, all enforced at compile time:
+
+* **The sections must appear in the order above.** The split is positional, so a `:prologue`
+  written after `:epilogue` would still lower to code that runs *before* the K-loop — the text
+  would read one way and execute another. That is an error rather than a convention.
+* **The marker set is closed.** A keyword in section position that is not one of the four is an
+  error, because it is almost always a typo. A mistyped `:epilog` used to be folded silently into
+  the reduction body, which stored the tile on every K-step.
+* **`:body` is required once `:let` or `:prologue` is used.** Both the prologue and the reduction
+  are bare form sequences, so without a marker there is nothing to separate them, and guessing
+  would quietly move a warm-up into the loop (or a load out of it). With neither present the body
+  may stay unmarked, which is why every pre-section kernel still compiles untouched.
+
+**Accumulator reset.** The macro resets `C-tile` at the start of each output tile's reduction, so
+a workgroup that owns more than one tile does not carry the previous tile's partial sums into the
+next.  A register tile resets to the init it was declared with; a scratch tile, which has no
+declared init, resets to `0.0` and gets a `sync-workgroup` after it, since filling scratch is a
+workgroup-collective write.  You do not write the reset yourself.
+
+One nuance, and it costs nothing to know: a **register** tile declared in `:let` is already
+re-initialised per output tile by its own binding, so the macro emits no second reset for it. A
+scratch tile has no init to re-run, so the macro's reset is what does the work wherever it is
+bound. Either way the guarantee is the same.
+
+The reset runs **before** `:prologue`, which is what makes a seeded accumulator expressible: the
+tile starts at its declared init and the prologue may then overwrite it — with a bias tile, say —
+without the macro clobbering the seed afterwards.
+
+> **Not yet differentiable: a scratch tile declared in `:let`.** Under `--differentiate` a
+> `make-scratch-matrix` bound in a nested `let` — which is what `:let` lowers to — gets a scalar
+> adjoint where the backward wants a tensor. The same bindings in the kernel's enclosing `let`
+> differentiate fine, and so does a **register** tile in `:let`. This predates sections and is
+> reproducible with no macro at all; see BUG 064.
+
 **Grid semantics.** `grid-y` / `grid-x` are TILE-IDs — 0-based tile coordinates over `C`'s output
 tiles (sized by `C-tile`) — which is exactly what `load-tile` / `store-tile` expect (they scale a
 tile-ID by the tile's extent).  `grid-k` is the K-step index, `0 .. K/<k-step> - 1`.  The macro is
 grid-strided: a workgroup owns **≥ 1** `C`-tile and strides across the grid, so it works whether
 you launch one workgroup per output tile (a 2-D grid = (#row-tiles, #col-tiles)) or fewer.
-
-**Accumulator reset.** The macro resets `C-tile` at the start of each output tile's reduction, so
-a workgroup that owns more than one tile does not carry the previous tile's partial sums into the
-next.  A register tile resets to the init it was declared with; a scratch tile, which has no
-declared init, resets to `0.0`.  You do not write the reset yourself.
 
 **Chapter 0 (synchronous) — what ships today.** The Chapter-0 body is fully synchronous: stage with
 plain `load-tile` (no `:barrier`), `sync-workgroup`, `mma-accumulate-via-tile`, `sync-workgroup`.

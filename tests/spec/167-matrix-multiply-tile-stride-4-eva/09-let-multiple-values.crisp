@@ -1,0 +1,52 @@
+;; Endeavor 167 — :let is a real Crisp LET, so it inherits multiple-value binding.
+;;
+;; :let lowers to (intern "LET" :crisp-language) rather than to any binding logic of the
+;; macro's own.  That is deliberate: Crisp's let is sequential (CL's let*) AND destructures
+;; multiple values, as 015/cell-09 and 052/03 use it.  Writing a bespoke binder inside the
+;; macro would have re-implemented both and drifted from them.
+;;
+;; So this spec is really a test that the macro DELEGATES.  A binding of the (a b FORM)
+;; shape must work in :let exactly as it does in an ordinary let, and the later bindings
+;; must see the earlier ones.
+;;
+;;
+;; SKIP-WITH[--differentiate] : "scratch tiles bound in a NESTED let are not yet differentiable --
+;;   a PRE-167 gap, reproduced with no macro at all (put_temp_files_here/167/ad-c.crisp: a plain
+;;   tile-stride whose scratch tiles sit in a plain user let inside it fails identically with
+;;   'Expected (TENSOR FLOAT 2 LOCAL COMPACT LAST) but inferred FLOAT').  The adjoint allocator
+;;   collects <var>_ADJ scratch pairs by scanning flat-anf, which does not reach a nested body,
+;;   so C-tile gets a scalar 0.0 adjoint where the backward wants a tensor.  Moving the same
+;;   bindings to the ENCLOSING let differentiates fine, and so does a REGISTER tile in :let
+;;   (02/03/11), which is why this is narrow.  Filed as BUG 064."
+;; Front-end only, generic pass, scalar body -- nothing here needs a target.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel let_multiple_values (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((K (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 4 (grid-y grid-x grid-k)
+      :let ((A-tile (make-scratch-matrix float (4 4)))
+            (B-tile (make-scratch-matrix float (4 4)))
+            (C-tile (make-scratch-matrix float (4 4)))
+            ;; multiple-value binding: truncate yields (quotient remainder)
+            (quot rem (truncate (~ A 0 0))))
+      :prologue
+      (fill-tile A-tile 0.0)
+      (sync-workgroup)
+      :body
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (dotimes (i 4)
+        (dotimes (j 4)
+          (dotimes (kk 4)
+            (set! (~ C-tile i j)
+                  (+ (~ C-tile i j)
+                     (* (~ A-tile i kk) (~ B-tile kk j)))))))
+      :epilogue
+      ;; Both halves of the multiple value are live, so neither can be quietly dropped.
+      (when (> quot 0)
+        (set! (~ C-tile 0 0) (+ (~ C-tile 0 0) rem)))
+      (store-tile C-tile C (grid-y grid-x)))))
