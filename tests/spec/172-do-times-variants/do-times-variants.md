@@ -28,7 +28,8 @@ Plan
 [x] Write tests, including auto-diff  (2026-09-19: 01-08 on-metal sequences + gates,
     09-15 VERIFY-AUTODIFF, errors/01-12; expected values cross-checked against a Python
     reference model of D2-D6)
-[ ] implement
+[x] implement  (2026-09-19, overlays/crisp-compiler-overlay.lisp -- 27/27 specs; all 7
+    VERIFY-AUTODIFF pass on L0; see Implementation notes below)
 [ ] bump docs (docs/ideal_001.md) 
 
 
@@ -108,6 +109,38 @@ accumulation loops, and the new forms follow it; each gets a VERIFY-AUTODIFF spe
 that shape.  But a dec-times-by-half tree reduction (with barriers over shared memory)
 needs its backward in REVERSE order -- the gradient broadcasts back down the tree.  That
 is explicitly out of scope for 172 and is a known prerequisite for 175 (reductions).
+
+
+Implementation notes (2026-09-19)
+=================================
+All in overlays/crisp-compiler-overlay.lisp; each definition is tagged with its src/ home.
+
+NEW (hand-written):
+- `*dotimes-family-names*`, `%dotimes-family-head-p`   -> src/anf-transform.lisp
+- `%dotimes-backward-head` (backward emits the plain head; DOTIMES+ -> dotimes as before)
+- `%anf-normalize-dotimes` (replaced: normalizes ALL binding operands, not just limit/stride)
+- `semantic-loop-variant` struct, `(:include semantic-dotimes)`   -> src/semantic.lisp
+  The :include means the two core.lisp etypecases need NO new clause.
+- `*loop-variant-specs*`, `analyze-loop-variant-expression` + helpers,
+  `register-loop-variant-analyzers`   -> src/analysis/control.lisp
+- `generate-node-ir (semantic-loop-variant)`, `%loop-variant-coerce`   -> src/codegen.lisp
+  One guarded, bottom-tested loop for all kinds; per-kind guard / start / latch table in
+  its docstring.  dec-power-step start = 1 << (W-1 - ctlz(N-1)), llvm.ctlz.iW.
+
+WHOLE-FUNCTION COPIES (extracted from src/ by script; the only change is noted):
+- `anf-normalize`, `%collect-locally-bound-vars`, `generate-backward-walk`:
+  the DOTIMES/DOTIMES+ name test -> `%dotimes-family-head-p`
+- `%gfw-process-dotimes`: emits the loop's own head via `%dotimes-backward-head`
+- `register-control-analyzers`: adds the `(register-loop-variant-analyzers)` call.
+  (A top-level registration does NOT survive initialize-compiler's clrhash.)
+
+When folding in: the new head symbols are interned at load, not declared in
+src/package.lisp -- consider exporting them alongside dotimes+.
+
+Observed, not changed: the loop variable's alloca is emitted at the current insert
+point, as dotimes does -- so a loop nested inside another loop gets its alloca in a
+non-entry block.  Pre-existing dotimes behaviour; noting it for 175, which will nest
+these loops.
 
 
 Test plan (draft)
