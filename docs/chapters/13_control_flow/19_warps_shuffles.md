@@ -1,4 +1,4 @@
-# Warps & Shuffles 📝
+# Warps & Shuffles ✅
 
 Witchcraft.
 
@@ -10,7 +10,7 @@ A *warp* (Intel calls it a *subgroup*) is the set of lanes that execute in locks
 Shuffles reach across a warp, never across a workgroup, and workgroups are very often
 BIGGER than a single warp — so plan your algorithm accordingly.
 
-#### How many lanes is a warp? 📝
+#### How many lanes is a warp? ✅
 
 This is the one portability question that actually matters, and the vendors disagree:
 
@@ -19,7 +19,7 @@ This is the one portability question that actually matters, and the vendors disa
 
 So do not hardcode 32. Ask for `(warp-size)`.
 
-##### warp-size 📝
+##### warp-size ✅
 `(warp-size) -> uint`
 
 `warp-size` is a **compile-time constant**. It resolves from the active hardware profile's
@@ -41,7 +41,7 @@ Do not confuse it with `(warp-count)`, which is how many warps there are in the 
 > a **compile error**, not a guess at 32. A reduction written for 16 lanes that silently
 > runs on 32 does not crash — it returns a wrong answer, which is worse.
 
-#### Sizing the workgroup 📝
+#### Sizing the workgroup ✅
 
 For some algorithms, making the workgroup exactly one warp makes the algorithm much easier
 to write. Be careful, though: multiple warps in a workgroup take up the slack whenever one
@@ -57,7 +57,7 @@ declaration with a nice message communicates that to whoever writes the hoisting
             :msg "this kernel requires the local work size to equal the warp size")
 ```
 
-#### Shuffles are warp collectives 📝
+#### Shuffles are warp collectives ✅
 
 **Every lane in the warp must reach the shuffle.** A shuffle placed inside a
 thread-divergent conditional is a compile error: the lanes that do arrive are asking for
@@ -73,7 +73,7 @@ The idiom is to shuffle unconditionally and gate only what you do with the resul
     (set! (~ out (warp-lane)) r)))
 ```
 
-#### The width argument: segmenting a warp 📝
+#### The width argument: segmenting a warp ✅
 
 Every shuffle takes an optional trailing `width`, defaulting to `(warp-size)`.
 
@@ -101,7 +101,7 @@ Writing `k` for a lane's index within its block, the four operations segment lik
 | `(shuffle-down v d width)` | the value `d` lanes higher, when `k + d < width` | keeps its **own** value |
 | `(shuffle-xor v m width)` | the value in block-lane `k XOR m` | rejected — see below |
 
-#### shuffle 📝
+#### shuffle ✅
 `(shuffle <someVar> target-lane-id &optional (width (warp-size)))`
 
 Evaluates to the current value of `someVar` as it is in another lane. The target lane id is
@@ -111,7 +111,7 @@ one — a lane that every other lane reads is a broadcast.
 If the target index falls outside the segment it is taken modulo `width`, so it always names
 a lane in the caller own block.
 
-#### shuffle-up  / shuffle-down 📝
+#### shuffle-up  / shuffle-down ✅
 `(shuffle-up   <someVar> delta &optional (width (warp-size)))`
 `(shuffle-down <someVar> delta &optional (width (warp-size)))`
 
@@ -129,7 +129,7 @@ source. A lane whose source falls outside the warp — or outside its segment, u
 `width` — **keeps its own value** rather than receiving anything. That edge rule is easy to
 forget and easy to get wrong, and an algorithm that sums the results will not notice.
 
-#### shuffle-xor 📝
+#### shuffle-xor ✅
 `(shuffle-xor <someVar> lane-id-mask:ulong &optional (width (warp-size)))`
 
 Those other shuffle operations do cool tricks. But `shuffle-xor` is where the real sorcery
@@ -183,7 +183,7 @@ This is a very useful operation often used in conjunction with the `popcount` bi
 `(warp-all? predicate:bool) -> bool`
 Returns true if any (or all) active threads in the warp evaluate `predicate` to true. These are extremely fast hardware reductions.
 
-#### Supported Types 📝
+#### Supported Types ✅
 The hardware shuffle instruction moves **32 bits**. Crisp natively supports the 32-bit
 types (`int`, `uint`, `float`) and decomposes anything larger for you: a 64-bit value
 (`long`, `ulong`, `double`) is split into two 32-bit halves, shuffled separately, and
@@ -192,7 +192,7 @@ recombined; aggregates are shuffled field by field.
 Decomposition is not a detail to ignore when reading performance numbers — a `double`
 shuffle is two instructions, not one — but it is not something you have to write.
 
-#### Differentiating a shuffle 📝
+#### Differentiating a shuffle ✅
 
 A shuffle is a **gather across lanes**, so its adjoint is a **scatter-add across lanes**.
 How cheap that is depends entirely on which shuffle you used:

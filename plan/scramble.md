@@ -867,6 +867,7 @@ Reductions
 ==========
 - [x] revisit Phase 1 vs Phase 2.
 - [x] need to compose correctly
+- [x] shuffles
 - [ ] implement
 - [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )
