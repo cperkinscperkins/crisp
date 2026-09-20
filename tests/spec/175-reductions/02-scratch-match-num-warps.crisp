@@ -1,0 +1,90 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER res: 6
+;; SKIP-WITH[--differentiate]: "no differentiable value -- the kernel reduces WARP IDS, which
+;; are lane coordinates, so every adjoint is structurally zero. This spec is about scratch
+;; SIZING, not arithmetic; 175's AD specs reduce real data."
+;;
+;; ENDEAVOUR 175, STEP 1 -- SYMBOLIC SCRATCH SIZING.
+;;
+;; THIS SPEC IS EXPECTED TO FAIL UNTIL THE RESOLVER IS WRITTEN.  It sits beyond ci-stop as
+;; TDD.  What it pins is the dependency the ENTIRE reduction family rests on: every macro in
+;; the design (reduce-workgroup, grid-reduce-atomic!, -cas!, -last-man!, -second-stage!)
+;; auto-generates its scratchpad with :match-num-warps-per-workgroup.  None of them can work
+;; until a symbolic scratch size resolves to a number.
+;;
+;; WHAT IS BROKEN TODAY, traced end to end:
+;;
+;;   1. %extract-scratch-size-expr (src/analysis/structs.lisp) takes the size argument as
+;;      (second args) VERBATIM.  A keyword passes through unexamined -- nothing validates it,
+;;      nothing resolves it.
+;;   2. The compiler never interprets it.  It is written straight into the metacrisp as
+;;      :size-expr, intended as a note to the hoisting code.
+;;   3. %l0-scratch-dims (src/hoist-l0/main.lisp) accepts ONLY an integer or a list of
+;;      integers, and errors on anything else:
+;;        "Scratch tensor ~a: :size-expr ~a is neither an integer nor a list of ~d integers."
+;;
+;; So a symbolic size is not merely inert -- it compiles, emits metadata, and then dies at
+;; HOIST.  074/01 uses :match-workgroup-size and passes only because it has no kernel and no
+;; TEST-HOIST; its own header admits the validator was never written.  075 asserts
+;; :match-warp-tile the same way, in metadata validators that never resolve it either.
+;;
+;; WHY THIS SPEC HAS TEETH.  A spec that merely DECLARES a scratch vector with a symbolic
+;; size would pass the moment the keyword stops erroring, whatever number it resolved to --
+;; and would prove nothing.  So the size is made OBSERVABLE: each warp's leader writes its
+;; own warp id into the scratch vector, and thread 0 then sums exactly 4 slots.
+;;
+;;   64 threads / 16 lanes per warp (the bmg profile below) = 4 warps
+;;   0 + 1 + 2 + 3 = 6
+;;
+;; A vector sized to anything other than 4 gives the wrong sum or reads out of bounds.  The
+;; literal 4 in the dotimes is deliberate and must NOT be replaced with a computed bound --
+;; it is the assertion.
+;;
+;; bmg is a BUILT-IN profile (register-builtin-hardware-profiles, src/mma.lisp), registered
+;; from register-mma-types AFTER initialize-compiler clrhash-es the registry, so the flag
+;; alone is enough and no def-hardware-profile belongs here.  Declaring one would be worse
+;; than redundant: a same-named user profile OVERRIDES the builtin, so a stub carrying only
+;; :simd-width would silently discard the real BMG's shapes, register modes and lowerings.
+;;
+;; WHERE THE RESOLUTION BELONGS, and why it is not a compile-time fold.
+;;
+;; It is tempting to fold :match-num-warps-per-workgroup to a literal here, since local-size
+;; and warp-size both look statically known.  That would be WRONG.  Crisp is a kernel-only
+;; language with no runtime: the hoist .cpp/.cu it emits is SAMPLE code the user may adapt or
+;; discard, and the real global/local sizes are chosen by whoever performs the enqueue.  The
+;; (global-size ...) / (local-size ...) declarations are author INTENT used to fit the
+;; generated host code and comment it -- they are not a guarantee Crisp may compile against.
+;;
+;; So the symbol must SURVIVE into the metacrisp, which is precisely what :size-expr was
+;; designed to carry, and the host code resolves it against the geometry it actually launches.
+;; The split is therefore:
+;;
+;;   COMPILER:  validate the keyword (reject an unknown one at the point of use, where the
+;;              source location is), and pass it through unchanged.
+;;   HOISTER:   resolve it against the launch geometry, in %l0-scratch-dims and its CUDA twin.
+;;
+;; That also means a scratch buffer sized this way is correct even when the enqueuer picks a
+;; local size the author never declared -- which is the whole point.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel wg_warp_scratch (&out res)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  ;; 64 / 16 = 4 warps, so this vector must have exactly 4 elements.
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    ;; Each warp's leader stamps its own id.  Thread-divergent, but it contains no warp
+    ;; collective, so 173's D6 convergence rule is not engaged.
+    (when (= (to-int (warp-lane)) 0)
+      (set! (~ sv (to-int (warp-id))) (to-float (warp-id))))
+    (sync-workgroup)
+    (when (= (to-int (get-local-linear-id)) 0)
+      (let ((acc 0.0))
+        (dotimes (i 4)
+          (set! acc (+ acc (~ sv i))))
+        (set! (~ res) acc)))))
