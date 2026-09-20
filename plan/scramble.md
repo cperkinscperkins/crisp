@@ -871,6 +871,10 @@ Reductions
 - [ ] implement
 - [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )
+- [ ] doc update: there are still old 'reduce-vec-1-cont' calls in the code base. 
+- [ ] doc update  warp-size not get-warp-size, warp-id not get-warp-id  and get-workgroup-id (not get-group-id)
+- [ ] when-thread-in-warp-is / when-thread-in-group-is  <-- may have compile-time divergence requirmenets inside reductions.
+
 
 Async Ops \ Named Barriers \ Rings
 ===================================

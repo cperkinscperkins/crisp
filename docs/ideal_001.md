@@ -6485,7 +6485,7 @@ Crisp offers four different Inter-Workgroup strategies to gather these partial r
 | **`grid-reduce-atomic!`** | `#'+`, `#'min`, `#'max` only | **None** | **Fast.** Hardware optimized atomics. |
 | **`grid-reduce-last-man!`** | Any Commutative | Size of `num_workgroups` | **Very Fast.** Single pass, zero contention. |
 | **`grid-reduce-cas!`** | Any Commutative | **None** | **Slow (High Contention).** CAS loop serializes grid. |
-| **`grid-reduce-dual-pass!`** | Any Commutative | Size of `num_workgroups` | **Moderate.** Safe, but incurs 2nd kernel launch overhead. |
+| **`grid-reduce-second-stage!`** | Any Commutative | Size of `num_workgroups` | **Moderate.** Safe, but requires manual 2nd kernel launch. |
 
 ### `grid-reduce-atomic!` 📝
 
@@ -6681,82 +6681,62 @@ It accomplishes this via a cooperative finish.
 
 ```
 
-### `grid-reduce-dual-pass!` 📝
 
-`(grid-reduce-dual-pass! someFunction <someVar> identity continuation-kernel-name &optional globalScratchVec localScratchVec)`
+### `grid-reduce-second-stage!` 📝
 
-`grid-reduce-dual-pass!` represents the traditional, highly safe approach to inter-workgroup reduction. Unlike the single-pass strategies, it physically splits the grid reduction across two separate kernel invocations to entirely avoid atomic contention or spinning locks.
+`(grid-reduce-second-stage! someFunction <someVar> identity in-scratch-vec &out return-vec &optional localScratchVec)`
 
-**Mechanics:**
-It performs Phase 1 of the reduction (`reduce-workgroup`) and stores each workgroup's partial result into a global scratch vector. Then, the macro automatically defines and hoists a brand new **continuation kernel** to handle Phase 2. This second kernel consists of a single workgroup that sweeps up the global scratch buffer and writes the final value to a result cell.
+`grid-reduce-second-stage!` is designed exclusively for the final sweep of a dual-pass reduction. It is meant to be called inside a continuation kernel launched with a single workgroup. It reads the partial results from `in-scratch-vec` (populated by Kernel 1), reduces them, and stores the ultimate answer in `return-vec`.
 
-**The Trade-off:**
-
-* **Pros:** Highly safe, works with *any* commutative operation, and involves absolutely zero atomic contention.
-* **Cons:** Requires launching two separate kernels, incurring scheduling overhead. It also requires the host (or device graph) to manage the subsequent kernel execution.
-
-**Special Compiler Constraints:**
-Because this macro dynamically generates the AST for a completely separate continuation kernel, both `someFunction` and `identity` **must be compile-time identifiable**. The compiler will emit an error if it cannot resolve them at compile time.
-
-Additionally, the continuation kernel will be hoisted with a different execution configuration from the parent kernel. Specifically, its `local_work_size` will be derived to be exactly the size of the `globalScratchVec`.
+**Special Constraints:**
+This macro executes an assertion ensuring it is launched with exactly one workgroup (`num_groups == 1`), and that the `local_work_size` is large enough to handle the number of elements in `in-scratch-vec`.
 
 **Arguments:**
 
-* `someFunction`: Any commutative `binop-type` `#(T T => T)`. (Must be known at compile time).
-* `<someVar>`: The local variable being reduced.
-* `identity`: The identity value for `someFunction`. (Must be known at compile time).
-* `continuation-kernel-name`: A string or symbol used to name the generated Phase 2 kernel.
-* `globalScratchVec`: (Optional) Writeable global memory. Its size must equal the number of workgroups. Crisp will generate it if omitted.
-* `localScratchVec`: (Optional) Writeable local memory used for the Phase 1 sweep. Its size must equal the number of warps in a single workgroup. Crisp will generate it if omitted.
+* `someFunction`: Any commutative `binop-type` `#(T T => T)`.
+* `<someVar>`: A local binding to hold the intermediate calculations.
+* `identity`: The identity value for `someFunction`.
+* `in-scratch-vec`: The `:global` vector containing the partial results from the first kernel pass.
+* `return-vec`: A required vector of length 1 (a `single-result`) where the final value is accumulated.
+* `localScratchVec`: (Optional) Writeable local memory used for the final sweep. Its size must equal the number of warps in a single workgroup. Crisp will generate it if omitted.
 
 **Post-Conditions & Return:**
 
-* **Variable State:** After the operation, the value of `<someVar>` in any thread is indeterminant.
-* **Continuation Kernel Output:** The generated `continuation-kernel-name` will accept a single-element result cell as its final argument, where the ultimate answer will be stored.
-* **Returns:** `nil` (but leaves a `launch-kernel` instruction in the AST for the hoisting code).
+* **Memory State:** `return-vec[0]` will hold the final global reduction.
+* **Returns:** `nil`.
 
 **Possible Implementation:**
 
 ```lisp
-;; -- grid-reduce-dual-pass! --
-(defmacro grid-reduce-dual-pass! (someFunction someVar identity continuation-kernel-name
-                                  &optional (globalScratchVec (make-scratch-vector (type-of someVar) :match-num-workgroups :address-space :global))
-                                            (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup))) 
-   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-   
-   `(let-kernel ((continuation-k  (l-s-v g-s-v result-cell)
-                  (declare (kernel-name ,continuation-kernel-name)
-                           (type l-s-v (scratch-vec-type (type-of ,someVar)))
-                           (type g-s-v (scratch-vec-type (type-of ,someVar) :global))
-                           (type result-cell (cell (type-of ,someVar)))
-                           (local-size :derive-from g-s-v :msg (string-concat ,continuation-kernel-name "requires a local_work_size at least as big as the global-scratch-vector")))
-                      (let ((num-items (length~ g-s-v))
-                            (local-id (get-local-id))
-                            ;; Each thread in the workgroup loads one partial result.
-                            ;; If there are more threads than items, inactive threads get the identity.
-                            (val (if (< local-id num-items)
-                                      (~ g-s-v local-id)
-                                      ,identity)))
-                        
-                        ;; Perform a standard Phase 1 workgroup reduction on the partial results.
-                        (reduce-workgroup ,someFunction val ,identity :local-scratch-vec l-s-v)
-                        
-                        ;; The final result is now in 'val' of all wg threads.
-                        ;; To avoid contention, only thread 0 writes the final result to the output cell.
-                        (when (= local-id 0)
-                          (set! (~ result-cell) val))) ))
+;; -- grid-reduce-second-stage! -- 
+(defmacro grid-reduce-second-stage! (someFunction someVar identity in-scratch-vec return-vec 
+                                     &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
+                                     &key message)
+  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
+  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
+  `(progn
+    (declare (grid-level) (num-groups :max 1))
+    
+    (r-t-assert-0 (== (get-num-groups) 1) "grid-reduce-second-stage! must be launched with exactly one workgroup")
+    (r-t-assert-0 (<= (length~ ,in-scratch-vec) (get-local-work-size)) "local_work_size must be >= the length of in-scratch-vec")
 
-      (declare (grid-level))
-      ;; Phase 1: Micro Strategy (Intra-Workgroup)
-      ;; After reduce-workgroup, the globalScratchVec will contain one value per group.
-      (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec :return-vec ,globalScratchVec)
+    (let ((num-items (length~ ,in-scratch-vec))
+          (local-id (get-local-id)))
       
-       ;; This isn't a runtime invocation. It demonstrates to the hoisting code 
-       ;; HOW this function expects the continuation kernel to be dispatched.
-      (launch-kernel (continuation-k ,globalScratchVec ,localScratchVec (allocate-cell (type-of ,someVar)))))
+      ;; Load partials into the local variable. Inactive threads get the identity.
+      (set! ,someVar (if (< local-id num-items)
+                         (~ ,in-scratch-vec local-id)
+                         ,identity))
+                         
+      ;; Perform a standard workgroup reduction
+      (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
+      
+      ;; Thread 0 writes the ultimate answer
+      (when-thread-in-group-is 0
+        (set! (~ ,return-vec 0) ,someVar)))))
 
 ```
+
 
 ### `Strategy D: Cooperative Grid Sync (Hardware Dependent)`
 
@@ -6787,6 +6767,14 @@ Because reducing a 1D vector or tensor is so common, Crisp provides a high-level
 `(reduce-vec someFunction vec identity &key out strategy)`
 
 Instead of manually writing the strided loops and managing the scratchpads, you simply tell `reduce-vec` which Macro Strategy to employ:
+
+
+The `strategy` is one of:
+```
+(def-enum reduction-strategy :atomic :last-man-standing :cas )
+```
+The "second stage" isn't available because it requires a second kernel enqueue.
+
 
 ```lisp
 ;; Example: The "Easy Button" atomic strategy
