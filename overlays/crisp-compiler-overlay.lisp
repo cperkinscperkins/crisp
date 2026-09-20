@@ -122,8 +122,15 @@
    else 32.  Single source of truth -- the shuffle width rules and the SPIR-V subgroup-size
    gate must agree with this, or a kernel could be checked against one width and run at
    another."
-  (let ((profile (active-hardware-profile)))
-    (or (and profile (getf profile :simd-width)) 32)))
+  (if (eq *target-backend* :ptx)
+      ;; NVIDIA's warp is 32 lanes by architecture on every part ever shipped, so the PTX
+      ;; `c` encoding is computed against the hardware, not against a profile.  This only
+      ;; differs when a profile and the target disagree (--hardware-profile=bmg with
+      ;; --ir-target=ptx, which a dual-backend spec produces); 32 is the truth there.
+      ;; :simd-width describes the SPIR-V subgroup width the driver would otherwise choose.
+      32
+      (let ((profile (active-hardware-profile)))
+        (or (and profile (getf profile :simd-width)) 32))))
 
 (defun %analyze-warp-size (expr env context location)
   "Analyzer for (warp-size) -- folds to a uint literal.  See %173-WARP-SIZE."
@@ -520,9 +527,34 @@
   (fdefinition '%emit-spirv-subgroup-size-execution-mode)
   "Captured once at overlay load.")
 
+(defun %173-ensure-grad-dispatch-decls (semantic-function)
+  "BUG FIX, found by 173: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under
+   its OWN name, so %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and
+   declined to pin.  Every differentiated kernel on Intel has therefore been running at a
+   subgroup size the driver chose, including MMA kernels whose warp counts are computed from
+   :simd-width -- the backward pass silently opted out of the contract the forward pass has.
+
+   The gradient kernel is launched with the SAME geometry as its forward kernel, so it
+   inherits the same declarations.  Doing it here rather than in the gate means 156's own
+   pinning starts working, not merely this endeavour's check."
+  (let* ((kname (semantic-function-name semantic-function))
+         (name (and kname (symbol-name kname))))
+    (when (and name
+               (not (gethash kname *kernel-dispatch-declarations*))
+               (> (length name) 5)
+               (string= "_GRAD" (subseq name (- (length name) 5))))
+      (let* ((base (subseq name 0 (- (length name) 5)))
+             (base-sym (find-symbol base (symbol-package kname)))
+             (decls (and base-sym (gethash base-sym *kernel-dispatch-declarations*))))
+        (when decls
+          (setf (gethash kname *kernel-dispatch-declarations*) decls)
+          (log:info "173: ~a inherits dispatch declarations from ~a" kname base-sym))))))
+
 (defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
-  "Overlay wrapper: unchanged behaviour, plus it records whether the size was pinned so a
-   shuffle in this kernel can refuse to be compiled against a width nobody guaranteed."
+  "Overlay wrapper: unchanged behaviour, plus (a) a _GRAD kernel inherits its forward
+   kernel's dispatch declarations so it can actually be pinned, and (b) it records whether
+   the size was pinned so a shuffle here can refuse a width nobody guaranteed."
+  (%173-ensure-grad-dispatch-decls semantic-function)
   (setf *173-subgroup-pinned* (%173-subgroup-pinned-p semantic-function))
   (log:debug "173: subgroup pinned for ~a = ~a"
              (semantic-function-name semantic-function) *173-subgroup-pinned*)
@@ -534,7 +566,115 @@
    answer.  So a shuffling kernel that cannot be pinned is refused rather than compiled
    against an assumed 32.  NVIDIA is exempt: its warp has been 32 lanes on every architecture
    shipped, so there is nothing to pin."
-  (unless (or (eq *target-backend* :ptx) *173-subgroup-pinned*)
+  ;; Only the real SPIR-V target.  :ptx has nothing to pin (NVIDIA's warp is 32 by
+  ;; architecture), and :generic / :cpu are the front-end passes, which emit no device code
+  ;; and must keep compiling exactly as they did before.
+  (when (and (eq *target-backend* :spirv) (not *173-subgroup-pinned*))
     (error 'crisp-compiler-error
            :message "this kernel uses a shuffle, but its SPIR-V subgroup size cannot be pinned, so the warp width it would run at is whatever the driver chooses (8, 16 or 32 on Intel) rather than the width this kernel was compiled against. Pinning needs an active hardware profile naming a :simd-width AND a compile-time (local-size :set-to N) whose total is a whole multiple of it. Crisp refuses rather than assuming 32: a reduction written for one width and run at another returns a wrong answer instead of failing"
            :source-location location)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 173 — A|D for the shuffles (D8).
+;;; ---------------------------------------------------------------------------
+;;; src/autodiff.lisp
+;;;
+;;; The AD walk runs BEFORE semantic analysis, so these rules match RAW FORMS by operator
+;;; name and emit raw forms, which are analyzed later like any other source.
+;;;
+;;; A shuffle is a gather across lanes, so its adjoint is a scatter-add.  Writing k for a
+;;; lane's index within its segment and w for the width:
+;;;
+;;;   xor m     y[L] = v[L^m]                          (an involution)
+;;;             => vbar[j] += shuffle-xor(g, m, w)      -- itself, exactly, no correction
+;;;
+;;;   up d      y[L] = v[L-d] if k(L)>=d else v[L]
+;;;             => vbar[j] += [k(j)+d <  w] * g[j+d]  +  [k(j) <  d] * g[j]
+;;;
+;;;   down d    y[L] = v[L+d] if k(L)+d<w else v[L]
+;;;             => vbar[j] += [k(j)   >= d] * g[j-d]  +  [k(j)+d >= w] * g[j]
+;;;
+;;; THE INDICATORS ARE NOT OPTIONAL, and this is the subtle part.  shuffle-down(g,d,w)
+;;; already returns g[j] (own value) where it runs off the end -- but the transpose wants
+;;; ZERO there, plus a SEPARATE own-value term under a different condition (k<d).  The two
+;;; conditions are disjoint for d <= w/2, so without the mask the top edge would collect a
+;;; spurious g[j] and the gradient would be silently wrong only at the segment boundary --
+;;; exactly the lane an aggregate check cannot see.  Hence the edge tests in spec 10.
+;;;
+;;; The zero is spelled (- g g) rather than 0.0 so it carries g's own type; these rules must
+;;; work for float and for double (spec 12) without a literal committing to one.
+
+(defun %shuffle-form-op (expr)
+  "The shuffle op keyword if EXPR is a raw shuffle form, else NIL.  Matched by symbol-name,
+   so it does not matter which package the kernel's reader interned the operator into."
+  (when (and (consp expr) (symbolp (car expr)))
+    (cdr (assoc (symbol-name (car expr)) *shuffle-op-names* :test #'string=))))
+
+(defun %shuffle-form-width-form (expr)
+  "The width argument of a raw shuffle form, or (warp-size) when it was left to default."
+  (or (fourth expr) (list (intern "WARP-SIZE" (find-package :crisp.compiler)))))
+
+(defun %shuffle-backward (v expr emit-fn local-adj-fn)
+  "Emits the adjoint updates for a raw shuffle form bound to V.  See the section header."
+  (let* ((op (%shuffle-form-op expr))
+         (value (second expr))
+         (idx (third expr))
+         (tail (cddr expr))                     ; (index [width]) -- reused verbatim
+         (w (%shuffle-form-width-form expr))
+         (g (funcall local-adj-fn v)))
+    (flet ((acc (x term)
+             (when (and x (symbolp x))
+               (funcall emit-fn `(set! ,(funcall local-adj-fn x)
+                                       (+ ,(funcall local-adj-fn x) ,term))))))
+      (log:debug "173 %shuffle-backward: ~a := ~a" v expr)
+      (let ((k `(rem (to-ulong (warp-lane)) (to-ulong ,w)))
+            (zero `(- ,g ,g)))
+        (ecase op
+          (:xor
+           ;; Self-transposing.  This is the one reductions are built from.
+           (acc value `(shuffle-xor ,g ,@tail)))
+          ;; NOTE THE `let`, which is not stylistic.  The shuffle is evaluated OUTSIDE the
+          ;; conditionals and only its RESULT is gated -- because a shuffle inside an `if` is
+          ;; a warp collective in divergent control flow, which D6 rejects.  The first cut
+          ;; wrote (if cond (shuffle-down ...) 0) and this endeavour's own gate refused it,
+          ;; which is the rule working: the backward pass has to obey the same convergence
+          ;; contract as the forward pass, and the fix is the one the error message gives
+          ;; users -- shuffle unconditionally, gate the result.
+          (:up
+           (acc value `(let ((s (shuffle-down ,g ,@tail)))
+                         (+ (if (< (+ ,k (to-ulong ,idx)) (to-ulong ,w)) s ,zero)
+                            (if (< ,k (to-ulong ,idx)) ,g ,zero)))))
+          (:down
+           (acc value `(let ((s (shuffle-up ,g ,@tail)))
+                         (+ (if (>= ,k (to-ulong ,idx)) s ,zero)
+                            (if (>= (+ ,k (to-ulong ,idx)) (to-ulong ,w)) ,g ,zero)))))
+          (:idx
+           ;; See D8.  A literal target makes every lane read the SAME source, so this is a
+           ;; broadcast, and the transpose of a broadcast is a warp REDUCTION, not a shuffle.
+           (error "~A: no VJP is registered for an indexed shuffle with a runtime target lane.  Its transpose is a genuine scatter-add -- several lanes may read the same source, so the adjoint must sum an unknown number of contributions, which is not a shuffle at all.  A CONSTANT target is no simpler: every lane then reads the SAME lane, so the form is a broadcast whose transpose is a warp-wide reduction rather than a permutation.  Use shuffle-xor (self-transposing), shuffle-up or shuffle-down, all of which differentiate exactly; or if this kernel really is forward-only, SKIP-WITH[--differentiate]."
+                  (car expr)))))
+      t)))
+
+;;; --- dispatch: activeness and backward ---
+
+(defvar *orig-active-scalar-vars* (fdefinition '%active-scalar-vars)
+  "Captured once at overlay load.")
+
+(defun %active-scalar-vars (expr env)
+  "Overlay wrapper: a shuffle propagates activeness from its VALUE operand only -- the
+   target lane / delta / mask is a lane coordinate and carries no gradient."
+  (if (%shuffle-form-op expr)
+      (%asv-union (list (second expr)) env)
+      (funcall *orig-active-scalar-vars* expr env)))
+
+(defvar *orig-handle-single-value-backward* (fdefinition '%handle-single-value-backward)
+  "Captured once at overlay load.")
+
+(defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn &rest keys)
+  "Overlay wrapper: shuffles carry their own backward rules; everything else is unchanged.
+   Placed ahead of the original because its final clause is the catch-all that would
+   otherwise report a shuffle as simply not differentiable."
+  (if (%shuffle-form-op expr)
+      (%shuffle-backward v expr emit-fn local-adj-fn)
+      (apply *orig-handle-single-value-backward* v expr adjoint-map emit-fn local-adj-fn keys)))

@@ -8,10 +8,25 @@ warp reductions also need shuffle support. So let's do that now.
 Ops in this endeavour:
 
 - [x] `warp-size` — folds to a literal; verified as `ret i32 32` (no profile) / `16` under `bmg`
-- [ ] `shuffle`
-- [ ] `shuffle-up`
-- [ ] `shuffle-down`
-- [ ] `shuffle-xor`
+- [x] `shuffle` — forward on both backends; A|D rejected (see the corrected D8)
+- [x] `shuffle-up` — forward + A|D
+- [x] `shuffle-down` — forward + A|D
+- [x] `shuffle-xor` — forward + A|D (free, self-transposing)
+
+**On metal (BMG), every predicted fingerprint confirmed exactly:**
+
+| buffer | result | what it proves |
+|---|---|---|
+| `x1: 17 7 37 27` | ✓ | xor 1 |
+| `b1: 27 27 27 27` | ✓ | broadcast |
+| `u1: 7 7 17 27` | ✓ | up 1 — lane 0 keeps its own value |
+| `w1: 17 27 37 7` | ✓ | width 4 — lane 3 wraps; segmentation |
+| `u2: 7 17 7 17` | ✓ | width 4, delta 2 — two edge lanes |
+| `q1: 2e10 1e10 4e10 3e10` | ✓ | 64-bit hi/lo decomposition |
+| `f1: 1.5 0.5 3.5 2.5` | ✓ | double — the fraction survives |
+
+Suite: unit 341/341, negative 268/268, E2E 1191/1194 with the only failure being the
+broadcast A|D spec, since moved to 175.
 
 Also landed here (see F7): **`let*` is now rejected**, guarded by
 `tests/spec/004-let/errors/01-let-star-rejected.crisp`.
@@ -77,15 +92,27 @@ wrong answer rather than crashing.
 | forward | adjoint | cost |
 |---|---|---|
 | `shuffle-xor v m w` | `shuffle-xor adj m w` (involution — self-transposing) | free |
-| `shuffle-up v d w` | `shuffle-down adj d w` + edge lanes self-contribute | cheap |
-| `shuffle-down v d w` | `shuffle-up adj d w` + edge lanes self-contribute | cheap |
-| `shuffle v <const> w` | the inverse permutation | cheap |
-| `shuffle v <runtime> w` | **compile error** | — |
+| `shuffle-up v d w` | `shuffle-down adj d w`, masked, + an edge self-term | cheap |
+| `shuffle-down v d w` | `shuffle-up adj d w`, masked, + an edge self-term | cheap |
+| `shuffle v <any> w` | **compile error** | — |
 
-The runtime-index case is a genuine scatter-add: several lanes may read the same source, so
-the adjoint must sum an unknown number of contributions, which is not a shuffle. It is a
-hard error — **not** `forward-only`, and **not** a `%backward-skip-fn-p` entry (a shuffle
-carries a value, so per the skip-list rule it must never go on that list).
+**D8 CORRECTED (2026-09-19), and writing the specs is what corrected it.** The original table
+said a compile-time target "inverts exactly, as a known permutation", splitting `shuffle`
+into an easy static case and a hard runtime one. That split does not exist. A literal target
+is evaluated identically in every lane, so every lane reads the SAME source: the form is a
+**broadcast**, a fan-in, not a permutation. The transpose of a fan-in is a SUM over its
+readers — a warp-wide reduction. So *both* indexed forms are rejected, and the positive test
+moved to `175-reductions/01-diff-shuffle-broadcast.crisp`, beyond ci-stop, because an
+xor-butterfly all-reduce is exactly what 175 builds. `errors/08` locks the rejection in.
+
+The rejection is a hard error — **not** `forward-only`, and **not** a `%backward-skip-fn-p`
+entry (a shuffle carries a value, so per the skip-list rule it must never go on that list).
+
+**The masks on up/down are not optional.** `shuffle-down(g,d,w)` already returns `g[j]` where
+it runs off the end, but the transpose wants ZERO there plus a *separate* own-value term
+under a *different* condition (`k < d`). For `d <= w/2` those conditions are disjoint, so
+without the mask the top edge silently collects a spurious `g[j]` — wrong at exactly one lane
+per segment, which is what `10`'s edge probes exist to catch.
 
 **D9 — 64-bit decomposition is in scope.** The hardware shuffle moves 32 bits. The design
 doc's own flagship example sums an `(in-vec long)`, and 175 will want `double` reductions,

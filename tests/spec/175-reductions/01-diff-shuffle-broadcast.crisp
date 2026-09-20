@@ -5,14 +5,22 @@
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=16.0 group=64 h=0.5 atol=1e-1 output-mat=4x16
 ;;
-;; Endeavour 173 A|D: an indexed shuffle with a COMPILE-TIME target differentiates; see
-;; errors/07 for the runtime-target case, which does not.
+;; MOVED HERE FROM 173 (endeavour 173 wrote this spec, and writing it is what corrected the
+;; decision it was testing).  It sits beyond ci-stop as future TDD until reductions exist.
 ;;
-;; A literal target is necessarily a BROADCAST -- every lane names the same source -- so this
-;; is the one shuffle whose adjoint is a genuine fan-in: the source lane's adjoint is the SUM
-;; of every reader's.  That makes it the exact shape the runtime-target case cannot do in
-;; general (there, who reads whom is unknown until the kernel runs, so the number of
-;; contributions is unknown too).  Here the permutation is static, so the sum is static:
+;; 173's decision D8 claimed an indexed shuffle with a COMPILE-TIME target differentiates as
+;; "the inverse permutation".  That is wrong, and this spec is the proof.  A literal target
+;; means EVERY LANE READS THE SAME LANE, so the form is a BROADCAST, not a permutation, and
+;; the transpose of a broadcast is a warp-wide REDUCTION -- the source lane's adjoint is the
+;; SUM of every reader's.
+;;
+;; So there is no easy static case and a hard runtime case: there is one case, and its VJP
+;; needs a warp reduction.  Which is exactly what endeavour 175 builds, and why this spec
+;; belongs here rather than in 173.  173 rejects BOTH indexed forms with a message saying so
+;; (see 173-shuffles/errors/07 and /08); when 175 can emit an xor-butterfly all-reduce, this
+;; spec becomes the positive test that the rejection is lifted correctly.
+;;
+;; The arithmetic below is already worked out and still holds:
 ;;
 ;;     C[t] = v[warp_base(t) + 2]      for all 16 lanes of the warp
 ;;     => d sum(C)/dA[2] = 16.0        (warp 0 pinned to 16 lanes by the bmg profile)
