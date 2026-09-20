@@ -1,4 +1,5 @@
-;; TEST-EXPECT: FAIL
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "no VJP is registered for an indexed shuffle"
 ;; CHECK-FAIL: "runtime target lane"
 ;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
 ;;

@@ -25,8 +25,19 @@ Ops in this endeavour:
 | `q1: 2e10 1e10 4e10 3e10` | ✓ | 64-bit hi/lo decomposition |
 | `f1: 1.5 0.5 3.5 2.5` | ✓ | double — the fraction survives |
 
-Suite: unit 341/341, negative 268/268, E2E 1191/1194 with the only failure being the
-broadcast A|D spec, since moved to 175.
+**A|D gradients verified numerically on BMG** (finite difference vs analytical):
+
+| spec | result | what it confirms |
+|---|---|---|
+| `09` xor | `analytical=4.0 numerical=4.0000305` | the involution VJP, `w(3)=4.0` |
+| `10` up, lane-0 edge | `analytical=3.0 numerical=3.0` | the edge SELF-TERM, `w(1)+w(0)` |
+| `10` down, segment top | `analytical=7.0 numerical=6.9999695` | the segment-top edge at `width 4`, `w(2)+w(3)` |
+
+So the masked transposes — the part most likely to be wrong and least visible to an
+aggregate check — are confirmed against finite differences on hardware.
+
+Suite: unit 341/341, negative 269/269, E2E 1194/1194, and 19/19 under
+`--filter=173` both with and without `--differentiate`.
 
 Also landed here (see F7): **`let*` is now rejected**, guarded by
 `tests/spec/004-let/errors/01-let-star-rejected.crisp`.
@@ -237,6 +248,28 @@ Blast radius was small: 5 pre-existing specs used `(let* ` (092/08, 170/26, 170/
 172/08) and were converted to `let`, which is semantically identical since Crisp's `let` is
 sequential. Regression after the change: unit 341/341, negative 261/261, E2E 1175/1175.
 
+
+**F8 — VERIFY-AUTODIFF cannot express a DOUBLE matrix input.** `tests/verify-autodiff-runner.lisp`
+writes and reads every buffer as a 4-byte float ("NIL, the default, means every input is
+4-byte float"); endeavour 163 added a 2-byte path for `half`, but there is no 8-byte one.
+`%vad-elem-bytes-of-type` *does* answer 8 for `double`, so the buffer is SIZED correctly and
+then filled with 4-byte floats — the kernel reads a garbage double and the finite difference
+reads `numerical=0.0`. 124/05, /06 and /11 differentiate doubles happily because they use
+double CELLS, a different path from a matrix input. Spec `12` therefore claims only what can
+be checked (that the 64-bit decomposition COMPILES under `--differentiate`); its numeric
+check returns when the runner grows an 8-byte path.
+
+**F9 — quoting a directive inside a comment RE-ACTIVATES it.** Directive parsing is textual
+and left-trims `";; "`, so a `VERIFY-AUTODIFF:` line quoted in an explanatory comment — even
+indented — is parsed and the check runs anyway. Cost one confusing round of "I removed the
+directive and it still fires". Same family as F3: these parsers match text, not structure,
+so a spec's prose can change its behaviour. Refer to a directive by name, never write it out.
+
+**F10 — a `run-specs` failure is reported in a `Failed Specs:` block, not inline.** An earlier
+sweep here grepped for `"... FAIL"`, found none, and wrongly reported a clean suite while
+three error specs were failing; the shortfall in the `N/M` summary was the only visible sign.
+Read the `Failed Specs:` block, or the count, and never infer "clean" from a pattern that
+matched nothing.
 
 Implementation notes
 ====================

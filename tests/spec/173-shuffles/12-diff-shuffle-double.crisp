@@ -3,7 +3,32 @@
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
 ;; SKIP-DEFAULT-PASS
 ;; HOIST-HARDWARE-PROFILE: bmg
-;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=4.0 group=64 h=0.5 atol=1e-3 output-mat=4x16
+;;
+;; NO VERIFY-AUTODIFF HERE, AND THE REASON IS A HARNESS GAP, NOT A COMPILER ONE.
+;; The first cut carried a VERIFY-AUTODIFF line reading
+;;   (A=4x16@0:0.01 at.A=0,2 expect.A=4.0 group=64 h=0.5 atol=1e-3 output-mat=4x16)
+;; and it read `analytical=1.0 numerical=0.0` against an expected 4.0.
+;;
+;; NB the directive above is deliberately NOT written out in full: directive parsing is
+;; TEXTUAL and left-trims ";; ", so a quoted copy inside a comment is still parsed and the
+;; check runs anyway.  Same trap as a CHECK-FAIL phrase that appears in its own filename.  The numerical 0.0 is
+;; the tell: perturbing the input changed the objective not at all.
+;;
+;; The verify runner writes and reads every buffer as a 4-BYTE FLOAT
+;; (tests/verify-autodiff-runner.lisp: "NIL, the default, means every input is 4-byte
+;; float").  Endeavour 163 added a 2-byte path so `half` operands could be filled, but there
+;; is no 8-byte path.  %vad-elem-bytes-of-type DOES answer 8 for double, so the buffer is
+;; SIZED right and then filled with 4-byte floats -- the kernel reads a garbage double, the
+;; finite difference sees nothing move, and the check fails for a reason that has nothing to
+;; do with the derivative.  124/05, /06 and /11 differentiate doubles happily because they
+;; use double CELLS, which take a different path from a matrix input.
+;;
+;; What still stands without it: this spec proves the 64-bit decomposition COMPILES under
+;; --differentiate, 08 proves the same decomposition is numerically right on metal in the
+;; forward direction, and 09 proves the xor VJP is numerically right on metal in float.  The
+;; only untested corner is the double backward's NUMBERS, and it is untested because the
+;; harness cannot express it.  Restore the directive above once the runner grows an 8-byte
+;; path -- see F8 in shuffles.md.
 ;;
 ;; Endeavour 173 A|D: differentiating through the 64-bit hi/lo DECOMPOSITION.
 ;;

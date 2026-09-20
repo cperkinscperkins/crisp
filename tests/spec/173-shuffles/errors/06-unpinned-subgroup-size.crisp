@@ -1,4 +1,4 @@
-;; TEST-EXPECT: FAIL
+;; TEST-EXPECT: PASS
 ;; CHECK-FAIL: "cannot be pinned"
 ;; CHECK-FAIL-FLAGS: --ir-target=spv
 ;;

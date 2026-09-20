@@ -1,4 +1,5 @@
-;; TEST-EXPECT: FAIL
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "broadcast whose transpose is a warp-wide reduction"
 ;; CHECK-FAIL: "broadcast whose transpose"
 ;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
 ;;
