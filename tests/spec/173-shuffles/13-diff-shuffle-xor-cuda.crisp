@@ -1,0 +1,46 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x16@0:0.01 at.A=0,2 expect.A=4.0 group=64 h=0.5 atol=1e-2 output-mat=4x16
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-19 and deliberately left unvalidated -- no NVIDIA
+;; !!! box was available at the time.  VALIDATE THIS FIRST on the next pod run, before reading
+;; !!! any failure here as a compiler defect.  An unrun directive is a guess: spec 12 carried
+;; !!! one that turned out to be unexpressible by the harness (bug 067), which is exactly the
+;; !!! mistake this warning exists to prevent repeating.
+;;
+;; Endeavour 173 A|D: the CUDA TWIN of 09-diff-shuffle-xor.
+;;
+;; WHY A SEPARATE FILE rather than a second directive in 09.  parse-verify-autodiff allows AT
+;; MOST ONE VERIFY-AUTODIFF line per spec and signals "Multiple VERIFY-AUTODIFF directives in
+;; one spec" otherwise -- the `[CUDA]` tag does not exempt it.  So a spec cannot carry both an
+;; unpinned (auto-select, SPIR-V-only) check and a CUDA-pinned one, and 09's BMG-verified
+;; numbers must not be traded away for these.  Twinning is the same shape 147/01 uses against
+;; 044/01: same arithmetic, different silicon, so a disagreement localises to one backend.
+;;
+;; WHAT THIS ADDS over 09, which already passes on BMG.  The VJP rules emit CRISP FORMS
+;; (shuffle-xor on the adjoint, and for the shift rules `rem` / `warp-lane` edge arithmetic),
+;; and those forms are re-analyzed and LOWERED PER BACKEND.  So the PTX backward path is a
+;; genuinely separate code path from the SPIR-V one: it has been compiled and read, never run.
+;; 09 gives it no coverage at all.
+;;
+;; WHY THE EXPECTED VALUE IS UNCHANGED AT 32 LANES.  d sum(C)/dA[k] = w(k^1) with
+;; w(t) = col(t)+1.  At the probe k=2 that is w(3) = 4.0.  XOR by 1 never leaves the low pair,
+;; so the answer does not depend on whether the warp is 16 lanes or 32 -- which is the same
+;; portability property the forward fingerprints were built on, and which the H100 run
+;; confirmed by returning byte-identical buffers to BMG.
+;;
+;; No hardware profile is pinned here, unlike 09.  D7 (a shuffling kernel needs a pinned
+;; subgroup size) applies to SPIR-V only; NVIDIA's warp is 32 by architecture, so there is
+;; nothing to pin and nothing to declare.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_shuffle_xor_cuda (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (w (to-float (+ col 1))))
+        (set! (~ C row col) (* w (shuffle-xor v 1ul)))))))

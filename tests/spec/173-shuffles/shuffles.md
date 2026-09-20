@@ -36,8 +36,63 @@ Ops in this endeavour:
 So the masked transposes — the part most likely to be wrong and least visible to an
 aggregate check — are confirmed against finite differences on hardware.
 
-Suite: unit 341/341, negative 269/269, E2E 1194/1194, and 19/19 under
+Suite (local, BMG): unit 341/341, negative 269/269, E2E 1194/1194, and 19/19 under
 `--filter=173` both with and without `--differentiate`.
+
+**H100 (`run-on-pod.sh`, branch `shuffles`)**: all three phases green, and the CUDA hoists
+genuinely EXECUTED — `SKIP (nvcc not available)` appears zero times across all three logs,
+and every metal spec reports `Hoist[CUDA] -> validate-cuda-host-run ... OK`. (Worth checking
+rather than assuming: a skipped hoist still reports a green phase.)
+
+**The NVIDIA fingerprints are byte-identical to the BMG ones**, at a 32-lane warp instead of
+16:
+
+    x1: 17 7 37 27     x2: 27 37 7 17      b1: 27 27 27 27    b2: 17 27 37 47
+    u1: 7 7 17 27      d1: 17 27 37 47     w1: 17 27 37 7
+    u2: 7 17 7 17      d2: 27 37 27 37
+    q1: 20000000000 10000000000 40000000000 30000000000       f1: 1.5 0.5 3.5 2.5
+
+Two things that settles.
+
+**The PTX `c`-operand encoding is verified on metal.** Clamp `0` for `.up` / `0x1f`
+otherwise, segment mask `(warpSize - width) << 8` — derived from CUDA's convention and, until
+this run, checked only by READING the emitted PTX. The SPIR-V path does not use that operand
+at all, so BMG gave it no coverage whatsoever. `w1`, `u2` and `d2` are the `width 4` cases,
+which are exactly what the encoding controls, and they are right at 32 lanes.
+
+**And the portability claim the fingerprints were designed around holds.** Identical results
+across a 16-lane and a 32-lane warp is the property F2 built the whole suite on; it is now
+observed rather than argued. Note the CUDA hoists ran under `--hardware-profile=bmg` (from
+`HOIST-HARDWARE-PROFILE`), i.e. the profile/target disagreement D2 resolves — had
+target-aware `warp-size` been wrong, the segment masks would have been encoded against 16
+lanes on a 32-lane warp and `w1`/`u2`/`d2` would have come back wrong rather than erroring.
+
+Also verified on this run: endeavour 170's CUDA hoists (`fma`, `abs-diff-sad`, `min3-nan`,
+`approx`, and the FFI `approx-metal-cuda`), which had never run on NVIDIA hardware.
+
+STILL NVIDIA-UNVERIFIED: the A|D **gradients**. `VERIFY-AUTODIFF` skipped there with "no
+on-metal AD runtime available" because an unpinned directive auto-selects SPIR-V only (147).
+The VJPs emit Crisp forms that are re-lowered per backend, so the PTX backward path — the
+`shfl` in the adjoint plus the `rem`/`warp-lane` edge arithmetic — has been compiled but
+never executed.
+
+**Specs `13` and `14` exist to close that, and have NEVER BEEN RUN.** They are CUDA twins of
+09 and 10 carrying `VERIFY-AUTODIFF[CUDA]:` with the same expected values (4.0; 3.0 and 7.0),
+all three of which are warp-size independent and hold unchanged at 32 lanes. Validate them on
+the next pod run before reading any failure as a compiler defect — an unrun directive is a
+guess, and spec 12 already carried one the harness could not express (bug 067).
+
+They are separate FILES because `parse-verify-autodiff` permits at most one VERIFY-AUTODIFF
+line per spec and errors with "Multiple VERIFY-AUTODIFF directives in one spec" otherwise —
+the `[CUDA]` tag does not exempt it. So 09 could not carry both its BMG-verified check and a
+CUDA-pinned one, and trading the verified one away would have been a loss. Twinning is the
+shape 147/01 uses against 044/01. Locally they compile and then skip loudly
+("pinned to CUDA; not available here"), counted as passes.
+
+Of the two, **14 is the one that matters**: xor transposes to itself in a single instruction,
+whereas the shift rules emit an edge correction (`rem` / `warp-lane` / a `let`-hoisted
+shuffle) that becomes `shfl.sync` plus a `%laneid` read on PTX. A wrong `c` operand, a wrong
+lane read, or a mis-folded `(warp-size)` in the BACKWARD would land there and nowhere else.
 
 Also landed here (see F7): **`let*` is now rejected**, guarded by
 `tests/spec/004-let/errors/01-let-star-rejected.crisp`.
