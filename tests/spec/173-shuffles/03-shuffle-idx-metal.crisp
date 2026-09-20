@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER b1: 27 27 27 27
+;; HOIST-EXPECT: BUFFER b2: 17 27 37 47
+;;
+;; Endeavour 173 ON-METAL: shuffle (indexed), full warp.  See 02 for the method.
+;;
+;; b1 = shuffle v 2          -> BROADCAST: every lane reads lane 2      -> 27 27 27 27
+;; b2 = shuffle v (lane+1)   -> each lane reads its right neighbour     -> 17 27 37 47
+;;
+;; b2 is the full-warp control for 05: with no width the source lane is absolute, so
+;; lane 3 reads lane 4 and gets 47.  Under (width 4) lane 3 would wrap to lane 0 and
+;; get 7 instead.  That single element is the entire observable effect of segmentation
+;; on an indexed shuffle, and 05 pins it.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel shuffle_idx_metal (&out b1 b2)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let* ((lane (to-ulong (warp-lane)))
+         (v    (+ (* lane 10ul) 7ul))
+         (r1   (shuffle v 2ul))
+         (r2   (shuffle v (+ lane 1ul))))
+    (when (< lane 4ul)
+      (set! (~ b1 lane) r1)
+      (set! (~ b2 lane) r2))))

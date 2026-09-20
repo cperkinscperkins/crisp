@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=16.0 group=64 h=0.5 atol=1e-1 output-mat=4x16
+;;
+;; Endeavour 173 A|D: an indexed shuffle with a COMPILE-TIME target differentiates; see
+;; errors/07 for the runtime-target case, which does not.
+;;
+;; A literal target is necessarily a BROADCAST -- every lane names the same source -- so this
+;; is the one shuffle whose adjoint is a genuine fan-in: the source lane's adjoint is the SUM
+;; of every reader's.  That makes it the exact shape the runtime-target case cannot do in
+;; general (there, who reads whom is unknown until the kernel runs, so the number of
+;; contributions is unknown too).  Here the permutation is static, so the sum is static:
+;;
+;;     C[t] = v[warp_base(t) + 2]      for all 16 lanes of the warp
+;;     => d sum(C)/dA[2] = 16.0        (warp 0 pinned to 16 lanes by the bmg profile)
+;;
+;; NO WEIGHT HERE, unlike 09 and 10.  A broadcast is already asymmetric -- only lane 2 of
+;; each warp has any gradient at all, and every other probe point reads 0.0 -- so the weight
+;; is not needed to break a symmetry, and leaving it out keeps the expected value a round
+;; multiple of the warp width instead of a sum of 16 different weights.
+;;
+;; THE VALUE IS THE WARP WIDTH, which is exactly why the profile must be pinned: unpinned,
+;; an Intel driver choosing SIMD32 would make this 32.0 and the spec would fail for a reason
+;; that has nothing to do with the derivative.  That is D7 stated as an arithmetic fact
+;; rather than as a rule.
+;;
+;; atol is looser than its neighbours (1e-1) because the 16x fan-in amplifies the finite
+;; difference by the same factor; the function is exactly linear in A, so the FD is still
+;; exact up to float rounding.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_shuffle_static_index (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    ;; Crisp's LET is already sequential; let* compiles forward but breaks the AD walk.
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (set! (~ C row col) (shuffle v 2ul))))))

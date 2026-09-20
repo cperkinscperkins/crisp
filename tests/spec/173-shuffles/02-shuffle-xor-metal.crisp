@@ -1,0 +1,40 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER x1: 17 7 37 27
+;; HOIST-EXPECT: BUFFER x2: 27 37 7 17
+;;
+;; Endeavour 173 ON-METAL: shuffle-xor, full warp.
+;;
+;; THE FINGERPRINT METHOD (used by every metal spec in 173).
+;; A shuffle is a permutation, so the test checks the PERMUTATION EXACTLY, not an
+;; aggregate -- a sum would hide precisely the edge-lane bugs we care about.
+;;
+;;   seed        v(L) = 10L + 7, so lane 0..4 hold 7 17 27 37 47.
+;;               Two-digit values keep lane INDEX and lane VALUE distinguishable:
+;;               a result of 27 is unambiguously "lane 2's data", never "the number 2".
+;;   convergence every lane shuffles UNCONDITIONALLY; only the store is conditional.
+;;               A shuffle inside the `when` would be a divergent warp collective
+;;               (see errors/04).
+;;   portability the L0 hoist harness gives a rank-1 tensor 4 elements, and
+;;               HOIST-EXPECT is a substring match, so we pin lanes 0..3.  Masks are
+;;               kept small so the result for lanes 0..3 is IDENTICAL whether the warp
+;;               is 32 lanes (NVIDIA) or 16 (BMG :simd-width 16).  XOR by a mask < 4
+;;               only flips low bits, so it can never leave the low quad.
+;;
+;; x1 = shuffle-xor v 1   ->  v(L^1): lanes 0<->1, 2<->3   ->  17  7 37 27
+;; x2 = shuffle-xor v 2   ->  v(L^2): lanes 0<->2, 1<->3   ->  27 37  7 17
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel shuffle_xor_metal (&out x1 x2)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let* ((lane (to-ulong (warp-lane)))
+         (v    (+ (* lane 10ul) 7ul))
+         (r1   (shuffle-xor v 1ul))
+         (r2   (shuffle-xor v 2ul)))
+    (when (< lane 4ul)
+      (set! (~ x1 lane) r1)
+      (set! (~ x2 lane) r2))))

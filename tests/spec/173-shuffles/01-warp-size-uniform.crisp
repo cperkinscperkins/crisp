@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv]
+;; TEST-WITH[--ir-target=ptx]
+;;
+;; Endeavour 173: (warp-size) is a COMPILE-TIME constant, resolved from the active
+;; hardware profile's :simd-width (32 when no profile is active).
+;;
+;; This spec asserts the property that matters rather than the value (which is 32 on
+;; NVIDIA and 16 on a BMG profile, so it cannot be pinned portably here): warp-size is
+;; legal as the limit of a `+` loop form.  Per 172 D5 a `+` form requires every operand
+;; to be PROVABLY UNIFORM, and a loop limit must fold, so this only compiles if
+;; (warp-size) is both uniform and compile-time known.  The value itself is pinned in
+;; the co-located unit test, which can bind a profile.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel warp_size_uniform (&out steps)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (set! (~ steps) 0ul)
+  (dec-times-by-half+ (s (/ (to-ulong (warp-size)) 2ul))
+    (set! (~ steps) (+ (~ steps) 1ul))))

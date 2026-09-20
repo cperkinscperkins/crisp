@@ -1,0 +1,27 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be a constant"
+;;
+;; Endeavour 173: the segment width must be a compile-time constant.
+;;
+;; PTX would actually tolerate a register here (shfl.sync takes clamp/segmask in its `c`
+;; operand), so this is a deliberate Crisp restriction, for three reasons:
+;;   - the power-of-two and <= (warp-size) rules are only checkable statically, and both
+;;     are silent-wrong-answer bugs at runtime rather than diagnosable ones;
+;;   - a lane-varying width is meaningless -- the segmentation must agree across the warp
+;;     or the lanes disagree about who they are exchanging with;
+;;   - SPIR-V has no width operand at all, so we synthesise the segment arithmetic, and a
+;;     constant width folds that to nothing on the shuffle-xor path.
+;;
+;; `n` is a runtime kernel parameter, so it fails all three.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_bad_segment_c (n &out out)
+  (declare #'(uint &out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let* ((lane (to-ulong (warp-lane)))
+         (v    (+ (* lane 10ul) 7ul))
+         (r    (shuffle-xor v 1ul n)))
+    (when (< lane 4ul)
+      (set! (~ out lane) r))))

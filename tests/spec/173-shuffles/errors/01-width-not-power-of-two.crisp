@@ -1,0 +1,19 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be a power of two"
+;;
+;; Endeavour 173: a segment width must be a power of two.  The hardware divides the warp
+;; into ALIGNED blocks, so 3 has no lowering -- it is not that it is slow, it does not
+;; exist.  Caught at compile time, which is possible only because width is required to
+;; be a compile-time constant (see 05 in this directory).
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_bad_segment_a (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let* ((lane (to-ulong (warp-lane)))
+         (v    (+ (* lane 10ul) 7ul))
+         (r    (shuffle-xor v 1ul 3)))
+    (when (< lane 4ul)
+      (set! (~ out lane) r))))

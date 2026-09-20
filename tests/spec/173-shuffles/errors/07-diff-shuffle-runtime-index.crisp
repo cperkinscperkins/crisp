@@ -1,0 +1,38 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "runtime target lane"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; Endeavour 173, DECISION D8: an indexed shuffle whose target is computed at runtime is a
+;; hard compile error under --differentiate.
+;;
+;; A shuffle is a gather across lanes, so its adjoint is a scatter-add.  For the other three
+;; forms the scatter happens to BE a shuffle -- xor is its own inverse, up and down transpose
+;; into each other, and a literal target is a known permutation.  For a runtime target none
+;; of that holds: several lanes may name the same source, so the source's adjoint is a sum of
+;; an unknown number of contributions.  An exact lowering exists (an O(width) ballot-and-match
+;; loop), but it is not a shuffle and it is not cheap, and silently emitting it would hide a
+;; large cost behind an operation the author believes is one instruction.
+;;
+;; So Crisp says so.  Specifically it is NOT handled by either of the two escape hatches:
+;;   - not `forward-only`, which would be a scheduling claim about this kernel rather than a
+;;     statement about the operation (the 146 lesson);
+;;   - not a %backward-skip-fn-p entry, because a shuffle CARRIES A VALUE.  The skip list is
+;;     for non-values -- allocators, barriers, shape queries -- and putting an arithmetic
+;;     operation on it would silently drop a real gradient term rather than refuse it.
+;;
+;; The kernel is otherwise identical to 11, which differs only in that its target is the
+;; literal 2 and therefore differentiates.  Without --differentiate this same source is
+;; legal and compiles, which is why the flags are pinned here.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k_moving_target (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    ;; Crisp's LET is already sequential; let* compiles forward but breaks the AD walk.
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (set! (~ C row col) (shuffle v (+ (to-ulong col) 1ul)))))))

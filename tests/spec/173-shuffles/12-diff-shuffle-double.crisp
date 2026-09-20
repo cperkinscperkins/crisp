@@ -1,0 +1,43 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=4.0 group=64 h=0.5 atol=1e-3 output-mat=4x16
+;;
+;; Endeavour 173 A|D: differentiating through the 64-bit hi/lo DECOMPOSITION.
+;;
+;; 09 in double.  The claim is that the two halves of the decomposition are not a special
+;; case for the backward: adjoint(shuffle-xor v m) is shuffle-xor adj m whatever the width
+;; of v, because the decomposition is below the level the AD rule is stated at.
+;;
+;; It is worth its own spec because the decomposition is the one place where a shuffle is
+;; NOT a single instruction, and a backward written against "the shuffle instruction" rather
+;; than against the shuffle OPERATION could plausibly transpose one half and not the other.
+;; That failure is invisible in 09 (32-bit, one instruction) and invisible in 07/08 (forward
+;; only, no adjoint to get wrong).
+;;
+;;     C[t] = w(t) * v[t^1]   =>   d sum(C)/dA[k] = w(k^1),   at k = 2: w(3) = 4.0
+;;
+;; Same arithmetic as 09, so a discrepancy between the two specs isolates the decomposition
+;; as the cause rather than the AD rule.
+;;
+;; atol is TIGHTER than 09 (1e-3 vs 1e-2), which is the point of running it in double: if
+;; this needs 09's tolerance to pass, something is being routed through float on the way.
+;;
+;; IF THIS FAILS FIRST, check the harness before the compiler: double-valued VERIFY-AUTODIFF
+;; is exercised by 124/05, /06 and /11, but always on cells, never on a 4x16 matrix.
+
+(def-type dmat-t (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_shuffle_double (A &out C)
+  (declare #'(dmat-t &out dmat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    ;; Crisp's LET is already sequential; let* compiles forward but breaks the AD walk.
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (w (to-double (+ col 1))))
+        (set! (~ C row col) (* w (shuffle-xor v 1ul)))))))

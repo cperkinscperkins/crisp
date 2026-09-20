@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER w1: 17 27 37 7
+;;
+;; Endeavour 173 ON-METAL: the optional WIDTH argument on an indexed shuffle.
+;;
+;; width SEGMENTS the warp into contiguous blocks of `width` lanes; a shuffle is
+;; confined to its own block.  It is NOT a query of the hardware warp size -- it is how
+;; you run several independent small reductions inside one warp.  width defaults to
+;; (warp-size), at which point it is a no-op, which is why the default is spelled that
+;; way in CUDA and why segmentation is the only thing this spec can observe.
+;;
+;; w1 = shuffle v (lane+1) 4    ->  17 27 37 7
+;;
+;; Compare 03's b2 (same kernel, no width): 17 27 37 47.  Only lane 3 differs.
+;; Unsegmented, lane 3 reads absolute lane 4 -> 47.  Segmented into quads, lane 3 is the
+;; top of block [0..3] and its source index wraps MODULO the width back to lane 0 -> 7.
+;; That one element is the whole feature, so it is the whole assertion.
+;;
+;; Segmentation into quads is also what makes this portable: a block of 4 lies wholly
+;; inside a warp whether the warp is 32 lanes or 16.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel shuffle_width_idx_metal (&out w1)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let* ((lane (to-ulong (warp-lane)))
+         (v    (+ (* lane 10ul) 7ul))
+         (r1   (shuffle v (+ lane 1ul) 4)))
+    (when (< lane 4ul)
+      (set! (~ w1 lane) r1))))

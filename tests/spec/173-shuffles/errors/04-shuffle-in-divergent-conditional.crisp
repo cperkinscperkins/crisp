@@ -1,0 +1,27 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "warp collective"
+;;
+;; Endeavour 173: a shuffle is a WARP COLLECTIVE and must be reached by every lane.
+;;
+;; Here it sits inside a thread-divergent `when`, so lanes 2..31 never arrive.  The lanes
+;; that do arrive are asking for data from lanes that are not participating: on PTX the
+;; full membermask we emit no longer describes reality, and the result is undefined or a
+;; hang; on SPIR-V the non-uniform group op has undefined behaviour outright.
+;;
+;; This reuses the divergence machinery from 111 Phase 1 (*in-divergent-conditional* /
+;; %tlc-check-not-divergent) rather than inventing a second checker, and it is what
+;; licenses passing an unconditional full membermask everywhere else.
+;;
+;; The legal spelling is the one every metal spec in this directory uses: shuffle in all
+;; lanes UNCONDITIONALLY, then gate only the store.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_bad_region (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let* ((lane (to-ulong (warp-lane)))
+         (v    (+ (* lane 10ul) 7ul)))
+    (when (< lane 2ul)
+      (set! (~ out lane) (shuffle-xor v 1ul)))))

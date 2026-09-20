@@ -109,8 +109,7 @@
 - [Barriers and Fences ✅](13_control_flow/17_barriers_and_fences.md)
 - [Sum a Vector using Local Memory ✅](13_control_flow/18_sum_a_vector_using_local_memory.md)
 - [Warps & Shuffles 📝](13_control_flow/19_warps_shuffles.md)
-- [in-warp 📝](13_control_flow/20_in_warp.md)
-- [Sum a Vector using Warps and Shuffles 📝](13_control_flow/21_sum_a_vector_using_warps_and_shuffles.md)
+- [Sum a Vector using Warps and Shuffles 📝](13_control_flow/20_sum_a_vector_using_warps_and_shuffles.md)
 
 ## Bit Twiddling Operations 📝
 - [`op-popcount` 📝](14_bit_twiddling_operations/01_op_popcount.md)
