@@ -662,6 +662,94 @@ set!  analyzer's behavior in analysis/structs.lisp."
     (make-semantic-hw-op :op op :type result-type :args arg-nodes :source-location location)))
 
 
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 173 — the four warp shuffles.
+;;; ---------------------------------------------------------------------------
+;;; The node itself is semantic-shuffle (src/semantic.lisp), which explains why these are not
+;;; semantic-hw-ops.  Codegen is in src/codegen.lisp, the backward rules in src/autodiff.lisp.
+
+(defparameter *shuffle-op-names*
+  '(("SHUFFLE" . :idx) ("SHUFFLE-UP" . :up) ("SHUFFLE-DOWN" . :down) ("SHUFFLE-XOR" . :xor))
+  "Crisp operator name -> shuffle op keyword.")
+
+(defparameter *shuffle-value-types*
+  '(int uint float long ulong double)
+  "Scalar types a shuffle may move.  The 32-bit ones are one hardware instruction; the
+   64-bit ones are decomposed into hi/lo halves by codegen (D9).")
+
+(defun %shuffle-literal-integer (node)
+  "The integer value of NODE if it is a compile-time integer literal, else NIL.
+   (warp-size) folds to such a literal, so (shuffle v n (warp-size)) is accepted."
+  (when (and (semantic-literal-p node)
+             (integerp (semantic-literal-value node)))
+    (semantic-literal-value node)))
+
+(defun %shuffle-resolve-width (width-node op-name location)
+  "Validates and returns the segment width for a shuffle (D4).  WIDTH-NODE may be NIL, in
+   which case the width is the whole warp."
+  (let ((warp (%173-warp-size)))
+    (if (null width-node)
+        warp
+        (let ((w (%shuffle-literal-integer width-node)))
+          (cond
+            ((null w)
+             (error 'crisp-compiler-error
+                    :message (format nil "~a: the segment width must be a constant known at compile time. A lane-varying width is meaningless -- every lane has to agree which lanes it exchanges with -- and the power-of-two and not-wider-than-the-warp rules can only be checked statically"
+                                     op-name)
+                    :source-location location))
+            ((or (<= w 0) (/= 0 (logand w (1- w))))
+             (error 'crisp-compiler-error
+                    :message (format nil "~a: the segment width must be a power of two, got ~a. The hardware divides the warp into ALIGNED blocks, so ~a has no lowering at all"
+                                     op-name w w)
+                    :source-location location))
+            ((> w warp)
+             (error 'crisp-compiler-error
+                    :message (format nil "~a: a segment width of ~a is wider than the warp it segments (~a lanes under the active hardware profile). A segment cannot exceed the warp that contains it"
+                                     op-name w warp)
+                    :source-location location))
+            (t w))))))
+
+(defun %analyze-shuffle (expr env context location)
+  "Analyzes (shuffle|shuffle-up|shuffle-down|shuffle-xor VALUE INDEX [WIDTH])."
+  (let* ((op-name (symbol-name (first expr)))
+         (op (cdr (assoc op-name *shuffle-op-names* :test #'string=)))
+         (args (rest expr)))
+    (unless (member (length args) '(2 3))
+      (error 'crisp-compiler-error
+             :message (format nil "~a expects <value> and <~a>, with an optional trailing width -- 2 or 3 arguments, got ~a"
+                              op-name
+                              (case op (:idx "target-lane") (:xor "lane-mask") (t "delta"))
+                              (length args))
+             :source-location location))
+    (let* ((value-node (analyze-expression (first args) env context (append location '(1))))
+           (index-node (analyze-expression (second args) env context (append location '(2))))
+           (width-node (when (third args)
+                         (analyze-expression (third args) env context (append location '(3)))))
+           (value-type (get-single-value-type value-node))
+           (width (%shuffle-resolve-width width-node op-name location)))
+      (unless (member value-type *shuffle-value-types*)
+        (error 'crisp-compiler-error
+               :message (format nil "~a cannot move a value of type ~a. A shuffle exchanges a scalar register between lanes; the supported types are ~{~a~^, ~}"
+                                op-name value-type *shuffle-value-types*)
+               :source-location location))
+      ;; D5 -- an xor mask that cannot stay inside its segment.  Checkable only when the mask
+      ;; is a literal; a RUNTIME mask is the reduction idiom (it comes from dec-times-by-half+)
+      ;; and is accepted.
+      (when (eq op :xor)
+        (let ((m (%shuffle-literal-integer index-node)))
+          (when (and m (>= m width))
+            (error 'crisp-compiler-error
+                   :message (format nil "shuffle-xor: a lane-mask of ~a reaches outside its segment of ~a lanes. XOR by a mask SMALLER than the segment can never leave it, which is the only case with a meaning; ~a >= ~a asks to read a lane the segmentation forbids"
+                                    m width m width)
+                   :source-location location))))
+      ;; D6 -- every lane must reach a warp collective.
+      (%shuffle-check-not-divergent op-name location)
+      (log:debug "173: ~a op=~a type=~a width=~a" op-name op value-type width)
+      (make-semantic-shuffle :type value-type :op op :value value-node
+                             :index index-node :width width
+                             :source-location location))))
+
+
 ;; src/analysis/ops.lisp -- whole-function replacement of register-ops-analyzers
 ;; adding mod and rem registrations.
 (defun register-ops-analyzers ()
@@ -687,6 +775,18 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
   ;; Endeavour 170: the hardware math ops (and the internal AD helper ops) all share one analyzer.
   (dolist (sym (append *hw-op-symbols* *hw-internal-op-symbols*))
     (setf (gethash sym *expression-analyzers*) 'analyze-hw-op-expression))
+  ;; Endeavour 173: the four warp shuffles, under both :crisp-language and :crisp.compiler.
+  ;; Not def-expression-analyzer, which quotes one literal operator symbol -- these must be
+  ;; interned into both packages at run time (user source reads in :crisp-language, where an
+  ;; unregistered spelling is silently minted as a fresh symbol rather than reported).
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry *shuffle-op-names*)
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) '%analyze-shuffle)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) '%analyze-shuffle)))))
   (def-expression-analyzer < analyze-lt-expression)
   (def-expression-analyzer > analyze-gt-expression)
   (def-expression-analyzer <= analyze-le-expression)

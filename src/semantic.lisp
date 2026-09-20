@@ -175,6 +175,20 @@
   "Endeavour 170: INTERNAL hardware-op forms that only the autodiff emits (never exported).
    (%hw-sat-interior R) => float mask, 1.0 where integer R lies STRICTLY inside its type's range.")
 
+;; Endeavour 173: a warp shuffle.  Deliberately NOT a semantic-hw-op (170's one-node-for-every-
+;; hardware-math-op), for two reasons -- the first decisive:
+;;
+;;   * WIDTH MUST NOT BE AN ARGUMENT NODE.  As a hw-op arg it would be subject to ANF, and codegen
+;;     would have to HOPE it was still a literal by the time it arrived.  Here it is a resolved
+;;     INTEGER SLOT, fixed at analysis time and immune to every later pass.
+;;   * The rule that decides compile-error-vs-inverse-permutation for a runtime target index has no
+;;     home inside %hw-op-backward, whose every other branch is pointwise arithmetic.
+(defstruct semantic-shuffle
+  "A warp shuffle.  OP is :idx / :up / :down / :xor.  TYPE is the result type, which is
+   always the type of VALUE.  INDEX is the analyzed target-lane / delta / mask node.  WIDTH
+   is a RESOLVED POSITIVE INTEGER (segment width in lanes), never a node -- see above."
+  type op value index width source-location)
+
 (defstruct semantic-lt
   type left-arg right-arg source-location)
 

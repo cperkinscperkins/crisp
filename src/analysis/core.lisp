@@ -112,9 +112,42 @@
 ;; below).  Codegen lives in the %call-spirv-uint-global-builtin helper plus
 ;; new cases in generate-node-ir for semantic-gpu-builtin.
 
+(defun %173-warp-size ()
+  "Lanes per warp for the current compilation: the active hardware profile's :simd-width,
+   else 32.  Single source of truth -- the shuffle width rules and the SPIR-V subgroup-size
+   gate must agree with this, or a kernel could be checked against one width and run at
+   another."
+  (if (eq *target-backend* :ptx)
+      ;; NVIDIA's warp is 32 lanes by architecture on every part ever shipped, so the PTX
+      ;; `c` encoding is computed against the hardware, not against a profile.  This only
+      ;; differs when a profile and the target disagree (--hardware-profile=bmg with
+      ;; --ir-target=ptx, which a dual-backend spec produces); 32 is the truth there.
+      ;; :simd-width describes the SPIR-V subgroup width the driver would otherwise choose.
+      32
+      (let ((profile (active-hardware-profile)))
+        (or (and profile (getf profile :simd-width)) 32))))
+
+(defun %analyze-warp-size (expr env context location)
+  "Analyzer for (warp-size) -- folds to a uint literal.  See %173-WARP-SIZE."
+  (declare (ignore env context))
+  (when (cdr expr)
+    (error 'crisp-compiler-error
+           :message (format nil "(warp-size) takes no arguments, got ~a. It is lanes-per-warp, a compile-time constant from the hardware profile's :simd-width — you may be looking for (warp-count), which is warps-per-workgroup"
+                            (length (cdr expr)))
+           :source-location location))
+  (let ((n (%173-warp-size)))
+    (log:debug "173: (warp-size) folded to ~a" n)
+    (make-semantic-literal :value-type 'uint :value n :source-location location)))
+
 (defun register-warp-builtins ()
   "Registers the warp-id / warp-lane / warp-count GPU builtins in
-   *expression-analyzers* for both :crisp-language and :crisp.compiler."
+   *expression-analyzers* for both :crisp-language and :crisp.compiler.
+   Endeavour 173: also WARP-SIZE, which is NOT a runtime builtin like its three siblings --
+   it folds to an integer LITERAL at analysis time (decision D2).  That is the whole point:
+   a literal is legal where a runtime value is not -- as a loop limit, as the default width
+   of a shuffle, and as the operand of a 172 `+` form, which requires every operand to be
+   provably uniform.  Folding also means the uniformity pre-pass and the AD walk never see a
+   WARP-SIZE operator at all, so neither needs a registration for it."
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
     (dolist (entry '(("WARP-ID"    :warp-id)
@@ -129,7 +162,14 @@
              (sym-cc (intern name-str cc-pkg)))
         (setf (gethash sym-cl *expression-analyzers*) fn)
         (unless (eq sym-cl sym-cc)
-          (setf (gethash sym-cc *expression-analyzers*) fn))))))
+          (setf (gethash sym-cc *expression-analyzers*) fn))))
+    ;; WARP-SIZE takes its own analyzer rather than a row in the table above, which builds a
+    ;; %analyze-gpu-builtin closure per entry.
+    (let ((sym-cl (intern "WARP-SIZE" cl-pkg))
+          (sym-cc (intern "WARP-SIZE" cc-pkg)))
+      (setf (gethash sym-cl *expression-analyzers*) '%analyze-warp-size)
+      (unless (eq sym-cl sym-cc)
+        (setf (gethash sym-cc *expression-analyzers*) '%analyze-warp-size)))))
 
 
 (defun %gpu-builtin-info (builtin-kw)
@@ -2287,6 +2327,7 @@ in single-pass mode."
     (semantic-cp-async-commit         (semantic-cp-async-commit-type node))
     (semantic-spirv-async-copy        (semantic-spirv-async-copy-type node))
     (semantic-spirv-group-wait        (semantic-spirv-group-wait-type node))
+    (semantic-shuffle                 (semantic-shuffle-type node))
     (semantic-mma-accumulate          (semantic-mma-accumulate-type node))))
 
 (defun semantic-node-source-location (node)
@@ -2296,6 +2337,7 @@ in single-pass mode."
     ;; Endeavor 122 (FFI) Pass 4: handle forms.
     (semantic-make-c-handle (semantic-make-c-handle-source-location node))
     (semantic-get-pointer (semantic-get-pointer-source-location node))
+    (semantic-shuffle (semantic-shuffle-source-location node))
     (semantic-dotimes (semantic-dotimes-source-location node))
     (semantic-literal (semantic-literal-source-location node))
     (semantic-device-vec-literal (semantic-device-vec-literal-source-location node))

@@ -415,7 +415,9 @@
    #:get-global-linear-id #:get-global-linear-size
    #:get-total-threads #:get-total-groups
    #:sync-workgroup #:sync-warp #:mem-fence
-   #:warp-id #:warp-lane #:warp-count))
+   #:warp-id #:warp-lane #:warp-count
+   ;; Endeavour 173: warp-size folds to a literal; the four shuffles are warp collectives.
+   #:warp-size #:shuffle #:shuffle-up #:shuffle-down #:shuffle-xor))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -524,6 +526,8 @@
                 #:get-total-threads #:get-total-groups
                 #:sync-workgroup #:sync-warp #:mem-fence
                 #:warp-id #:warp-lane #:warp-count
+                ;; Endeavour 173
+                #:warp-size #:shuffle #:shuffle-up #:shuffle-down #:shuffle-xor
 
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~

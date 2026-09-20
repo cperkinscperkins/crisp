@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-19T22:52:52.897486Z
+Generated on 2026-09-20T17:42:48.989086Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -254,6 +254,20 @@ Generated on 2026-09-19T22:52:52.897486Z
 - **Args**: `(OP-NAME LOCATION)`
 
   > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-at / store-tile-at analyzers.  >    NOTE (Endeavor 139): a with-warp-specialization role block ALSO sets *in-divergent-conditional*,  >    but its callers gate this on (not *in-warp-spec-block*) and apply the mode-aware  >    %warp-spec-check-block-only instead — a :block load there is leader-issued and safe.
+
+
+---
+### DEFUN `%SHUFFLE-CHECK-NOT-DIVERGENT`
+- **Args**: `(OP-NAME LOCATION)`
+
+  > Endeavour 173, D6: a shuffle is a warp collective and every lane must reach it.  >   >    Deliberately NOT %tlc-check-not-divergent: that one explains a deadlocking internal  >    sync-workgroup, which is not what goes wrong here, and it would reject a case that is  >    actually fine.  >   >    THE WARP-SPECIALIZATION EXEMPTION.  Endeavour 139 role blocks also set  >    *in-divergent-conditional*, but that divergence is BETWEEN warps -- every lane of any one  >    warp takes the same role. A warp collective is therefore still fully converged inside a  >    role block, so a shuffle there is legal.  What breaks a shuffle is divergence WITHIN a  >    warp, which is what an ordinary thread-divergent conditional produces.
+
+
+---
+### DEFUN `%ANALYZE-LET-STAR-REJECTED`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Signals a clear error for `let*`, which is not a Crisp form.  Crisp's LET is already  >    sequential (later bindings see earlier ones) and destructures multiple values, so LET*  >    is redundant; it was previously aliased onto LET in the expression analyzer only, which  >    made it compile forward and fail under --differentiate naming an unrelated operator.
 
 
 ---
@@ -1141,9 +1155,22 @@ Generated on 2026-09-19T22:52:52.897486Z
 
 
 ---
+### DEFUN `%173-WARP-SIZE`
+
+  > Lanes per warp for the current compilation: the active hardware profile's :simd-width,  >    else 32.  Single source of truth -- the shuffle width rules and the SPIR-V subgroup-size  >    gate must agree with this, or a kernel could be checked against one width and run at  >    another.
+
+
+---
+### DEFUN `%ANALYZE-WARP-SIZE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (warp-size) -- folds to a uint literal.  See %173-WARP-SIZE.
+
+
+---
 ### DEFUN `REGISTER-WARP-BUILTINS`
 
-  > Registers the warp-id / warp-lane / warp-count GPU builtins in  >    *expression-analyzers* for both :crisp-language and :crisp.compiler.
+  > Registers the warp-id / warp-lane / warp-count GPU builtins in  >    *expression-analyzers* for both :crisp-language and :crisp.compiler.  >    Endeavour 173: also WARP-SIZE, which is NOT a runtime builtin like its three siblings --  >    it folds to an integer LITERAL at analysis time (decision D2).  That is the whole point:  >    a literal is legal where a runtime value is not -- as a loop limit, as the default width  >    of a shuffle, and as the operand of a 172 `+` form, which requires every operand to be  >    provably uniform.  Folding also means the uniformity pre-pass and the AD walk never see a  >    WARP-SIZE operator at all, so neither needs a registration for it.
 
 
 ---
@@ -1934,6 +1961,39 @@ Generated on 2026-09-19T22:52:52.897486Z
 
 
 ---
+### DEFPARAMETER `*SHUFFLE-OP-NAMES*`
+
+  > Crisp operator name -> shuffle op keyword.
+
+
+---
+### DEFPARAMETER `*SHUFFLE-VALUE-TYPES*`
+
+  > Scalar types a shuffle may move.  The 32-bit ones are one hardware instruction; the  >    64-bit ones are decomposed into hi/lo halves by codegen (D9).
+
+
+---
+### DEFUN `%SHUFFLE-LITERAL-INTEGER`
+- **Args**: `(NODE)`
+
+  > The integer value of NODE if it is a compile-time integer literal, else NIL.  >    (warp-size) folds to such a literal, so (shuffle v n (warp-size)) is accepted.
+
+
+---
+### DEFUN `%SHUFFLE-RESOLVE-WIDTH`
+- **Args**: `(WIDTH-NODE OP-NAME LOCATION)`
+
+  > Validates and returns the segment width for a shuffle (D4).  WIDTH-NODE may be NIL, in  >    which case the width is the whole warp.
+
+
+---
+### DEFUN `%ANALYZE-SHUFFLE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (shuffle|shuffle-up|shuffle-down|shuffle-xor VALUE INDEX [WIDTH]).
+
+
+---
 ### DEFUN `REGISTER-OPS-ANALYZERS`
 
   > Registers all expression analyzer functions.  > Redefined for 082-atomics to add atomic RMW op analyzers.  > Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler.
@@ -2593,6 +2653,27 @@ Generated on 2026-09-19T22:52:52.897486Z
 - **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)`
 
   > Handles %CONSTRUCT-STRUCT backward rule.
+
+
+---
+### DEFUN `%SHUFFLE-FORM-OP`
+- **Args**: `(EXPR)`
+
+  > The shuffle op keyword if EXPR is a raw shuffle form, else NIL.  Matched by symbol-name,  >    so it does not matter which package the kernel's reader interned the operator into.
+
+
+---
+### DEFUN `%SHUFFLE-FORM-WIDTH-FORM`
+- **Args**: `(EXPR)`
+
+  > The width argument of a raw shuffle form, or (warp-size) when it was left to default.
+
+
+---
+### DEFUN `%SHUFFLE-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
+
+  > Emits the adjoint updates for a raw shuffle form bound to V.  See the section header.
 
 
 ---
@@ -4940,10 +5021,72 @@ Generated on 2026-09-19T22:52:52.897486Z
 
 
 ---
+### DEFVAR `*173-SUBGROUP-PINNED*`
+
+  > T when the kernel currently being generated had its SPIR-V subgroup size pinned by 156.  >    Set by %emit-spirv-subgroup-size-execution-mode at function setup, read by  >    %shuffle-check-pinned (endeavour 173, D7).
+
+
+---
+### DEFUN `%173-ENSURE-GRAD-DISPATCH-DECLS`
+- **Args**: `(SEMANTIC-FUNCTION)`
+
+  > BUG 066: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under its OWN name,  >    so %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and declined to  >    pin.  Every differentiated kernel on Intel was therefore running at a subgroup size the  >    driver chose, including MMA kernels whose warp counts are computed from :simd-width -- the  >    backward pass silently opted out of the contract the forward pass has.  >   >    The gradient kernel is launched with the SAME geometry as its forward kernel, so it  >    inherits the same declarations.  Doing it HERE rather than in 173's D7 gate means 156's own  >    pinning starts working, not merely that endeavour's check.  >   >    If another generated-kernel suffix ever joins _GRAD, this needs widening.
+
+
+---
 ### DEFUN `%EMIT-SPIRV-SUBGROUP-SIZE-EXECUTION-MODE`
 - **Args**: `(FUNC MODULE SEMANTIC-FUNCTION)`
 
-  > Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's  >    :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES  >    are the same value by contract rather than by coincidence.  >   >    Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into  >    OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing  >    the execution mode directly does NOT work, because the capability would be missing and the  >    translator silently drops the mode (observed 2026-08-24).  >   >    Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and  >    the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See  >    the Phase 0 header for why that guard is deliberately narrow.
+  > Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's  >    :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES  >    are the same value by contract rather than by coincidence.  >   >    Attaches !intel_reqd_sub_group_size to the kernel.  The LLVM->SPIR-V translator turns that into  >    OpExecutionMode SubgroupSize together with the SubgroupDispatch capability it requires; writing  >    the execution mode directly does NOT work, because the capability would be missing and the  >    translator silently drops the mode (observed 2026-08-24).  >   >    Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and  >    the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See  >    the Phase 0 header for why that guard is deliberately narrow.  >   >    Endeavour 173 adds two things.  (a) A _GRAD kernel first inherits its forward kernel's dispatch  >    declarations, without which it could never be pinned at all -- see %173-ensure-grad-dispatch-decls  >    and BUG 066.  (b) Each branch records whether the size was pinned in *173-SUBGROUP-PINNED*, so a  >    shuffle generated later in this kernel can refuse a warp width nobody guaranteed (D7).  The flag  >    is set HERE, inside the decision, rather than re-derived by a second copy of these conditions.
+
+
+---
+### DEFUN `%SHUFFLE-INDEX-I32`
+- **Args**: `(BUILDER IDX-VAL IDX-TYPE)`
+
+  > Narrows a shuffle index/delta/mask to the i32 the hardware ops take.
+
+
+---
+### DEFUN `%SHUFFLE-PTX`
+- **Args**: `(BUILDER MODULE OP VAL IDX WIDTH)`
+
+  > One 32-bit shuffle via the NVVM intrinsics, which map 1:1 to shfl.sync.{idx,up,down,bfly}.  >   >    The `c` operand packs the segment mask with the clamp value exactly as CUDA does:  >    c = ((warpSize - width) << 8) | clamp, where clamp is 0 for .up and 0x1f otherwise.  >    Membermask is the full warp, which is legitimate because D6 rejects a shuffle reached  >    from divergent control flow -- every lane is here.
+
+
+---
+### DEFUN `%SHUFFLE-SPV-TARGET`
+- **Args**: `(BUILDER LANE OP IDX WIDTH)`
+
+  > The absolute target lane for a SPIR-V shuffle -- see the section header.  Clamps to LANE  >    itself when the source would leave the segment, which reproduces the CUDA own-value rule.
+
+
+---
+### DEFUN `%SHUFFLE-SPV`
+- **Args**: `(BUILDER MODULE OP VAL IDX WIDTH)`
+
+  > One 32-bit shuffle via the SPIR-V group-non-uniform ops.  Scope operand 3 = Subgroup.
+
+
+---
+### DEFUN `%SHUFFLE-EMIT-I32`
+- **Args**: `(BUILDER MODULE OP VAL IDX WIDTH)`
+
+  > One 32-bit shuffle on the active backend.
+
+
+---
+### DEFUN `%SHUFFLE-EMIT-I64`
+- **Args**: `(BUILDER MODULE OP VAL64 IDX WIDTH)`
+
+  > D9: the hardware moves 32 bits, so a 64-bit value is split into hi/lo halves, shuffled  >    SEPARATELY, and recombined.  Both halves take the same op, index and width, so the two  >    shuffles agree about which lane they are reading.
+
+
+---
+### DEFUN `%SHUFFLE-CHECK-PINNED`
+- **Args**: `(LOCATION)`
+
+  > Endeavour 173, D7.  On Intel the driver picks the subgroup size (8, 16 or 32) unless the  >    kernel pins it, and a reduction written for 16 lanes that runs on 32 does not crash -- it  >    returns a wrong answer.  So a shuffling kernel that cannot be pinned is refused rather than  >    compiled against an assumed 32.  NVIDIA is exempt: its warp has been 32 lanes on every  >    architecture shipped, so there is nothing to pin.  >   >    Reads *173-SUBGROUP-PINNED*, which %emit-spirv-subgroup-size-execution-mode sets at function  >    setup -- BEFORE any body node is generated -- so the flag is always current by the time a  >    shuffle asks about it.
 
 
 ---
@@ -9488,6 +9631,12 @@ Generated on 2026-09-19T22:52:52.897486Z
 ### DEFPARAMETER `*HW-INTERNAL-OP-SYMBOLS*`
 
   > Endeavour 170: INTERNAL hardware-op forms that only the autodiff emits (never exported).  >    (%hw-sat-interior R) => float mask, 1.0 where integer R lies STRICTLY inside its type's range.
+
+
+---
+### DEFSTRUCT `SEMANTIC-SHUFFLE`
+
+  > A warp shuffle.  OP is :idx / :up / :down / :xor.  TYPE is the result type, which is  >    always the type of VALUE.  INDEX is the analyzed target-lane / delta / mask node.  WIDTH  >    is a RESOLVED POSITIVE INTEGER (segment width in lanes), never a node -- see above.
 
 
 ---
