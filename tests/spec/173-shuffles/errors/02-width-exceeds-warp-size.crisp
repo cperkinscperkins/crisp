@@ -1,0 +1,19 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "wider than the warp"
+;;
+;; Endeavour 173: a segment cannot be larger than the warp it segments.  64 > 32, and on
+;; a BMG profile (:simd-width 16) even 32 would be rejected -- which is the point: the
+;; bound is the RESOLVED (warp-size), not a constant 32, so the same source is checked
+;; against whatever hardware profile is active.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_bad_segment_b (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (v    (+ (* lane 10ul) 7ul))
+        (r    (shuffle-xor v 1ul 64)))
+    (when (< lane 4ul)
+      (set! (~ out lane) r))))

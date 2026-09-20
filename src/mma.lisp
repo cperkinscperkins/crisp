@@ -2726,7 +2726,21 @@
             (sym-cc (intern (car entry) cc-pkg)))
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
         (unless (eq sym-cl sym-cc)
-          (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))))
+          (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))
+    ;; Endeavour 173 / BUG 069: Crisp has no LET* -- its LET is already sequential.  This is the
+    ;; site that decides what `let*` means, because (intern "LET*" :crisp-language) HERE mints the
+    ;; very symbol the Crisp reader later reuses for user source; the table above aliased it onto
+    ;; LET, which compiled forward and then died under --differentiate blaming SET!.
+    ;;
+    ;; ONLY the :crisp-language spelling is rejected, which is why this sits outside the loop:
+    ;; crisp.compiler uses :cl and does not shadow LET*, so (intern "LET*" cc-pkg) up there
+    ;; returns COMMON-LISP:LET* -- a DIFFERENT symbol, which must stay pointed at the real LET
+    ;; analyzer.  That is load-bearing, not merely tidy: instantiate-generic-function
+    ;; (src/environment.lisp) injects `(let* ,bindings ,@body) to bind a &key parameter's
+    ;; defaults, and that backquote is read in :crisp.compiler -- so a COMPILER LOWERING emits
+    ;; the CL spelling.  Rejecting it too breaks every &key default (016-advanced-signatures/04).
+    ;; User source, read in :crisp-language, reaches the rejected symbol instead.
+    (setf (gethash (intern "LET*" cl-pkg) *expression-analyzers*) '%analyze-let-star-rejected)))
 
 
 ;;; ===========================================================================

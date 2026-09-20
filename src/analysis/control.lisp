@@ -935,6 +935,54 @@
                      op-name)
           :source-location location)))
 
+(defun %shuffle-check-not-divergent (op-name location)
+  "Endeavour 173, D6: a shuffle is a warp collective and every lane must reach it.
+
+   Deliberately NOT %tlc-check-not-divergent: that one explains a deadlocking internal
+   sync-workgroup, which is not what goes wrong here, and it would reject a case that is
+   actually fine.
+
+   THE WARP-SPECIALIZATION EXEMPTION.  Endeavour 139 role blocks also set
+   *in-divergent-conditional*, but that divergence is BETWEEN warps -- every lane of any one
+   warp takes the same role. A warp collective is therefore still fully converged inside a
+   role block, so a shuffle there is legal.  What breaks a shuffle is divergence WITHIN a
+   warp, which is what an ordinary thread-divergent conditional produces."
+  (when (and *in-divergent-conditional* (not *in-warp-spec-block*))
+    (error 'crisp-compiler-error
+           :message (format nil "~a is a warp collective and cannot appear inside a thread-divergent conditional (if / when / unless / cond): the lanes that arrive would be asking for data from lanes that never will. Shuffle in every lane UNCONDITIONALLY and gate only what you do with the result, or use a uniform condition (if+ / when+ / unless+, or one based on get-workgroup-id rather than get-local-id)"
+                            op-name)
+           :source-location location)))
+
+;;; Endeavour 173 — `let*` is not a Crisp form.
+;;;
+;;; Crisp's LET is ALREADY SEQUENTIAL and destructures multiple values, so `let*` adds nothing.
+;;; :crisp-language deliberately does not import let/let* from CL, so `let*` in Crisp source is
+;;; MINTED as a fresh symbol -- yet register-mma-analyzers aliased it onto the LET analyzer, so it
+;;; compiled forward and emitted byte-identical SPIR-V.
+;;;
+;;; Only the expression analyzer knew.  The uniformity pre-pass matches the operator name "LET"
+;;; exactly (%uni-analyze-let's caller, src/analysis/core.lisp), and the AD walk runs before
+;;; semantic analysis and knows only `let`.  So `let*` worked until someone added --differentiate,
+;;; then failed with "Function SET! is not differentiable" -- blaming an operator that
+;;; differentiates fine.  Forward-legal / backward-fatal / blames a bystander is worse than
+;;; refused, so: refused.  See BUG 069.
+;;;
+;;; The registration lives in register-mma-analyzers (src/mma.lisp), which is the site that
+;;; interns "LET*" into :crisp-language -- and that intern is what mints the very symbol the Crisp
+;;; reader later reuses for user source.  common-lisp::LET* stays pointed at analyze-let-expression
+;;; by register-control-analyzers below: no lowering generates a crisp-language LET* form (the
+;;; tile/stride lowerings all intern "LET"), and leaving the CL spelling alone keeps this surgical.
+
+(defun %analyze-let-star-rejected (expr env context location)
+  "Signals a clear error for `let*`, which is not a Crisp form.  Crisp's LET is already
+   sequential (later bindings see earlier ones) and destructures multiple values, so LET*
+   is redundant; it was previously aliased onto LET in the expression analyzer only, which
+   made it compile forward and fail under --differentiate naming an unrelated operator."
+  (declare (ignore expr env context))
+  (error 'crisp-compiler-error
+         :message "Crisp has no LET*. Use LET — Crisp's LET is already sequential, so later bindings may refer to earlier ones"
+         :source-location location))
+
 #|
 (defun %warp-spec-check-sync (builtin-kw name-str location)
   "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective

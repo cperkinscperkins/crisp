@@ -1,0 +1,35 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "Crisp has no LET"
+;;
+;; `let*` is not a Crisp form and must be rejected.
+;;
+;; Crisp's own LET is ALREADY SEQUENTIAL -- later bindings see earlier ones, and it
+;; destructures multiple values (see 01-let-unified, and 167/09 which documents the
+;; delegation).  So `let*` is not merely unsupported, it is redundant: there is nothing it
+;; could mean that `let` does not already do.
+;;
+;; WHY THIS NEEDS A GUARD RATHER THAN A NOTE.  `:crisp-language` deliberately does not
+;; import let/let* from CL (see the shadowing-import block in src/package.lisp), so `let*`
+;; read from Crisp source was MINTED as a fresh symbol in that package -- the same trap that
+;; mints MOD.  It was then registered as an alias of analyze-let-expression, so it compiled
+;; forward and produced byte-identical SPIR-V.
+;;
+;; But only the expression analyzer knew.  The uniformity pre-pass matches the operator name
+;; "LET" exactly, and the AD walk runs before semantic analysis and knows only `let`.  So a
+;; kernel using `let*` compiled and ran correctly until someone added --differentiate, at
+;; which point it failed with
+;;
+;;     Function SET! is not differentiable.
+;;
+;; naming an operator that is perfectly differentiable and sending the reader into the
+;; backward pass.  Found in endeavour 173, where all four A|D specs failed this way with no
+;; shuffle involved.
+;;
+;; A form that works forward, is wrong backward, and blames a bystander is worse than one
+;; that is simply refused.  So it is refused.
+
+(def-function let-star-binding (a)
+  (declare #'(int => int))
+  (let* ((x (+ a 1))
+         (y (* x 2)))
+    (return y)))

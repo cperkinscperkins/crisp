@@ -2404,3 +2404,78 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         Specs: tests/spec/092-dotimes/errors/02-zero-stride.crisp (compile error) and
         tests/spec/092-dotimes/08-runtime-stride-gate.crisp (on metal: stride 0 and stride -1
         both run 0 iterations; a regression HANGS the GPU rather than returning a wrong number).
+
+[x] 066 SPIR-V SUBGROUP-SIZE PINNING NEVER FIRED FOR ANY DIFFERENTIATED KERNEL.
+        *kernel-dispatch-declarations* is keyed by kernel name symbol, and the generated
+        <NAME>_GRAD kernel is not registered under its own name.  So
+        %emit-spirv-subgroup-size-execution-mode (endeavour 156) read a NIL local-size for
+        every gradient kernel and declined to pin -- while its forward twin pinned normally.
+
+        WHY IT MATTERS.  On Intel the driver picks the subgroup size (8/16/32) when nothing
+        pins it.  A backward pass therefore ran at a width nobody guaranteed, silently, while
+        the forward pass ran at the profile width.  MMA gradient kernels are exposed too:
+        their warp counts are computed from :simd-width, so the backward opted out of a
+        contract the forward keeps.  It degrades into a WRONG ANSWER, not a failure, which is
+        why nothing surfaced it for this long.
+
+        FOUND BY.  Endeavour 173.  The new D7 gate (a kernel that shuffles must have a pinned
+        subgroup size on SPIR-V) refused a _GRAD kernel that had a perfectly good
+        (local-size :set-to 64); the log read
+            subgroup pinned for DIFF_SHUFFLE_XOR = T
+            subgroup pinned for DIFF_SHUFFLE_XOR_GRAD = NIL
+
+        FIXED.  Endeavour 173, %173-ensure-grad-dispatch-decls in the compiler overlay: a
+        _GRAD kernel with no entry of its own inherits the forward kernel's plist (strip the
+        trailing _GRAD, find-symbol the base, reuse it).  Deliberately done at the EMIT site
+        rather than inside 173's gate, so 156's own pinning starts working rather than only
+        this endeavour's check.  If another generated-kernel suffix ever joins _GRAD, this
+        needs widening.
+
+[ ] 067 VERIFY-AUTODIFF CANNOT EXPRESS A DOUBLE MATRIX INPUT -- IT READS numerical=0.0.
+        tests/verify-autodiff-runner.lisp writes and reads every buffer as a 4-BYTE FLOAT
+        ("NIL, the default, means every input is 4-byte float").  Endeavour 163 added a
+        2-byte path so half operands could be filled; there is no 8-byte path.
+        %vad-elem-bytes-of-type DOES answer 8 for double, so the buffer is SIZED correctly and
+        then filled with 4-byte floats: the kernel reads a garbage double, the finite
+        difference sees nothing move, and the check fails with numerical=0.0 for a reason that
+        has nothing to do with the derivative.
+
+        NOT the same as double AD generally, which works -- 124/05, /06 and /11 differentiate
+        doubles happily, because they use double CELLS, a different path from a matrix input.
+
+        FOUND BY.  Endeavour 173 spec 12 (the 64-bit shuffle VJP), which read
+        analytical=1.0 numerical=0.0 against an expected 4.0.  That spec now claims only that
+        the 64-bit decomposition COMPILES under --differentiate; its numeric check is written
+        out in the header and should be restored when the runner grows an 8-byte path.
+
+[ ] 068 (hardware-stride :warp-idx ...) HARDCODES A WARP OF 32 AND IS WRONG ON INTEL.
+        src/analysis/control.lisp says so in its own docstring -- the chunk size is "currently
+        hardcoded to 32 as a placeholder for (get-warp-size)".  Under a profile with
+        :simd-width 16 it strides by 32 over 16-lane warps.
+
+        FOUND BY.  Endeavour 173, while establishing that (warp-size) did not exist.  173 adds
+        it as a compile-time constant resolved from the active profile, so the fix is now
+        available: substitute (warp-size) for the literal 32 at that site.  Left OPEN because
+        it is a behaviour change to an existing construct and wants its own spec.
+
+[x] 069 let* COMPILED FORWARD, DIED UNDER --differentiate, AND BLAMED SET!.
+        :crisp-language deliberately does not import let/let* from CL, so let* in Crisp source
+        was MINTED as a fresh symbol -- and then aliased onto the LET analyzer by BOTH
+        register-control-analyzers and register-mma-analyzers.  Forward compilation produced
+        byte-identical SPIR-V to let.  But only the expression analyzer knew: the uniformity
+        pre-pass matches the operator name "LET" exactly, and the AD walk runs before semantic
+        analysis and knows only let.  So a kernel using let* worked until someone added
+        --differentiate, at which point it failed with
+            Function SET! is not differentiable.
+        naming an operator that differentiates perfectly well.
+
+        THE REAL POINT: let* was never needed.  Crisp's LET is ALREADY SEQUENTIAL (and
+        destructures multiple values) -- stated in 167/09 and relied on by 145/14.
+
+        FOUND BY.  Endeavour 173: all four A|D specs failed this way with no shuffle in them.
+
+        FIXED.  Endeavour 173 rejects the :crisp-language spelling with a clear message
+        ("Crisp has no LET*. Use LET -- ..."); common-lisp::LET* stays registered since no
+        lowering generates a crisp-language LET* form.  Guarded by
+        tests/spec/004-let/errors/01-let-star-rejected.crisp.  Five pre-existing specs used
+        let* (092/08, 170/26, 170/28, 170/29, 172/08) and were converted to let.

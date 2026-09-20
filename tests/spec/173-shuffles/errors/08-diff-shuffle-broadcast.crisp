@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "broadcast whose transpose is a warp-wide reduction"
+;; CHECK-FAIL: "broadcast whose transpose"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; Endeavour 173, D8 CORRECTED: a CONSTANT target lane is not the easy case.  It is a
+;; broadcast, and it is rejected under --differentiate exactly like the runtime case in 07.
+;;
+;; D8 originally said a compile-time target "inverts exactly, as a known permutation".  That
+;; is false, and the error is instructive: a literal target is evaluated identically in every
+;; lane, so every lane reads the SAME source lane.  That is a fan-in, not a permutation --
+;; sixteen readers, one source -- and the transpose of a fan-in is a SUM over the readers,
+;; i.e. a warp-wide reduction.  There is no static/runtime split to exploit; there is one
+;; indexed shuffle, and its adjoint needs a reduction.
+;;
+;; Which is why the positive version of this test now lives in 175-reductions, beyond
+;; ci-stop: a warp all-reduce (an xor butterfly over log2(warp) steps) is precisely what
+;; endeavour 175 builds.  When it exists, this rejection is lifted and that spec goes green.
+;;
+;; The three shuffles that DO differentiate here need no reduction at all: xor is its own
+;; transpose, and up/down transpose into each other with an edge term.  That is the honest
+;; boundary, and it is drawn at what the mathematics needs rather than at what was convenient.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k_one_source_many_readers (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (set! (~ C row col) (shuffle v 2ul))))))

@@ -1,0 +1,46 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x16@0:0.01 B=4x16@0:0.01 at.A=0,0 expect.A=3.0 at.B=0,3 expect.B=7.0 group=64 h=0.5 atol=1e-2 output-mat=4x16
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-19 and deliberately left unvalidated -- no NVIDIA
+;; !!! box was available at the time.  VALIDATE THIS FIRST on the next pod run, before reading
+;; !!! any failure here as a compiler defect.  See the same warning on 13.
+;;
+;; Endeavour 173 A|D: the CUDA TWIN of 10-diff-shuffle-up-down-edges.  See 13 for why a twin
+;; file rather than a second directive (at most one VERIFY-AUTODIFF line per spec).
+;;
+;; THIS IS THE MORE VALUABLE OF THE TWO TWINS.  The xor VJP is a single instruction that
+;; transposes to itself, so 13 exercises little beyond "a shuffle appears in the backward".
+;; The shift rules carry an EDGE CORRECTION that is emitted as Crisp source and re-lowered per
+;; backend:
+;;
+;;     (let ((s (shuffle-down g d w)))
+;;       (+ (if (< (+ k d) w) s zero)
+;;          (if (< k d) g zero)))          with k = (rem (to-ulong (warp-lane)) (to-ulong w))
+;;
+;; so on PTX this becomes shfl.sync in the backward PLUS a %laneid read and a remainder, none
+;; of which the BMG run touches.  A wrong `c` operand, a wrong lane read, or a mis-folded
+;; (warp-size) in the backward would all land here and nowhere else.
+;;
+;; BOTH PROBES SIT ON AN EDGE, as in 10, because an interior probe cannot distinguish a
+;; correct backward from one that dropped the edge term:
+;;   A, shuffle-up 1 full warp : d/dA[0] = w(1) + w(0) = 3.0   (lane 0 keeps its own value)
+;;   B, shuffle-down 1 width 4 : d/dB[3] = w(2) + w(3) = 7.0   (segment top keeps its own)
+;;
+;; Both survive a 32-lane warp unchanged.  Lane 0 is lane 0 at any width, and a quad is a quad
+;; at any width -- which is precisely why 10's expectations could be reused verbatim.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_shuffle_up_down_cuda (A B &out C)
+  (declare #'(mat-t mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (u (~ B row col))
+            (w (to-float (+ col 1))))
+        (let ((ru (shuffle-up   v 1ul))
+              (rd (shuffle-down u 1ul 4)))
+          (set! (~ C row col) (+ (* w ru) (* w rd))))))))

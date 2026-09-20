@@ -688,11 +688,11 @@ A|D issues
 
 Looping Constructs
 ==================
-- [ ] dotimes 
-- - [ ]  dotimes+
-- [ ] dec-times / dec-times+
-- [ ] do-times-by-doubling
-- [ ] &c.
+- [x] dotimes 
+- - [x]  dotimes+
+- [x] dec-times / dec-times+
+- [x] do-times-by-doubling
+- [x] &c.
 
 FFI
 ===
@@ -867,6 +867,7 @@ Reductions
 ==========
 - [x] revisit Phase 1 vs Phase 2.
 - [x] need to compose correctly
+- [x] shuffles
 - [ ] implement
 - [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )

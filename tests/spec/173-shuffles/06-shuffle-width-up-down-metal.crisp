@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER u2: 7 17 7 17
+;; HOIST-EXPECT: BUFFER d2: 27 37 27 37
+;;
+;; Endeavour 173 ON-METAL: width + shuffle-up/down, and BOTH segment edges.
+;;
+;; This is the spec that pays for the width argument.  04 could only pin the LOWER edge,
+;; because the upper edge of a real warp is lane 31 on NVIDIA and lane 15 on BMG.  With
+;; (width 4) every block has both edges inside the first four lanes, so both are pinned
+;; portably, and with delta 2 there are TWO edge lanes on each side rather than one.
+;;
+;; Block [0..3], sub-lane k = lane:
+;;   u2 = shuffle-up   v 2 4 -> k<2 has no source in block, KEEPS own:  7 17  <- edges
+;;                              k>=2 reads k-2:                         7 17
+;;   d2 = shuffle-down v 2 4 -> k+2<4 reads k+2:                       27 37
+;;                              k+2>=4 leaves the block, KEEPS own:    27 37  <- edges
+;;
+;; The two halves of each line coinciding is a property of delta = width/2, not a typo:
+;; lanes 0,1 keep 7,17 and lanes 2,3 read lanes 0,1 which also hold 7,17.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel shuffle_width_up_down_metal (&out u2 d2)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (v    (+ (* lane 10ul) 7ul))
+        (ru   (shuffle-up   v 2ul 4))
+        (rd   (shuffle-down v 2ul 4)))
+    (when (< lane 4ul)
+      (set! (~ u2 lane) ru)
+      (set! (~ d2 lane) rd))))

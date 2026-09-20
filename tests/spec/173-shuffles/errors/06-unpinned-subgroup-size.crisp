@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; CHECK-FAIL: "cannot be pinned"
+;; CHECK-FAIL-FLAGS: --ir-target=spv
+;;
+;; Endeavour 173, DECISION: a shuffle on SPIR-V requires a PINNED subgroup size.
+;;
+;; This is the main portability trap of the whole feature, and it is currently silent.
+;; On NVIDIA the warp has been 32 lanes on every architecture ever shipped, so assuming
+;; it costs nothing.  On Intel the subgroup size is CHOSEN BY THE DRIVER (8, 16 or 32)
+;; unless the kernel pins it -- and a reduction written for 16 lanes that runs on 32
+;; does not crash, it returns a wrong answer.
+;;
+;; Endeavour 156 already emits the SubgroupSize ExecutionMode, but deliberately only
+;; when ALL of: a profile names :simd-width, the local-size is compile-time known, total
+;; work-items >= that width, and total is a whole multiple of it.  That guard is narrow
+;; on purpose -- over a thousand shipped specs have tiny or runtime-derived local sizes
+;; and must keep compiling exactly as before.
+;;
+;; So the rule belongs to the SHUFFLE, not to the guard: a kernel that shuffles and
+;; cannot be pinned is an error naming what is missing, never a guess at 32.  Here the
+;; local-size is absent, so it is not compile-time known and nothing can be pinned.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_unpinned_lane_group (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (v    (+ (* lane 10ul) 7ul))
+        (r    (shuffle-xor v 1ul)))
+    (when (< lane 4ul)
+      (set! (~ out lane) r))))

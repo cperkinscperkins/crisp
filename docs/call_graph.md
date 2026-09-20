@@ -282,6 +282,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - (%APPLY-DENORMAL-ATTRIBUTE FUNC MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-DENORM-EXECUTION-MODE FUNC MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-SUBGROUP-SIZE-EXECUTION-MODE FUNC MODULE SEMANTIC-FUNCTION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp
 - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - (%APPLY-CLUSTER-DIMS-ATTRIBUTE FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
@@ -657,6 +658,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%COOP-ACCESS-CHAIN BUILDER MODULE MAT-PTR IDX-I64)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%SHUFFLE-INDEX-I32 BUILDER IDX-VAL IDX-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I32 BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-PTX BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-SPV BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-CHECK-PINNED LOCATION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-UINT-GLOBAL-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-SPV-TARGET BUILDER LANE OP IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I64 BUILDER MODULE OP VAL64 IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I32 BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp
 - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P (K
@@ -729,6 +743,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - (%ASV-UNION EXPRS ENV)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
 - - - - - - - - - - - - - - - (%COLLECT-ALL-DIFF-PARAM-SYMS-FOR-RETURN ENV RECORD-PARAM-INFO &OPTIONAL ACTIVE-SET)  autodiff.lisp
 - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -785,6 +800,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%HW-OP-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%SHUFFLE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-WIDTH-FORM EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%AD-REM-OR-MOD-FORM-P EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%AD-HANDLE-REM-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%AD-WIDENING-CONVERSION-FORM-P EXPR)  autodiff.lisp
@@ -1177,6 +1196,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%AD-REPLAY-SCALAR-WRITE-TARGETS FORM)  autodiff.lisp
 - - (%AD-REPLAY-OP-NAME-P FORM NAME)  autodiff.lisp
+
+- (%ANALYZE-LET-STAR-REJECTED EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+
+- (%ANALYZE-SHUFFLE EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%SHUFFLE-RESOLVE-WIDTH WIDTH-NODE OP-NAME LOCATION)  analysis/ops.lisp
+- - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
+- - - (%SHUFFLE-LITERAL-INTEGER NODE)  analysis/ops.lisp
+- - (%SHUFFLE-LITERAL-INTEGER NODE)  analysis/ops.lisp [See above]
+- - (%SHUFFLE-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp
+
+- (%ANALYZE-WARP-SIZE EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - (%173-WARP-SIZE)  analysis/core.lisp [See above]
 
 - (%AUTODIFF-GRAD-CELL-TYPE)  autodiff.lisp
 

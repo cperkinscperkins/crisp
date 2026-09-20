@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER q1: 20000000000 10000000000 40000000000 30000000000
+;;
+;; Endeavour 173 ON-METAL: 64-bit shuffle via hi/lo DECOMPOSITION.
+;;
+;; The hardware shuffle moves 32 bits.  A ulong/long/double must therefore be split into
+;; two 32-bit halves, shuffled separately, and recombined.  This is not an optional
+;; nicety: the design doc's own flagship reduction sums an (in-vec long), and 175 will
+;; want double reductions, so `long` is on the critical path.
+;;
+;; seed v(L) = 10000000000 * (L+1) = 10^10, 2*10^10, 3*10^10, 4*10^10.  Every seed
+;; EXCEEDS 2^32 (~4.29*10^9), so both halves are non-zero and both must move:
+;;   a lo-half-only implementation leaves the high word as the lane's OWN, and
+;;   a hi-half-only one leaves the low word -- either way the printed value is wrong,
+;;   not merely imprecise.
+;;
+;; q1 = shuffle-xor v 1 -> v(L^1) -> 2e10 1e10 4e10 3e10
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel shuffle_64bit_metal (&out q1)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (v    (* (+ lane 1ul) 10000000000ul))
+        (r1   (shuffle-xor v 1ul)))
+    (when (< lane 4ul)
+      (set! (~ q1 lane) r1))))

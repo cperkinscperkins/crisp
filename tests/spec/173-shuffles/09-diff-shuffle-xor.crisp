@@ -1,0 +1,55 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=4.0 group=64 h=0.5 atol=1e-2 output-mat=4x16
+;;
+;; Endeavour 173 A|D: shuffle-xor is an INVOLUTION, so its adjoint is itself.
+;;
+;; THE CLAIM.  adjoint(shuffle-xor v m) = shuffle-xor adj m -- same instruction, same mask,
+;; no extra cost.  This is the case reductions are built from, so it is the one that has to
+;; be right.
+;;
+;; WHY THE WEIGHT EXISTS, and this is the whole trick of the spec.  VERIFY-AUTODIFF
+;; differentiates sum(C), and a sum is PERMUTATION-INVARIANT: with C[t] = v[t^1] unweighted,
+;; d sum(C)/dA[k] = 1.0 for every k -- and it would read 1.0 just the same if the shuffle
+;; were dropped entirely.  The test would pass while proving nothing.  Weighting by the
+;; lane's own column breaks that symmetry:
+;;
+;;     C[t] = w(t) * v[t^1]        where w(t) = col(t) + 1
+;;     sum(C) = SUM_t w(t)*v[t^1] = SUM_k w(k^1)*v[k]
+;;     => d sum(C)/dA[k] = w(k^1)
+;;
+;; At the probe point k = 2:  w(3) = 4.0.
+;; If the backward omits the shuffle (adjoint delivered to the wrong lane) it reads w(2) =
+;; 3.0 instead.  Two distinct non-zero values, so neither a dropped term nor a zeroed
+;; gradient can be mistaken for a pass.
+;;
+;; GEOMETRY.  One element per thread, never a shared cell: a shared cell would accumulate
+;; once per thread in the backward and this spec would be measuring the warp width instead
+;; of the derivative (the lesson of 146/01).  tid^1 stays inside the warp because every warp
+;; base is a multiple of 16, so the permutation is the same whether the sub-group is 16 or
+;; 32 wide -- but the profile is pinned to bmg anyway, since D7 requires a pinned subgroup
+;; size for any kernel that shuffles on SPIR-V.
+;;
+;; D10: unrolled deliberately.  A shuffle inside dec-times-by-half+ would drag in reverse
+;; -order loop replay, which is a 175 prerequisite, not a 173 one.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_shuffle_xor (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  ;; NB (146): do not name a local `c` -- the reader is case-insensitive, so it would
+  ;; shadow the &out parameter C and the overload lookup fails obscurely.
+  (let ((tid (to-int (get-local-linear-id))))
+    ;; Crisp's LET is already SEQUENTIAL (let*-like), so later bindings may refer to
+    ;; earlier ones.  Do not reach for let* -- it is redundant here, and it compiles
+    ;; forward but breaks the AD walk with a message that blames SET!.
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (w (to-float (+ col 1))))
+        (set! (~ C row col) (* w (shuffle-xor v 1ul)))))))

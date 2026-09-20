@@ -669,6 +669,87 @@
 ;; Re-definition of the src/ original.  CHANGE: one added clause giving the fragment-level
 ;; MMA forms an actionable error instead of the generic "not differentiable" advice.
 ;;; ---------------------------------------------------------------------------------------------
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 173: autodiff for the warp shuffles (decision D8).
+;;;
+;;; The AD walk runs BEFORE semantic analysis, so these rules match RAW FORMS by operator name and
+;;; emit raw forms, which are analyzed later like any other source.
+;;;
+;;; A shuffle is a gather across lanes, so its adjoint is a scatter-add.  Writing k for a lane's
+;;; index within its segment and w for the width:
+;;;
+;;;   xor m     y[L] = v[L^m]                          (an involution)
+;;;             => vbar[j] += shuffle-xor(g, m, w)      -- itself, exactly, no correction
+;;;
+;;;   up d      y[L] = v[L-d] if k(L)>=d else v[L]
+;;;             => vbar[j] += [k(j)+d <  w] * g[j+d]  +  [k(j) <  d] * g[j]
+;;;
+;;;   down d    y[L] = v[L+d] if k(L)+d<w else v[L]
+;;;             => vbar[j] += [k(j)   >= d] * g[j-d]  +  [k(j)+d >= w] * g[j]
+;;;
+;;; THE INDICATORS ARE NOT OPTIONAL, and this is the subtle part.  shuffle-down(g,d,w) already
+;;; returns g[j] (own value) where it runs off the end -- but the transpose wants ZERO there, plus
+;;; a SEPARATE own-value term under a different condition (k<d).  The two conditions are disjoint
+;;; for d <= w/2, so without the mask the top edge would collect a spurious g[j] and the gradient
+;;; would be silently wrong only at the segment boundary -- exactly the lane an aggregate check
+;;; cannot see.  Hence the edge tests in tests/spec/173-shuffles/10.
+;;;
+;;; The zero is spelled (- g g) rather than 0.0 so it carries g's own type; these rules must work
+;;; for float and for double (spec 12) without a literal committing to one.
+;;; ---------------------------------------------------------------------------------------------
+
+(defun %shuffle-form-op (expr)
+  "The shuffle op keyword if EXPR is a raw shuffle form, else NIL.  Matched by symbol-name,
+   so it does not matter which package the kernel's reader interned the operator into."
+  (when (and (consp expr) (symbolp (car expr)))
+    (cdr (assoc (symbol-name (car expr)) *shuffle-op-names* :test #'string=))))
+
+(defun %shuffle-form-width-form (expr)
+  "The width argument of a raw shuffle form, or (warp-size) when it was left to default."
+  (or (fourth expr) (list (intern "WARP-SIZE" (find-package :crisp.compiler)))))
+
+(defun %shuffle-backward (v expr emit-fn local-adj-fn)
+  "Emits the adjoint updates for a raw shuffle form bound to V.  See the section header."
+  (let* ((op (%shuffle-form-op expr))
+         (value (second expr))
+         (idx (third expr))
+         (tail (cddr expr))                     ; (index [width]) -- reused verbatim
+         (w (%shuffle-form-width-form expr))
+         (g (funcall local-adj-fn v)))
+    (flet ((acc (x term)
+             (when (and x (symbolp x))
+               (funcall emit-fn `(set! ,(funcall local-adj-fn x)
+                                       (+ ,(funcall local-adj-fn x) ,term))))))
+      (log:debug "173 %shuffle-backward: ~a := ~a" v expr)
+      (let ((k `(rem (to-ulong (warp-lane)) (to-ulong ,w)))
+            (zero `(- ,g ,g)))
+        (ecase op
+          (:xor
+           ;; Self-transposing.  This is the one reductions are built from.
+           (acc value `(shuffle-xor ,g ,@tail)))
+          ;; NOTE THE `let`, which is not stylistic.  The shuffle is evaluated OUTSIDE the
+          ;; conditionals and only its RESULT is gated -- because a shuffle inside an `if` is
+          ;; a warp collective in divergent control flow, which D6 rejects.  The first cut
+          ;; wrote (if cond (shuffle-down ...) 0) and this endeavour's own gate refused it,
+          ;; which is the rule working: the backward pass has to obey the same convergence
+          ;; contract as the forward pass, and the fix is the one the error message gives
+          ;; users -- shuffle unconditionally, gate the result.
+          (:up
+           (acc value `(let ((s (shuffle-down ,g ,@tail)))
+                         (+ (if (< (+ ,k (to-ulong ,idx)) (to-ulong ,w)) s ,zero)
+                            (if (< ,k (to-ulong ,idx)) ,g ,zero)))))
+          (:down
+           (acc value `(let ((s (shuffle-up ,g ,@tail)))
+                         (+ (if (>= ,k (to-ulong ,idx)) s ,zero)
+                            (if (>= (+ ,k (to-ulong ,idx)) (to-ulong ,w)) ,g ,zero)))))
+          (:idx
+           ;; See D8.  A literal target makes every lane read the SAME source, so this is a
+           ;; broadcast, and the transpose of a broadcast is a warp REDUCTION, not a shuffle.
+           (error "~A: no VJP is registered for an indexed shuffle with a runtime target lane.  Its transpose is a genuine scatter-add -- several lanes may read the same source, so the adjoint must sum an unknown number of contributions, which is not a shuffle at all.  A CONSTANT target is no simpler: every lane then reads the SAME lane, so the form is a broadcast whose transpose is a warp-wide reduction rather than a permutation.  Use shuffle-xor (self-transposing), shuffle-up or shuffle-down, all of which differentiate exactly; or if this kernel really is forward-only, SKIP-WITH[--differentiate]."
+                  (car expr)))))
+      t)))
+
+
 ;;; Endeavour 170: autodiff for the hardware-supported math ops.
 ;;; Integer operands differentiate like any integer input (promoted adjoints).  The *-approx
 ;;; derivatives are EVALUATED with the approx ops (decision D20): the rule is the ordinary calculus
@@ -767,6 +848,10 @@
    ;; clauses below key on operator names this one does not share.
    ((%hw-op-form-op expr)
      (%hw-op-backward v expr emit-fn local-adj-fn))
+   ;; Endeavour 173: likewise the warp shuffles.  Ahead of the catch-all below, which would
+   ;; otherwise report a shuffle as simply not differentiable.
+   ((%shuffle-form-op expr)
+     (%shuffle-backward v expr emit-fn local-adj-fn))
    ;; Endeavor 146 Gap 2: rem / mod.  Kept as its own clause rather than added to the
    ;; member list below because that list tests with #'eq against symbols read in THIS
    ;; package, and a kernel's reader may intern `rem` elsewhere.  Matching by symbol-name
@@ -3622,6 +3707,9 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
         ((null name) nil)
         ;; Endeavour 170: every operand of a hardware math op propagates.
         ((%hw-op-form-op expr) (%asv-union (cdr expr) env))
+        ;; Endeavour 173: a shuffle propagates activeness from its VALUE operand only -- the
+        ;; target lane / delta / mask is a lane coordinate and carries no gradient.
+        ((%shuffle-form-op expr) (%asv-union (list (second expr)) env))
         ;; differentiable arithmetic — every operand propagates.
         ;; Endeavor 146 Gap 2: REM and MOD belong here, not in a skip list.  d(rem)/da = 1
         ;; and d(rem)/db = -trunc(a/b), so BOTH positions genuinely carry activeness.  An

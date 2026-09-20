@@ -5565,69 +5565,166 @@ like to see the hoisting code in action, then use either a continuation kernel (
 or  `def-orchestration` (see below).
 
 
-### Warps & Shuffles 📝
+### Warps & Shuffles ✅
 Witchcraft.
 
-The shuffle primitives are special hardware instructions that allow threads
-within a single warp directly exchange register values with each other without 
-using shared memory. They are very powerful and fast operations.
+The shuffle primitives are special hardware instructions that let threads within a single
+warp exchange register values directly with one another — no shared memory, no barrier.
+They are very powerful and very fast operations.
 
-For most NVidia hardware there are at most 32 lanes in a single warp.  Very often workgroups
-are BIGGER than a single warp, so plan your algorithm accordingly. shuffles work across warps, not 
-workgroups. 
+A *warp* (Intel calls it a *subgroup*) is the set of lanes that execute in lockstep.
+Shuffles reach across a warp, never across a workgroup, and workgroups are very often
+BIGGER than a single warp — so plan your algorithm accordingly.
 
-For some algorithms, setting the workgroup size to be the same as the maximum warp size makes
-the algorithm easier to implement. But be careful if you do this, because multiple warps
-in a workgroup take up slack whenever there is a stall accessing memory.  If your workgroup
-has only one warp, that advantage is surrendered.  However, if you decide to use tha strategy then be sure the `local_work_size` used when enqueueing the kernel matches.  A `(local-size :set-to 32)` declaration with a nice message can help communicate that to whoever is developing
-the hoisting.
+#### How many lanes is a warp? ✅
 
-### in-warp 📝
-`(in-warp (<id-name>) ...)`
-`in-warp` binds the thread's lane id to the `id-name` expression for the statements in its body.  
+This is the one portability question that actually matters, and the vendors disagree:
 
-It is within the scope of an `in-warp` block that the various shuffle operations can occur. They cannot
-be used otherwise. <!-- NOTE: I don't think this has to be true at all. Maybe? -->
+- **NVIDIA** — 32 lanes, on every architecture shipped to date.
+- **Intel** — 8, 16, or 32, **chosen by the driver** unless the kernel pins it.
 
-<!-- IMPLEMENTATION NOTE
-  CUDA:   unsigned int lane_id = threadIdx.x % 32;
-  OpenCL: unsigned int lane_id = get_sub_group_local_id();
--->
+So do not hardcode 32. Ask for `(warp-size)`.
 
+##### warp-size ✅
+`(warp-size) -> uint`
 
-#### shuffle 📝
-`(shuffle <someVar> target-lane-id &optional (width (get-warp-size)))`
-The `(shuffle ...)` expression evaluates to the current value of `someVar` as it is in another thread. 
-THe target lane-id is provided directly to `shuffle`.
+`warp-size` is a **compile-time constant**. It resolves from the active hardware profile's
+`:simd-width`, and to 32 when no profile is active. Because it folds to a literal, it is
+legal anywhere a constant is legal: as a loop limit, inside a `(local-size :set-to ...)`
+declaration, or as the operand of a `+` (uniformity-checked) loop form.
 
-#### shuffle-up  / shuffle-down 📝
-`(shuffle-up <someVar> delta &optional (width (get-warp-size)))`
-`(shuffle-down <someVar> delta &optional (width (get-warp-size)))`
-These expressions evaluate to the current value of `someVar` in a thread that is plus or minus `delta` lanes over.
-Note that `-up` / `-down` do not necessarily have an intuitive interpretation. The direction is where the data 
-is going to, rather than the operation performed with the delta. So `shuffle-up` SUBTRACTS `delta` from the current 
-lane id and returns the value of `someVar` from that lower lane (ie, the data is shuffling "up" to our higher lane).
-Meanwhile, `shuffle-down` ADDS `delta` to the current lane id and return the value of `someVar` from that higher
-lane (ie, the data is shuffling "down" to us.) Whatever. 
-
-#### shuffle-xor 📝
-`(shuffle-xor <someVar> &optional lane-id-mask:ulong (width (get-warp-size)))`
-
-Those other shuffle operations do cool tricks. But `shuffle-xor` is where real sorcery occurs.
-
-The `(shuffle-xor ...)` expression evaluates to the current value of `someVar` as it is in one of the other threads.  
-The target lane id is calculated by taking the current thread lane id and XOR-ing with the `lane-id-mask` argument.
-`shuffle-xor` only needs to be given the name of the variable to fetch and the mask, it gets the current lane id automatically.  
-
-`shuffle-xor` is very useful for tree reducing.  See the `sum_vector_warp` example below. 
-The magic occurs in the interaction between the descending-by-half mask gotten from `dec-times-by-half` and `shuffle-xor`
-This gives us a butterfly communication pattern, which allows all threads to contribute to a reduction in a logarithmic
-number of steps.
 ```
-(dec-times-by-half (s (/ (get-warp-size) 2)) ;;start the descent with half the warp size. ie 16 then 8, 4, 2, 1
+(def-hardware-profile bmg :simd-width 16)   ; (warp-size) is now 16
+```
+
+Do not confuse it with `(warp-count)`, which is how many warps there are in the workgroup.
+`warp-size` is how many lanes there are in a warp.
+
+> **On SPIR-V, a kernel that shuffles must have a pinned warp size.** Crisp emits the
+> SubgroupSize execution mode only when it can: a hardware profile names a `:simd-width`,
+> the kernel's `local-size` is compile-time known, and the work-item count is a whole
+> multiple of that width. If a kernel uses a shuffle and those cannot be satisfied, that is
+> a **compile error**, not a guess at 32. A reduction written for 16 lanes that silently
+> runs on 32 does not crash — it returns a wrong answer, which is worse.
+
+#### Sizing the workgroup ✅
+
+For some algorithms, making the workgroup exactly one warp makes the algorithm much easier
+to write. Be careful, though: multiple warps in a workgroup take up the slack whenever one
+of them stalls on a memory access, and a single-warp workgroup surrenders that advantage.
+The compensation is that shuffles are wicked fast compared to the shared memory and
+barriers you would otherwise need.
+
+If you do take that route, make sure the `local_work_size` used when enqueueing matches. A
+declaration with a nice message communicates that to whoever writes the hoisting:
+
+```
+(local-size :set-to (warp-size)
+            :msg "this kernel requires the local work size to equal the warp size")
+```
+
+#### Shuffles are warp collectives ✅
+
+**Every lane in the warp must reach the shuffle.** A shuffle placed inside a
+thread-divergent conditional is a compile error: the lanes that do arrive are asking for
+data from lanes that never will. On NVIDIA that is undefined or a hang, and on SPIR-V a
+non-uniform group operation is undefined outright.
+
+The idiom is to shuffle unconditionally and gate only what you do with the result:
+
+```
+(let* ((v (compute-something))
+       (r (shuffle-xor v 1ul)))      ; every lane, always
+  (when (< (warp-lane) 4ul)          ; only the store is conditional
+    (set! (~ out (warp-lane)) r)))
+```
+
+#### The width argument: segmenting a warp ✅
+
+Every shuffle takes an optional trailing `width`, defaulting to `(warp-size)`.
+
+`width` **is not a query of the hardware** — that is what `(warp-size)` is for. It
+subdivides the warp into contiguous, aligned blocks of `width` lanes, and confines the
+shuffle to its own block. It exists so you can run several independent small reductions
+inside one warp — one per matrix row, say. At the default it is a no-op.
+
+The rules, all checked at compile time:
+
+- `width` must be a **compile-time constant**. PTX would tolerate a register here, but a
+  lane-varying width is meaningless (the lanes would disagree about who they are talking
+  to), and the remaining two rules are only checkable statically.
+- `width` must be a **power of two**. The hardware divides the warp into aligned blocks;
+  a width of 3 has no lowering at all.
+- `width` must not be **wider than `(warp-size)`**. A segment cannot exceed the warp that
+  contains it.
+
+Writing `k` for a lane's index within its block, the four operations segment like this:
+
+| expression | result | when the source leaves the block |
+|---|---|---|
+| `(shuffle v n width)` | the value in block-lane `n mod width` | wraps, by construction |
+| `(shuffle-up v d width)` | the value `d` lanes lower, when `k >= d` | keeps its **own** value |
+| `(shuffle-down v d width)` | the value `d` lanes higher, when `k + d < width` | keeps its **own** value |
+| `(shuffle-xor v m width)` | the value in block-lane `k XOR m` | rejected — see below |
+
+#### shuffle ✅
+`(shuffle <someVar> target-lane-id &optional (width (warp-size)))`
+
+Evaluates to the current value of `someVar` as it is in another lane. The target lane id is
+given directly. Every lane may name a different target, and several lanes may name the same
+one — a lane that every other lane reads is a broadcast.
+
+If the target index falls outside the segment it is taken modulo `width`, so it always names
+a lane in the caller own block.
+
+#### shuffle-up  / shuffle-down ✅
+`(shuffle-up   <someVar> delta &optional (width (warp-size)))`
+`(shuffle-down <someVar> delta &optional (width (warp-size)))`
+
+These evaluate to the value of `someVar` in the lane `delta` lanes below or above the
+caller.
+
+The `-up` / `-down` names do not have an intuitive reading. The direction is where the data
+is GOING, not the arithmetic performed on the delta. `shuffle-up` SUBTRACTS `delta` from the
+current lane id and returns the value from that lower lane (the data shuffles "up" to our
+higher lane). `shuffle-down` ADDS `delta` and returns the value from that higher lane (the
+data shuffles "down" to us). Whatever.
+
+Unlike `shuffle` and `shuffle-xor`, a shift is **not a permutation**: some lanes have no
+source. A lane whose source falls outside the warp — or outside its segment, under a
+`width` — **keeps its own value** rather than receiving anything. That edge rule is easy to
+forget and easy to get wrong, and an algorithm that sums the results will not notice.
+
+#### shuffle-xor ✅
+`(shuffle-xor <someVar> lane-id-mask:ulong &optional (width (warp-size)))`
+
+Those other shuffle operations do cool tricks. But `shuffle-xor` is where the real sorcery
+occurs.
+
+It evaluates to the value of `someVar` as it is in one other lane, whose id is the caller
+own lane id XOR the `lane-id-mask`. You give it the value and the mask; it gets the current
+lane id itself.
+
+XOR by a fixed mask is an **involution**: if lane `a` reads lane `b`, then lane `b` reads
+lane `a`, and applying it twice returns the original. Every lane both gives and receives,
+which is exactly what makes it the reduction primitive — and, as it happens, what makes it
+free to differentiate.
+
+`lane-id-mask` must be **less than `width`**. A mask smaller than the segment can never
+leave it (XOR only flips low bits inside an aligned block), so a segmented xor and an
+unsegmented one are the same instruction. A mask greater than or equal to `width` is asking
+to read a lane the segmentation forbids, so Crisp rejects it rather than inheriting whatever
+the clamp hardware happens to do.
+
+`shuffle-xor` is what you want for tree reduction. See the `sum_vector_warp` example below.
+The magic is in the interaction between the descending-by-half mask from `dec-times-by-half+`
+and `shuffle-xor`: it gives a butterfly communication pattern, letting every lane contribute
+to a reduction in a logarithmic number of steps.
+
+```
+(dec-times-by-half+ (s (/ (warp-size) 2))   ; half the warp size, then 8, 4, 2, 1
         ... (shuffle-xor someVal s))
 ```
-
 
 #### Ballot Operations 📝
 The ballot primitives allow the warp to vote on a predicate.
@@ -5652,78 +5749,111 @@ This is a very useful operation often used in conjunction with the `popcount` bi
 `(warp-all? predicate:bool) -> bool`
 Returns true if any (or all) active threads in the warp evaluate `predicate` to true. These are extremely fast hardware reductions.
 
-#### Supported Types
-The shuffle operations natively support 32-bit types (`int`, `uint`, `float`). 
-Crisp will automatically decompose larger types (like `double`, vectors, or structs) into multiple 32-bit shuffle operations for you.
+#### Supported Types ✅
+The hardware shuffle instruction moves **32 bits**. Crisp natively supports the 32-bit
+types (`int`, `uint`, `float`) and decomposes anything larger for you: a 64-bit value
+(`long`, `ulong`, `double`) is split into two 32-bit halves, shuffled separately, and
+recombined; aggregates are shuffled field by field.
 
-### Sum a Vector using Warps and Shuffles 📝
+Decomposition is not a detail to ignore when reading performance numbers — a `double`
+shuffle is two instructions, not one — but it is not something you have to write.
+
+#### Differentiating a shuffle ✅
+
+A shuffle is a **gather across lanes**, so its adjoint is a **scatter-add across lanes**.
+How cheap that is depends entirely on which shuffle you used:
+
+- **`shuffle-xor` is free.** It is its own inverse, so the adjoint of
+  `(shuffle-xor v m width)` is `(shuffle-xor adj m width)` — the same instruction, the same
+  mask. This is the one reductions are built from, and it differentiates at no cost.
+- **`shuffle-up` and `shuffle-down` transpose into each other,** plus a correction: the
+  edge lanes that kept their own value in the forward pass contribute to their own adjoint
+  rather than to a neighbour. Exact, and still cheap.
+- **`shuffle` with a runtime target is a compile error under `--differentiate`.** When the
+  target index is a compile-time constant the shuffle is a known permutation and inverts
+  exactly. When it is computed at runtime the transpose is a genuine scatter-add — several
+  lanes may read the same source, so the adjoint must sum an unknown number of
+  contributions, which is no longer a shuffle at all. Crisp says so plainly rather than
+  silently dropping a gradient term.
+
+### Sum a Vector using Warps and Shuffles ✅
 
 Would you like to calculate the sum of a vector without needing any local shared memory
 and without needing any barriers? Just a drop of blood is all we need, use it to sign the
-contract below. 
+contract below.
 
-This version starts out the same as the last one. The grid stride legerdemain is used and 
-each of the threads holds its own copy of a sum. Then, as before, we reduce. Half 
-the warp uses a shuffle and an XOR mask to fetch the sum from another thread and add it.
-Then half again, and so on. And then we  record the results into the same Result vector.
+This version starts out the same as the last one. The grid stride legerdemain is used and
+each of the threads holds its own copy of a sum. Then, as before, we reduce. Half the warp
+uses a shuffle and an XOR mask to fetch the sum from another thread and add it. Then half
+again, and so on. And then we record the results into the same Result vector.
 
-The result vector should be size M, where M = global_work_size / local_work_size.
-This is the same size as the number of workgroups.
+The result vector should be size M, where M = global_work_size / local_work_size. This is
+the same size as the number of workgroups.
 
-Note that this version ties the workgroup size to the size of a single warp. 
-Doing so might limit the "latency hiding" opportunities, because there are no "extra" warps
- to fill in if this one stalls on a memory access.  But that potential performance
-penalty is offset by the use of shuffles, instead of local memory and barriers.
-Shuffles, if used correctly, are wicked fast, but they can't reach outside a single warp.
+Note that this version ties the workgroup size to the size of a single warp. Doing so might
+limit the latency-hiding opportunities, because there are no "extra" warps to fill in if
+this one stalls on a memory access. But that potential penalty is offset by the use of
+shuffles instead of local memory and barriers. Shuffles, used correctly, are wicked fast —
+they just cannot reach outside a single warp.
 
 This version of vector summing is likely faster than the last one.
 
 ```
-;; 32 warps maximum for most hardware
-(def-constant +warp-size+ 32ul)
-
-;; the source vector can be any size. 
-(def-type source-vec (in-vec long :compact))    
+;; the source vector can be any size.
+(def-type source-vec (in-vec long :compact))
 
 ;; the result vector should be size M, where M = global_work_size / local_work_size
 ;; aka num-groups
-(def-type result-vec (vector long :align :compact :address-space :global :size (get-num-groups)))  
+(def-type result-vec (vector long :align :compact :address-space :global :size (get-num-groups)))
+
 
 ;; -- calculate-this-thread-sum --
 (def-function calculate-this-thread-sum (A)
   (declare #(source-vec -> long))
   (let ((sum 0))
     (loop-vector-stride A (i)
-      (inc! sum (~ A i))))) ; <-- inc! implicity returns final sum
+      (inc! sum (~ A i))))) ; <-- inc! implicitly returns final sum
 
 
 ;; -- sum_vector_warp_first_stage --
 (def-kernel sum_vector_warp_first_stage (A Res)
     (declare #'(source-vec result-vec => nil)
-             (local-size :set-to +warp-size+ :msg "this kernel requires the local work size to be the same as the warp size") 
+             (local-size :set-to (warp-size)
+                         :msg "this kernel requires the local work size to equal the warp size")
              (global-size :derive-from A :strategy :strided))
   ;; Stride the vector, summing it up. Each thread has its own value in 'sum'
   (let ((sum (calculate-this-thread-sum A)))
-     ;;  Reduce 
-    (in-warp (lane-id)
-      ;; this reduction uses `s` from `dec-times-by-half` to bisect/reduce. The `lane-id` is unused.
-      (dec-times-by-half+ (s (/ +warp-size+ 2))
-         (inc! sum (shuffle-xor sum s))))
-    
+
+    ;; Reduce. `s` descends 16, 8, 4, 2, 1 on a 32-lane warp, and every lane both gives
+    ;; and receives at each step -- a butterfly. The `+` form is not decoration: it is
+    ;; what proves the loop runs uniformly, which is what makes the shuffle inside it a
+    ;; legal warp collective.
+    (dec-times-by-half+ (s (/ (warp-size) 2))
+       (inc! sum (shuffle-xor sum s)))
+
     ;; move sum to global
     (when-thread-in-group-is (0)
       (let ((wg-idx (get-workgroup-id 0)))
-          (set! (~ Res wg-idx) sum)))))   
-      
+          (set! (~ Res wg-idx) sum)))))
 ```
 
+Two things worth noticing, because they are the difference between this compiling
+everywhere and this working only on the machine you wrote it on.
+
+First, nothing here says 32. `(warp-size)` is a compile-time constant that comes from the
+active hardware profile, so the same source reduces over 32 lanes on NVIDIA and 16 on a
+`:simd-width 16` Intel part, and the `local-size` declaration follows it automatically.
+
+Second, `sum` is a `long`. Each `shuffle-xor` therefore moves 64 bits as two 32-bit halves
+(see **Supported Types**). That is real instruction count, and if you do not need the range
+a `float` or `int` accumulator halves it.
+
 Like the previous sum_vector demonstration, this example is provided so that you can see
- "Crisp-ish" constructs used together, this time with shuffles and warps. 
-The vector is not fully summed. That requires a second kernel pass. 
-Most expedient is to make another kernel that
-employs `reduce-vec-second-stage` (see below) and then you'll have a two step solution. If you would
-like to see the hoisting code in action, then use either a continuation kernel (see above) 
-or  `def-orchestration` (see below).
+"Crisp-ish" constructs used together, this time with shuffles and warps. The vector is not
+fully summed. That requires a second kernel pass. Most expedient is to make another kernel
+that employs `reduce-vec-second-stage` (see below) and then you will have a two step
+solution. If you would like to see the hoisting code in action, then use either a
+continuation kernel (see above) or `def-orchestration` (see below).
 
 ## Bit Twiddling Operations 📝
 

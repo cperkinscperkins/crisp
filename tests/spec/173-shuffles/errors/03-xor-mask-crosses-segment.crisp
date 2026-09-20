@@ -1,0 +1,27 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "outside its segment"
+;;
+;; Endeavour 173, DECISION: reject an xor mask that cannot stay inside its segment.
+;;
+;; For shuffle-xor the width argument is otherwise INVISIBLE: xor by a mask < width can
+;; never leave an aligned power-of-two block, so a segmented xor and an unsegmented one
+;; are the same instruction.  The only case where width means anything is mask >= width,
+;; and there the request is self-contradictory -- the caller is asking to read a lane the
+;; segmentation forbids.
+;;
+;; Rather than inherit whatever the clamp hardware happens to do (the two backends need
+;; not agree, and neither behaviour is useful), Crisp rejects it.  That makes this the
+;; ONLY observable effect of width on shuffle-xor, which is why it is a negative test
+;; and not a metal one.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_bad_mask (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (v    (+ (* lane 10ul) 7ul))
+        (r    (shuffle-xor v 8ul 4)))
+    (when (< lane 4ul)
+      (set! (~ out lane) r))))

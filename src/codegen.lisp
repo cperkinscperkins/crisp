@@ -5767,6 +5767,36 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 ;;
 ;; So this is not "a different way to write the same thing" -- it is the difference between asking
 ;; for a mode and asking for the FEATURE, and only the latter brings its capability with it.
+(defvar *173-subgroup-pinned* nil
+  "T when the kernel currently being generated had its SPIR-V subgroup size pinned by 156.
+   Set by %emit-spirv-subgroup-size-execution-mode at function setup, read by
+   %shuffle-check-pinned (endeavour 173, D7).")
+
+(defun %173-ensure-grad-dispatch-decls (semantic-function)
+  "BUG 066: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under its OWN name,
+   so %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and declined to
+   pin.  Every differentiated kernel on Intel was therefore running at a subgroup size the
+   driver chose, including MMA kernels whose warp counts are computed from :simd-width -- the
+   backward pass silently opted out of the contract the forward pass has.
+
+   The gradient kernel is launched with the SAME geometry as its forward kernel, so it
+   inherits the same declarations.  Doing it HERE rather than in 173's D7 gate means 156's own
+   pinning starts working, not merely that endeavour's check.
+
+   If another generated-kernel suffix ever joins _GRAD, this needs widening."
+  (let* ((kname (semantic-function-name semantic-function))
+         (name (and kname (symbol-name kname))))
+    (when (and name
+               (not (gethash kname *kernel-dispatch-declarations*))
+               (> (length name) 5)
+               (string= "_GRAD" (subseq name (- (length name) 5))))
+      (let* ((base (subseq name 0 (- (length name) 5)))
+             (base-sym (find-symbol base (symbol-package kname)))
+             (decls (and base-sym (gethash base-sym *kernel-dispatch-declarations*))))
+        (when decls
+          (setf (gethash kname *kernel-dispatch-declarations*) decls)
+          (log:info "173: ~a inherits dispatch declarations from ~a" kname base-sym))))))
+
 (defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
   "Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's
    :simd-width, so the width Crisp ASSUMES when computing warp counts and the width IGC COMPILES
@@ -5779,7 +5809,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
    Emits nothing -- preserving pre-156 behaviour exactly -- unless a profile names a :simd-width and
    the kernel's compile-time local-size is a whole multiple of it that is at least as large.  See
-   the Phase 0 header for why that guard is deliberately narrow."
+   the Phase 0 header for why that guard is deliberately narrow.
+
+   Endeavour 173 adds two things.  (a) A _GRAD kernel first inherits its forward kernel's dispatch
+   declarations, without which it could never be pinned at all -- see %173-ensure-grad-dispatch-decls
+   and BUG 066.  (b) Each branch records whether the size was pinned in *173-SUBGROUP-PINNED*, so a
+   shuffle generated later in this kernel can refuse a warp width nobody guaranteed (D7).  The flag
+   is set HERE, inside the decision, rather than re-derived by a second copy of these conditions."
+  (%173-ensure-grad-dispatch-decls semantic-function)
+  (setf *173-subgroup-pinned* nil)
   (let* ((profile (active-hardware-profile))
          (simd    (and profile (getf profile :simd-width)))
          (kname   (semantic-function-name semantic-function))
@@ -5795,6 +5833,7 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
        (log:info "subgroup-size: local-size ~a for ~a is not a whole multiple of simd-width ~a; not pinning."
                  total kname simd))
       (t
+       (setf *173-subgroup-pinned* t)
        (let* ((ctx  (llvm-get-module-context module))
               (i32  (llvm-int32-type))
               (name "intel_reqd_sub_group_size")
@@ -5805,7 +5844,188 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
            (let ((node (llvm-md-node-in-context2 ctx arr 1)))
              (crisp.llvm-bindings::llvm-global-set-metadata func kind node)))
          (log:info "subgroup-size: pinned ~a to SubgroupSize ~a (local-size ~a = ~a subgroup~:p)."
-                   kname simd total (floor total simd)))))))
+                   kname simd total (floor total simd)))))
+    ;; 173: the per-kernel verdict on one line.  This is the log that exposed BUG 066 -- a
+    ;; forward kernel reading T beside its _GRAD twin reading NIL.
+    (log:debug "173: subgroup pinned for ~a = ~a" kname *173-subgroup-pinned*)))
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 173 — shuffle codegen (PTX + SPIR-V).
+;;; ---------------------------------------------------------------------------
+;;; THE ONE REAL SEMANTIC DIFFERENCE BETWEEN THE BACKENDS, and it decides this whole design:
+;;; when a shift runs off the end, PTX's shfl.sync.up/down return the caller's OWN value (the
+;;; instruction has a predicate for exactly that), but SPIR-V says an out-of-range
+;;; OpGroupNonUniformShuffleUp/Down is UNDEFINED.  Crisp promises the CUDA rule, so SPIR-V
+;;; cannot simply use the matching opcode.
+;;;
+;;; Rather than shuffle-then-select, the target lane itself is CLAMPED TO THE CALLER when the
+;;; source would be out of range, and a plain OpGroupNonUniformShuffle reads it.  Reading your
+;;; own lane returns your own value -- which IS the rule -- so one shuffle does the job with no
+;;; select, and (usefully) no select binding, which llvm-bindings does not have.
+;;;
+;;; The validity flag is folded in arithmetically: target = lane -/+ delta*zext(valid).  When
+;;; invalid that term is zero and the target is the caller's own lane.
+;;;
+;;; SEGMENTATION falls out of the same formula.  With k = lane & (width-1):
+;;;     idx   target = (lane & ~(width-1)) | (idx & (width-1))
+;;; which at width = warp reduces to idx & (warp-1) -- i.e. CUDA's "srcLane modulo width" --
+;;; because lane < warp makes the first term zero.  So there is ONE formula, not two.
+;;;
+;;; xor keeps the native opcode on both backends (bfly / OpGroupNonUniformShuffleXor): D5
+;;; guarantees mask < width, so an xor can never leave its segment and needs no arithmetic.
+;;; That matters -- xor is the hot path for reductions and stays a single instruction.
+
+(defun %shuffle-index-i32 (builder idx-val idx-type)
+  "Narrows a shuffle index/delta/mask to the i32 the hardware ops take."
+  (let ((i32 (crisp.llvm-bindings::llvm-int32-type)))
+    (case idx-type
+      ((long ulong) (crisp.llvm-bindings::llvm-build-trunc builder idx-val i32 "shfl_idx"))
+      ((int uint) idx-val)
+      (t (error 'crisp-compiler-error
+                :message (format nil "a shuffle index must be an integer, got ~a" idx-type))))))
+
+(defun %shuffle-ptx (builder module op val idx width)
+  "One 32-bit shuffle via the NVVM intrinsics, which map 1:1 to shfl.sync.{idx,up,down,bfly}.
+
+   The `c` operand packs the segment mask with the clamp value exactly as CUDA does:
+   c = ((warpSize - width) << 8) | clamp, where clamp is 0 for .up and 0x1f otherwise.
+   Membermask is the full warp, which is legitimate because D6 rejects a shuffle reached
+   from divergent control flow -- every lane is here."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (warp (%173-warp-size))
+         (clamp (if (eq op :up) 0 #x1f))
+         (c (logior (ash (- warp width) 8) clamp))
+         (name (ecase op
+                 (:idx  "llvm.nvvm.shfl.sync.idx.i32")
+                 (:up   "llvm.nvvm.shfl.sync.up.i32")
+                 (:down "llvm.nvvm.shfl.sync.down.i32")
+                 (:xor  "llvm.nvvm.shfl.sync.bfly.i32"))))
+    (log:debug "173 ptx shuffle: ~a width=~a c=#x~x" name width c)
+    (%coop-call builder module name i32
+                (list i32 i32 i32 i32)
+                (list (crisp.llvm-bindings::llvm-const-int i32 #xFFFFFFFF nil)
+                      val idx
+                      (crisp.llvm-bindings::llvm-const-int i32 c nil)))))
+
+(defun %shuffle-spv-target (builder lane op idx width)
+  "The absolute target lane for a SPIR-V shuffle -- see the section header.  Clamps to LANE
+   itself when the source would leave the segment, which reproduces the CUDA own-value rule."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (wmask (crisp.llvm-bindings::llvm-const-int i32 (1- width) nil))
+         (k (crisp.llvm-bindings::llvm-build-and builder lane wmask "shfl_k")))
+    (ecase op
+      (:idx
+       (let ((base (crisp.llvm-bindings::llvm-build-and
+                    builder lane
+                    (crisp.llvm-bindings::llvm-const-int
+                     i32 (logand (lognot (1- width)) #xFFFFFFFF) nil)
+                    "shfl_base"))
+             (off (crisp.llvm-bindings::llvm-build-and builder idx wmask "shfl_off")))
+         (crisp.llvm-bindings::llvm-build-or builder base off "shfl_tgt")))
+      (:up
+       ;; valid = k >= delta
+       (let* ((p (crisp.llvm-bindings::llvm-build-icmp
+                  builder crisp.llvm-bindings::+llvm-int-uge+ k idx "shfl_ok"))
+              (vz (crisp.llvm-bindings::llvm-build-zext builder p i32 "shfl_okz"))
+              (d (crisp.llvm-bindings::llvm-build-mul builder idx vz "shfl_d")))
+         (crisp.llvm-bindings::llvm-build-sub builder lane d "shfl_tgt")))
+      (:down
+       ;; valid = k + delta < width
+       (let* ((sum (crisp.llvm-bindings::llvm-build-add builder k idx "shfl_sum"))
+              (p (crisp.llvm-bindings::llvm-build-icmp
+                  builder crisp.llvm-bindings::+llvm-int-ult+ sum
+                  (crisp.llvm-bindings::llvm-const-int i32 width nil) "shfl_ok"))
+              (vz (crisp.llvm-bindings::llvm-build-zext builder p i32 "shfl_okz"))
+              (d (crisp.llvm-bindings::llvm-build-mul builder idx vz "shfl_d")))
+         (crisp.llvm-bindings::llvm-build-add builder lane d "shfl_tgt"))))))
+
+(defun %shuffle-spv (builder module op val idx width)
+  "One 32-bit shuffle via the SPIR-V group-non-uniform ops.  Scope operand 3 = Subgroup."
+  (%shuffle-check-pinned nil)
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (scope (crisp.llvm-bindings::llvm-const-int i32 3 nil)))
+    (if (eq op :xor)
+        (%coop-call builder module "__spirv_GroupNonUniformShuffleXor" i32
+                    (list i32 i32 i32) (list scope val idx))
+        (let* ((lane (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId"))
+               (target (%shuffle-spv-target builder lane op idx width)))
+          (%coop-call builder module "__spirv_GroupNonUniformShuffle" i32
+                      (list i32 i32 i32) (list scope val target))))))
+
+(defun %shuffle-emit-i32 (builder module op val idx width)
+  "One 32-bit shuffle on the active backend."
+  (if (eq *target-backend* :ptx)
+      (%shuffle-ptx builder module op val idx width)
+      (%shuffle-spv builder module op val idx width)))
+
+(defun %shuffle-emit-i64 (builder module op val64 idx width)
+  "D9: the hardware moves 32 bits, so a 64-bit value is split into hi/lo halves, shuffled
+   SEPARATELY, and recombined.  Both halves take the same op, index and width, so the two
+   shuffles agree about which lane they are reading."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (i64 (crisp.llvm-bindings::llvm-int64-type))
+         (lo (crisp.llvm-bindings::llvm-build-trunc builder val64 i32 "shfl_lo"))
+         (hi64 (crisp.llvm-bindings::llvm-build-l-shr
+                builder val64 (crisp.llvm-bindings::llvm-const-int i64 32 nil) "shfl_hi64"))
+         (hi (crisp.llvm-bindings::llvm-build-trunc builder hi64 i32 "shfl_hi"))
+         (slo (%shuffle-emit-i32 builder module op lo idx width))
+         (shi (%shuffle-emit-i32 builder module op hi idx width))
+         (zlo (crisp.llvm-bindings::llvm-build-zext builder slo i64 "shfl_zlo"))
+         (zhi (crisp.llvm-bindings::llvm-build-zext builder shi i64 "shfl_zhi"))
+         (hish (crisp.llvm-bindings::llvm-build-shl
+                builder zhi (crisp.llvm-bindings::llvm-const-int i64 32 nil) "shfl_hish")))
+    (crisp.llvm-bindings::llvm-build-or builder hish zlo "shfl_join")))
+
+(defmethod generate-node-ir ((node semantic-shuffle) builder module var-env di-builder di-scope location-map)
+  "A warp shuffle.  Floats ride through the integer path by bitcast -- the hardware moves
+   bits, not numbers -- and 64-bit values are decomposed (D9)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let* ((ty (semantic-shuffle-type node))
+           (op (semantic-shuffle-op node))
+           (width (semantic-shuffle-width node))
+           (idx-node (semantic-shuffle-index node))
+           (val (gen (semantic-shuffle-value node)))
+           (idx (%shuffle-index-i32 builder (gen idx-node)
+                                    (get-single-value-type idx-node)))
+           (i32 (crisp.llvm-bindings::llvm-int32-type))
+           (i64 (crisp.llvm-bindings::llvm-int64-type)))
+      (log:debug "173 codegen shuffle: op=~a ty=~a width=~a backend=~a" op ty width *target-backend*)
+      (values
+       (ecase ty
+         ((int uint)
+          (%shuffle-emit-i32 builder module op val idx width))
+         ((float)
+          (let* ((bits (crisp.llvm-bindings::llvm-build-bit-cast builder val i32 "shfl_fbits"))
+                 (res (%shuffle-emit-i32 builder module op bits idx width)))
+            (crisp.llvm-bindings::llvm-build-bit-cast
+             builder res (resolve-type-to-llvm 'float) "shfl_fval")))
+         ((long ulong)
+          (%shuffle-emit-i64 builder module op val idx width))
+         ((double)
+          (let* ((bits (crisp.llvm-bindings::llvm-build-bit-cast builder val i64 "shfl_dbits"))
+                 (res (%shuffle-emit-i64 builder module op bits idx width)))
+            (crisp.llvm-bindings::llvm-build-bit-cast
+             builder res (resolve-type-to-llvm 'double) "shfl_dval"))))
+       nil))))
+
+(defun %shuffle-check-pinned (location)
+  "Endeavour 173, D7.  On Intel the driver picks the subgroup size (8, 16 or 32) unless the
+   kernel pins it, and a reduction written for 16 lanes that runs on 32 does not crash -- it
+   returns a wrong answer.  So a shuffling kernel that cannot be pinned is refused rather than
+   compiled against an assumed 32.  NVIDIA is exempt: its warp has been 32 lanes on every
+   architecture shipped, so there is nothing to pin.
+
+   Reads *173-SUBGROUP-PINNED*, which %emit-spirv-subgroup-size-execution-mode sets at function
+   setup -- BEFORE any body node is generated -- so the flag is always current by the time a
+   shuffle asks about it."
+  ;; Only the real SPIR-V target.  :ptx has nothing to pin (NVIDIA's warp is 32 by
+  ;; architecture), and :generic / :cpu are the front-end passes, which emit no device code
+  ;; and must keep compiling exactly as they did before.
+  (when (and (eq *target-backend* :spirv) (not *173-subgroup-pinned*))
+    (error 'crisp-compiler-error
+           :message "this kernel uses a shuffle, but its SPIR-V subgroup size cannot be pinned, so the warp width it would run at is whatever the driver chooses (8, 16 or 32 on Intel) rather than the width this kernel was compiled against. Pinning needs an active hardware profile naming a :simd-width AND a compile-time (local-size :set-to N) whose total is a whole multiple of it. Crisp refuses rather than assuming 32: a reduction written for one width and run at another returns a wrong answer instead of failing"
+           :source-location location)))
+
 
 (defun %kernel-mma-lowering (semantic-function)
   "The lowering SEMANTIC-FUNCTION declared, or :coop-matrix when it declared none.

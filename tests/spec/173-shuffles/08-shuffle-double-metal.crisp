@@ -1,0 +1,31 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER f1: 1.5 0.5 3.5 2.5
+;;
+;; Endeavour 173 ON-METAL: 64-bit shuffle of a FLOAT type.
+;;
+;; The companion to 07.  A double takes the same hi/lo decomposition, but reaches it by
+;; a different route -- the halves are a bitcast of a floating value, not an integer
+;; split -- so a lowering can pass 07 and still fail here.
+;;
+;; seed v(L) = L + 0.5.  The fraction is what does the work: it lives in the low
+;; mantissa bits, so a lowering that moves only the high word returns the neighbour's
+;; EXPONENT with this lane's fraction and prints something that is not x.5 at all.
+;; 0.5 1.5 2.5 3.5 are exact in binary and print in one decimal, well inside the six
+;; significant digits std::cout gives a double by default.
+;;
+;; f1 = shuffle-xor v 1 -> v(L^1) -> 1.5 0.5 3.5 2.5
+
+(def-type d-vec (vector double :address-space :global :align :compact))
+
+(def-kernel shuffle_double_metal (&out f1)
+  (declare #'(&out d-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (v    (+ (to-double lane) 0.5d))
+        (r1   (shuffle-xor v 1ul)))
+    (when (< lane 4ul)
+      (set! (~ f1 lane) r1))))
