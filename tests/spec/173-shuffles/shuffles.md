@@ -7,11 +7,14 @@ warp reductions also need shuffle support. So let's do that now.
 
 Ops in this endeavour:
 
-- [ ] `warp-size`
+- [x] `warp-size` — folds to a literal; verified as `ret i32 32` (no profile) / `16` under `bmg`
 - [ ] `shuffle`
 - [ ] `shuffle-up`
 - [ ] `shuffle-down`
 - [ ] `shuffle-xor`
+
+Also landed here (see F7): **`let*` is now rejected**, guarded by
+`tests/spec/004-let/errors/01-let-star-rejected.crisp`.
 
 Explicitly **out of scope** (they were only in the same section of the design doc):
 `in-warp`, `warp-ballot`, `warp-any?`, `warp-all?`.
@@ -186,10 +189,26 @@ The reason `let*` was never needed is the real finding: **Crisp's `let` is alrea
 sequential** (let\*-like) — stated in `167/09`'s header and relied on by `145/14`. So `let*`
 is redundant, and the specs here use `let`.
 
-That leaves a compiler bug worth its own entry: `let*` should either be rejected outright
-(`Unsupported form LET*`) or differentiate. Compiling forward and then failing backward
-under another form's name is the same misattribution shape as the "`GRID-Y` is not
-differentiable" ANF bug. Candidate for `plan/bugs.md` alongside F5.
+**FIXED.** `let*` is now rejected with
+`"Crisp has no LET*. Use LET — Crisp's LET is already sequential..."`.
+
+Getting there took one wrong turn worth recording. `let*` is aliased at **two** sites, and
+the second wins: `register-control-analyzers` (`src/analysis/control.lisp`) points it at
+`analyze-let-expression`, then `register-mma-analyzers` (`src/mma.lisp`) re-points it at
+`analyze-let-with-tile-explosion` **by function object**. Hooking only the first is dead
+code. Worse, mma's loop does `(intern "LET*" :crisp-language)` — and that `intern` is what
+MINTS the symbol the reader later reuses for user source, so the alias creates its own key.
+A diagnostic dump of `*expression-analyzers*` showed the truth in one run after two rounds
+of guessing: two keys named `LET*`, in `COMMON-LISP` and `CRISP-LANGUAGE`, both holding
+function objects.
+
+Only the `:crisp-language` spelling is rejected; nothing generates a crisp-language `LET*`
+form internally (the tile/stride lowerings all intern `"LET"`), and leaving `common-lisp::LET*`
+registered keeps the change surgical.
+
+Blast radius was small: 5 pre-existing specs used `(let* ` (092/08, 170/26, 170/28, 170/29,
+172/08) and were converted to `let`, which is semantically identical since Crisp's `let` is
+sequential. Regression after the change: unit 341/341, negative 261/261, E2E 1175/1175.
 
 
 Implementation notes
