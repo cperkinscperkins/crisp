@@ -207,3 +207,63 @@
           (error "~A: no VJP is registered for an indexed shuffle with a runtime target lane.  A CONSTANT target lane IS supported: every lane then reads the same lane, so the form is a broadcast whose transpose is a segment-wide sum, which differentiates exactly.  The distinction that matters is UNIFORM vs LANE-VARYING, not constant vs runtime -- a lane-varying index is a general gather, where several lanes may read the same source and others none, so its transpose is a scatter-add of unknown multiplicity and not a shuffle at all.  A uniform RUNTIME index is differentiable in principle, but Crisp cannot tell it apart here because the uniformity pre-pass runs after the autodiff walk.  Use a constant target lane, or shuffle-xor / shuffle-up / shuffle-down, all of which differentiate exactly; or if this kernel really is forward-only, SKIP-WITH[--differentiate]."
                  (car expr))
           (funcall *orig-175-shuffle-backward* v expr emit-fn local-adj-fn))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — thread-selection sugar (DEVELOPMENT DRAFT -- macros, need a src patch)
+;;; ---------------------------------------------------------------------------
+;;; Belong in src/macros.lisp (or beside reduce-warp), plus the three package.lisp sites.
+;;;
+;;; SCOPE.  ideal_001.md specifies a whole family -- when-thread-is / abs-when-thread-is,
+;;; when-group-is, when-global-linear-id-is / when-local-linear-id-is, when-is-last-workgroup,
+;;; each with 1/2/3-D variants.  NONE of it exists yet.  This endeavour implements only the two
+;;; forms the reductions chapter actually uses, in their 1-D form; the rest is its own piece of
+;;; work.  (The multi-dimensional grammar in the doc, `(when-thread-in-group-is x-id y-id
+;;; <expr>)`, is also ambiguous for a multi-STATEMENT body -- it cannot be told apart from a
+;;; 1-D election with two body forms.  That wants resolving before the N-D variants are built.)
+;;;
+;;; when-thread-in-warp-is is listed under "## Forgotten" in ideal_001.md: the reductions
+;;; chapter uses it and nothing defines it.  Semantics adopted here, and pinned by spec 06:
+;;; the body runs in the named lane of EVERY warp -- a per-warp election, not a per-workgroup
+;;; one.  That is what a warp leader writing its partial into a scratchpad needs.
+;;;
+;;; WHY MACROS EXPANDING TO `when` ARE ENOUGH FOR THE DEADLOCK GUARANTEE.
+;;;
+;;; The doc promises something stronger than the generic analysis:  "The compiler will _attempt_
+;;; to detect the deadlock possibility in a generic construction, but due to variables,
+;;; assignments, etc that guarantee is not strong.  Whereas in when-thread-in-group-is it is a
+;;; surety."
+;;;
+;;; *in-divergent-conditional* is set by ANY conditional whose test did not constant-fold
+;;; (src/analysis/control.lisp), so expanding to `when` over a lane/local-id test sets it every
+;;; time -- and %tlc-check-not-divergent then refuses sync-workgroup, while
+;;; %shuffle-check-not-divergent refuses a warp collective.  The surety comes from the form
+;;; being divergent BY CONSTRUCTION: there is no way to write one whose body every thread
+;;; reaches, so there is no analysis for an intervening variable or assignment to defeat.
+;;; Guarded by errors/03 (workgroup barrier) and errors/04 (warp collective).
+
+(defmacro when-thread-in-warp-is (lane &body body)
+  "Runs BODY only in lane LANE of EVERY warp -- a per-WARP election.
+   A warp collective in BODY is refused: only one lane arrives.  See spec 06, errors/04."
+  `(when (= (to-int (warp-lane)) ,lane)
+     ,@body))
+
+(defmacro when-thread-in-group-is (id &body body)
+  "Runs BODY only in thread ID of the workgroup -- a per-WORKGROUP election.
+   Per ideal_001.md this is an implicit (when (= someId (get-local-id 0)) ...).
+   sync-workgroup in BODY is refused: only one thread arrives.  See spec 07, errors/03."
+  `(when (= (to-int (get-local-id 0)) ,id)
+     ,@body))
+
+(eval-when (:load-toplevel :execute)
+  ;; See the reduce-warp draft above for why this copies macro-function rather than exporting:
+  ;; mutating the package's export list at overlay load makes build.lisp's later targets fail
+  ;; with a package-variance error.  The src patch imports these properly instead.
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (name '("WHEN-THREAD-IN-WARP-IS" "WHEN-THREAD-IN-GROUP-IS"))
+      (let ((ccs (find-symbol name cc)))
+        (when (and ccs cl)
+          (let ((cls (intern name cl)))
+            (unless (eq cls ccs)
+              (setf (macro-function cls) (macro-function ccs)))))))))

@@ -1,0 +1,38 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "thread-divergent conditional"
+;;
+;; ENDEAVOUR 175 -- a workgroup barrier inside a single-thread election is a deadlock.  TDD.
+;;
+;; ideal_001.md states this as a requirement of the form, not a nicety:
+;;
+;;   "Using (sync-workgroup) inside the scope of when-thread-in-group-is results in a
+;;    compilation error as it would otherwise deadlock an entire workgroup."
+;;
+;; and gives it as the REASON to prefer when-thread-in-group-is over a hand-written
+;; (when (= (get-local-id) 0) ...):  "The compiler will _attempt_ to detect the deadlock
+;; possibility in a generic construction, but due to variables, assignments, etc that guarantee
+;; is not strong.  Whereas in when-thread-in-group-is it is a surety."
+;;
+;; So this spec is not merely checking that an error appears -- it is checking that the
+;; guarantee is STRUCTURAL.  when-thread-in-group-is is divergent by construction: there is no
+;; way to write one whose body is reached by every thread, so there is no analysis to be
+;; defeated by an intervening variable or assignment.
+;;
+;; CHECK-FAIL deliberately matches "thread-divergent conditional" rather than "sync-workgroup".
+;; CHECK-FAIL also matches against the kernel name and the FILE name, and this file is called
+;; ...-barrier-in-group-election precisely so that it cannot satisfy its own check without the
+;; compiler actually emitting a diagnostic.
+;;
+;; TEST-EXPECT is FAIL, with no CHECK-FAIL-FLAGS: the refusal is backend-independent, so it
+;; fires on the default pass too.  (See errors/01 for the distinction.)
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel elected_barrier (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (when-thread-in-group-is 0
+    ;; Only one thread of 64 reaches this; the other 63 never arrive.
+    (sync-workgroup)
+    (set! (~ out 0) 1.0)))

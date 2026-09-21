@@ -1,0 +1,34 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "warp collective"
+;;
+;; ENDEAVOUR 175 -- a WARP collective inside a single-lane election is a deadlock too.  TDD.
+;;
+;; The mirror of errors/03, one level down.  errors/03 pins that a WORKGROUP barrier cannot sit
+;; inside a one-thread-per-workgroup election; this pins that a WARP collective cannot sit
+;; inside a one-lane-per-warp election.  Only lane 0 of each warp reaches the body, so a
+;; reduce-warp there would have 1 lane of 16 exchanging registers with 15 that never arrive.
+;;
+;; WORTH ITS OWN SPEC because the two forms elect at different granularities and it would be
+;; easy to implement when-thread-in-warp-is in a way that satisfies errors/03 and not this --
+;; for instance by special-casing only workgroup collectives, or by treating a per-warp
+;; election as "uniform" on the grounds that every warp runs it.  Every warp does run it, but
+;; not every LANE does, and a warp collective needs the lanes.
+;;
+;; This is also the case 173's D6 exemption does NOT cover.  A 139 warp-specialization role
+;; block is warp-divergent yet still legal for a warp collective, because every lane of any one
+;; warp takes the same role.  A lane election is the opposite: the divergence is WITHIN the
+;; warp, which is exactly what breaks a shuffle.
+;;
+;; Named ...-reduction-in-lane-election so the file name cannot satisfy CHECK-FAIL by itself.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel elected_reduction (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (warp-lane))))
+    (when-thread-in-warp-is 0
+      ;; One lane of sixteen; the reduction needs all of them.
+      (reduce-warp #'+ contrib 0.0)
+      (set! (~ out (to-int (warp-id))) contrib))))

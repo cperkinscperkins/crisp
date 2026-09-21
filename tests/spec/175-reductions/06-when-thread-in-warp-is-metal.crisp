@@ -1,0 +1,38 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 100 110 120 130
+;; SKIP-WITH[--differentiate]: "elects a lane by coordinate; no differentiable value"
+;;
+;; ENDEAVOUR 175 -- when-thread-in-warp-is.  TDD: written before the implementation.
+;;
+;;   (when-thread-in-warp-is <lane> body...)   =>   runs body only in that lane of EVERY warp
+;;
+;; This form is listed under "## Forgotten" in ideal_001.md -- it is used by the reductions
+;; chapter (the warp leader writing its partial into the scratchpad) but never specified.  This
+;; spec is the specification: the body runs in the named lane of EACH warp, not in one lane of
+;; the workgroup.  That distinction is the whole point of the form, and it is what the test
+;; measures.
+;;
+;; WHY THE WRITTEN VALUE ENCODES BOTH COORDINATES.  Lane 0 of warp W writes 100 + 10*W, so the
+;; expected buffer is 100 110 120 130.  Three different wrong implementations are excluded:
+;;
+;;   * elects one lane of the WORKGROUP (not of each warp) -> only slot 0 written, rest stay
+;;     at the harness's 1 2 3 pre-fill
+;;   * elects EVERY lane (the guard does nothing) -> the last lane wins and each slot reads
+;;     100 + 10*W + 15
+;;   * elects the wrong lane -> the +lane term makes it visible rather than silently correct
+;;
+;; Writing just the warp id would collide with the pre-fill (0 1 2 3) and prove nothing.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel warp_leader_writes (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (when-thread-in-warp-is 0
+    (set! (~ out (to-int (warp-id)))
+          (to-float (+ 100 (* 10 (to-int (warp-id))) (to-int (warp-lane)))))))
