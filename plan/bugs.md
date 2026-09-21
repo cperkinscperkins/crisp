@@ -2479,3 +2479,72 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         lowering generates a crisp-language LET* form.  Guarded by
         tests/spec/004-let/errors/01-let-star-rejected.crisp.  Five pre-existing specs used
         let* (092/08, 170/26, 170/28, 170/29, 172/08) and were converted to let.
+
+[x] 070 FIXED -- A SYMBOLIC SCRATCH SIZE COMPILED, EMITTED METADATA, AND THEN DIED AT HOIST.
+        (make-scratch-vector float :match-workgroup-size) and its siblings were accepted by the
+        front end and written verbatim into the metacrisp as :size-expr, but NOTHING ever
+        resolved them.  %extract-scratch-size-expr (src/analysis/structs.lisp) takes the size
+        argument as (second args) without examining it, the compiler passes it straight through,
+        and both hoisters then accepted only an integer or a list of integers:
+
+            Error: Scratch tensor sv_from_wg_warp_scratch_1: :size-expr
+                   MATCH-NUM-WARPS-PER-WORKGROUP is neither an integer nor a list of 1 integers.
+
+        So the vocabulary was designed and documented but had no consumer anywhere in the chain.
+
+        WHY IT HID FOR SO LONG.  No spec combined a symbolic size with a hoist run.  074 uses
+        :match-workgroup-size in compile-only specs (074/01's own header admits its validator was
+        never written), and 075 asserts :match-warp-tile in metadata validators that never resolve
+        it either.  Both pass with the feature entirely absent.
+
+        FOUND BY.  Endeavour 175, which needs it: EVERY reduction macro in the design
+        (reduce-workgroup, grid-reduce-atomic!, -cas!, -last-man!, -second-stage!) auto-generates
+        its scratchpad with :match-num-warps-per-workgroup, so none of them could work.
+
+        FIXED.  Endeavour 175, in the HOISTERS rather than the compiler -- deliberately.  Crisp is
+        kernel-only with no runtime: the generated .cpp/.cu is sample host code the user may adapt
+        or discard, and the real launch geometry is chosen by whoever enqueues.  (local-size ...)
+        is author INTENT for fitting the launcher, not a fact to compile against, so folding the
+        size to a literal at compile time would bake in an assumption the host may violate -- a
+        kernel handed a 4-element buffer could be launched with 8 warps and corrupt silently.
+        Guarded by tests/spec/175-reductions/02-scratch-match-num-warps.crisp, which makes the
+        size OBSERVABLE (4 warp leaders stamp their ids, thread 0 sums exactly 4 slots => 6)
+        rather than merely declaring a symbolic vector; verified on BMG.
+        Scoped to RANK 1: a symbolic size names one length, and the scalar rule makes a SQUARE
+        tensor, so rank-3 :match-workgroup-size would mean wg^3 elements of SLM (074/01 and
+        074/03 do exactly that and never noticed).  :match-num-workgroups is refused for now --
+        under :strategy :strided the group count is computed at RUNTIME from the device, so it
+        does not exist at hoist time; it arrives with grid-reduce-last-man!.
+
+[ ] 071 THE TWO HOISTERS RESOLVE SYMBOLIC SCRATCH SIZES DIFFERENTLY.  Not a defect in either
+        backend -- a documented asymmetry, recorded so it is not mistaken for one later.
+
+        L0 emits a C++ EXPRESSION over named geometry constants (wg_size, warp_size), so editing
+        the generated launcher's geometry re-sizes every dependent scratch buffer.  Each local
+        tensor gets its own zeKernelSetArgumentValue(..., bytes, nullptr), so the sizes are
+        independent and an expression costs nothing.
+
+        CUDA folds to an INTEGER from the declared geometry.  All workgroup-local scratch shares
+        ONE dynamic-shared blob: compute-total-shared-bytes sums it, that number becomes the
+        sharedMemBytes launch argument, and each param is handed a running byte offset into it
+        (the BUG 046 fix).  An expression-valued total would break this hoist-time decision in
+        %emit-launch-base, which chooses whether to request the >48KB opt-in:
+
+            (when (and shared-bytes (> shared-bytes 32768))
+              ... cuFuncSetAttribute(..., MAX_DYNAMIC_SHARED_SIZE_BYTES, N))
+
+        That is a decision about a value which, made dynamic, would not exist until launch.
+
+        CONSEQUENCE: retuning a CUDA launcher's block size requires REGENERATING it, because its
+        scratch sizes were fixed when it was generated.  The L0 launcher re-sizes itself.
+        Closing the gap means expression-valued offsets, an expression-valued blob total, and a
+        runtime-conditional attribute call -- reworking the shared-memory path BUG 046 only just
+        stabilised.  Deferred on purpose, not overlooked.
+
+        RELATED WART (L0, same endeavour): the workgroup size appears TWICE in the generated L0
+        launcher -- as wg_size_x/wg_size_y and again as literals in zeKernelSetGroupSize.  Phrasing
+        the call against the constants works but breaks nine STRATEGY-EXPECT directives
+        (089-strategy/10,11,12,13,15,16x2,17 and 118-async-misc/10), which pin that call's literal
+        text -- that being exactly what 089-strategy exists to check.  Updating them is a
+        deliberate change to what the suite pins; until then the emitted comment names the second
+        site so the edit is discoverable.

@@ -1,0 +1,48 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 15 115 215 315
+;; SKIP-WITH[--differentiate]: "max is not the AD case -- the VJP spec reduces with +"
+;;
+;; ENDEAVOUR 175 -- reduce-warp with an operator that is not +, and not a builtin.  TDD.
+;;
+;; someFunction is a real argument, not decoration: the design says any commutative
+;; #(T T => T).  An implementation that hardwired addition -- or folded the butterfly into a
+;; chain of + instructions -- would pass 03 and 04 and fail here.
+;;
+;; WHY A USER-DEFINED FUNCTION RATHER THAN #'max.  Because Crisp has no `max`.  It is not
+;; exported and not registered: (max 3.0 7.0) fails with "Unsupported form 'MAX' found in
+;; function body".  This matters beyond this spec -- the design doc specifies
+;; grid-reduce-atomic! as accepting exactly #'+, #'min and #'max, so two of its three legal
+;; operators do not currently exist.  (The hardware ops are there under other names --
+;; atomic-min!/atomic-max! and 170's op-min3/op-max3 -- but there is no scalar min/max binop.)
+;; Adding them is its own small piece of work; this spec deliberately does not wait on it.
+;;
+;; Passing a USER function is also the stronger test: it proves reduce-warp accepts an
+;; arbitrary binop rather than pattern-matching a known set of builtin operator symbols.
+;;
+;; Lane L of warp W contributes 100*W + L, so the per-warp maxima are 15, 115, 215, 315 --
+;; distinct per warp, so a workgroup-wide max (315 everywhere) is excluded too.
+;;
+;; The identity is a TRUE identity, not a convenient constant.  Every lane is active here so
+;; strictly any value survives, but 0.0 would be wrong for max the moment someone copied this
+;; spec and made the warp partial, since 0.0 beats any negative contribution and would win the
+;; reduction.  -1.0e30 stays correct under that edit.  (Crisp has no float -infinity literal;
+;; if one is added, it belongs here.)
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function warp-max (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel reduce_warp_max (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (+ (* (to-int (warp-id)) 100) (to-int (warp-lane))))))
+    (reduce-warp #'warp-max contrib -1.0e30)
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ out (to-int (warp-id))) contrib))))

@@ -1,0 +1,37 @@
+;; TEST-EXPECT: PASS
+;; CHECK-FAIL: "wider than the warp"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 175 -- active-threads may not exceed the warp width.  TDD.
+;;
+;; The design doc currently says this is UNDEFINED BEHAVIOUR: "Using a value for
+;; active-threads that is GREATER than the warp size for the GPU hardware results in
+;; undefined behavior.  This reduction cannot reduce more than +warp-size+ threads."
+;;
+;; PROPOSED CHANGE, and the reason this spec exists: when the value is a compile-time literal
+;; there is no reason to leave it undefined.  Crisp already refuses the exactly-analogous
+;; mistake one level down -- 173's D4 rejects a shuffle segment width wider than the warp with
+;; "a segment width of N is wider than the warp it segments (M lanes under the active hardware
+;; profile)" (tests/spec/173-shuffles/errors/02).  A reduce-warp asking for 32 active lanes on
+;; a 16-lane profile is the same error wearing a different name, and silently producing a
+;; wrong sum is the worst of the available behaviours.
+;;
+;; So: a LITERAL active-threads greater than (warp-size) is a compile error.  A RUNTIME value
+;; stays unchecked and remains the user's responsibility -- same split as D5's xor-mask rule,
+;; where a literal mask is checked and a runtime one is the reduction idiom and is accepted.
+;;
+;; 32 > 16 here because the bmg profile is pinned; under a 32-lane profile this same source is
+;; legal, which is precisely why the message must name the ACTIVE PROFILE's width rather than
+;; talking about "the warp size" in the abstract.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel wide_request (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (warp-lane))))
+    ;; 32 active lanes requested, but the bmg profile's warp is 16.
+    (reduce-warp #'+ contrib 0.0 32)
+    (when (= (to-int (warp-lane)) 0)
+      (set! (~ out (to-int (warp-id))) contrib))))

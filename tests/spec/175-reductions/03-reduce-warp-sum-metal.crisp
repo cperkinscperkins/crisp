@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 120 1720 3320 4920
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- reduce-warp, the base case.  TDD: written before the implementation.
+;;
+;;   (reduce-warp someFunction <someVar> identity &optional active-threads)
+;;
+;; Post-condition under test: <someVar> in ALL threads of the warp holds the reduced value,
+;; and the reduction is WARP-scoped, not workgroup-scoped.
+;;
+;; THE TWO THINGS THAT GIVE THIS SPEC TEETH.
+;;
+;; 1. EACH WARP GETS A DISTINCT EXPECTED VALUE.  Lane L of warp W contributes 100*W + L, so
+;;    warp W sums to 1600*W + 120 -- 120, 1720, 3320, 4920.  A reduction that accidentally
+;;    reached across the whole workgroup would write 10080 into every slot, and one that
+;;    reduced nothing would write 100*W + 15.  Contributing just the lane id would make all
+;;    four warps produce 120 and hide both faults.
+;;
+;; 2. THE LAST LANE WRITES THE RESULT, NOT LANE 0.  (warp-size)-1 is deliberate.  An
+;;    implementation that leaves the total only in lane 0 -- the classic shuffle-down
+;;    tournament shape -- passes a lane-0 check and fails this one.  The xor butterfly is an
+;;    ALL-reduce: after s = warp/2, warp/4, ... 1 every lane holds the total, which is why the
+;;    design doc's trailing (shuffle val 0) broadcast is redundant.  Dropping it is not just
+;;    tidiness: an indexed shuffle has no VJP (173 errors/07, /08), so a reduce-warp built
+;;    purely from shuffle-xor differentiates today, and one ending in a broadcast does not.
+;;
+;; 64 threads / 16 lanes per warp (bmg) = 4 warps, which is also exactly the 4-element buffer
+;; the L0 hoist harness allocates -- so each warp leader's slot is addressable.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel reduce_warp_sum (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (+ (* (to-int (warp-id)) 100) (to-int (warp-lane))))))
+    (reduce-warp #'+ contrib 0.0)
+    ;; The LAST lane, not lane 0 -- see the header.
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ out (to-int (warp-id))) contrib))))

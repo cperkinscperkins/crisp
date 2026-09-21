@@ -1,0 +1,40 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 28 28 28 28
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- reduce-warp with a PARTIAL warp.  TDD: written before the implementation.
+;;
+;; active-threads = 8 of the profile's 16 lanes.  Lanes 0..7 contribute their lane id; lanes
+;; 8..15 are inactive and must contribute the IDENTITY instead, so every warp sums
+;; 0+1+...+7 = 28 rather than 0+...+15 = 120.
+;;
+;; THIS IS THE SPEC THAT MAKES `identity` DO REAL WORK.  In 03 every lane is active, so the
+;; identity argument is never actually used and any value would pass.  Here it is the whole
+;; mechanism: the reduction still runs unconditionally across the FULL warp (the loop bound is
+;; the warp width, not active-threads), and correctness depends entirely on the inactive lanes
+;; having been seeded with a value that cannot disturb the result.
+;;
+;; AND THE WRITER IS AN INACTIVE LANE.  Lane (warp-size)-1 = 15 is outside active-threads, yet
+;; the post-condition says <someVar> in ALL threads of the warp holds the reduced value -- not
+;; just the participating ones.  So this doubles as the test that an inactive lane still comes
+;; out of the reduction holding 28.  If reduce-warp ever gates its writeback on
+;; (< lane active-threads), this spec fails and 03 does not.
+;;
+;; All four warps produce the same 28: this spec is about the identity and the inactive-lane
+;; post-condition, and 03 already pins per-warp independence.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel reduce_warp_partial (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (warp-lane))))
+    (reduce-warp #'+ contrib 0.0 8)
+    ;; Lane 15 is INACTIVE and must still hold the total -- see the header.
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ out (to-int (warp-id))) contrib))))
