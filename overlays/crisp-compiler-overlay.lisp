@@ -58,7 +58,7 @@
 (defun %analyze-warp-collective-check (expr env context location)
   "Analyzer for (%warp-collective-check \"name\") -- runs D6 and emits nothing."
   (declare (ignore env context))
-  (%shuffle-check-not-divergent (or (second expr) "this warp collective") location)
+  (%shuffle-check-not-divergent (or (second expr) :|this warp collective|) location)
   (make-semantic-literal :value-type 'int :value 0 :source-location location))
 
 (defvar *orig-175-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
@@ -74,13 +74,28 @@
         (setf (gethash (intern "%WARP-COLLECTIVE-CHECK" pkg) *expression-analyzers*)
               '%analyze-warp-collective-check)))))
 
+(defun %175-apply-binop (fn a b)
+  "The form applying binop FN to A and B.  A LITERAL #'op is inlined as a DIRECT call rather
+   than emitted as (funcall #'op a b) -- two reasons, the second decisive:
+
+     * a direct call is simply better code than an indirect one through a function value;
+     * FUNCALL IS NOT DIFFERENTIABLE.  The AD walk refuses it (\"Function FUNCALL is not
+       differentiable\"), so a reduction emitting funcall cannot be differentiated at all --
+       whereas (+ a b) is differentiated by the ordinary arithmetic rules.
+
+   A non-literal FN (a variable holding a function value) still goes through funcall and is
+   still not differentiable; that is a genuine AD gap, not something this can paper over."
+  (if (and (consp fn) (symbolp (car fn)) (string-equal (symbol-name (car fn)) "FUNCTION"))
+      (list (second fn) a b)
+      (list 'funcall fn a b)))
+
 (defmacro reduce-warp (fn var identity &optional active-threads)
   "Reduce VAR across the current warp with the commutative binop FN, leaving the result in
    VAR in EVERY lane of the warp.  IDENTITY seeds the lanes outside ACTIVE-THREADS."
   (%reduce-warp-check-active-threads active-threads)
   (let ((s (gensym "RW-S")))
     `(progn
-       (%warp-collective-check "reduce-warp")
+       (%warp-collective-check :reduce-warp)
        ,@(when active-threads
            (list `(set! ,var (if (< (to-int (warp-lane)) ,active-threads) ,var ,identity))))
        ;; The butterfly's first stride is warp/2, resolved AT MACROEXPANSION TIME to a plain
@@ -91,7 +106,7 @@
        ;; anf-transform with *target-backend* and the profile already bound, and re-runs per
        ;; target pass, so a dual-backend spec gets 16 for bmg and 32 for ptx.
        (dec-times-by-half+ (,s ,(floor (%173-warp-size) 2))
-         (set! ,var (funcall ,fn (shuffle-xor ,var ,s) ,var)))
+         (set! ,var ,(%175-apply-binop fn `(shuffle-xor ,var ,s) var)))
        (compiler-no-op))))
 
 (eval-when (:load-toplevel :execute)
@@ -267,3 +282,310 @@
           (let ((cls (intern name cl)))
             (unless (eq cls ccs)
               (setf (macro-function cls) (macro-function ccs)))))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — reduce-workgroup (DEVELOPMENT DRAFT; measurement vehicle)
+;;; ---------------------------------------------------------------------------
+;;; Drafted to MEASURE option 3 for its autodiff: let the macro expand and let the ordinary
+;;; backward walk reverse the expansion.  If the resulting _GRAD kernel is heavy, the construct
+;;; becomes an analyzed form with a semantic VJP instead (option 1).
+;;;
+;;; BARRIER PLACEMENT IS CORRECTED from reductions-excerpt.md, which puts the sweep's
+;;; sync-workgroup INSIDE (when (< local-id num-warps) ...).  Crisp refuses that outright -- a
+;;; workgroup collective in a thread-divergent conditional deadlocks -- and the excerpt also
+;;; leaves the barrier OUTSIDE the halving loop, so successive passes are not separated and a
+;;; pass can read a slot the previous one has not written.  Chris confirmed ideal_001.md does
+;;; not carry the mistake.  Correct shape: barrier INSIDE the loop, OUTSIDE the guard, and the
+;;; loop must be the `+` (uniform) variant so every thread reaches the same barriers.
+;;;
+;;; num-warps is computed AT RUNTIME from get-local-linear-size / warp-size, not folded from the
+;;; declared local-size.  Same reasoning as the scratch sizing (BUG 070): the enqueuer owns the
+;;; geometry, so the kernel adapts rather than baking in author intent.  dec-times-by-half+
+;;; accepts a runtime-uniform limit, which is what makes this possible.
+;;;
+;;; :local-scratch-vec IS REQUIRED IN THIS DRAFT.  Auto-generating it needs the element type of
+;;; VAR at macroexpansion time, and Crisp has no macro-time type-of; the doc's reference
+;;; implementation writes (make-scratch-vector (type-of someVar) ...) as if it did.  Resolving
+;;; that is orthogonal to the AD question being measured, so the caller passes one.
+
+(defmacro reduce-workgroup (fn var identity &key local-scratch-vec return-vec message)
+  "Reduce VAR across the whole workgroup with the commutative binop FN, leaving the result in
+   VAR in EVERY thread.  Phase 1 is a per-warp reduce-warp; phase 2 sweeps the warp partials
+   through LOCAL-SCRATCH-VEC, which must hold one element per warp."
+  (declare (ignore message))
+  (unless local-scratch-vec
+    (error 'crisp-compiler-error
+           :message "reduce-workgroup: :local-scratch-vec is required in this build.  Auto-generating it needs VAR's element type at macroexpansion time, which Crisp cannot yet supply.  Pass e.g. (make-scratch-vector float :match-num-warps-per-workgroup)."
+           :source-location nil))
+  (let ((s (gensym "RWG-S"))
+        (nw (gensym "RWG-NW"))
+        (lid (gensym "RWG-LID")))
+    `(progn
+       ;; Phase 1 -- each warp reduces itself; every lane then holds its warp's partial.
+       (reduce-warp ,fn ,var ,identity)
+       (when-thread-in-warp-is 0
+         (set! (~ ,local-scratch-vec (to-int (warp-id))) ,var))
+       (sync-workgroup)
+       ;; Phase 2 -- halving sweep over the per-warp partials.
+       (let ((,nw (/ (get-local-linear-size) (to-ulong (warp-size))))
+             (,lid (to-int (get-local-linear-id))))
+         (dec-times-by-half+ (,s (/ ,nw 2ul))
+           ;; Divergence confined to the combine; the barrier below is reached by every thread.
+           (when (< ,lid (to-int ,s))
+             (set! (~ ,local-scratch-vec ,lid)
+                   ,(%175-apply-binop fn
+                                      `(~ ,local-scratch-vec ,lid)
+                                      `(~ ,local-scratch-vec (+ ,lid (to-int ,s))))))
+           (sync-workgroup))
+         ;; Slot 0 now holds the workgroup total; every thread reads it.  When there is only one
+         ;; warp the sweep runs zero iterations (BUG 065's gate) and slot 0 already holds the
+         ;; single warp's partial, separated from these reads by the barrier above.
+         (set! ,var (~ ,local-scratch-vec 0)))
+       ,@(when return-vec
+           (list `(when-thread-in-group-is 0
+                    (set! (~ ,return-vec (to-int (get-workgroup-id 0))) ,var))))
+       (compiler-no-op))))
+
+(eval-when (:load-toplevel :execute)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (let ((ccs (find-symbol "REDUCE-WORKGROUP" cc)))
+      (when (and ccs cl)
+        (let ((cls (intern "REDUCE-WORKGROUP" cl)))
+          (unless (eq cls ccs)
+            (setf (macro-function cls) (macro-function ccs))))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — the 173 warp builtins are gradient-inert (real gap, not a draft)
+;;; ---------------------------------------------------------------------------
+;;; src/autodiff.lisp  (the prefix list inside %backward-skip-fn-p-145p1)
+;;;
+;;; That list already carries every thread-coordinate and shape query -- GET-LOCAL-ID,
+;;; GET-LOCAL-LINEAR-SIZE, GET-NUM-GROUPS, SYNC-WORKGROUP and the rest.  Endeavour 173 added
+;;; four more of exactly that kind -- WARP-SIZE, WARP-ID, WARP-LANE, WARP-COUNT -- and never
+;;; added them here.  A lane index carries no gradient any more than a local id does.
+;;;
+;;; The symptom is the misleading one this list exists to prevent:
+;;;
+;;;     Function WARP-SIZE is not differentiable.  Wrap the kernel in 'forward-only' ...
+;;;
+;;; which points away from the fix -- the kernel IS differentiable; a warp width simply has no
+;;; derivative.  Compare the identical wording quoted in %backward-skip-fn-p for
+;;; MAKE-ASYNC-BARRIER-RING, and [[ad-error-naming-a-coordinate]].
+;;;
+;;; WHY 173 DID NOT NOTICE.  Every 173 spec that uses these builtins in a differentiated kernel
+;;; carries SKIP-WITH[--differentiate] for an unrelated reason, and the two that do differentiate
+;;; (09, 10) use only shuffle-xor / shuffle-up / shuffle-down, whose operands are values rather
+;;; than coordinates.  175 spec 09 is the first kernel to put (warp-size) in the path of the
+;;; backward walk.
+
+(defvar *orig-175-backward-skip-fn-p* (fdefinition '%backward-skip-fn-p-145p1)
+  "Captured once at overlay load.")
+
+(defun %backward-skip-fn-p-145p1 (fn-sym)
+  "Overlay wrapper: the 173 warp builtins join the gradient-inert coordinate queries."
+  (or (and (symbolp fn-sym)
+           (member (symbol-name fn-sym)
+                   '("WARP-SIZE" "WARP-ID" "WARP-LANE" "WARP-COUNT")
+                   :test #'string=)
+           t)
+      (funcall *orig-175-backward-skip-fn-p* fn-sym)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — reduce-workgroup becomes an ANALYZED FORM with a semantic VJP.
+;;; ---------------------------------------------------------------------------
+;;; SUPERSEDES the reduce-workgroup macro drafted above (last definition wins; the draft's
+;;; macro-function is removed below).  Option 1, chosen after MEASURING option 3.
+;;;
+;;; WHY THE MACRO HAD TO GO.  A macro expands inside anf-transform, before the backward walk, so
+;;; AD saw only the expansion -- a butterfly, scratch writes, barriers -- and reversed it
+;;; mechanically.  That is not merely heavy, it is WRONG: spec 09 measured analytical=1.0
+;;; against a hardware finite difference of 64.00012.  1.0 is the derivative of the IDENTITY, so
+;;; the backward pass had lost the entire reduction.
+;;;
+;;; The reason is general enough to be worth stating (BUG 073): the AD walk models SINGLE-THREAD
+;;; dataflow.  Thread j writing sv[j] and thread i reading it is a CROSS-THREAD edge, and no
+;;; per-thread reversal can see it.  reduce-warp differentiates correctly only because
+;;; shuffle-xor carries an explicit VJP that models the cross-lane transpose; shared memory has
+;;; no such rule.  Communication between threads needs a STATED derivative.
+;;;
+;;; THE STATED DERIVATIVE, and it is elementary.  reduce-workgroup is an ALL-reduce -- every
+;;; thread ends up holding the total -- so the forward map is N outputs, not one:
+;;;
+;;;     y_t = SUM over j of x_j      for every t          dy_t/dx_j = 1
+;;;     xbar_j = SUM over t of ybar_t                     (the VJP sums over OUTPUTS)
+;;;
+;;; An all-reduce is a fan-in followed by a fan-out; transposing reverses the order and dualises
+;;; each half, giving fan-out then fan-in -- an all-reduce again.  It is SELF-TRANSPOSING, just
+;;; as shuffle-xor is.  So the backward pass is the SAME OPERATION applied to the adjoint, and
+;;; the VJP below simply emits another reduce-workgroup.
+;;;
+;;; It transforms the adjoint IN PLACE rather than accumulating, mirroring the forward, which
+;;; consumes v and produces v.
+
+(defun %reduce-workgroup-expand (expr)
+  "The forward lowering of (reduce-workgroup FN VAR IDENTITY &key ...).  A plain function, not a
+   macro: as a macro this expanded inside anf-transform and the backward walk never saw the
+   construct.  The analyzer below calls it; the VJP registry sees the unexpanded form."
+  (let* ((fn        (second expr))
+         (var       (third expr))
+         (identity  (fourth expr))
+         (keys      (cddddr expr))
+         (scratch   (getf keys :local-scratch-vec))
+         (return-vec (getf keys :return-vec))
+         (s   (gensym "RWG-S"))
+         (nw  (gensym "RWG-NW"))
+         (lid (gensym "RWG-LID")))
+    (unless scratch
+      (error 'crisp-compiler-error
+             :message "reduce-workgroup: :local-scratch-vec is required in this build.  Auto-generating it needs VAR's element type at analysis time, which Crisp cannot yet supply.  Pass e.g. (make-scratch-vector float :match-num-warps-per-workgroup)."
+             :source-location nil))
+    `(progn
+       ;; Phase 1 -- each warp reduces itself; every lane then holds its warp's partial.
+       (reduce-warp ,fn ,var ,identity)
+       (when-thread-in-warp-is 0
+         (set! (~ ,scratch (to-int (warp-id))) ,var))
+       (sync-workgroup)
+       ;; Phase 2 -- halving sweep over the per-warp partials.  The barrier is INSIDE the loop
+       ;; and OUTSIDE the guard: reductions-excerpt.md has it the other way round, which Crisp
+       ;; refuses (a workgroup collective in divergent control flow) and which would also leave
+       ;; successive passes unseparated.  The loop is the + variant so every thread runs the
+       ;; same iteration count and meets the same barriers.
+       (let ((,nw (/ (get-local-linear-size) (to-ulong (warp-size))))
+             (,lid (to-int (get-local-linear-id))))
+         (dec-times-by-half+ (,s (/ ,nw 2ul))
+           (when (< ,lid (to-int ,s))
+             (set! (~ ,scratch ,lid)
+                   ,(%175-apply-binop fn
+                                      `(~ ,scratch ,lid)
+                                      `(~ ,scratch (+ ,lid (to-int ,s))))))
+           (sync-workgroup))
+         ;; Slot 0 holds the workgroup total; every thread reads it.  With one warp the sweep
+         ;; runs zero iterations (BUG 065's gate) and slot 0 already holds that warp's partial,
+         ;; separated from these reads by the barrier above.
+         (set! ,var (~ ,scratch 0)))
+       ,@(when return-vec
+           (list `(when-thread-in-group-is 0
+                    (set! (~ ,return-vec (to-int (get-workgroup-id 0))) ,var))))
+       (compiler-no-op))))
+
+(defun %analyze-reduce-workgroup (expr env context location)
+  "Analyzer for reduce-workgroup -- expands and delegates.  Being an ANALYZED form rather than a
+   macro is what keeps the construct visible to the autodiff walk (see the section header)."
+  (analyze-expression (%reduce-workgroup-expand expr) env context location))
+
+(defvar *orig-175b-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrapper.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus reduce-workgroup as an analyzed form."
+  (funcall *orig-175b-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "REDUCE-WORKGROUP" pkg) *expression-analyzers*)
+              '%analyze-reduce-workgroup)))))
+
+;;; --- the semantic VJP -------------------------------------------------------
+
+(defun %175-vjp-reduce-workgroup (form ctx)
+  "VJP for reduce-workgroup: an all-reduce is self-transposing, so the backward pass is another
+   all-reduce of the adjoint.  See the section header for the derivation and spec 09 for the
+   measured value (64, against 1.0 for the mechanical reversal)."
+  (let* ((fn         (second form))
+         (var        (third form))
+         (keys       (cddddr form))
+         (scratch    (getf keys :local-scratch-vec))
+         (return-vec (getf keys :return-vec))
+         (local-adj  (getf ctx :local-adj)))
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "reduce-workgroup: autodiff is supported only for the + reduction.  The transpose of a SUM reduction is another sum reduction, which is exact and needs nothing recorded from the forward pass.  min/max would route the adjoint to the winning thread, which requires the forward pass to stash an argmin/argmax; an arbitrary binop needs the partial derivatives of that op at every combining node, i.e. the whole combining tree and its intermediates.  Neither is recorded today.  Use the + reduction, or mark the kernel SKIP-WITH[--differentiate] if it is forward-only."))
+    (when return-vec
+      (error "reduce-workgroup: :return-vec is not differentiable yet.  The per-workgroup partial written to that vector is a SECOND output of this form, so a correct VJP must also collect whatever gradient flows back through it.  The expansion that writes it is hidden inside the analyzer, so the walk cannot see that store and the contribution would be silently dropped.  Refusing rather than returning an incomplete gradient.  Drop the key, or write the element yourself after the reduction."))
+    (unless (and var (symbolp var))
+      (return-from %175-vjp-reduce-workgroup nil))
+    (let ((vbar (funcall local-adj var)))
+      (log:debug "175 VJP reduce-workgroup: all-reduce of ~a" vbar)
+      ;; In place, mirroring the forward -- the operation consumes v and produces v, so the
+      ;; input adjoint REPLACES the output adjoint rather than accumulating onto it.
+      `(reduce-workgroup ,fn ,vbar 0.0 :local-scratch-vec ,scratch))))
+
+(eval-when (:load-toplevel :execute)
+  ;; Remove the superseded MACRO from both packages so anf-transform stops expanding the form
+  ;; and the VJP registry can see it.  fmakunbound, not (setf (macro-function ...) nil).
+  (dolist (pkg (list (find-package :crisp.compiler) (find-package :crisp-language)))
+    (when pkg
+      (let ((sym (find-symbol "REDUCE-WORKGROUP" pkg)))
+        (when (and sym (macro-function sym))
+          (fmakunbound sym)))))
+  (register-vjp "REDUCE-WORKGROUP" (function %175-vjp-reduce-workgroup)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 066's _GRAD inheritance must copy GEOMETRY ONLY.
+;;; ---------------------------------------------------------------------------
+;;; src/codegen.lisp  (replaces %173-ensure-grad-dispatch-decls)
+;;;
+;;; BUG 066 let a _GRAD kernel inherit its forward kernel's dispatch declarations so that 156's
+;;; SPIR-V subgroup pinning could see a local-size.  It copied the WHOLE plist -- and that plist
+;;; carries more than launch geometry.  src/metadata.lisp reads :cluster-size and
+;;; :cluster-size-decl out of it, so the derivative began advertising a cluster size it was never
+;;; given, which 152-DSMEM-Cluster/05 exists to forbid:
+;;;
+;;;     the BACKWARD kernel's metacrisp carries :cluster-size.  Scheduling declarations must not
+;;;     propagate into a derivative -- cluster-size says where bytes arrive, not what is computed.
+;;;
+;;; That spec is right, and its principle decides the fix: a gradient kernel is LAUNCHED like its
+;;; forward twin, so it inherits the launch GEOMETRY; it is not SCHEDULED like it, so everything
+;;; else stays behind.  :cluster-size / :cluster-size-decl / :effective-cluster-size are
+;;; data-movement decisions and :mma-lowering is a code-generation strategy -- none of them
+;;; describe what is computed, and a derivative that claimed them would be making a promise
+;;; nobody made to it.
+;;;
+;;; WHY IT WAS MISSED.  The check lives in a --metadata validator on the BACKWARD kernel, so it
+;;; only runs in the --differentiate phase, which CI runs and local work usually does not.  173's
+;;; overlay carried the same over-broad copy; folding it into src/ preserved it.  Found by running
+;;; the full --differentiate phase after touching shared autodiff code.
+
+(defparameter *grad-inheritable-dispatch-keys*
+  '(:global-size :local-size :num-groups)
+  "The dispatch-declaration keys a _GRAD kernel inherits from its forward twin: LAUNCH GEOMETRY
+   only.  Deliberately a whitelist rather than a blacklist -- a new scheduling key added to the
+   plist later must not start leaking into derivatives merely because nobody remembered to
+   exclude it.  See 152-DSMEM-Cluster/05.")
+
+(defun %173-ensure-grad-dispatch-decls (semantic-function)
+  "BUG 066: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under its OWN name, so
+   %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and declined to pin --
+   leaving every differentiated kernel on Intel running at a driver-chosen subgroup size while
+   its forward twin was pinned.
+
+   The gradient kernel is launched with the same GEOMETRY as its forward kernel, so it inherits
+   those keys and only those; see *GRAD-INHERITABLE-DISPATCH-KEYS* for why the rest stay behind.
+
+   If another generated-kernel suffix ever joins _GRAD, this needs widening."
+  (let* ((kname (semantic-function-name semantic-function))
+         (name (and kname (symbol-name kname))))
+    (when (and name
+               (not (gethash kname *kernel-dispatch-declarations*))
+               (> (length name) 5)
+               (string= "_GRAD" (subseq name (- (length name) 5))))
+      (let* ((base (subseq name 0 (- (length name) 5)))
+             (base-sym (find-symbol base (symbol-package kname)))
+             (decls (and base-sym (gethash base-sym *kernel-dispatch-declarations*))))
+        (when decls
+          (let ((geom nil))
+            (dolist (k *grad-inheritable-dispatch-keys*)
+              (let ((v (getf decls k :%absent)))
+                (unless (eq v :%absent)
+                  (setf geom (append geom (list k v))))))
+            (when geom
+              (setf (gethash kname *kernel-dispatch-declarations*) geom)
+              (log:info "175: ~a inherits launch geometry ~s from ~a (scheduling keys withheld)"
+                        kname (loop for (k nil) on geom by #'cddr collect k) base-sym))))))))

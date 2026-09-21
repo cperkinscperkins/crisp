@@ -2548,3 +2548,102 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         text -- that being exactly what 089-strategy exists to check.  Updating them is a
         deliberate change to what the suite pins; until then the emitted comment names the second
         site so the edit is discoverable.
+
+[x] 072 FIXED -- THE 173 WARP BUILTINS WERE MISSING FROM THE AUTODIFF SKIP LIST, so any
+        differentiated kernel mentioning (warp-size), (warp-id), (warp-lane) or (warp-count)
+        was refused with a message pointing away from the fix:
+
+            Function WARP-SIZE is not differentiable.  Wrap the kernel in 'forward-only'
+            if differentiation is not needed...
+
+        The kernel IS differentiable; a warp width has no derivative, exactly as a local id
+        has none.  %backward-skip-fn-p-145p1 (src/autodiff.lisp) already lists every sibling --
+        GET-LOCAL-ID, GET-LOCAL-LINEAR-SIZE, GET-NUM-GROUPS, SYNC-WORKGROUP and the rest --
+        and endeavour 173 added four more of the same kind without adding them here.
+
+        WHY 173 DID NOT NOTICE.  Every 173 spec using these builtins in a differentiated kernel
+        carries SKIP-WITH[--differentiate] for an unrelated reason, and the two that do
+        differentiate (09, 10) use only shuffle-xor / -up / -down, whose operands are VALUES
+        rather than coordinates.  So no kernel had ever put a warp builtin in the path of the
+        backward walk.  Same shape as BUG 066: 173's forward work was complete and its AD-side
+        registration was not.
+
+        FOUND BY.  Endeavour 175 spec 09, the first differentiated kernel to call (warp-size).
+        FIXED.  Endeavour 175: the four names join the gradient-inert prefix list.
+
+[ ] 073 CROSS-THREAD DATAFLOW THROUGH SCRATCH IS INVISIBLE TO THE AUTODIFF WALK, so a
+        reduction written by hand differentiates to a SILENTLY WRONG gradient.
+
+        MEASURED, not theorised.  tests/spec/175-reductions/09 runs a workgroup sum where all
+        64 threads read the total, so d(sum C)/dA = 64.  On BMG:
+
+            analytical=1.0   numerical=64.00012   diff=63.000122
+
+        The finite difference (ground truth, on hardware) says 64.  The compiler said 1.0 --
+        which is precisely the derivative you get if the reduction were the IDENTITY.  The
+        backward pass lost the whole reduction.
+
+        CAUSE.  The AD walk models SINGLE-THREAD dataflow.  It reverses one thread's
+        instruction stream correctly, but thread j's write to sv[j] being read by thread i is a
+        CROSS-THREAD edge, and no per-thread walk can see it.  The fan-in therefore vanishes and
+        the chain collapses to v -> v.
+
+        THE GENERAL RULE, worth stating because it is not obvious: communication between
+        threads needs a STATED VJP; it cannot be recovered by reversing instructions.
+        reduce-warp differentiates correctly ONLY because shuffle-xor carries an explicit VJP
+        (173) that models the cross-lane transpose.  Shared memory has no such rule.
+
+        SCOPE IS WIDER THAN reduce-workgroup.  Giving reduce-workgroup a semantic VJP fixes the
+        library construct, but a USER who writes their own scratch-based reduction and asks for
+        --differentiate still gets a silently wrong answer.  Open question worth deciding: should
+        the compiler REFUSE to differentiate a kernel whose backward walk crosses a local-scratch
+        write/read pair it cannot transpose, rather than quietly producing a number?  A wrong
+        gradient with no failure is the worst outcome available, and it is what ships today.
+
+        FOUND BY.  Endeavour 175, measuring whether reduce-workgroup's AD could be left to the
+        ordinary backward walk (it cannot).  Spec 09 pins the ANSWER (64) rather than any
+        mechanism, so it stays valid whatever the construct is built from.
+
+[ ] 074 THE VERIFY-AUTODIFF RUNNER IS A THIRD CONSUMER OF :size-expr AND STILL CANNOT RESOLVE A
+        SYMBOLIC SCRATCH SIZE.  BUG 070 taught both hoisters to resolve :match-num-warps-per-
+        workgroup and friends; tests/verify-autodiff-runner.lisp allocates scratch buffers of its
+        own and was missed, so a VERIFY-AUTODIFF spec whose kernel uses a symbolic size dies with
+
+            Runner error: The value :MATCH-NUM-WARPS-PER-WORKGROUP is not of type NUMBER
+
+        That is a RUNNER failure, not a compile or hoist failure, so 070's fix did not cover it
+        and its specs did not catch it.  The runner knows the launch geometry it is about to use
+        (it sets group size itself), so it can resolve these the same way the L0 hoister does.
+
+        FOUND BY.  Endeavour 175 spec 09, which wants the symbolic form and currently hard-codes
+        an explicit 4 with a comment saying why.  Restore the symbolic form when this is fixed.
+
+[x] 075 FIXED -- BUG 066's _GRAD INHERITANCE COPIED THE WHOLE DISPATCH PLIST, so a derivative
+        advertised SCHEDULING declarations nobody gave it.
+
+        066 let a _GRAD kernel inherit its forward twin's dispatch declarations so 156's SPIR-V
+        subgroup pinning could find a local-size.  It copied the entire plist -- but that plist
+        holds more than launch geometry: src/metadata.lisp reads :cluster-size and
+        :cluster-size-decl out of it, and :mma-lowering and :effective-cluster-size live there
+        too.  So the BACKWARD kernel's metacrisp began carrying a cluster size, which
+        152-DSMEM-Cluster/05 exists to forbid:
+
+            the BACKWARD kernel's metacrisp carries :cluster-size.  Scheduling declarations
+            must not propagate into a derivative -- cluster-size says where bytes arrive, not
+            what is computed.
+
+        FIXED by a WHITELIST: a gradient kernel is LAUNCHED like its forward twin, so it
+        inherits :global-size / :local-size / :num-groups, and is not SCHEDULED like it, so
+        everything else stays behind.  Deliberately a whitelist rather than a blacklist -- a new
+        scheduling key added to the plist later must not start leaking into derivatives because
+        nobody remembered to exclude it.
+
+        WHY IT SURVIVED SO LONG.  The check is a --metadata validator on the BACKWARD kernel, so
+        it runs only in the --differentiate phase -- which CI runs and local work usually does
+        not.  173's overlay carried the same over-broad copy from the start; folding 066 into
+        src/ preserved it rather than introducing it.
+
+        FOUND BY.  Endeavour 175, running the full --differentiate phase after touching shared
+        autodiff code (the 072 skip list and the reduce-workgroup VJP).  Worth the habit: three
+        of this endeavour's findings -- 066, 072 and this -- are all cases where the forward
+        work was complete and the AD-side consequence went unrun.

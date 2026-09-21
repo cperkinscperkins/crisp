@@ -1,0 +1,76 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=64.0 group=64 h=0.5 atol=5e-1 output-mat=4x16
+;;
+;; ENDEAVOUR 175 -- the VJP of reduce-workgroup.  TDD.
+;;
+;; THIS SPEC EXISTS TO DISCRIMINATE TWO CANDIDATE RULES BY A FACTOR OF 64.
+;;
+;; reduce-workgroup is an ALL-reduce: every thread ends up holding the total.  So the forward
+;; map is not one output but N:
+;;
+;;     y_t = SUM over j of x_j      for every thread t
+;;     dy_t/dx_j = 1                for all t, j
+;;
+;; and the VJP sums over OUTPUTS:
+;;
+;;     xbar_j = SUM over t of ybar_t
+;;
+;; That is an all-reduce of the adjoint -- an all-reduce is a fan-in followed by a fan-out, and
+;; transposing reverses the order and dualises each half, giving fan-out then fan-in, which is
+;; an all-reduce again.  It is SELF-TRANSPOSING, exactly as shuffle-xor is.
+;;
+;; THE TEMPTING WRONG RULE is xbar_j = ybar_j -- "the forward pass broadcast the result to every
+;; thread, so the adjoint is already there".  That confuses the PRIMAL broadcast with the
+;; adjoint, which flows the other way.  Here every one of the 64 threads writes the total to its
+;; own output element, so sum(C) = 64 * total and the true derivative is 64.  The copy rule
+;; would read 1.0.  A kernel where only ONE thread consumed the result would separate them the
+;; other way round: the copy rule gives the correct value in that thread and ZERO in the other
+;; 63.  Either way it is a wrong answer with no failure, which is why this spec pins a NUMBER
+;; rather than merely compiling.
+;;
+;; atol is loose (5e-1) because a 64x fan-in amplifies the finite difference by the same factor.
+;; The function is exactly linear in A, so the FD is still exact up to float rounding -- the
+;; tolerance is absorbing scale, not sloppiness.
+;;
+;; MEASURED, and the measurement is why reduce-workgroup is an ANALYZED FORM rather than a
+;; macro.  As a macro it expanded before the backward walk, and the ordinary machinery reversed
+;; the expansion.  That is not merely heavy -- it is WRONG.  This spec read:
+;;
+;;     analytical=1.0   numerical=64.00012   diff=63.000122
+;;
+;; 1.0 is the derivative of the IDENTITY: the backward pass had lost the entire reduction.  The
+;; AD walk models SINGLE-THREAD dataflow, and thread j writing sv[j] for thread i to read is a
+;; CROSS-THREAD edge no per-thread reversal can see, so the fan-in simply vanished.  reduce-warp
+;; differentiates correctly only because shuffle-xor carries an explicit VJP modelling the
+;; cross-lane transpose; shared memory has no such rule.  See BUG 073.
+;;
+;; With the semantic VJP (an all-reduce of the adjoint, since an all-reduce is self-transposing)
+;; the same spec reads analytical=64.0 against numerical=64.00012.
+;;
+;; The spec itself did not change between those two runs: it constrains the ANSWER, not the
+;; implementation, which is what let it arbitrate the choice at all.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_reduce_workgroup (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  ;; EXPLICIT 4, not :match-num-warps-per-workgroup.  tests/verify-autodiff-runner.lisp
+  ;; allocates the scratch buffer itself and, like the hoisters before BUG 070, accepts only a
+  ;; NUMBER -- a symbolic size fails the run with ":MATCH-NUM-WARPS-PER-WORKGROUP is not of type
+  ;; NUMBER".  It is a THIRD consumer of :size-expr that BUG 070 did not reach.  4 is correct
+  ;; here (64 threads / 16-lane bmg warp) and keeps this spec about the DERIVATIVE; restore the
+  ;; symbolic form when the runner grows a resolver.
+  (let ((sv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((v (~ A row col)))
+          (reduce-workgroup #'+ v 0.0 :local-scratch-vec sv)
+          ;; Every thread writes the total, so sum(C) = 64 * total.
+          (set! (~ C row col) v))))))

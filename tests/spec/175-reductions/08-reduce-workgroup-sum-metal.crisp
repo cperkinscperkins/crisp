@@ -1,0 +1,44 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 2016 2016 2016 2016
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- reduce-workgroup, the base case.  TDD.
+;;
+;; Each of the 64 threads contributes its own linear id, so the workgroup total is
+;; 0+1+...+63 = 2016, and EVERY thread must end up holding it.
+;;
+;; WHY 2016 IS THE RIGHT NUMBER TO DEMAND.  Under the bmg profile a 64-thread workgroup is four
+;; 16-lane warps, and warp W covers linear ids 16W..16W+15, so its own partial is 256W + 120:
+;;
+;;     warp 0 -> 120     warp 1 -> 376     warp 2 -> 632     warp 3 -> 888
+;;
+;; and those sum to 2016.  So a reduction that completes PHASE 1 (per-warp) but not PHASE 2
+;; (the inter-warp sweep) writes 120 376 632 888 -- four visibly distinct wrong values rather
+;; than something that could be mistaken for a rounding difference.  This spec therefore
+;; discriminates the two phases, which is the part of reduce-workgroup that can actually break;
+;; spec 03 already covers the per-warp butterfly on its own.
+;;
+;; THE WRITER IS EACH WARP'S LAST LANE, not lane 0 and not thread 0.  The post-condition is that
+;; every thread of the workgroup holds the total, so reading it back from an arbitrary
+;; non-leader lane is a stronger claim than reading it from the thread that happened to do the
+;; final broadcast.  All four slots must agree.
+;;
+;; The scratch vector is passed explicitly: auto-generation needs VAR's element type at
+;; macroexpansion time, which Crisp cannot yet supply.  Its :match-num-warps-per-workgroup
+;; sizing is the mechanism spec 02 pins.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel reduce_workgroup_sum (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-local-linear-id))))
+      (reduce-workgroup #'+ contrib 0.0 :local-scratch-vec sv)
+      (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+        (set! (~ out (to-int (warp-id))) contrib)))))
