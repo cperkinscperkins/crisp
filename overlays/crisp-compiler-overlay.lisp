@@ -102,3 +102,108 @@
       (let ((cls (intern "REDUCE-WARP" cl)))
         (unless (eq cls ccs)
           (setf (macro-function cls) (macro-function ccs)))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — the VJP of a BROADCAST shuffle (lifts 173's :idx refusal).
+;;; ---------------------------------------------------------------------------
+;;; src/autodiff.lisp  (replaces %shuffle-backward's :idx branch)
+;;;
+;;; y[L] = v[base(L) + (idx mod w)]  -- every lane of a segment reads the SAME lane, so an
+;;; indexed shuffle with a UNIFORM index is a BROADCAST.  The transpose of a fan-out is a
+;;; fan-in:
+;;;
+;;;     vbar[L] += SUM over j in segment(L) of g[j]     if (L mod w) == (idx mod w)
+;;;     vbar[L] += 0                                    otherwise
+;;;
+;;; 173 refused this, and its message asserted that "a CONSTANT target is no simpler" than a
+;;; runtime one.  That claim is wrong, and the axis it picked is the wrong one.  The question
+;;; is not literal-vs-runtime, it is UNIFORM-vs-LANE-VARYING:
+;;;
+;;;   * a UNIFORM index (every lane reads one lane) is a broadcast -- transpose is the
+;;;     segment reduction above, which is exact, allocation-free and needs no atomics;
+;;;   * a LANE-VARYING index is a general gather -- several lanes may read the same source and
+;;;     others none, so the transpose is a true scatter-add of unknown multiplicity.  THAT is
+;;;     the hard case 173 described, and it is still refused.
+;;;
+;;; A compile-time literal is simply the case where uniformity is free to establish.  A
+;;; uniform RUNTIME index is equally differentiable in principle and is left for later: Crisp
+;;; has a uniformity pre-pass (endeavour 120), but it runs after the AD walk, so consulting it
+;;; here is a sequencing change rather than a new rule.  The refusal below now says so.
+;;;
+;;; WHY THE BUTTERFLY IS INLINE rather than a reduce-warp call.  The sum is SEGMENT-scoped --
+;;; lane L must collect only its own width-w segment -- and reduce-warp reduces a whole warp.
+;;; Its active-threads argument is a different concept (which lanes CONTRIBUTE, not how wide
+;;; the exchange is), so it cannot express this.  The strides run w/2 .. 1 and an xor by a mask
+;;; below w never leaves its segment, so passing the width through to shuffle-xor keeps each
+;;; segment's reduction independent.
+;;;
+;;; The `let` placing the reduction OUTSIDE the conditional is the same D6 obligation the
+;;; :up/:down branches document: a warp collective may not sit in divergent control flow, so
+;;; the butterfly runs unconditionally in every lane and only its RESULT is gated.
+
+(defun %175-broadcast-vjp-form (g value-adj idx tail width-form zero)
+  "The adjoint statement for a broadcast shuffle.  See the section header for the derivation."
+  (let* ((explicit-width (second tail))            ; (index [width]) -- width if written
+         (w-lit (or (and (integerp explicit-width) explicit-width) (%173-warp-size)))
+         (tot (intern "%RW-TOT" (find-package :crisp.compiler)))
+         (st  (intern "%RW-S"   (find-package :crisp.compiler)))
+         (xor-tail (when explicit-width (list explicit-width))))
+    `(let ((,tot ,g))
+       (dec-times-by-half+ (,st ,(floor w-lit 2))
+         (set! ,tot (+ (shuffle-xor ,tot ,st ,@xor-tail) ,tot)))
+       (set! ,value-adj
+             (+ ,value-adj
+                (if (= (rem (to-ulong (warp-lane)) (to-ulong ,width-form))
+                       (rem (to-ulong ,idx) (to-ulong ,width-form)))
+                    ,tot
+                    ,zero))))))
+
+(defun %175-raw-integer-literal (form)
+  "The integer value of a raw literal FORM, or NIL.
+
+   Needed because the AD walk sees RAW forms and Crisp spells a typed literal as a SUFFIXED
+   SYMBOL: `2ul` is read by the CL reader as the symbol |2UL|, and only later does
+   %try-parse-typed-literal (src/analysis/core.lisp) turn it into a ulong semantic-literal.  So
+   (integerp (third expr)) is false for exactly the form this VJP is written for.
+
+   Only the INTEGER suffixes are accepted.  A float-suffixed literal (2.0f, 3d) is not a legal
+   lane index, so returning NIL for it is correct rather than merely conservative."
+  (cond
+    ((integerp form) form)
+    ((symbolp form)
+     (let* ((name (symbol-name form))
+            (npos (or (position-if-not #'digit-char-p name) (length name))))
+       (when (and (> npos 0)
+                  (member (subseq name npos)
+                          '("" "U" "L" "UL" "S" "US" "C" "UC")
+                          :test #'string=))
+         (parse-integer name :end npos))))
+    (t nil)))
+
+(defvar *orig-175-shuffle-backward* (fdefinition '%shuffle-backward)
+  "Captured once at overlay load.")
+
+(defun %shuffle-backward (v expr emit-fn local-adj-fn)
+  "Overlay wrapper: handles the :idx (broadcast) case 173 refused; everything else unchanged."
+  (if (and (eq (%shuffle-form-op expr) :idx)
+           (%175-raw-integer-literal (third expr)))
+      (let* ((value (second expr))
+             (idx   (third expr))
+             (tail  (cddr expr))
+             (w     (%shuffle-form-width-form expr))
+             (g     (funcall local-adj-fn v)))
+        (log:debug "175 broadcast VJP: ~a := ~a" v expr)
+        (if (and value (symbolp value))
+            (funcall emit-fn (%175-broadcast-vjp-form
+                              g (funcall local-adj-fn value) idx tail w `(- ,g ,g)))
+            (log:debug "175 broadcast VJP: operand ~a is not a symbol; nothing to accumulate" value))
+        t)
+      (if (eq (%shuffle-form-op expr) :idx)
+          ;; KEEP THE PHRASE "runtime target lane".  173-shuffles/errors/07 matches on it
+          ;; (CHECK-FAIL), and "no VJP is registered for an indexed shuffle" is its FAIL-WITH
+          ;; string -- rewording either silently turns that spec from a real check into a
+          ;; failure, which is how this was caught.
+          (error "~A: no VJP is registered for an indexed shuffle with a runtime target lane.  A CONSTANT target lane IS supported: every lane then reads the same lane, so the form is a broadcast whose transpose is a segment-wide sum, which differentiates exactly.  The distinction that matters is UNIFORM vs LANE-VARYING, not constant vs runtime -- a lane-varying index is a general gather, where several lanes may read the same source and others none, so its transpose is a scatter-add of unknown multiplicity and not a shuffle at all.  A uniform RUNTIME index is differentiable in principle, but Crisp cannot tell it apart here because the uniformity pre-pass runs after the autodiff walk.  Use a constant target lane, or shuffle-xor / shuffle-up / shuffle-down, all of which differentiate exactly; or if this kernel really is forward-only, SKIP-WITH[--differentiate]."
+                 (car expr))
+          (funcall *orig-175-shuffle-backward* v expr emit-fn local-adj-fn))))

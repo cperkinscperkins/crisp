@@ -1,6 +1,13 @@
-;; TEST-EXPECT: PASS
+;; TEST-EXPECT: FAIL
 ;; CHECK-FAIL: "warp collective"
-;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; TEST-EXPECT is FAIL, and no CHECK-FAIL-FLAGS, because this refusal is backend-independent:
+;; %shuffle-check-not-divergent consults only *in-divergent-conditional*, so it fires on the
+;; default pass too.  Modelled on 173-shuffles/errors/04, which is the same check one level
+;; down.  (The TEST-EXPECT: PASS + CHECK-FAIL-FLAGS shape belongs to an error that fires ONLY
+;; under particular flags -- 173 errors/06, whose D7 pinning check is SPIR-V-only and whose
+;; default pass therefore has to succeed.  Using that shape here made the default pass expect a
+;; clean compile and report the correct refusal as a failure.)
 ;;
 ;; ENDEAVOUR 175 -- reduce-warp is a WARP COLLECTIVE and every lane must reach it.  TDD.
 ;;
