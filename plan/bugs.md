@@ -2782,10 +2782,16 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         Guarded by tests/spec/175-reductions/16, which pins the NUMBER (1.0) against a finite
         difference rather than merely compiling.
 
-[ ] 078 VERIFY-AUTODIFF WITH output-vec DOES NOT COMPUTE A FINITE DIFFERENCE, so such a spec
-        checks the analytical gradient against the DIRECTIVE's own expectation and nothing else.
-        The report reads `analytical=X expected=Y` where an output-mat spec reads
+[ ] 078 VERIFY-AUTODIFF DOES NOT COMPUTE A FINITE DIFFERENCE FOR A VECTOR INPUT (A=[...]), so
+        such a spec checks the analytical gradient against the DIRECTIVE's own expectation and
+        nothing else.  The report reads `analytical=X expected=Y` where a matrix-input spec reads
         `analytical=X numerical=Y`.
+
+        CORRECTED 2026-09-22.  This entry originally blamed output-vec, which is WRONG: spec 23
+        uses `A=4x16 ... output-vec=1` and does get a finite difference.  The axis is the INPUT --
+        a matrix input is differenced, a vector input is not.  The original diagnosis came from
+        spec 16's first draft, which changed input and output shape together and so could not
+        separate them.  Two variables, one experiment.
 
         That is a weaker test than it looks: the whole value of VERIFY-AUTODIFF is corroborating
         the compiler against an independent measurement on hardware, and with output-vec there is
@@ -2985,3 +2991,33 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Endeavour 175's grid-reduce-last-man!, the first construct in Crisp needing
         cross-workgroup DATA rather than just a cross-workgroup counter.
+
+[ ] 084 VERIFY-AUTODIFF CANNOT RUN A KERNEL CONTAINING A GLOBAL SCRATCH CELL -- the launch dies
+        with L0 0x70000001 (DEVICE_LOST) at zeCommandQueueSynchronize.
+
+        BISECTED to one binding.  The same kernel, differing only by whether it declares
+        (make-scratch-cell uint :address-space :global):
+
+            with the cell:     FAIL  L0 error 0x70000001 in ZE-COMMAND-QUEUE-SYNCHRONIZE
+            without the cell:  PASS  analytical=1.0 numerical=1.0000019
+
+        No election, no barriers, no reduction involved in the failing case -- a bare kernel that
+        allocates the cell, bumps it once, and atomically accumulates into its output.
+
+        NOT the compiler.  The differentiated kernel BUILDS cleanly and its _GRAD body is correct
+        on inspection (the VJP replaced the construct; the backward contains no replayed election
+        and no atomics).  The failure is in the runner's handling of the implicit parameter.
+
+        TWO HARNESS GAPS WERE FIXED ON THE WAY HERE and are worth distinguishing from this one:
+        BUG 047 (a scratch CELL run through the tensor spec builder) was a real COMPILER bug, and
+        tests/run-specs.lisp's %vad-read-implicit-params had no case for a UINT element type.
+        Both are fixed; this remains.
+
+        BLOCKS.  tests/spec/175-reductions/26 -- the VJP of grid-reduce-last-man!, which needs a
+        global uint cell for its ticket counter, so the construct's derivative cannot be measured
+        against a finite difference at all until this is fixed.  The spec keeps its COMPILE-WITH
+        passes (the backward kernel builds) but its NUMBER is unverified, which given this
+        endeavour's history -- three constructs that compiled and returned wrong gradients
+        silently -- is not a comfortable place to leave it.
+
+        FOUND BY.  Endeavour 175, writing the AD spec for grid-reduce-last-man!.

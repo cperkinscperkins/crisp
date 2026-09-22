@@ -1721,3 +1721,54 @@
                (when-thread-in-group-is 0
                  (set! (~ ,return-vec 0) ,val)))))
          (compiler-no-op)))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 047: a scratch CELL is not a tensor.
+;;; ---------------------------------------------------------------------------
+;;; src/autodiff.lisp  (%promote-scratch-init-for-ad)
+;;;
+;;; The function computed
+;;;
+;;;     (canonical (%scratch-tensor-canonical-spec op args))
+;;;
+;;; UNCONDITIONALLY, before dispatching on the operator -- so a (make-scratch-cell uint) was run
+;;; through the TENSOR spec builder, which has no cell case and falls through to (list 'tensor
+;;; arg1).  That is the incomplete type (TENSOR UINT), and the compiler died:
+;;;
+;;;     Invalid incomplete type specifier: (TENSOR UINT).
+;;;
+;;; The MAKE-SCRATCH-CELL branch then promoted that bogus spec, so the cell path could never have
+;;; worked -- which matches the symptom: 074-scratch-tensor/05 has carried a differentiate-skip
+;;; naming BUG 047 since it was written, as "the first spec to bind a scratch CELL in a def-kernel
+;;; let under --differentiate".
+;;;
+;;; THE FIX IS TO NOT ASK A TENSOR QUESTION ABOUT A CELL.  A cell's element type is simply its
+;;; first argument; there is no rank, no extents and no canonical tuple to consult.  The tensor
+;;; branches are untouched and still go through the original.
+;;;
+;;; Endeavour 175 made this load-bearing: grid-reduce-last-man! needs TWO scratch cells (the
+;;; global ticket counter and the local election flag), so every differentiated kernel using it
+;;; hit this immediately.
+
+(defvar *orig-175-promote-scratch-init* (fdefinition '%promote-scratch-init-for-ad)
+  "Captured once at overlay load.")
+
+(defun %promote-scratch-init-for-ad (init)
+  "Overlay wrapper: MAKE-SCRATCH-CELL is handled directly; every other scratch form defers to the
+   original.  A cell has no tensor spec to canonicalise (BUG 047)."
+  (let ((op (car init)))
+    (if (and (symbolp op) (string-equal (symbol-name op) "MAKE-SCRATCH-CELL"))
+        (let* ((args (cdr init))
+               (elem (first args))
+               ;; Same promotion rule the tensor paths use: an adjoint accumulates many
+               ;; contributions, so an integer or narrow-float element widens to a float one.
+               (promoted (cond
+                           ((%crisp-integer-scalar-type-p elem)
+                            (%integer-scalar-to-float-scalar elem))
+                           ((%crisp-narrow-float-scalar-p elem) 'float)
+                           (t elem))))
+          ;; Trailing arguments (e.g. :address-space :global) are preserved verbatim -- the
+          ;; adjoint cell must live in the same memory the primal cell does.
+          `(,op ,promoted ,@(cdr args)))
+        (funcall *orig-175-promote-scratch-init* init))))

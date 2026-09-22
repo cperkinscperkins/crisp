@@ -1553,6 +1553,11 @@
                                    ((float)  4)
                                    ((half bfloat16) 2)
                                    ((double) 8)
+                                   ;; Endeavour 175: a UINT scratch cell.  grid-reduce-last-man!
+                                   ;; needs two -- the global ticket counter and the local election
+                                   ;; flag -- so any differentiated kernel using it hit the error
+                                   ;; below.  4 bytes, matching Crisp's 32-bit uint.
+                                   ((uint) 4)
                                    ((int ulong long) 8)
                                    (t (error "%vad-read-implicit-params: unsupported elem-type ~A in ~A"
                                              elem-type type-spec))))

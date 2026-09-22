@@ -1,0 +1,57 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "only for the + reduction"
+;; CHECK-FAIL: "only for the + reduction"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 175 -- grid-reduce-last-man! differentiates only the SUM reduction.
+;;
+;; errors/05's twin for the other stage-2 strategy.  The refusal already existed in the VJP when
+;; this spec was written and NOTHING EXERCISED IT, which is the reason the spec exists: an
+;; unexercised refusal is a claim about the code, not a behaviour of it.  A later edit that
+;; dropped the operator check would have left spec 28 green (it never differentiates) and spec 26
+;; green (it only ever reduces with +), and the compiler would have started returning a confident
+;; wrong gradient for max.  This endeavour has produced three constructs that did exactly that --
+;; BUG 073, 077 and 081 -- so the failure mode is measured history, not a hypothetical.
+;;
+;; TEST-EXPECT is PASS with CHECK-FAIL-FLAGS because the refusal is AD-ONLY: the same kernel
+;; compiles and runs correctly forward, which spec 28 verifies on hardware at -1.  Only the
+;; backward pass is refused.  FAIL-WITH is required in addition, because when the runner itself
+;; differentiates the default pass BECOMES a differentiating pass, and this kernel is built to be
+;; refused there -- without it the correct refusal is reported as a failure.
+;;
+;; WHY THE LINE IS AT +, and it is mathematics rather than a missing feature.  A SUM over the grid
+;; gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell
+;; -- exact, and needing nothing recorded from the forward pass.  For max the adjoint routes ONLY
+;; to the thread that supplied the winning value and is zero everywhere else, so the backward pass
+;; needs an argmax that the forward pass never stored; for an arbitrary binop it needs that op's
+;; partial derivatives at every combining node, i.e. the whole combining tree and its
+;; intermediates.  Neither is recorded, and Crisp refuses rather than returning a gradient that
+;; is quietly wrong.
+;;
+;; THE REFUSAL IS THE STRATEGY'S ONE ASYMMETRY.  Accepting any commutative binop is precisely what
+;; last-man offers over grid-reduce-atomic! (spec 28), and the derivative is exactly where that
+;; generality stops.  Worth stating plainly rather than leaving a user to infer it: forward and
+;; backward do NOT accept the same set of operators here.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function lm-max-nd (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel diff_last_man_non_plus (A &out out)
+  (declare #'((matrix float :address-space :global :align :compact :contiguous-term :row-major)
+              &out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((v (~ A (/ tid 16) (rem tid 16))))
+        (grid-reduce-last-man! #'lm-max-nd v -1.0e30 out
+                               :local-scratch-vec sv
+                               :global-scratch-vec gv
+                               :atomic-counter ctr
+                               :election-flag-cell flag)))))

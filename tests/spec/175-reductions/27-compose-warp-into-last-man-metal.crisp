@@ -1,0 +1,52 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 30720 1 2 3
+;; SKIP-WITH[--differentiate]: "composition of forward constructs; the VJPs have their own specs"
+;;
+;; ENDEAVOUR 175 -- STAGE 1 FEEDING LAST-MAN.  Spec 20's twin, with the other stage-2 strategy.
+;;
+;; Composition is not a property of the construct pair in the abstract, it is a property of each
+;; construct's internals, so it has to be re-checked per strategy rather than argued once.
+;; grid-reduce-atomic! finishes with a hardware instruction; grid-reduce-last-man! finishes with a
+;; SECOND reduce-workgroup, inside an election, reading a global buffer.  That sweep reuses the
+;; SAME :local-scratch-vec the first reduction used -- so a composition that left live state in
+;; that scratch, or a sweep that raced its own phase-1 use of it, would break here and nowhere
+;; else in the ladder.
+;;
+;;   lane L of a 16-lane bmg warp contributes L
+;;   reduce-warp            -> every lane of every warp now holds 0+1+...+15 = 120
+;;   grid-reduce-last-man!  -> 256 threads each contributing 120 = 30720
+;;
+;; THE SAME NUMBER AS SPEC 20, deliberately and not by accident: the two strategies compute the
+;; same function, so agreeing is the point.  It does mean this value alone cannot tell you WHICH
+;; strategy ran -- but the failure modes are what separate them.  If the election never fired,
+;; last-man leaves slot 0 at its pre-fill of 0; grid-reduce-atomic! has no election and cannot
+;; fail that way.  If the reduce-warp were dropped the grid would sum raw lane ids (1920).
+;;
+;; The multiplier is the warp width, so 30720 is bmg-specific -- a 32-lane CUDA twin reads 126976.
+;;
+;; The reduce-warp runs UNCONDITIONALLY in every lane: it is a warp collective and gating it is
+;; refused (errors/04).  Only the grid reduction elects, and it does so internally.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel compose_warp_into_last_man (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (let ((contrib (to-float (warp-lane))))
+      ;; Stage 1: every lane ends up holding its warp's total.
+      (reduce-warp #'+ contrib 0.0)
+      ;; Stage 2: that per-warp total is now the per-thread contribution to the grid.
+      (grid-reduce-last-man! #'+ contrib 0.0 out
+                             :local-scratch-vec sv
+                             :global-scratch-vec gv
+                             :atomic-counter ctr
+                             :election-flag-cell flag))))

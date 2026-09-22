@@ -1,0 +1,78 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; NO FINITE-DIFFERENCE CHECK HERE -- blocked by BUG 084, which stops VERIFY-AUTODIFF running
+;; any kernel that declares a global scratch cell.
+;;
+;; (Not written as a KNOWN-ISSUE directive: that one marks a whole spec expected-to-FAIL, and the
+;; two compile passes below are expected to PASS.  Saying it in prose is the accurate thing.)
+;;
+;; The finite-difference check this spec WANTS is, WITH THE COLON PUT BACK after the directive
+;; name (it is omitted here on purpose -- the runner matches a directive anywhere in a comment
+;; line, indentation and surrounding prose included, so spelling it in full would re-arm it):
+;;
+;;   VERIFY-AUTODIFF  A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-vec=1
+;;
+;; It is kept here rather than deleted so it can be restored exactly when BUG 084 is fixed.
+;;
+;; grid-reduce-last-man! needs a GLOBAL uint cell for its ticket counter, and the runner dies on
+;; any kernel declaring one (L0 0x70000001 at zeCommandQueueSynchronize).  Bisected to that single
+;; binding: the identical kernel without the cell passes at analytical=1.0 numerical=1.0000019.
+;;
+;; WHAT THIS SPEC STILL PROVES, and what it does not.  The COMPILE-WITH passes below show the
+;; construct differentiates without error and that its VJP is reached -- the _GRAD body contains
+;; no replayed election and no atomics, so the rule replaced the construct rather than the walk
+;; reversing it.  It does NOT prove the NUMBER.  Given this endeavour has already produced three
+;; constructs that compiled and returned silently wrong gradients (BUG 073, 077, 081), that is a
+;; real gap and not a formality.
+;;
+;; The rule itself is shared with grid-reduce-atomic!, whose VJP IS measured (spec 23, 16.0
+;; against a finite difference) -- the two constructs compute the same function by different
+;; schedules, so they carry the same derivative.  That is corroboration, not verification.
+;;
+;; ENDEAVOUR 175 -- the VJP of grid-reduce-last-man!.
+;;
+;; out[0] is the sum over the whole grid, so d out / d x = 1 for every thread and the adjoint is
+;; a plain broadcast of the output cell -- xbar_t = outbar[0].  Identical to grid-reduce-atomic!'s
+;; rule, and that identity is the interesting part rather than a coincidence: the two constructs
+;; compute the SAME FUNCTION by wildly different schedules, and a derivative depends on what is
+;; computed, not on how the work was divided.  The whole last-man apparatus -- the global
+;; partials, the ticket, the election, the single sweeping workgroup -- leaves no trace in the
+;; backward pass at all.
+;;
+;; ONE WORKGROUP HERE, deliberately.  The input has 64 elements and VERIFY-AUTODIFF launches one
+;; thread per element, so a multi-workgroup launch would have threads reading past the end.  Spec
+;; 25 covers the multi-workgroup forward path on metal (4 workgroups, 32640, with the election
+;; measured).  The VJP does not vary with workgroup count -- it is a broadcast either way -- so
+;; the single-workgroup case is the right place to pin the NUMBER.
+;;
+;; With one workgroup last-man degenerates gracefully: num_groups-1 = 0, the sole workgroup draws
+;; ticket 0, elects itself, and sweeps its own single partial.  That is worth exercising in its
+;; own right -- an off-by-one in the ticket comparison would make NO workgroup elect itself and
+;; the result would never be stored.
+;;
+;; output-vec=1 with a MATRIX input, which does produce a real finite difference.  (BUG 078 is
+;; about a vector INPUT, not a vector output -- an error in the original diagnosis, corrected.)
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel diff_grid_reduce_last_man (A &out out)
+  (declare #'(mat-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((v (~ A row col)))
+          (grid-reduce-last-man! #'+ v 0.0 out
+                                 :local-scratch-vec sv
+                                 :global-scratch-vec gv
+                                 :atomic-counter ctr
+                                 :election-flag-cell flag))))))
