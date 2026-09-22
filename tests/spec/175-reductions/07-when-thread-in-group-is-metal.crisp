@@ -2,9 +2,16 @@
 ;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
 ;; SKIP-DEFAULT-PASS
 ;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; HOIST-EXPECT: BUFFER out: 100 1 2 3
 ;; SKIP-WITH[--differentiate]: "elects a thread by coordinate; no differentiable value"
+;;
+;; BOTH BACKENDS SHARE ONE EXPECTATION, unlike most of this endeavour's metal specs, because this
+;; one is genuinely warp-width independent: it elects ONE thread of the workgroup and writes
+;; out[0], so neither the value nor the buffer pattern moves between a 16-lane and a 32-lane warp.
+;; Contrast 06, whose per-warp election writes out[warp-id] and therefore fills four slots on BMG
+;; and two on NVIDIA -- that one needs a separate twin.  (The CUDA run SKIPs locally without nvcc.)
 ;;
 ;; ENDEAVOUR 175 -- when-thread-in-group-is.  TDD: written before the implementation.
 ;;

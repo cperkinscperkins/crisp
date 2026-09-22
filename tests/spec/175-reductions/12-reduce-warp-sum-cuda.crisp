@@ -1,0 +1,55 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 496 3696 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP twin is spec 14"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-21 and deliberately left unvalidated -- no NVIDIA box
+;; !!! was available.  VALIDATE THIS FIRST on the next pod run, before reading any failure here as
+;; !!! a compiler defect.  An unrun directive is a guess: 173 spec 12 carried one that turned out
+;; !!! to be unexpressible by the harness (BUG 067), which is the mistake this warning exists to
+;; !!! prevent repeating.
+;;
+;; ENDEAVOUR 175 -- the CUDA twin of 03-reduce-warp-sum-metal.
+;;
+;; WHY A SEPARATE FILE rather than a second TEST-HOIST on 03.  A spec carries ONE HOIST-EXPECT
+;; set, and these values are WARP-WIDTH dependent, so the two backends cannot share them.  173/02
+;; does share one, but only because its fingerprint values happen to be width-independent.
+;;
+;; THE ARITHMETIC IS THE POINT OF THE TWIN.  The kernel source is identical to 03; only the warp
+;; width differs, and every expected number moves:
+;;
+;;                       BMG (16 lanes, 4 warps)      NVIDIA (32 lanes, 2 warps)
+;;   warp W sums          256W + 120                   3200W + 496
+;;   out                  120 1720 3320 4920           496 3696 2 3
+;;
+;; Lane L of warp W contributes 100W + L, so warp W sums 32*100W + (0+...+31) = 3200W + 496 --
+;; 496 and 3696.  Only TWO warps exist, so slots 2 and 3 keep the harness pre-fill, and that is
+;; itself part of the claim: a 16-lane assumption leaking into the PTX path would write four slots.
+;;
+;; STATICALLY PRE-VERIFIED, which is as far as it is honest to go without the hardware.  The
+;; emitted PTX butterfly is five steps wide, as a 32-lane warp requires:
+;;
+;;     shfl.sync.bfly.b32  %r13, %r12, 16, 31, -1
+;;     shfl.sync.bfly.b32  %r15, %r14,  8, 31, -1
+;;     shfl.sync.bfly.b32  %r17, %r16,  4, 31, -1
+;;     shfl.sync.bfly.b32  %r19, %r18,  2, 31, -1
+;;     shfl.sync.bfly.b32  %r21, %r20,  1, 31, -1
+;;
+;; against four steps (8..1) on BMG.  That confirms %173-warp-size's deliberate short-circuit to
+;; 32 on :ptx reaches the macro expansion; it does NOT confirm the sum.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel reduce_warp_sum_cuda (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (+ (* (to-int (warp-id)) 100) (to-int (warp-lane))))))
+    (reduce-warp #'+ contrib 0.0)
+    ;; The LAST lane, not lane 0 -- the xor butterfly is an ALL-reduce, so every lane holds the
+    ;; total and an implementation that left it only in lane 0 must fail.
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ out (to-int (warp-id))) contrib))))

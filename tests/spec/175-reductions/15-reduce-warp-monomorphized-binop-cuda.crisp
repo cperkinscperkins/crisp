@@ -1,0 +1,57 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 31 496 2 3
+;; SKIP-WITH[--differentiate]: "forward monomorphization only"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-21, no NVIDIA box available.  VALIDATE THIS FIRST on
+;; !!! the next pod run before reading a failure here as a compiler defect.
+;;
+;; ENDEAVOUR 175 -- the CUDA twin of 11-reduce-warp-monomorphized-binop-metal.
+;;
+;; Two instantiations of one forwarder, over a 32-lane warp: max of lane ids is 31, sum is
+;; 0+1+...+31 = 496.  On BMG the same source gives 15 and 120.
+;;
+;; THIS TWIN COVERS A PATH THE BMG SPEC CANNOT REACH.  BUG 076's fix makes D7 a kernel-scope
+;; reachability check -- a kernel that transitively reaches a warp collective must have a pinned
+;; subgroup size -- and that check is guarded by (eq *target-backend* :spirv), because NVIDIA's warp
+;; has been 32 lanes on every part ever shipped and there is nothing to pin.  So on PTX the check is
+;; SKIPPED entirely, and this spec is the only thing that exercises a warp collective behind a
+;; monomorphized function parameter with D7 out of the picture.
+;;
+;; That matters because the two mechanisms are independent: the forwarder must work because the
+;; MONOMORPHIZATION inlines a specialised copy, not because a pinning check let it through.  If the
+;; PTX path ever grew its own reason to refuse a collective inside a helper, this spec would catch it
+;; and spec 11 would not.
+;;
+;; The reduction is computed UNCONDITIONALLY and only the write is elected -- a warp collective
+;; inside the election would be refused, and correctly so (errors/04).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function wmax-c (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-function wsum-c (a b)
+  (declare #'(float float => float))
+  (+ a b))
+
+(def-function warp-reduce-with-c (f x seed)
+  (declare #'(#'(float float => float) float float => float))
+  (let ((v x))
+    (reduce-warp f v seed)
+    v))
+
+(def-kernel monomorphized_warp_reduce_cuda (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((lane (to-float (warp-lane))))
+    (let ((mx (warp-reduce-with-c #'wmax-c lane -1.0e30))
+          (sm (warp-reduce-with-c #'wsum-c lane 0.0)))
+      (when-thread-in-group-is 0
+        (set! (~ out 0) mx)
+        (set! (~ out 1) sm)))))
