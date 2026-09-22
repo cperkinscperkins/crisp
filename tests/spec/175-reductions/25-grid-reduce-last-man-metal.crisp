@@ -1,0 +1,59 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-last-man!, the second stage-2 strategy.
+;;
+;;   (grid-reduce-last-man! fn var identity return-vec
+;;                          :local-scratch-vec sv :global-scratch-vec gv :atomic-counter ctr)
+;;
+;; Every workgroup reduces itself, writes its partial into a GLOBAL scratch vector, and bumps a
+;; global counter.  The workgroup whose ticket comes back as num_groups-1 knows it is the last to
+;; arrive, and it alone sweeps the partials into the answer.  One kernel launch, no contention on
+;; the result cell, and -- unlike grid-reduce-atomic! -- it works for ANY commutative operator,
+;; because the final sweep is an ordinary reduce-workgroup rather than a hardware instruction.
+;;
+;; 256 threads in 4 workgroups each contribute their global linear id, so the total is
+;; 0+1+...+255 = 32640.
+;;
+;; NOTE THE EXPECTATION IS 32640 EXACTLY, NOT 32640 PLUS THE PRE-FILL.  This is the visible
+;; behavioural difference from grid-reduce-atomic!: the last workgroup STORES the answer, where
+;; the atomic strategy ACCUMULATES onto whatever the buffer held.  Spec 17 reads 32640 only
+;; because slot 0 happens to start at 0; spec 21 shows the difference plainly, where slot 1 starts
+;; at 1 and reads 32641.  A last-man implementation that accumulated instead of storing would pass
+;; spec 17's shape and fail here.
+;;
+;; THE DOC'S CONSTRAINT IS SATISFIED: num_groups (4) must be <= local_work_size (64), so the final
+;; sweep covers every partial in one pass.  The construct asserts it at run time.
+;;
+;; WHAT WOULD BREAK AND HOW IT WOULD READ.  If no workgroup recognised itself as last, slot 0
+;; keeps its pre-fill of 0.  If EVERY workgroup thought it was last, the answer is still 32640
+;; (they would all store the same total) -- which is why the counter semantics have their own
+;; check: atomic-add! must return the value BEFORE the addition, so exactly one ticket equals
+;; num_groups-1.  That property is verified separately rather than inferred from this number.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_last_man (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        ;; The election flag is WORKGROUP-LOCAL and always uint, whatever the reduction's type.
+        ;; Caller-supplied for the same reason the buffers above are: scratch created inside an
+        ;; analyzer's expansion is invisible to the Pass-1 scanner that builds the kernel's
+        ;; implicit parameters.  It is what lets the LOSING workgroups retire immediately instead
+        ;; of sweeping a buffer whose result they will discard.
+        (flag (make-scratch-cell uint)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-last-man! #'+ contrib 0.0 out
+                             :local-scratch-vec sv
+                             :global-scratch-vec gv
+                             :atomic-counter ctr
+                             :election-flag-cell flag))))

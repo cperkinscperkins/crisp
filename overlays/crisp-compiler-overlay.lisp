@@ -1229,3 +1229,495 @@
         (when (and sym (macro-function sym))
           (fmakunbound sym)))))
   (register-vjp "REDUCE-WARP" (function %175-vjp-reduce-warp)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — grid-reduce-last-man! : analyzed form + monolithic VJP.
+;;; ---------------------------------------------------------------------------
+;;; src/analysis/ops.lisp (form + analyzer), src/autodiff.lisp (the VJP registration).
+;;;
+;;;   (grid-reduce-last-man! fn var identity return-vec
+;;;                          :local-scratch-vec sv :global-scratch-vec gv :atomic-counter ctr)
+;;;
+;;; Every workgroup reduces itself, stores its partial into a GLOBAL scratch vector and bumps a
+;;; global counter; the workgroup whose ticket comes back as num_groups-1 knows it arrived last
+;;; and sweeps the partials into the answer.  One launch, no contention on the result cell, and
+;;; unlike grid-reduce-atomic! it accepts ANY commutative operator -- the final sweep is an
+;;; ordinary reduce-workgroup rather than a single hardware instruction.
+;;;
+;;; IT STORES THE ANSWER; grid-reduce-atomic! ACCUMULATES onto whatever the buffer held.  That is
+;;; a visible behavioural difference, not an implementation detail, and spec 25 pins it.
+;;;
+;;; TWO DEPARTURES FROM THE DESIGN DOC'S REFERENCE IMPLEMENTATION.
+;;;
+;;; 1. THE LAST-MAN FLAG GETS ITS OWN CELL.  The doc parks it in localScratchVec[0] and then runs
+;;;    the final reduce-workgroup over that same buffer -- whose phase-1 leader store writes slot
+;;;    0.  Nothing separates the flag READS from that write, so a thread still reading the flag
+;;;    can see it clobbered by a faster thread that has already entered the sweep.  A race, and an
+;;;    intermittent one.  A dedicated cell costs one word of SLM and removes the interaction
+;;;    entirely.  It can be auto-allocated because its type is fixed (uint) and does not depend on
+;;;    VAR's -- which is exactly why the local and global scratch vectors still cannot be.
+;;;
+;;; 2. (get-local-id) BECOMES (get-local-linear-id).  BUG 079: a comparison against
+;;;    (get-local-id 0) is unreliable on SPIR-V, and the doc's sweep indexes the partials by it.
+;;;
+;;; THE SWEEP IS GATED, THE BARRIERS ARE NOT NEGOTIABLE.  reduce-workgroup contains
+;;; sync-workgroup, and a workgroup collective inside a thread-divergent conditional deadlocks --
+;;; which is why the gate must be WORKGROUP-UNIFORM.  Every thread reads the same flag cell after
+;;; a barrier, so it is uniform in fact; when+ is the form that says so to the analyzer.
+
+(defun %grid-reduce-last-man-parts (expr)
+  "Destructures (grid-reduce-last-man! FN VAR IDENTITY RETURN-VEC &key ...).
+   Returns (values fn var identity return-vec local global counter)."
+  (let ((keys (cdr (cdddr (cdr expr)))))
+    (values (second expr) (third expr) (fourth expr) (fifth expr)
+            (getf keys :local-scratch-vec)
+            (getf keys :global-scratch-vec)
+            (getf keys :atomic-counter))))
+
+(defun %grid-reduce-last-man-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (BUG 073/077/081 -- three constructs have now been bitten by
+   having their cross-thread behaviour live in an expansion rather than in a stated rule)."
+  (multiple-value-bind (fn var identity return-vec sv gv ctr)
+      (%grid-reduce-last-man-parts expr)
+    (dolist (pair (list (list return-vec "a return-vec" "the single global element the grid reduces into")
+                        (list sv ":local-scratch-vec" "one element per warp, for the per-workgroup reduction")
+                        (list gv ":global-scratch-vec" "one element per WORKGROUP, holding the partials")
+                        (list ctr ":atomic-counter"   "a zero-initialised global uint cell, used to elect the last workgroup")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-last-man!: ~a is required -- ~a.  These cannot be auto-generated because their element type follows VAR's, which is not known at analysis time."
+                                (second pair) (third pair))
+               :source-location nil)))
+    (let ((is-last (gensym "LM-ISLAST"))
+          (lid  (gensym "LM-LID"))
+          (ng   (gensym "LM-NG"))
+          (val  (gensym "LM-VAL")))
+      `(progn
+         ;; The doc's constraint: the final sweep is ONE reduce-workgroup, so every partial must
+         ;; fit in one workgroup's worth of threads.
+         (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
+                       "grid-reduce-last-man!: the number of workgroups exceeds local_work_size, so the final sweep cannot cover every partial in one pass")
+         ;; Phase 1 -- every thread of this workgroup ends up holding the workgroup's total.
+         (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+         ;; Phase 2 -- publish the partial, then take a ticket.
+         (when-thread-in-group-is 0
+           (set! (~ ,gv (to-int (get-workgroup-id 0))) ,var)
+           ;; The partial must be visible to whoever sweeps it BEFORE the counter announces this
+           ;; workgroup has arrived; otherwise the last workgroup can read a slot whose store is
+           ;; still in flight.  Legal inside the election because a fence is not a collective
+           ;; (BUG 082).
+           (mem-fence)
+           ;; The flag rides in the local scratch's slot 0.  A dedicated cell would be cleaner,
+           ;; but a scratch allocated inside an ANALYZER's expansion is invisible to the Pass-1
+           ;; scanner that builds the kernel's implicit parameters -- "Missing implicit argument
+           ;; ... for make-scratch-cell".  Only scratch written in the SOURCE is threaded through.
+           (set! (~ ,sv 0)
+                 (if (= (atomic-add! (~ ,ctr) 1u)
+                        (- (to-uint (get-num-groups 0)) 1u))
+                     ,identity ,identity)))
+         (sync-workgroup)
+         (let ((,is-last (~ ,sv 0)))
+           ;; THE SECOND BARRIER IS THE FIX FOR THE DOC'S RACE.  Every thread must finish READING
+           ;; the flag before the sweep below starts WRITING the same buffer -- reduce-workgroup's
+           ;; phase-1 leader store lands in slot 0.  Without this, a fast thread entering the
+           ;; sweep clobbers the flag while a slow one is still reading it, intermittently.
+           (sync-workgroup)
+           ;; Uniform by construction: every thread read the same slot after a barrier.  when+ is
+           ;; what says so to the analyzer, and it must, because the body contains barriers.
+           (when+ (> ,is-last 0.5)
+             (let ((,lid (to-int (get-local-linear-id)))
+                   (,ng  (to-int (get-num-groups 0))))
+               (let ((,val (if (< ,lid ,ng) (~ ,gv ,lid) ,identity)))
+                 (reduce-workgroup ,fn ,val ,identity :local-scratch-vec ,sv)
+                 (when-thread-in-group-is 0
+                   (set! (~ ,return-vec 0) ,val))))))
+         (compiler-no-op)))))
+
+(defun %analyze-grid-reduce-last-man (expr env context location)
+  "Analyzer for grid-reduce-last-man! -- expands and delegates."
+  (analyze-expression (%grid-reduce-last-man-expand expr) env context location))
+
+(defvar *orig-175f-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus grid-reduce-last-man!."
+  (funcall *orig-175f-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "GRID-REDUCE-LAST-MAN!" pkg) *expression-analyzers*)
+              '%analyze-grid-reduce-last-man)))))
+
+(defun %175-vjp-grid-reduce-last-man (form ctx)
+  "VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's
+   adjoint -- identical to grid-reduce-atomic!'s rule, because the two constructs compute the
+   same function by different schedules.  A derivative depends on WHAT is computed, not on how
+   the work was divided, which is worth stating: the elaborate last-man machinery leaves no trace
+   in the backward pass at all."
+  (multiple-value-bind (fn var identity return-vec sv gv ctr)
+      (%grid-reduce-last-man-parts form)
+    (declare (ignore identity sv gv ctr))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (and (consp fn) (symbolp (car fn))
+                   (string-equal (symbol-name (car fn)) "FUNCTION")
+                   (string= (symbol-name (second fn)) "+"))
+        (error "grid-reduce-last-man!: autodiff is supported only for the + reduction.  A SUM over the grid gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell.  min/max would route the adjoint only to the thread that supplied the winning value, which needs an argmin/argmax the forward pass does not record; an arbitrary binop needs the partial derivatives of that op at every combining node.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+      (unless (and var (symbolp var) return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-last-man nil))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg))))
+        (log:debug "175 VJP grid-reduce-last-man!: ~a := (~~ ~a 0)" vadj radj)
+        `(set! ,vadj (~ ,radj 0))))))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-LAST-MAN!" (function %175-vjp-grid-reduce-last-man)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 082: mem-fence is not a collective and must not be refused
+;;; in divergent control flow.
+;;; ---------------------------------------------------------------------------
+;;; src/analysis/control.lisp  (%warp-spec-check-sync)
+;;;
+;;; %analyze-gpu-builtin routes :sync-workgroup, :sync-warp, :mem-fence and :sync-cluster through
+;;; %warp-spec-check-sync, which -- outside a warp-specialization block -- hands all four to
+;;; %tlc-check-not-divergent.  So a mem-fence inside any thread-divergent conditional is refused:
+;;;
+;;;     MEM-FENCE cannot appear inside a thread-divergent conditional (if / when / unless / cond).
+;;;     It contains an internal sync-workgroup that would deadlock when only some threads enter.
+;;;
+;;; The claim in that message is FALSE for a fence.  mem-fence lowers to %ptx-membar-cta
+;;; (PTX `membar.cta`) and %gen-spirv-memory-barrier (SPIR-V OpMemoryBarrier) -- both pure MEMORY
+;;; fences, ordering one thread's accesses.  Neither is an execution barrier and neither requires
+;;; other threads to arrive, so there is nothing to deadlock.  The message is inherited from
+;;; %tlc-check-not-divergent, which was written for load-tile-at (which genuinely does contain an
+;;; internal sync-workgroup).
+;;;
+;;; WHAT IT BLOCKS: publish-then-signal, the standard idiom for handing data between workgroups --
+;;;
+;;;     (when-thread-in-group-is 0
+;;;       (set! (~ partials wg) value)
+;;;       (mem-fence)                        ; make the store visible BEFORE announcing it
+;;;       (atomic-add! (~ counter) 1u))
+;;;
+;;; which is exactly what grid-reduce-last-man! needs, and exactly how the design doc writes it.
+;;; Hoisting the fence out of the election is a correct workaround but a worse one: it makes every
+;;; thread fence to order a store only one of them performed.
+;;;
+;;; sync-warp KEEPS the check.  It is a warp COLLECTIVE -- every lane must arrive -- so divergence
+;;; genuinely breaks it, exactly as it breaks a shuffle (173's D6).  Only the fence is exempt.
+
+(defvar *orig-175-warp-spec-check-sync* (fdefinition '%warp-spec-check-sync)
+  "Captured once at overlay load.")
+
+(defun %warp-spec-check-sync (builtin-kw name-str location)
+  "Overlay wrapper: mem-fence is a memory fence, not a collective, so it is legal in divergent
+   control flow.  Everything else defers to the original check."
+  (if (eq builtin-kw :mem-fence)
+      nil
+      (funcall *orig-175-warp-spec-check-sync* builtin-kw name-str location)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — grid-reduce-last-man!, corrected expansion (supersedes the one above).
+;;; ---------------------------------------------------------------------------
+;;; NO LAST-MAN FLAG, AND NO GATE ON THE SWEEP.  The design doc elects the last workgroup, stores
+;;; a flag where every thread can see it, and runs the final sweep only in that workgroup.  Two
+;;; things make that hard to reproduce honestly here:
+;;;
+;;;   * THE FLAG HAS NO TYPE.  It would live in the local scratch, whose element type follows the
+;;;     reduction's -- so there is no generic way to write "1" and "0" into it.  (- var var) gives
+;;;     a typed zero; nothing gives a typed one.  A dedicated uint cell would solve it, but a
+;;;     scratch allocated inside an ANALYZER's expansion is invisible to the Pass-1 scanner that
+;;;     builds the kernel's implicit parameters -- "Missing implicit argument ... for
+;;;     make-scratch-cell".  Only scratch written in the SOURCE is threaded through.
+;;;   * GATING THE SWEEP GATES BARRIERS.  reduce-workgroup contains sync-workgroup, so the gate
+;;;     must be provably workgroup-uniform or the collective is refused.
+;;;
+;;; The observation that removes both: THREAD 0 ALREADY KNOWS.  It took the ticket, so it needs
+;;; no broadcast to learn whether its workgroup was last -- only the STORE has to be elected, and
+;;; a store is not a collective.  So every workgroup sweeps, and exactly one stores.
+;;;
+;;; IS THE UNGATED SWEEP CORRECT?  Yes, and the reason is the ticket, not the schedule.  A
+;;; workgroup receiving ticket num_groups-1 is by definition the last to increment, so every other
+;;; workgroup has already completed its fence-ordered store; the data it sweeps is complete.  The
+;;; others sweep partial data -- global scratch is zero-initialised, so they read zeros rather
+;;; than garbage -- and discard it unstored.
+;;;
+;;; THE COST, stated plainly: num_groups-1 workgroups perform one redundant reduce-workgroup.
+;;; That is a real regression against the doc's design and it is a deliberate trade for
+;;; correctness and simplicity.  It becomes recoverable the moment Crisp grows a workgroup
+;;; BROADCAST -- to-workgroup-uniform is currently a pass-through that emits a barrier
+;;; (codegen.lisp says so in its own docstring), not a broadcast.  Worth revisiting when the
+;;; reduction benchmarks land, since this is exactly the construct the doc calls "usually the
+;;; fastest".
+
+(defun %grid-reduce-last-man-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (BUG 073/077/081)."
+  (multiple-value-bind (fn var identity return-vec sv gv ctr)
+      (%grid-reduce-last-man-parts expr)
+    (dolist (pair (list (list return-vec "a return-vec" "the single global element the grid reduces into")
+                        (list sv ":local-scratch-vec" "one element per warp, for the per-workgroup reduction")
+                        (list gv ":global-scratch-vec" "one element per WORKGROUP, holding the partials")
+                        (list ctr ":atomic-counter"   "a zero-initialised global uint cell, used to elect the last workgroup")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-last-man!: ~a is required -- ~a.  These cannot be auto-generated: their element type follows VAR's, which is not known at analysis time, and a scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters."
+                                (second pair) (third pair))
+               :source-location nil)))
+    (let ((ticket (gensym "LM-TICKET"))
+          (lid    (gensym "LM-LID"))
+          (ng     (gensym "LM-NG"))
+          (val    (gensym "LM-VAL")))
+      `(progn
+         ;; The final sweep is ONE reduce-workgroup, so every partial must fit in one workgroup.
+         (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
+                       "grid-reduce-last-man!: the number of workgroups exceeds local_work_size, so the final sweep cannot cover every partial in one pass")
+         ;; Phase 1 -- every thread of this workgroup ends up holding the workgroup's total.
+         (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+         (let ((,ticket 0u))
+           (when-thread-in-group-is 0
+             (set! (~ ,gv (to-int (get-workgroup-id 0))) ,var))
+           ;; The partial must be visible BEFORE the counter announces this workgroup has
+           ;; arrived, or the last workgroup can sweep a slot whose store is still in flight.
+           ;; OUTSIDE the election: a fence inside a divergent conditional is refused (BUG 082,
+           ;; over-strict but load-bearing for sync-wait).  Ordering is preserved regardless,
+           ;; because it is thread 0's OWN program order that carries it -- its store precedes
+           ;; its fence precedes its atomic.  The other 63 threads fence for nothing.
+           (mem-fence)
+           (when-thread-in-group-is 0
+             ;; atomic-add! yields the value BEFORE the addition, so exactly one workgroup sees
+             ;; num_groups-1.  Verified on hardware rather than assumed.
+             (set! ,ticket (atomic-add! (~ ,ctr) 1u)))
+           (sync-workgroup)
+           ;; Phase 3 -- UNGATED sweep; see the section header for why this is not a gate.
+           (let ((,lid (to-int (get-local-linear-id)))
+                 (,ng  (to-int (get-num-groups 0))))
+             (let ((,val (if (< ,lid ,ng) (~ ,gv ,lid) ,identity)))
+               (reduce-workgroup ,fn ,val ,identity :local-scratch-vec ,sv)
+               ;; Only the elected thread of the LAST workgroup stores.  Its ticket is a register
+               ;; it has carried since phase 2 -- no broadcast, and a store is not a collective.
+               (when-thread-in-group-is 0
+                 (when (= ,ticket (- (to-uint (get-num-groups 0)) 1u))
+                   (set! (~ ,return-vec 0) ,val))))))
+         (compiler-no-op)))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 083: make-scratch-* silently discarded :address-space :global.
+;;; ---------------------------------------------------------------------------
+;;; src/analysis/structs.lisp  (%scratch-tensor-canonical-spec)
+;;;
+;;; Both branches of that function ended with
+;;;
+;;;     (append raw-spec '(:address-space :local :align :compact))
+;;;
+;;; with the address space HARDCODED.  So (make-scratch-vector float 4 :address-space :global)
+;;; compiled, emitted metadata reading `:address-space :local`, and the L0 hoister then allocated
+;;; workgroup-local SLM for it:
+;;;
+;;;     // LOCAL scratch tensor: gv (rank=1, float, 4 elems, 16 bytes)
+;;;     zeKernelSetArgumentValue(kernel, 3, 16ULL, nullptr);
+;;;
+;;; -- one private copy per workgroup.  Measured consequence: four workgroups each wrote their
+;;; partial into "the" buffer and the workgroup that swept it saw ONLY ITS OWN (0 0 102 0, where
+;;; 102 was the sweeper's own value).  Nothing failed; the answer was quietly a quarter right.
+;;;
+;;; THE GLOBAL SCRATCH CELL WAS FINE ALL ALONG, which is what made this confusing: the atomic
+;;; counter in the same kernel is a CELL, takes %make-global-scratch-cell's separate path, gets
+;;; real device memory, and is genuinely shared -- the ticket reached num_groups-1 correctly.  So
+;;; the cross-workgroup election worked while the cross-workgroup DATA did not.
+;;;
+;;; THE HOISTER NEEDED NO CHANGE.  %l0-emit-global-scratch-tensor-arg already exists and the
+;;; dispatch already routes a non-local tensor with a :size-expr to it (device memory plus the
+;;; zero-initialised host staging mirror endeavour 166 added).  Only the analyzer was dropping
+;;; the address space, so honouring the key is the whole fix.
+;;;
+;;; FOUND BY grid-reduce-last-man!, which is the first construct in Crisp to need cross-workgroup
+;;; DATA rather than just a cross-workgroup counter.
+
+(defun %175-scratch-address-space (args)
+  "The :address-space requested in a make-scratch-* arg list, defaulting to :local.
+   Refuses anything but :local or :global -- a scratch buffer in :constant or a private space is
+   not a thing the hoisters can allocate, and silently downgrading is what BUG 083 was."
+  ;; Located by SEARCHING FOR THE KEY, not by parsing a plist tail.  Two traps rule the
+  ;; alternatives out: the keyword tail starts at a different position per form ((elem size
+  ;; &rest keys) for vector/matrix, (elem N size &rest keys) for the rank-N tensor), and a
+  ;; SYMBOLIC SIZE is itself a keyword -- so scanning for the first keyword picks up
+  ;; :match-num-warps-per-workgroup and reports "malformed property list".
+  (let* ((pos (position :address-space args))
+         (as  (if pos (nth (1+ pos) args) :local)))
+    (unless (member as '(:local :global))
+      (error 'crisp-compiler-error
+             :message (format nil "make-scratch-*: :address-space must be :local or :global, got ~s. A scratch buffer is either workgroup-local (SLM) or grid-global (device memory); there is nothing else the hoisting code can allocate."
+                              as)
+             :source-location nil))
+    as))
+
+(defvar *orig-175-scratch-canonical-spec* (fdefinition '%scratch-tensor-canonical-spec)
+  "Captured once at overlay load.")
+
+(defun %scratch-tensor-canonical-spec (op args)
+  "Overlay wrapper: honours :address-space instead of hardcoding :local.
+
+   Implemented as a post-pass over the original's result rather than a reimplementation -- the
+   original resolves aliases, implicit ranks and storage-handle expansion, none of which this
+   changes.  It rewrites the address-space slot of the canonical
+   (tensor elem N addr align ct) tuple only when :global was asked for."
+  (let ((spec (funcall *orig-175-scratch-canonical-spec* op args))
+        (as   (%175-scratch-address-space args)))
+    (if (and (eq as :global)
+             (consp spec)
+             (symbolp (first spec))
+             (string-equal (symbol-name (first spec)) "TENSOR")
+             (>= (length spec) 4))
+        ;; Canonical shape is (tensor elem N addr align ct); slot 3 is the address space.
+        (let ((copy (copy-list spec)))
+          (setf (nth 3 copy) :global)
+          (log:debug "175: scratch ~a promoted to :global -> ~s" op copy)
+          copy)
+        spec)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — REVERTING the mem-fence divergence exemption (BUG 082).
+;;; ---------------------------------------------------------------------------
+;;; The exemption above is WRONG and is undone here (last definition wins).
+;;;
+;;; The reasoning behind it still holds in isolation: mem-fence lowers to a pure memory fence on
+;;; both backends and does not wait for anyone.  But %warp-spec-check-sync is not only reached by
+;;; a user-written mem-fence -- sync-wait's lowering goes through it too, and that check was the
+;;; ONLY thing refusing a sync-wait inside a thread-divergent conditional.  Exempting the fence
+;;; therefore made an arrival-barrier WAIT legal in divergent control flow, which deadlocks.
+;;; 118-async-misc/errors/02-arrival-sync-divergent caught it immediately: it asserts the refusal
+;;; and matches on the MEM-FENCE wording, which is itself the tell that the diagnostic is
+;;; attributed to the wrong construct.
+;;;
+;;; So the over-strictness is real but the fix is not a blanket exemption: the divergence check
+;;; belongs on sync-wait (which genuinely needs convergence) rather than on the fence it happens
+;;; to emit.  Left OPEN in plan/bugs.md rather than half-fixed here.
+;;;
+;;; grid-reduce-last-man! does not need the exemption anyway.  Hoisting the fence OUT of the
+;;; leader election preserves the ordering that matters, because it is thread 0's OWN program
+;;; order that carries the guarantee:
+;;;
+;;;     (when-thread-in-group-is 0 (set! (~ gv wg) partial))   ; store
+;;;     (mem-fence)                                            ; every thread, incl. thread 0
+;;;     (when-thread-in-group-is 0 (set! ticket (atomic-add! ...)))
+;;;
+;;; The cost is that 63 other threads fence to order a store none of them made -- measurably
+;;; nothing here, and honest.
+
+(defun %warp-spec-check-sync (builtin-kw name-str location)
+  "Restored to the src behaviour: every sync/fence builtin gets the divergence check."
+  (funcall *orig-175-warp-spec-check-sync* builtin-kw name-str location))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — grid-reduce-last-man! with a REAL election (supersedes both above).
+;;; ---------------------------------------------------------------------------
+;;; The previous expansion had every workgroup sweep the global partials and let only the last
+;;; one store.  Correct, but it threw away the algorithm's entire point.
+;;;
+;;; WHY EARLY RETIREMENT IS THE POINT, not an optimisation.  The whole reason last-man-standing
+;;; beats a second kernel launch is that the LOSING workgroups finish and RETIRE the moment they
+;;; draw a losing ticket, handing their registers, SLM and occupancy slots straight back to the
+;;; hardware scheduler so the remaining workgroups can launch.  A version where all N workgroups
+;;; stay resident to perform a sweep that N-1 of them discard holds those slots hostage and
+;;; saturates the memory path re-reading a buffer that, for the early arrivals, is still mostly
+;;; zeros.  On a grid larger than the GPU can hold concurrently that is the difference between
+;;; the strategy's advertised behaviour and a slower version of a two-pass reduction.
+;;;
+;;; (It does NOT deadlock, for the record: nothing in either shape waits on another workgroup.
+;;; The counter is a ticket, not a barrier -- no one spins, so there is no cycle to close.)
+;;;
+;;; WHAT MADE THE ELECTION HARD, and how the caller solves it.  The whole workgroup must learn
+;;; what only THREAD 0 knows (its ticket), because the final sweep is a reduce-workgroup and every
+;;; thread has to reach its barriers.  That broadcast needs a scratch cell, and two things ruled
+;;; out allocating one inside this expansion:
+;;;
+;;;   * a scratch created in an ANALYZER's expansion is invisible to the Pass-1 scanner that
+;;;     builds the kernel's implicit parameters -- "Missing implicit argument ... for
+;;;     make-scratch-cell";
+;;;   * parking the flag in the local scratch VECTOR instead fails on type: its element type
+;;;     follows the reduction's, and there is no generic way to write "1" and "0" into a buffer
+;;;     of unknown type.  (- var var) gives a typed zero; nothing gives a typed one.
+;;;
+;;; :election-flag-cell fixes both at once.  Allocated in the CALLER's scope it is seen by Pass 1
+;;; like every other scratch, and being a fixed uint it never inherits the reduction's type.  It
+;;; is the same bargain :local-scratch-vec already makes, for the same reason.
+
+(defun %grid-reduce-last-man-parts (expr)
+  "Destructures (grid-reduce-last-man! FN VAR IDENTITY RETURN-VEC &key ...).
+   Returns (values fn var identity return-vec local global counter flag)."
+  (let ((keys (cdr (cdddr (cdr expr)))))
+    (values (second expr) (third expr) (fourth expr) (fifth expr)
+            (getf keys :local-scratch-vec)
+            (getf keys :global-scratch-vec)
+            (getf keys :atomic-counter)
+            (getf keys :election-flag-cell))))
+
+(defun %grid-reduce-last-man-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (BUG 073/077/081)."
+  (multiple-value-bind (fn var identity return-vec sv gv ctr flag)
+      (%grid-reduce-last-man-parts expr)
+    (dolist (pair (list (list return-vec "a return-vec" "the single global element the grid reduces into")
+                        (list sv ":local-scratch-vec" "one element per warp, for the per-workgroup reduction")
+                        (list gv ":global-scratch-vec" "one element per WORKGROUP, holding the partials")
+                        (list ctr ":atomic-counter"   "a zero-initialised GLOBAL uint cell, used to draw tickets")
+                        (list flag ":election-flag-cell" "a LOCAL uint cell, broadcasting the ticket result from thread 0 to its workgroup")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-last-man!: ~a is required -- ~a.  It must be allocated in the CALLER's scope: scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters."
+                                (second pair) (third pair))
+               :source-location nil)))
+    (let ((lid (gensym "LM-LID"))
+          (ng  (gensym "LM-NG"))
+          (val (gensym "LM-VAL")))
+      `(progn
+         ;; The final sweep is ONE reduce-workgroup, so every partial must fit in one workgroup.
+         (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
+                       "grid-reduce-last-man!: the number of workgroups exceeds local_work_size, so the final sweep cannot cover every partial in one pass")
+         ;; Phase 1 -- every thread of this workgroup ends up holding the workgroup's total.
+         (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+         ;; Phase 2 -- publish this workgroup's partial.
+         (when-thread-in-group-is 0
+           (set! (~ ,gv (to-int (get-workgroup-id 0))) ,var))
+         ;; The store must be visible before the counter announces this workgroup has arrived.
+         ;; OUTSIDE the election because a fence in divergent control flow is refused (BUG 082,
+         ;; over-strict but load-bearing for sync-wait).  Ordering survives regardless: it is
+         ;; thread 0's OWN program order that carries it -- store, then fence, then atomic.
+         (mem-fence)
+         (when-thread-in-group-is 0
+           ;; atomic-add! yields the value BEFORE the addition, so exactly one workgroup in the
+           ;; grid draws num_groups-1.  Verified on hardware, not assumed.
+           (set! (~ ,flag)
+                 (if (= (atomic-add! (~ ,ctr) 1u)
+                        (- (to-uint (get-num-groups 0)) 1u))
+                     1u 0u)))
+         ;; Publish the verdict to the rest of the workgroup.
+         (sync-workgroup)
+         ;; Uniform by construction -- every thread reads the same cell after a barrier.  It has
+         ;; to be when+ rather than when: the body contains a reduce-workgroup, and a workgroup
+         ;; collective inside a merely thread-divergent conditional is refused.
+         ;; THE LOSERS FALL STRAIGHT THROUGH HERE AND RETIRE.
+         (when+ (= (~ ,flag) 1u)
+           (let ((,lid (to-int (get-local-linear-id)))
+                 (,ng  (to-int (get-num-groups 0))))
+             (let ((,val (if (< ,lid ,ng) (~ ,gv ,lid) ,identity)))
+               (reduce-workgroup ,fn ,val ,identity :local-scratch-vec ,sv)
+               (when-thread-in-group-is 0
+                 (set! (~ ,return-vec 0) ,val)))))
+         (compiler-no-op)))))

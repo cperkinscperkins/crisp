@@ -2913,3 +2913,75 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         analyzer is registered under both package symbols by name; only a MACRO needs the symbols
         to be identical.  That leaves when-thread-in-warp-is / when-thread-in-group-is as the
         only forms in this endeavour requiring one.
+
+[ ] 082 mem-fence IS REFUSED IN DIVERGENT CONTROL FLOW THOUGH IT IS NOT A COLLECTIVE -- but
+        that check is LOAD-BEARING for sync-wait, so the fix is not a blanket exemption.
+
+        %analyze-gpu-builtin routes :sync-workgroup, :sync-warp, :mem-fence and :sync-cluster
+        through %warp-spec-check-sync, which -- outside a warp-specialization block -- handed all
+        four to %tlc-check-not-divergent.  So a fence inside any thread-divergent conditional was
+        refused with a claim that is FALSE for a fence:
+
+            MEM-FENCE cannot appear inside a thread-divergent conditional ... It contains an
+            internal sync-workgroup that would deadlock when only some threads enter the branch.
+
+        mem-fence lowers to %ptx-membar-cta (PTX membar.cta) and %gen-spirv-memory-barrier
+        (SPIR-V OpMemoryBarrier, CrossWorkgroup scope, AcquireRelease semantics).  Both are pure
+        MEMORY fences ordering one thread's own accesses; neither waits for anyone, so there is
+        nothing to deadlock.  The wording was inherited from %tlc-check-not-divergent, written
+        for load-tile-at, which genuinely does contain an internal sync-workgroup.
+
+        WHAT IT BLOCKED: publish-then-signal, the standard way to hand data between workgroups --
+        store, fence, then bump a counter -- which is how the design doc writes
+        grid-reduce-last-man! and the only correct place for the fence.  Hoisting it out of the
+        election is a valid workaround but a worse one: every thread then fences to order a store
+        only one of them performed.
+
+        ATTEMPTED AND REVERTED.  Exempting :mem-fence from %warp-spec-check-sync fixes the
+        symptom and breaks something real: sync-wait's lowering goes through the SAME check, and
+        it was the only thing refusing an arrival-barrier WAIT inside a divergent conditional --
+        which genuinely deadlocks.  118-async-misc/errors/02-arrival-sync-divergent caught it on
+        the next negative run (274 -> 273), and the fact that that spec matches on the MEM-FENCE
+        wording is itself the tell: the diagnostic is already attributed to the wrong construct.
+
+        THE REAL FIX is to move the divergence check onto sync-wait, where convergence genuinely
+        is required, and let the fence go free.  Left open rather than half-done.
+
+        NOT BLOCKING grid-reduce-last-man!, which hoists the fence OUT of the leader election.
+        Ordering survives because it is thread 0's OWN program order that carries it: its store
+        precedes its fence precedes its atomic.  The other threads fence for nothing, which costs
+        little and is honest.
+
+[x] 083 FIXED -- make-scratch-* SILENTLY DISCARDED :address-space :global, so a "global" scratch
+        buffer was allocated as PER-WORKGROUP local memory.
+
+        Both branches of %scratch-tensor-canonical-spec ended with
+
+            (append raw-spec '(:address-space :local :align :compact))
+
+        with the address space hardcoded.  (make-scratch-vector float 4 :address-space :global)
+        compiled, emitted metadata reading :address-space :local, and the L0 hoister allocated
+        SLM -- one private copy per workgroup:
+
+            // LOCAL scratch tensor: gv (rank=1, float, 4 elems, 16 bytes)
+            zeKernelSetArgumentValue(kernel, 3, 16ULL, nullptr);
+
+        MEASURED CONSEQUENCE: four workgroups each wrote a distinct partial and the workgroup
+        that swept them saw ONLY ITS OWN -- `0 0 102 0`, where 102 was the sweeper's own value.
+        No error, no warning; the reduction was quietly a quarter right.
+
+        WHAT MADE IT CONFUSING: the atomic COUNTER in the same kernel is a CELL, takes
+        %make-global-scratch-cell's separate path, gets real device memory and IS shared -- so
+        the cross-workgroup ELECTION worked perfectly while the cross-workgroup DATA did not.
+
+        THE HOISTER NEEDED NO CHANGE.  %l0-emit-global-scratch-tensor-arg already existed and the
+        dispatch already routed a non-local tensor with a :size-expr to it (device memory plus the
+        zero-initialised staging mirror from endeavour 166).  Only the analyzer dropped the key.
+
+        FIXED by honouring :address-space, and refusing anything but :local / :global rather than
+        downgrading.  The key is located by SEARCHING FOR IT, not by parsing a plist tail: the
+        keyword tail starts at a different position per form, and a SYMBOLIC SIZE is itself a
+        keyword, so scanning for the first keyword picks up :match-num-warps-per-workgroup.
+
+        FOUND BY.  Endeavour 175's grid-reduce-last-man!, the first construct in Crisp needing
+        cross-workgroup DATA rather than just a cross-workgroup counter.
