@@ -1,0 +1,47 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 30720 1 2 3
+;; SKIP-WITH[--differentiate]: "composition of forward constructs; the VJPs have their own specs"
+;;
+;; ENDEAVOUR 175 -- STAGE 1 FEEDING STAGE 2.  A reduce-warp result is the input to a grid
+;; reduction, which is the composition the design doc's "Matchy Matchy" section is about.
+;;
+;; Every earlier spec exercises one rung at a time, and grid-reduce-atomic! contains a
+;; reduce-workgroup internally -- so that pairing is already covered implicitly.  What is NOT
+;; covered is a user placing a micro strategy in front of a macro strategy themselves, which is
+;; exactly what the doc invites: reduce-warp "is not a grid-level operation.  This makes it highly
+;; versatile -- it can be nested and used in a wide variety of contexts."
+;;
+;; THE ARITHMETIC IS DELIBERATELY NOT A PLAIN SUM OF THE INPUTS, because that would not
+;; distinguish the composition from either half alone:
+;;
+;;   lane L of a 16-lane bmg warp contributes L
+;;   reduce-warp       -> every lane of every warp now holds 0+1+...+15 = 120
+;;   grid-reduce       -> 256 threads each contributing 120 = 30720
+;;
+;; So 30720 = 120 * 256.  If the reduce-warp were dropped the grid would sum raw lane ids
+;; (4 warps * 120 per workgroup * 4 workgroups = 1920); if the grid reduction were dropped the
+;; buffer would keep its pre-fill.  Both failures are far from 30720 and from each other.
+;;
+;; NOTE THE MULTIPLIER IS THE WARP WIDTH, so this value is bmg-specific: on a 32-lane warp each
+;; lane would hold 0+...+31 = 496 and the answer would be 496 * 256 = 126976.  A CUDA twin would
+;; need that number.
+;;
+;; The reduce-warp runs UNCONDITIONALLY in every lane -- it is a warp collective, and gating it
+;; would be refused (errors/04).  Only the grid reduction elects a leader, inside the construct.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel compose_warp_into_grid (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (warp-lane))))
+      ;; Stage 1: every lane ends up holding its warp's total.
+      (reduce-warp #'+ contrib 0.0)
+      ;; Stage 2: that per-warp total is now the per-thread contribution to the grid.
+      (grid-reduce-atomic! #'+ contrib 0.0 out :local-scratch-vec sv))))

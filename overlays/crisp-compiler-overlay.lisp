@@ -941,8 +941,18 @@
         (error "grid-reduce-atomic!: autodiff is supported only for the + reduction.  A SUM over the grid gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell.  min/max would route the adjoint only to the thread that supplied the winning value, which needs an argmin/argmax the forward pass does not record -- the same gap atomic-min!/atomic-max! have on their own (BUG 077).  Use the + reduction, or mark the kernel SKIP-WITH[--differentiate] if it is forward-only."))
       (unless (and var (symbolp var) return-vec (symbolp return-vec))
         (return-from %175-vjp-grid-reduce-atomic nil))
-      (let ((vadj (funcall local-adj var))
-            (radj (funcall local-adj return-vec)))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             ;; The gradient HANDLE of the output tensor, not a scalar adjoint.  local-adj alone
+             ;; yields a scalar here and the emitted (~ radj 0) then fails to typecheck with
+             ;; "No matching function overload found for '~' with argument types (FLOAT INT)".
+             ;; Same resolution the atomic VJP uses.
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg))))
         (log:debug "175 VJP grid-reduce-atomic!: ~a := (~~ ~a 0)" vadj radj)
         ;; OVERWRITE, mirroring the forward: the construct consumes VAR (the doc says its value is
         ;; indeterminate afterwards), so the input adjoint REPLACES the output adjoint.
@@ -1124,3 +1134,98 @@
       (when (probe-file ll-opt-file) (delete-file ll-opt-file))
       (when (probe-file bc-file)     (delete-file bc-file)))
     (log:info "Generated SPIR-V: ~a" spv-file)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 081: reduce-warp becomes an ANALYZED FORM with a VJP.
+;;; ---------------------------------------------------------------------------
+;;; SUPERSEDES the reduce-warp macro defined earlier in this overlay (last definition wins; the
+;;; macro-function is removed below).  src/analysis/ops.lisp + src/autodiff.lisp on fold-back.
+;;;
+;;; WHY.  As a macro, reduce-warp expanded before the backward walk and AD reversed the
+;;; EXPANSION -- an in-place mutation inside a loop:
+;;;
+;;;     (dec-times-by-half+ (s warp/2) (set! v (+ (shuffle-xor v s) v)))
+;;;
+;;; The assumption was that shuffle-xor's own VJP (173) would carry it.  It does not: spec 24
+;;; measured analytical=1.0 against a hardware finite difference of 16.0 -- the derivative of the
+;;; IDENTITY, with the fan-out lost entirely.  Third instance of the same lesson (BUG 073, 077,
+;;; 081): a construct whose cross-thread behaviour lives in its expansion rather than in a stated
+;;; rule will be reversed into silence.
+;;;
+;;; THE STATED RULE.  A warp reduction is an ALL-reduce -- every lane ends up holding the total --
+;;; so it is a fan-in followed by a fan-out, and transposing reverses the order and dualises each
+;;; half: fan-out then fan-in, which is an all-reduce again.  SELF-TRANSPOSING, exactly as
+;;; shuffle-xor and reduce-workgroup are.  The backward pass is another reduce-warp on the
+;;; adjoint, in place.
+;;;
+;;; ACTIVE-THREADS IS DELIBERATELY DROPPED IN THE BACKWARD.  A partial reduce-warp seeds the
+;;; inactive lanes with the identity, and their adjoints are genuinely zero; reducing the adjoint
+;;; across the FULL warp is still correct, because the inactive lanes contribute nothing to the
+;;; sum.  Spec 04's arithmetic is the check if this is ever revisited.
+
+(defun %reduce-warp-expand (expr)
+  "Forward lowering of (reduce-warp FN VAR IDENTITY &optional ACTIVE-THREADS).
+   A plain function rather than a macro: keeping the construct unexpanded is what lets the VJP
+   registry see it (BUG 081)."
+  (let* ((fn (second expr))
+         (var (third expr))
+         (identity (fourth expr))
+         (active-threads (fifth expr))
+         (s (gensym "RW-S")))
+    (%reduce-warp-check-active-threads active-threads)
+    `(progn
+       (%warp-collective-check :reduce-warp)
+       ,@(when active-threads
+           (list `(set! ,var (if (< (to-int (warp-lane)) ,active-threads) ,var ,identity))))
+       ;; Butterfly stride warp/2, resolved at ANALYSIS time to a literal: (warp-size) folds to a
+       ;; UINT so `/` would reject the INT 2, and dec-times-by-half+ wants a provably uniform
+       ;; limit, which a literal is by construction.
+       (dec-times-by-half+ (,s ,(floor (%173-warp-size) 2))
+         (set! ,var ,(%175-apply-binop fn `(shuffle-xor ,var ,s) var)))
+       (compiler-no-op))))
+
+(defun %analyze-reduce-warp (expr env context location)
+  "Analyzer for reduce-warp -- expands and delegates."
+  (analyze-expression (%reduce-warp-expand expr) env context location))
+
+(defvar *orig-175e-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus reduce-warp as an analyzed form."
+  (funcall *orig-175e-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "REDUCE-WARP" pkg) *expression-analyzers*)
+              '%analyze-reduce-warp)))))
+
+(defun %175-vjp-reduce-warp (form ctx)
+  "VJP for reduce-warp: a warp all-reduce is self-transposing, so the backward pass is another
+   reduce-warp of the adjoint.  See the section header."
+  (let* ((fn  (second form))
+         (var (third form))
+         (local-adj (getf ctx :local-adj)))
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "reduce-warp: autodiff is supported only for the + reduction.  The transpose of a SUM all-reduce is another sum all-reduce, which is exact and needs nothing recorded from the forward pass.  min/max would route the adjoint to the lane that supplied the winning value, which requires the forward pass to stash an argmin/argmax; an arbitrary binop needs the partial derivatives of that op at every butterfly step.  Neither is recorded.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+    (unless (and var (symbolp var))
+      (return-from %175-vjp-reduce-warp nil))
+    (let ((vadj (funcall local-adj var)))
+      (log:debug "175 VJP reduce-warp: all-reduce of ~a" vadj)
+      ;; In place, mirroring the forward, and WITHOUT active-threads: the inactive lanes' adjoints
+      ;; are zero and contribute nothing to the sum.
+      `(reduce-warp ,fn ,vadj 0.0))))
+
+(eval-when (:load-toplevel :execute)
+  ;; Drop the superseded MACRO from both packages so anf-transform stops expanding the form and
+  ;; the VJP registry can see it.  fmakunbound, not (setf (macro-function ...) nil).
+  (dolist (pkg (list (find-package :crisp.compiler) (find-package :crisp-language)))
+    (when pkg
+      (let ((sym (find-symbol "REDUCE-WARP" pkg)))
+        (when (and sym (macro-function sym))
+          (fmakunbound sym)))))
+  (register-vjp "REDUCE-WARP" (function %175-vjp-reduce-warp)))

@@ -2861,3 +2861,55 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         NOTE: this was reachable long before 175 -- any kernel calling (atomic-min! ...) on a
         float hits it.  082-atomics/05 and /06 use CELLS of int, which is why the suite never did.
+
+[x] 081 FIXED -- reduce-warp DIFFERENTIATED TO THE IDENTITY -- analytical=1.0 where the hardware finite
+        difference says 16.0 (the warp width).  A SILENTLY wrong gradient.
+
+        MEASURED.  tests/spec/175-reductions/24 reduces a 4x16 matrix within each warp and writes
+        the result back, so every element is counted once per lane of its warp:
+
+            analytical=1.0   numerical=16.00003   diff=15.0000305
+
+        1.0 is the derivative of the IDENTITY: the fan-out never happened.
+
+        THE ASSUMPTION THAT FAILED, stated plainly because it was mine and it sounded right:
+        reduce-warp is a MACRO expanding to a shuffle-xor butterfly, shuffle-xor carries an
+        explicit VJP (173), therefore AD falls out for free.  It does not.  The expansion is an
+        IN-PLACE mutation inside a loop --
+
+            (dec-times-by-half+ (s warp/2) (set! v (+ (shuffle-xor v s) v)))
+
+        -- and reversing that is not the same problem as reversing a single shuffle-xor.  Same
+        family as BUG 073: a construct whose cross-thread behaviour lives in its EXPANSION rather
+        than in a stated rule.
+
+        WHY NOTHING CAUGHT IT.  Specs 03/04/05 exercise reduce-warp on metal but all carry a
+        differentiate-skip for unrelated reasons, and every AD spec in the endeavour went through
+        reduce-workgroup (which has its own VJP) or a bare shuffle.  reduce-warp's own AD had
+        never been measured.
+
+        FOUND BY.  Endeavour 175, adding COMPOSITION tests at Chris's request -- spec 23 chains
+        reduce-warp into grid-reduce-atomic! and read 1.0 against a measured 16.0, which sent the
+        question back to reduce-warp alone (spec 24).  Testing the rungs together found what
+        testing them separately had not.
+
+        LIKELY FIX, by the precedent this endeavour has already set twice: make reduce-warp an
+        ANALYZED FORM with a stated VJP instead of a macro.  A warp all-reduce is a fan-in
+        followed by a fan-out, so it is SELF-TRANSPOSING -- the backward pass is another
+        reduce-warp on the adjoint, exactly as reduce-workgroup's is.  That also removes it from
+        the list of constructs needing a package.lisp change, since an analyzer needs none.
+
+        FIXED as predicted: reduce-warp is now an ANALYZED FORM carrying a stated VJP instead of
+        a macro, so the backward walk applies a rule rather than reversing a butterfly.
+
+            spec 24 (alone)     analytical=16.0  numerical=16.00003
+            spec 23 (composed)  analytical=16.0  numerical=16.0
+
+        active-threads is deliberately DROPPED in the backward: a partial reduction seeds the
+        inactive lanes with the identity, so their adjoints are zero and reducing the adjoint
+        across the full warp is still correct.
+
+        CONSEQUENCE FOR THE FOLD-BACK: reduce-warp no longer needs a package.lisp change.  An
+        analyzer is registered under both package symbols by name; only a MACRO needs the symbols
+        to be identical.  That leaves when-thread-in-warp-is / when-thread-in-group-is as the
+        only forms in this endeavour requiring one.

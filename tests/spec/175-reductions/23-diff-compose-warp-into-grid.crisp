@@ -1,0 +1,53 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=16.0 atol=1e-1 h=0.5 group=64 output-vec=1
+;;
+;; ENDEAVOUR 175 -- do TWO VJPs compose?  The differentiable twin of spec 20.
+;;
+;; Spec 20 pins the forward composition (reduce-warp feeding grid-reduce-atomic!).  This pins the
+;; backward one, which is a separate claim: each construct now carries its own stated VJP, and
+;; nothing has yet checked that two of them chain correctly.
+;;
+;; THE MATHS, worth writing out because the answer is NOT 1:
+;;
+;;   forward   w_t = sum over t's WARP of x        (reduce-warp: every lane holds its warp total)
+;;             out = sum over ALL threads of w_t   (grid reduction)
+;;
+;;   so each x_j is counted once per lane of its warp -- 16 times on bmg -- giving
+;;   d out / d x_j = 16.
+;;
+;;   backward  grid-reduce-atomic! VJP:  wbar_t = outbar          (a broadcast; no communication)
+;;             reduce-warp VJP:          xbar_j = sum over j's warp of wbar = 16 * outbar
+;;
+;; The two rules chain to exactly the forward factor, which is the property under test.  A
+;; composition that lost one of the two rules would read 1.0 (grid VJP only) or 0.0 (neither) --
+;; both far from 16.0, and both the shape of the silent failures this endeavour has already hit
+;; twice (BUG 073, BUG 077).
+;;
+;; THE 16 IS THE WARP WIDTH, so this value is bmg-specific: a 32-lane warp would give 32.0.
+;;
+;; NO FINITE DIFFERENCE HERE, and that is a real weakness of this spec rather than a detail.
+;; grid-reduce-atomic!'s return-vec is a length-1 VECTOR by design, and VERIFY-AUTODIFF does not
+;; compute an FD for a vector output -- it reports `analytical=X expected=Y`, comparing against
+;; this comment's arithmetic rather than a measurement (BUG 078).  So unlike specs 09 and 16, the
+;; number below is NOT corroborated by hardware.  It still catches the two failure modes that
+;; matter (1.0 and 0.0 are nowhere near 16.0), but it should be re-pointed at an FD as soon as 078
+;; is fixed.  Spec 20 does measure the forward composition on metal, which covers the other half.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel diff_compose_warp_into_grid (A &out out)
+  (declare #'(mat-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((v (~ A row col)))
+          (reduce-warp #'+ v 0.0)
+          (grid-reduce-atomic! #'+ v 0.0 out :local-scratch-vec sv))))))

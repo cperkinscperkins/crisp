@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 97920 1 2 3
+;; SKIP-WITH[--differentiate]: "composition of forward constructs; the VJPs have their own specs"
+;;
+;; ENDEAVOUR 175 -- a grid reduction REPEATED inside a loop.
+;;
+;; Every reduction spec so far runs its construct once.  This one runs a full stage-1 + stage-2
+;; reduction three times in a uniform loop, which is where the barrier and scratch reuse a
+;; reduction depends on either hold up or do not.  reduce-workgroup writes the same scratch slots
+;; on every iteration and separates its sweep passes with sync-workgroup; if any of those barriers
+;; were misplaced, iteration k+1 could read slots iteration k had not finished writing -- a race
+;; that a single-shot spec can never see.
+;;
+;;   each of 256 threads contributes its global linear id  -> grid total 32640 per iteration
+;;   three iterations                                      -> 3 * 32640 = 97920
+;;
+;; and the buffer starts at 0, so 97920 is the whole reading.  A loop that ran once would leave
+;; 32640; one that ran twice, 65280.  The three possible answers are far apart, so a miscount is
+;; unmistakable rather than a near miss.
+;;
+;; 97920 IS EXACTLY REPRESENTABLE IN FLOAT32, and so is every partial sum along the way -- the
+;; largest intermediate is 97920 and floats carry integers exactly to 2^24 = 16777216.  Worth
+;; stating because a reduction spec that accumulated past that point would start failing for
+;; reasons of precision rather than logic, and the failure would look like a reduction bug.
+;;
+;; THE LOOP MUST BE UNIFORM.  dotimes over a literal bound is: every thread runs the same three
+;; iterations and meets the same barriers.  A thread-varying trip count around a workgroup
+;; collective would deadlock, which is the same contract errors/03 pins for a barrier inside an
+;; election.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel compose_reduction_in_loop (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (dotimes (i 3)
+      ;; Rebound each iteration: grid-reduce-atomic! consumes its variable.
+      (let ((contrib (to-float (get-global-linear-id))))
+        (grid-reduce-atomic! #'+ contrib 0.0 out :local-scratch-vec sv)))))
