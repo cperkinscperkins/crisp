@@ -2704,3 +2704,135 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         Guarded by tests/spec/175-reductions/11 (now green on hardware: 15 120 2 3, two
         instantiations of one forwarder) and by 173-shuffles/errors/06, which still refuses an
         unpinnable kernel and pins the original "cannot be pinned" wording.
+
+[x] 077 FIXED -- atomic-add! INTO AN &out PARAMETER PRODUCED A ZERO GRADIENT, SILENTLY.  A grid-level
+        accumulation compiles under --differentiate and returns analytical=0.0 where the true
+        derivative is 1.0.
+
+        MEASURED.  tests/spec/175-reductions/16 is four lines: each of four threads atomically
+        adds its own input element into out[0], so out[0] = SUM of A and d(out[0])/dA[2] = 1.0
+        exactly -- independent of thread count, warp width, and accumulation ORDER, which matters
+        because atomics do not guarantee order.  The harness reports
+
+            FAIL (A: analytical=0.0 expected=1.0 diff=1.0 > atol=0.01)
+
+        Not wrong by a factor: the gradient never flows back to the input at all.
+
+        CAUSE.  The autodiff machinery knows atomic-add! only as a WRITTEN PLACE -- it appears in
+        the primal-replay place collector (src/autodiff.lisp, alongside SET! and the other
+        atomics) so a replay knows the location was touched.  Nothing propagates a derivative
+        through it.  The two other mentions of ATOMIC-ADD! in that file are the MMA VJP EMITTING
+        one to accumulate gradients, not differentiating a user's.  It is not on the
+        gradient-inert skip list either, which would at least have been a deliberate choice --
+        it simply has no backward rule.
+
+        SAME CLASS AS BUG 073, one level up.  073 is cross-THREAD dataflow through shared scratch
+        being invisible to a per-thread backward walk; this is cross-WORKGROUP dataflow through a
+        global atomic, invisible for the same reason.  The general rule stands: communication
+        between threads needs a STATED derivative and cannot be recovered by reversing
+        instructions.
+
+        CONSEQUENCE FOR grid-reduce-atomic!.  Its phase 2 is exactly this atomic, so the construct
+        cannot be differentiated by COMPOSITION of its parts, which was the plan: reduce-workgroup
+        now has a correct VJP (spec 09) and the atomic does not.  It needs a stated VJP of its own,
+        the same way reduce-workgroup did.  The rule is simple -- out = SUM over the whole grid of
+        x_t, so xbar_t = outbar[0] in every thread, a broadcast of one global cell needing no
+        communication at all.
+
+        THE USER-FACING TRAP IS WIDER than the reduction library.  Anyone hand-writing a
+        grid-level accumulation with atomic-add! and asking for --differentiate gets zeros with no
+        diagnostic.  Worth deciding, with 073, whether the compiler should REFUSE to differentiate
+        an atomic write it has no rule for rather than quietly returning nothing.
+
+        FOUND BY.  Endeavour 175, checking grid-reduce-atomic!'s dependencies before implementing
+        it.  The construct's forward path is otherwise ready: (grid-level) / (workgroup-level)
+        declarations already exist and are enforced by %check-context-declarations, and
+        atomic-add! / -min! / -max! are all registered.
+
+        CONFIRMED BY A/B, because the first measurement used a harness path that turned out to be
+        unreliable on its own (VERIFY-AUTODIFF with output-vec reports `expected=` rather than
+        `numerical=` -- it does not compute a finite difference, so it could not corroborate).
+        Re-run with output-mat, which does compute one, and with the rule toggled:
+
+            rule OFF:  analytical=0.0  numerical=1.0      <- the defect
+            rule ON :  analytical=1.0  numerical=1.0      <- fixed
+
+        The hardware finite difference is ground truth in both rows, so the bug was real and the
+        fix is verified rather than merely plausible.
+
+        FIXED.  Endeavour 175 registers VJPs for the atomics, split by whether the operation is
+        LINEAR in its value argument:
+
+          atomic-add!  ->  vbar += adj(place)        linear, coefficient +1
+          atomic-sub!  ->  vbar -= adj(place)        linear, coefficient -1
+          atomic-inc! / -dec!  ->  :inert            no value argument; the increment is a
+                                                     constant, so zero really IS the gradient
+          atomic-min! / -max!  ->  REFUSED           the adjoint routes only to the thread that
+                                                     supplied the winning value, which needs an
+                                                     argmin/argmax the forward pass never records
+          atomic-xchg! / -set! / -cas!  ->  REFUSED  two outputs, or a conditional write
+
+        THE RULE WAS ALREADY WRITTEN DOWN, which is what made it cheap: %gfw-process-set! emits
+        exactly `(set! v_adj (+ v_adj (~ t_GRAD i)))` for (set! (~ t i) v), and `out[i] = v` and
+        `out[i] += v` have the SAME derivative with respect to v.  ONE DIFFERENCE was easy to miss
+        by copying: in the SCRATCH branch %gfw-process-set! also ZEROES the destination adjoint,
+        because a set! destroys the old value.  An atomic-add! accumulates onto it, so zeroing
+        there would drop a real contribution -- it is deliberately absent.
+
+        Guarded by tests/spec/175-reductions/16, which pins the NUMBER (1.0) against a finite
+        difference rather than merely compiling.
+
+[ ] 078 VERIFY-AUTODIFF WITH output-vec DOES NOT COMPUTE A FINITE DIFFERENCE, so such a spec
+        checks the analytical gradient against the DIRECTIVE's own expectation and nothing else.
+        The report reads `analytical=X expected=Y` where an output-mat spec reads
+        `analytical=X numerical=Y`.
+
+        That is a weaker test than it looks: the whole value of VERIFY-AUTODIFF is corroborating
+        the compiler against an independent measurement on hardware, and with output-vec there is
+        no independent measurement -- only the author's arithmetic, which is exactly the thing
+        most likely to be wrong in a subtle case.
+
+        FOUND BY.  Endeavour 175 spec 16, first written with output-vec=1 because the design doc
+        specifies grid-reduce-atomic!'s return-vec as a length-1 vector.  It reported
+        analytical=0.0 with no numerical column; the spec was rewritten to output-mat=4x16, which
+        produced the finite difference that made the A/B above conclusive.  Sibling of BUG 074 --
+        both are the VERIFY-AUTODIFF runner being narrower than the directive surface suggests.
+
+[ ] 079 A COMPARISON AGAINST (get-local-id 0) IS UNRELIABLE ON SPIR-V -- the branch is never
+        taken, and whether it misbehaves depends on what ELSE in the kernel reads the builtin.
+
+        MEASURED on BMG.  One kernel, two elections, both plain (set! (~ out i) <literal>):
+
+            (when (= (to-int (get-local-id 0))      0) (set! (~ out 0) 11.0))   -> NOT taken
+            (when (= (to-int (get-local-linear-id)) 0) (set! (~ out 1) 22.0))   -> taken once
+
+        giving `BUFFER out: 0 22 2 3`.  A counting probe confirms it directly: with
+        atomic-add! counting the threads that pass, (get-local-id 0) == 0 elects ZERO of 64
+        threads while (get-local-linear-id) == 0 elects exactly one.
+
+        THE VALUE PATH IS FINE -- only the comparison misbehaves.  The same probe wrote
+        (to-float (get-local-id 0)) for the thread whose linear id is 5 and read back 5.
+
+        NOT VISIBLE IN THE LLVM IR, which is what makes it nasty.  The two forms compile to
+        structurally identical IR -- the same addrspace(1) builtin global, the same
+        `extractelement <3 x i64> ..., i32 0`, the same `icmp eq i32 ..., 0`, the same branch.
+        So the divergence happens AFTER LLVM IR: in the LLVM->SPIR-V translation or the -O3 pass
+        that runs on that path.  Compare BUG's-worth of precedent in o3-strips-spirv-decorations:
+        -O3 is already known to discard SPIR-V decorations and to need them re-attached after.
+
+        CONTEXT-DEPENDENT, which is why it went unnoticed.  tests/spec/175-reductions/07 used
+        this exact comparison (via when-thread-in-group-is) and PASSED on hardware -- its body
+        reads get-local-linear-id, and something about that keeps the election honest.  Removing
+        the read, or putting a second election in the same kernel, makes it fail.  So a spec can
+        pass for a reason unrelated to the property it claims to test.
+
+        WORKED AROUND, NOT FIXED.  Endeavour 175's when-thread-in-group-is now elects on
+        (get-local-linear-id) instead, which is also the better spelling for a 1-D election --
+        the flattened index is unambiguous whatever the workgroup's dimensionality.  ideal_001.md
+        specifies the form as an implicit (when (= someId (get-local-id 0)) ...), so the doc
+        wants amending too.  The underlying defect remains for any user who writes the
+        comparison by hand.
+
+        FOUND BY.  Endeavour 175 building grid-reduce-atomic!, whose leader election is exactly
+        this shape.  The first multi-workgroup kernel in the endeavour accumulated NOTHING; the
+        trail ran through the atomic, the reduction and the launch geometry before landing here.

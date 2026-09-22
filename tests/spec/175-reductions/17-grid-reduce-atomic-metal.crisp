@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-atomic!, the first STAGE 2 (inter-workgroup) strategy.  TDD.
+;;
+;;   (grid-reduce-atomic! fn var identity return-vec :local-scratch-vec sv)
+;;
+;; Phase 1 reduces each workgroup with reduce-workgroup; phase 2 has one leader per workgroup
+;; accumulate that partial into return-vec[0] with a native hardware atomic.
+;;
+;; FOUR WORKGROUPS, WHICH IS THE ENTIRE POINT.  Every earlier spec in this endeavour launches a
+;; single workgroup, where a grid reduction and a workgroup reduction are indistinguishable.  Here
+;; global-size 256 over local-size 64 gives four, so the atomic actually has to combine across
+;; them.  Each thread contributes its GLOBAL linear id, so the grid total is
+;;
+;;     0 + 1 + ... + 255 = 255*256/2 = 32640
+;;
+;; and a construct that reduced only within workgroups would leave whichever partial landed last
+;; -- the four are 2016, 6112, 10208 and 14304 -- none of which is 32640, and all of which are
+;; far enough from it to be unmistakable.
+;;
+;; THE ACCUMULATION STARTS FROM THE BUFFER'S EXISTING CONTENTS, which is why the expectation is
+;; 32640 and not 32640-plus-something: the harness pre-fills the output vector with 0 1 2 3, so
+;; slot 0 begins at 0.  Slots 1..3 are never touched and keep the pre-fill, which also says the
+;; leader wrote exactly one element rather than one per workgroup.
+;;
+;; ONLY #'+ IS REACHABLE TODAY.  The design doc specifies grid-reduce-atomic! as accepting exactly
+;; #'+, #'min and #'max -- the three with native hardware atomics -- but Crisp has no scalar `max`
+;; or `min` binop at all ((max 3.0 7.0) fails with "Unsupported form 'MAX'"), so two of the three
+;; legal operators do not yet exist.  errors/06 pins the refusal for an operator outside that set.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_atomic_sum (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-atomic! #'+ contrib 0.0 out :local-scratch-vec sv))))

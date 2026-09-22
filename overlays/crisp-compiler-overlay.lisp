@@ -267,7 +267,14 @@
   "Runs BODY only in thread ID of the workgroup -- a per-WORKGROUP election.
    Per ideal_001.md this is an implicit (when (= someId (get-local-id 0)) ...).
    sync-workgroup in BODY is refused: only one thread arrives.  See spec 07, errors/03."
-  `(when (= (to-int (get-local-id 0)) ,id)
+  ;; get-local-LINEAR-id, NOT (get-local-id 0), despite ideal_001.md specifying the latter.
+  ;; A comparison against (get-local-id 0) is unreliable on the SPIR-V path: the LLVM IR is
+  ;; structurally identical to the linear-id form -- same global, same extractelement 0, same
+  ;; icmp -- yet at run time the branch is never taken, and whether it misbehaves depends on
+  ;; what else in the kernel reads the builtin.  Measured on BMG; see plan/bugs.md BUG 079.
+  ;; The linear id is also the better spelling for a 1-D election: it is the flattened index and
+  ;; is unambiguous whatever the workgroup's dimensionality.
+  `(when (= (to-int (get-local-linear-id)) ,id)
      ,@body))
 
 (eval-when (:load-toplevel :execute)
@@ -704,3 +711,242 @@
    the pinning verdict the original computes."
   (funcall *orig-175-emit-spirv-subgroup-size* func module semantic-function)
   (%175-check-kernel-warp-collective-pinning semantic-function *173-subgroup-pinned*))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 077: give the LINEAR atomics a VJP, refuse the rest.
+;;; ---------------------------------------------------------------------------
+;;; src/autodiff.lisp (beside the other register-vjp calls)
+;;;
+;;; atomic-add! into an &out parameter differentiated to ZERO, silently -- spec 16 measured
+;;; analytical=0.0 where the truth is 1.0.  The machinery knew atomic-add! only as a WRITTEN
+;;; PLACE (it appears in the primal-replay place collector beside SET!) and had no backward rule,
+;;; so a grid-level accumulation lost its gradient entirely.  Same class as BUG 073 one level up:
+;;; cross-WORKGROUP dataflow through a global atomic, invisible to a per-thread walk.
+;;;
+;;; THE RULE IS ALREADY WRITTEN DOWN ELSEWHERE, which is what makes this cheap.  For
+;;; (set! (~ t i) v), %gfw-process-set! emits
+;;;
+;;;     (set! v_adj (+ v_adj (~ t_GRAD i)))
+;;;
+;;; and `out[i] = v` and `out[i] += v` have the SAME derivative with respect to v -- both are 1.
+;;; So the linear atomics reuse that rule verbatim.
+;;;
+;;; ONE DIFFERENCE THAT MATTERS, and it is easy to miss by copying: in the SCRATCH branch,
+;;; %gfw-process-set! also ZEROES the destination adjoint, because a set! destroys the old value
+;;; and its adjoint must not flow on.  An atomic-add! does NOT destroy the old value -- it
+;;; accumulates onto it -- so zeroing there would drop a real contribution.  The zeroing is
+;;; deliberately absent below.
+;;;
+;;; WHICH ATOMICS GET A RULE, decided by whether the operation is LINEAR in its value argument:
+;;;
+;;;   add!  -> vbar += adj(place)          linear, coefficient +1
+;;;   sub!  -> vbar -= adj(place)          linear, coefficient -1
+;;;   inc! / dec!  -> :inert               no value argument; the increment is a constant, so
+;;;                                        there is nothing to propagate and zero IS correct
+;;;   min! / max!  -> REFUSED              the adjoint routes only to the thread that supplied
+;;;                                        the winning value, which the forward pass does not
+;;;                                        record (an argmin/argmax); same gap as
+;;;                                        reduce-workgroup's non-+ case
+;;;   exchange! / cas!  -> REFUSED         conditional or old-value-returning; not linear, and
+;;;                                        the returned old value is a second output
+;;;
+;;; Refusing beats silence.  A wrong gradient with no diagnostic is the worst outcome available,
+;;; and it is what shipped until now.
+
+(defun %175-atomic-place-parts (place)
+  "TARGET and INDICES of an atomic's place, or NIL if it is not a (~ t i...) form.
+   Matched by symbol-name: a kernel's reader may intern ~ into its own package."
+  (when (and (consp place) (symbolp (car place))
+             (string= (symbol-name (car place)) "~"))
+    (values (second place) (cddr place))))
+
+(defun %175-vjp-atomic-linear (form ctx sign op-name)
+  "Backward rule for an atomic that is LINEAR in its value argument.
+   SIGN is +1 for add!, -1 for sub!."
+  (let ((place (second form))
+        (val   (third form)))
+    (multiple-value-bind (target indices) (%175-atomic-place-parts place)
+      (cond
+        ;; Not a place we understand, or a non-symbol value: decline rather than guess, and let
+        ;; the walk's own clauses report it.
+        ((or (null target) (not (symbolp val))) nil)
+        (t
+         (let* ((inputs    (getf ctx :inputs))
+                (outputs   (getf ctx :outputs))
+                (local-adj (getf ctx :local-adj))
+                (pkg       (getf ctx :kernel-pkg)))
+           (when (member target inputs)
+             (error "Cannot differentiate: kernel mutates input parameter ~A via (~A (~~ ~A) ...). Only output parameters may be written."
+                    target op-name target))
+           (let* ((tgt-adj (if (member target outputs)
+                               (intern (format nil "~A_GRAD" (symbol-name target))
+                                       (symbol-package target))
+                               (%tlc-bwd-adj-name target inputs outputs local-adj pkg)))
+                  (vadj (funcall local-adj val))
+                  (contrib `(~ ,tgt-adj ,@indices)))
+             (log:debug "175 VJP ~a: ~a ~a= ~a" op-name vadj (if (plusp sign) "+" "-") contrib)
+             ;; NO zeroing of the destination adjoint -- see the section header.
+             `(set! ,vadj ,(if (plusp sign)
+                               `(+ ,vadj ,contrib)
+                               `(- ,vadj ,contrib))))))))))
+
+(defun %175-vjp-atomic-refuse (form ctx op-name why)
+  "Backward rule for an atomic Crisp cannot differentiate: refuse, with the reason."
+  (declare (ignore form ctx))
+  (error "~A is not differentiable.  ~A~%~
+          Crisp refuses rather than returning a gradient of zero, which is what it did before~%~
+          BUG 077: a kernel accumulating with an atomic compiled, ran, and reported an~%~
+          analytical derivative of 0.0 where the true value was 1.0, with no diagnostic.~%~
+          atomic-add! and atomic-sub! DO differentiate (they are linear in their value).~%~
+          If this kernel is genuinely forward-only, mark it SKIP-WITH[--differentiate]."
+         op-name why))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ATOMIC-ADD!"
+                (lambda (f c) (%175-vjp-atomic-linear f c 1 "atomic-add!")))
+  (register-vjp "ATOMIC-SUB!"
+                (lambda (f c) (%175-vjp-atomic-linear f c -1 "atomic-sub!")))
+  ;; No value argument: the increment is a constant, so zero really is the gradient.
+  (register-vjp "ATOMIC-INC!" (lambda (f c) (declare (ignore f c)) :inert))
+  (register-vjp "ATOMIC-DEC!" (lambda (f c) (declare (ignore f c)) :inert))
+  (register-vjp "ATOMIC-MIN!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-min!"
+                               "Its adjoint routes only to the thread that supplied the winning value, which requires the forward pass to have recorded an argmin.  Nothing records it.")))
+  (register-vjp "ATOMIC-MAX!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-max!"
+                               "Its adjoint routes only to the thread that supplied the winning value, which requires the forward pass to have recorded an argmax.  Nothing records it.")))
+  (register-vjp "ATOMIC-XCHG!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-xchg!"
+                               "It both overwrites the place and RETURNS the old value, so it has two outputs; a correct rule must account for whatever the returned value feeds.")))
+  (register-vjp "ATOMIC-SET!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-set!"
+                               "It both overwrites the place and RETURNS the old value, so it has two outputs; a correct rule must account for whatever the returned value feeds.")))
+  (register-vjp "ATOMIC-CAS!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-cas!"
+                               "The write is CONDITIONAL on a comparison, so the derivative depends on whether the swap happened -- a fact the forward pass does not record."))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — grid-reduce-atomic! : analyzed form + monolithic VJP.
+;;; ---------------------------------------------------------------------------
+;;; src/analysis/ops.lisp (form + analyzer), src/autodiff.lisp (the VJP registration).
+;;;
+;;;   (grid-reduce-atomic! fn var identity return-vec :local-scratch-vec sv)
+;;;
+;;; Phase 1 reduces each workgroup (reduce-workgroup); phase 2 has one leader per workgroup
+;;; accumulate that partial into return-vec[0] with a native hardware atomic.
+;;;
+;;; ONLY THE OPERATORS WITH A HARDWARE ATOMIC ARE LEGAL, which is a physical restriction rather
+;;; than a missing feature: phase 2 is one instruction, and the hardware provides add/min/max.
+;;; The doc says the same.  In practice only #'+ is reachable today because Crisp has no scalar
+;;; min or max binop -- (max 3.0 7.0) fails with "Unsupported form 'MAX'" -- so two of the three
+;;; legal operators do not yet exist.  The mapping below is written for all three anyway, so
+;;; adding the binops is the only work required to reach them.
+;;;
+;;; AN ANALYZED FORM, NOT A MACRO, for the reason established by reduce-workgroup: a macro expands
+;;; inside anf-transform before the backward walk, so AD would reverse the EXPANSION rather than
+;;; apply a rule -- and reversing cross-thread communication silently loses it (BUG 073/077).
+;;;
+;;; THE VJP IS THE SIMPLEST IN THE ENDEAVOUR.  out[0] is the sum over the WHOLE GRID of x_t, so
+;;;
+;;;     d out / d x_t = 1   for every thread t        =>     xbar_t = outbar[0]
+;;;
+;;; Every thread reads one global cell.  No atomics (the transpose of a scatter-add is a GATHER,
+;;; which is read-only), no barriers, no scratch.
+;;;
+;;; WHY A MONOLITHIC RULE RATHER THAN COMPOSITION, now that atomic-add! also has a VJP (BUG 077):
+;;; composition would be correct -- the atomic's rule gives wg_total_bar = outbar in the leader
+;;; and 0 elsewhere, and reduce-workgroup's all-reduce VJP then spreads it to every thread -- but
+;;; that all-reduce costs a scratch sweep and a barrier per halving step in the BACKWARD kernel.
+;;; The monolithic rule reaches the same answer with a single load, because it accounts for the
+;;; whole fan-in at once.  Correctness is equal; the saving is the barriers, not atomic contention.
+
+(defparameter *grid-atomic-operator-map*
+  '(("+" . "ATOMIC-ADD!") ("MIN" . "ATOMIC-MIN!") ("MAX" . "ATOMIC-MAX!"))
+  "Operators grid-reduce-atomic! accepts, and the native atomic each lowers to.  The hardware
+   provides exactly these three; anything else has no single-instruction form.")
+
+(defun %grid-atomic-op-name (fn)
+  "The atomic operator name for a literal #'op, or NIL if OP has no hardware atomic."
+  (when (and (consp fn) (symbolp (car fn))
+             (string-equal (symbol-name (car fn)) "FUNCTION")
+             (symbolp (second fn)))
+    (cdr (assoc (symbol-name (second fn)) *grid-atomic-operator-map* :test #'string-equal))))
+
+(defun %grid-reduce-atomic-parts (expr)
+  "Destructures (grid-reduce-atomic! FN VAR IDENTITY RETURN-VEC &key ...).
+   Returns (values fn var identity return-vec scratch)."
+  (let ((keys (cdr (cdddr (cdr expr)))))   ; everything after the four positional arguments
+    (values (second expr) (third expr) (fourth expr) (fifth expr)
+            (getf keys :local-scratch-vec))))
+
+(defun %grid-reduce-atomic-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (see the section header)."
+  (multiple-value-bind (fn var identity return-vec scratch) (%grid-reduce-atomic-parts expr)
+    (let ((atomic (%grid-atomic-op-name fn)))
+      (unless return-vec
+        (error 'crisp-compiler-error
+               :message "grid-reduce-atomic!: a return-vec is required -- it is the single global element the grid accumulates into.  Call it as (grid-reduce-atomic! #'+ var identity return-vec :local-scratch-vec sv)."
+               :source-location nil))
+      (unless scratch
+        (error 'crisp-compiler-error
+               :message "grid-reduce-atomic!: :local-scratch-vec is required in this build.  Auto-generating it needs VAR's element type at analysis time, which Crisp cannot yet supply.  Pass e.g. (make-scratch-vector float :match-num-warps-per-workgroup)."
+               :source-location nil))
+      (unless atomic
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-atomic!: ~s has no native hardware atomic, so there is no instruction for phase 2 to emit.  Only +, min and max qualify -- the hardware provides exactly those.  For an arbitrary commutative operator use grid-reduce-cas! (a CAS loop; no extra memory, high contention) or grid-reduce-last-man! (a global scratch buffer; no contention)."
+                                fn)
+               :source-location nil))
+      `(progn
+         ;; Phase 1 -- every thread of the workgroup ends up holding the workgroup's total.
+         (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,scratch)
+         ;; Phase 2 -- ONE leader per workgroup contributes that total to the grid cell.  Electing
+         ;; a single thread is what makes the atomic correct: without it all 64 would add the same
+         ;; workgroup total and the result would be scaled by the workgroup size.
+         (when-thread-in-group-is 0
+           (,(intern atomic (find-package :crisp.compiler)) (~ ,return-vec 0) ,var))
+         (compiler-no-op)))))
+
+(defun %analyze-grid-reduce-atomic (expr env context location)
+  "Analyzer for grid-reduce-atomic! -- expands and delegates."
+  (analyze-expression (%grid-reduce-atomic-expand expr) env context location))
+
+(defvar *orig-175c-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus grid-reduce-atomic! as an analyzed form."
+  (funcall *orig-175c-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "GRID-REDUCE-ATOMIC!" pkg) *expression-analyzers*)
+              '%analyze-grid-reduce-atomic)))))
+
+(defun %175-vjp-grid-reduce-atomic (form ctx)
+  "VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's
+   adjoint.  One global load per thread -- no atomics, no barriers, no scratch."
+  (multiple-value-bind (fn var identity return-vec scratch) (%grid-reduce-atomic-parts form)
+    (declare (ignore identity scratch))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (string-equal (or (%grid-atomic-op-name fn) "") "ATOMIC-ADD!")
+        (error "grid-reduce-atomic!: autodiff is supported only for the + reduction.  A SUM over the grid gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell.  min/max would route the adjoint only to the thread that supplied the winning value, which needs an argmin/argmax the forward pass does not record -- the same gap atomic-min!/atomic-max! have on their own (BUG 077).  Use the + reduction, or mark the kernel SKIP-WITH[--differentiate] if it is forward-only."))
+      (unless (and var (symbolp var) return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-atomic nil))
+      (let ((vadj (funcall local-adj var))
+            (radj (funcall local-adj return-vec)))
+        (log:debug "175 VJP grid-reduce-atomic!: ~a := (~~ ~a 0)" vadj radj)
+        ;; OVERWRITE, mirroring the forward: the construct consumes VAR (the doc says its value is
+        ;; indeterminate afterwards), so the input adjoint REPLACES the output adjoint.
+        `(set! ,vadj (~ ,radj 0))))))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-ATOMIC!" (function %175-vjp-grid-reduce-atomic)))

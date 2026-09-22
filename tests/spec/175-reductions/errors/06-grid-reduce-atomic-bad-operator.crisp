@@ -1,0 +1,40 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "native hardware atomic"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-atomic! accepts only operators with a hardware atomic.  TDD.
+;;
+;; Unlike every other reduction in this endeavour, this one is NOT generic over commutative
+;; binops, and the restriction is physical rather than a missing feature.  Phase 2 is a single
+;; native atomic instruction; the hardware provides add, min and max and nothing else.  A
+;; user-defined binop has no atomic form, so there is no instruction to emit.
+;;
+;; The design doc says the same: "Attempting to use this macro with any other operation will
+;; result in a compilation error."  Crisp offers two escape routes for an arbitrary commutative
+;; operator, and the message names them -- grid-reduce-cas! (a CAS loop, zero extra memory, high
+;; contention) and grid-reduce-last-man! (a global scratch buffer, no contention).  A refusal that
+;; only says "no" would leave the user stuck; the alternatives are the useful part.
+;;
+;; NOTE FOR WHOEVER READS THIS NEXT: of the three operators the doc declares legal, only #'+ is
+;; reachable today, because Crisp has no scalar `min` or `max` binop -- (max 3.0 7.0) fails with
+;; "Unsupported form 'MAX'".  So this spec exercises the refusal with a user-defined function,
+;; which is the case that will stay refused forever; when min/max are added they must be ACCEPTED,
+;; and this spec must keep passing with the function it uses here.
+;;
+;; CHECK-FAIL matches "native hardware atomic", a phrase absent from the kernel name and the file
+;; name -- CHECK-FAIL matches those too, so a carelessly named spec can satisfy its own check
+;; without the compiler emitting anything.  TEST-EXPECT is FAIL with no CHECK-FAIL-FLAGS because
+;; the refusal happens at analysis time on every backend.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function combine-somehow (a b)
+  (declare #'(float float => float))
+  (+ (* a 2.0) b))
+
+(def-kernel grid_atomic_bad_op (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-atomic! #'combine-somehow contrib 0.0 out :local-scratch-vec sv))))

@@ -1,0 +1,63 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-mat=4x16
+;;
+;; ENDEAVOUR 175 -- does a GRID-LEVEL atomic accumulation differentiate correctly?
+;;
+;; This spec exists ahead of grid-reduce-atomic! because it isolates that construct's entire AD
+;; question into four lines of kernel.  grid-reduce-atomic! is, in substance:
+;;
+;;     reduce-workgroup #'+           (already verified, spec 09: 64.0)
+;;     then one leader per workgroup:  atomic-add! into a single global cell
+;;
+;; and if BOTH halves differentiate, the composition needs no VJP of its own.  Worth showing why,
+;; because the composition is not obvious:
+;;
+;;   * the atomic contributes d out / d wg_total = 1, but only in the thread that performed it --
+;;     so wg_total_bar = outbar in the leader and 0 in every other thread;
+;;   * reduce-workgroup's VJP is an ALL-REDUCE of the adjoint, which then spreads that leader's
+;;     outbar to every thread in the workgroup.
+;;
+;; Composing the two gives xbar_t = outbar for every t, which is exactly right for
+;; out = SUM over the whole grid of x_t.  The all-reduce that looked like a curiosity in spec 09
+;; is what carries the leader's adjoint back to the threads that fed it.
+;;
+;; SO THIS SPEC TESTS THE HALF THAT IS NOT YET VERIFIED: the atomic.  out[0] = SUM of A, so
+;; d(out)/dA[2] = 1.0 exactly -- the value is independent of thread count, warp width and
+;; accumulation ORDER, which matters because atomics do not guarantee order.
+;;
+;; WHY IT IS NOT ENOUGH THAT IT COMPILES.  It already does.  So did reverse-mode through
+;; reduce-workgroup's expansion, which returned 1.0 where the truth was 64.0 (BUG 073) -- a wrong
+;; gradient, silently, from a kernel that built and ran.  A cross-thread accumulation is exactly
+;; the shape that failure had, and an atomic into a shared cell is cross-thread by definition.
+;; The number is the test; compilation is not.
+;;
+;; output-mat=4x16 RATHER THAN output-vec=1, and the reason is worth recording.  The natural
+;; shape here is a length-1 vector -- the design doc specifies grid-reduce-atomic!'s return-vec
+;; exactly that way -- and the spec was first written with output-vec=1.  But VERIFY-AUTODIFF does
+;; not compute a finite difference for a vector output: it reports `analytical=X expected=Y`,
+;; comparing against the directive's own arithmetic rather than a measurement (BUG 078).  That is
+;; the weaker test, and it would have made the result below uncorroborated.  With output-mat the
+;; harness produces a real FD, which is what let the fix be confirmed by A/B:
+;;
+;;     rule OFF:  analytical=0.0  numerical=1.0
+;;     rule ON :  analytical=1.0  numerical=1.0
+;;
+;; All 64 threads accumulate into C[0,0], so sum(C) is the grid total and d(sum C)/dA[0,2] = 1.0.
+;; Heavy contention on one address is the point, not an oversight: it is the same shape
+;; grid-reduce-atomic! produces with one leader per workgroup.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_atomic_accumulate (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      ;; All 64 threads accumulate into ONE element; sum(C) is therefore the grid total.
+      (atomic-add! (~ C 0 0) (~ A row col)))))
