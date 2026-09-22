@@ -1578,6 +1578,14 @@
                                 ;; build a rank-N tensor record instead of guessing.
                                 :dims dims
                                 :elem-bytes elem-bytes
+                                ;; BUG 084: the address space was read from the metacrisp and
+                                ;; then dropped here, so every implicit scratch param reached
+                                ;; the binder looking local and was bound as SLM.  A :global
+                                ;; buffer needs a real device allocation; binding it as shared
+                                ;; local memory hands the kernel a bogus addrspace(1) pointer
+                                ;; and the first write ends in DEVICE_LOST.  Defaulting to
+                                ;; :local preserves the old behaviour for everything else.
+                                :address-space (or (getf p :address-space) :local)
                                 :arg-width (1+ (- (second range) (first range)))))))))))))))
 
 

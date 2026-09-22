@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "atomic-cas! is not differentiable"
+;; CHECK-FAIL: "atomic-cas! is not differentiable"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 175 -- atomic-cas! has no derivative, and the reason is not a missing feature.
+;;
+;; Every other refusal on this ladder is "we did not record what the backward pass would need".
+;; This one is different and stronger: a CAS returns WHICH THREAD WON A RACE.  That is not a
+;; function of the program's inputs at all -- two identical runs of the same kernel on the same
+;; data can legitimately return different values -- so there is no derivative to take, not merely
+;; one Crisp declines to compute.
+;;
+;; WHY REFUSE RATHER THAN RETURN ZERO.  A gradient of zero is a claim that perturbing the input
+;; cannot change the output, and here that claim is false: the value CAS writes depends on the
+;; input directly.  Returning zero would be indistinguishable from a correct answer for an
+;; input that genuinely does not participate, which is exactly how BUG 073, 077 and 081 each
+;; hid for months.
+;;
+;; TEST-EXPECT is PASS with CHECK-FAIL-FLAGS because the refusal is AD-only -- specs 33 and 34 run
+;; atomic-cas! forward on hardware for uint and float.  FAIL-WITH is required as well: when the
+;; runner differentiates, the default pass becomes a differentiating pass and this kernel is built
+;; to be refused there.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel diff_cas_attempt (A &out out)
+  (declare #'((matrix float :address-space :global :align :compact :contiguous-term :row-major)
+              &out uvec-t => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  ;; truncate, then to-uint: 'to-...' refuses float-to-integer outright and says so.
+  (let ((seed (to-uint (truncate (~ A 0 0)))))
+    (let ((old (atomic-cas! (~ out 1) 1u seed)))
+      (set! (~ out 0) old))))

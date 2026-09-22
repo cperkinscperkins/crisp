@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 1 9 2 2
+;; SKIP-WITH[--differentiate]: "a CAS result depends on who won a race; its VJP refuses -- errors/10"
+;;
+;; ENDEAVOUR 175 -- atomic-cas!, the foundational primitive under atomic-binop!.
+;;
+;;   (atomic-cas! location expected desired)
+;;
+;; Compares the value at LOCATION with EXPECTED; if they match, stores DESIRED.  Returns the value
+;; that was there BEFORE, matching all eight existing Crisp atomics -- so the caller detects
+;; success by comparing the returned value against EXPECTED, rather than by a separate boolean.
+;;
+;; THAT RETURN CONVENTION IS A DELIBERATE DIVERGENCE from the design doc's sketch, which uses the
+;; result as a boolean ((when (atomic-cas! ...) ...)).  Returning the old value is the more
+;; primitive of the two -- a boolean is derivable from it, the reverse is not -- it is what both
+;; target ISAs actually give back (LLVM cmpxchg, PTX atom.cas), and it keeps the rule "every
+;; atomic returns the value before" true without exception.
+;;
+;; ONE THREAD, both outcomes.  Contention is NOT what this spec is for; spec 35 hammers a single
+;; location with 256 threads.  What this pins is the semantics of a single attempt, which is
+;; easier to get subtly wrong and impossible to diagnose once threads are involved:
+;;
+;;   out[1] starts at 1, expected 1 -> MATCHES, stores 9, returns 1
+;;   out[2] starts at 2, expected 99 -> NO MATCH, stores nothing, returns 2
+;;
+;; so out[0] takes the successful attempt's old value (1) and out[3] the failed one's (2), leaving
+;; out = 1 9 2 2.  Every element of that is load-bearing: slot 1 proves the store happened, slot 2
+;; proves the failed attempt did NOT write, and slots 0 and 3 prove both attempts returned the
+;; prior value rather than a success flag.  A CAS that returned a boolean would read 1 9 2 0.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel cas_uint_smoke (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  ;; Crisp's let is sequential, so these nest rather than using let*.
+  (let ((old-ok (atomic-cas! (~ out 1) 1u 9u)))
+    (let ((old-fail (atomic-cas! (~ out 2) 99u 7u)))
+      (set! (~ out 0) old-ok)
+      (set! (~ out 3) old-fail))))

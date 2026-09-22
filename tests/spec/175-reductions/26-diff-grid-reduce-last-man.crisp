@@ -3,34 +3,13 @@
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
 ;; SKIP-DEFAULT-PASS
 ;; HOIST-HARDWARE-PROFILE: bmg
-;; NO FINITE-DIFFERENCE CHECK HERE -- blocked by BUG 084, which stops VERIFY-AUTODIFF running
-;; any kernel that declares a global scratch cell.
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-vec=1
 ;;
-;; (Not written as a KNOWN-ISSUE directive: that one marks a whole spec expected-to-FAIL, and the
-;; two compile passes below are expected to PASS.  Saying it in prose is the accurate thing.)
-;;
-;; The finite-difference check this spec WANTS is, WITH THE COLON PUT BACK after the directive
-;; name (it is omitted here on purpose -- the runner matches a directive anywhere in a comment
-;; line, indentation and surrounding prose included, so spelling it in full would re-arm it):
-;;
-;;   VERIFY-AUTODIFF  A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-vec=1
-;;
-;; It is kept here rather than deleted so it can be restored exactly when BUG 084 is fixed.
-;;
-;; grid-reduce-last-man! needs a GLOBAL uint cell for its ticket counter, and the runner dies on
-;; any kernel declaring one (L0 0x70000001 at zeCommandQueueSynchronize).  Bisected to that single
-;; binding: the identical kernel without the cell passes at analytical=1.0 numerical=1.0000019.
-;;
-;; WHAT THIS SPEC STILL PROVES, and what it does not.  The COMPILE-WITH passes below show the
-;; construct differentiates without error and that its VJP is reached -- the _GRAD body contains
-;; no replayed election and no atomics, so the rule replaced the construct rather than the walk
-;; reversing it.  It does NOT prove the NUMBER.  Given this endeavour has already produced three
-;; constructs that compiled and returned silently wrong gradients (BUG 073, 077, 081), that is a
-;; real gap and not a formality.
-;;
-;; The rule itself is shared with grid-reduce-atomic!, whose VJP IS measured (spec 23, 16.0
-;; against a finite difference) -- the two constructs compute the same function by different
-;; schedules, so they carry the same derivative.  That is corroboration, not verification.
+;; This spec was compile-only for a while: BUG 084 stopped VERIFY-AUTODIFF launching any kernel
+;; that declared global scratch, which is every stage-2 reduction there is.  The harness bound
+;; every implicit scratch param as workgroup-local SLM, so the ticket counter arrived as a bogus
+;; addrspace(1) pointer and the first write took the device down.  Fixed by dispatching on the
+;; address space the metacrisp already recorded; the number below is measured, not asserted.
 ;;
 ;; ENDEAVOUR 175 -- the VJP of grid-reduce-last-man!.
 ;;

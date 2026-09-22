@@ -1,0 +1,44 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 2016 1 2 3
+;; SKIP-WITH[--differentiate]: "forward contention only; the + VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- atomic-binop! under REAL CONTENTION, which is the point of this spec.
+;;
+;;   (atomic-binop! location binop-f arg)
+;;
+;; A bounded CAS retry loop.  Every one of the 64 threads in a single workgroup hammers the SAME
+;; memory location with its own linear id, so the retry path is genuinely exercised rather than
+;; incidentally touched -- 0+1+...+63 = 2016.
+;;
+;; WHY ONE LOCATION AND ALL THREADS.  The doc's own example puts atomic-binop! inside
+;; when-thread-in-group-is 0, one contender per workgroup, and that arrangement barely retries at
+;; all: with four workgroups the loop almost always succeeds first attempt and a broken retry path
+;; would still produce the right answer.  Maximum contention is the only arrangement where the
+;; loop body is really under test, and it is also the arrangement that would expose a bound that
+;; is too small.
+;;
+;; THE BOUND IS DERIVED, NOT GUESSED, and this number is what checks the derivation.  A CAS fails
+;; only because another thread's CAS succeeded, and each thread needs to succeed once, so a thread
+;; can be beaten at most (contenders - 1) times and (contenders) attempts always suffice.  The
+;; loop uses global_size + 1.  If that reasoning were wrong -- if some thread could be starved
+;; past the bound -- the r-t-assert-0 inside the construct would fire rather than this quietly
+;; reading low, which is the whole reason the assert is there.  A silent exhaustion would drop
+;; contributions and read as, say, 1998, and nothing would say why.
+;;
+;; A SUM, DELIBERATELY, even though atomic-add! already does sums in hardware.  The value of using
+;; + here is that the expected total is exactly known and any lost update is visible as a specific
+;; shortfall; spec 36 uses an operator that has no hardware atomic at all, which is the reason
+;; atomic-binop! exists.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel binop_contention (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-local-linear-id))))
+    (atomic-binop! (~ out 0) #'+ contrib)))

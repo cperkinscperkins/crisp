@@ -2992,7 +2992,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 175's grid-reduce-last-man!, the first construct in Crisp needing
         cross-workgroup DATA rather than just a cross-workgroup counter.
 
-[ ] 084 VERIFY-AUTODIFF CANNOT RUN A KERNEL CONTAINING A GLOBAL SCRATCH CELL -- the launch dies
+[x] 084 FIXED 2026-09-22.  VERIFY-AUTODIFF BOUND EVERY IMPLICIT SCRATCH PARAM AS LOCAL, so any :global scratch
+        buffer gets no device allocation and the launch dies
         with L0 0x70000001 (DEVICE_LOST) at zeCommandQueueSynchronize.
 
         BISECTED to one binding.  The same kernel, differing only by whether it declares
@@ -3020,4 +3021,130 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         endeavour's history -- three constructs that compiled and returned wrong gradients
         silently -- is not a comfortable place to leave it.
 
+        SCOPE CORRECTED, AND ROOT CAUSE FOUND (2026-09-22).  Filed first as "a global scratch
+        CELL", which was too narrow -- I had bisected a kernel that happened to use a cell and
+        stopped there.  A kernel with a global scratch VECTOR and no cell at all (spec 31, the
+        grid-reduce-second-stage! VJP) fails identically, so the trigger is the ADDRESS SPACE,
+        not the shape.
+
+        THE CAUSE IS IN THE HARNESS, in %vad-bind-implicit-param (tests/verify-autodiff-runner.lisp,
+        ~line 718).  Its dispatch branches ONLY on :arg-width -- 3 / 6 / 9 to cell / vector /
+        matrix -- and every branch calls a bind-LOCAL-scratch-* function.  There is no
+        address-space test anywhere in it; its own docstring says so outright ("Everything else is
+        a local scratch tile, dispatched on its physical width").  A :global scratch buffer is a
+        real ptr addrspace(1) parameter that needs a device allocation, so binding it as SLM hands
+        the kernel a bogus global pointer and the first write faults.  That single cause explains
+        both the cell and the vector observation.
+
+        THE METADATA FOR A FIX ALREADY EXISTS.  The metacrisp implicit-param record carries the
+        address space explicitly -- BUG 083's fix is what put it there:
+
+            :implicit-params ((:name "gv_from_diff_second_stage_2"
+                               :type (tensor float 1 :global :compact :last)
+                               :size-expr 8 :address-space :global :range (0 5))
+                              (:name "sv_from_diff_second_stage_1"
+                               :type (tensor float 1 :local :compact :last)
+                               :size-expr 4 :address-space :local :range (6 11)))
+
+        So the fix is a branch on (getf p :address-space): allocate device memory of
+        size-expr * elem-bytes and bind pointer + descriptor, as the L0 hoister's
+        %l0-emit-global-scratch-tensor-arg already does, instead of binding SLM.
+
+        WHY IT MATTERS MORE THAN ONE SPEC.  Every stage-2 reduction needs global scratch by
+        nature -- that is what makes it cross-workgroup.  So as long as this stands, NO grid-level
+        reduction can have its gradient measured against a finite difference, and this endeavour
+        has already produced three constructs (BUG 073, 077, 081) that compiled clean and returned
+        silently wrong gradients.  Compile-only AD specs would have certified all three.
+
+        THE FIX HAD TWO HALVES, and the second was only visible once the first worked.
+
+        (1) BIND BY ADDRESS SPACE.  tests/run-specs.lisp's %vad-read-implicit-params read the
+            address space from the metacrisp and then DROPPED it when building the plist, so the
+            binder never had it.  Carry it through, and dispatch in %vad-bind-implicit-param to
+            new l0-bind-global-scratch-{vector,cell}-arg, which allocate real shared memory and
+            pass a POINTER where the local path passes a null value plus a byte size.
+
+        (2) RE-ZERO BEFORE EVERY LAUNCH, not once at bind time.  With (1) alone, spec 26 went
+            from DEVICE_LOST to a perfect analytical=1.0 against a numerical of exactly 0.0.
+            The cause is that grid-reduce-last-man!'s ticket counter is STATEFUL ACROSS
+            DISPATCHES: zero it once and the first launch elects correctly, but VERIFY-AUTODIFF
+            re-launches the forward kernel once per finite-difference probe, and on every later
+            launch the counter starts at num_groups, nobody draws the winning ticket, and the
+            answer is never stored.  Every probe read back the unperturbed buffer, so the
+            numerical gradient was 0.  %vad-zero-global-scratch now runs from launch-kernel-1d.
+
+        WORTH KEEPING.  Both failure modes -- a wrong address space and stale scratch -- present
+        as a CLEAN-LOOKING NUMBER rather than an error, and the second one produced a gradient
+        pair (1.0 vs 0.0) that reads exactly like a compiler bug in the VJP.  It was not; the VJP
+        was right and the forward was not being re-run.
+
+        MEASURED AFTER THE FIX.  175/26 (last-man) analytical=1.0 numerical=1.0 diff=0.0;
+        175/31 (second-stage) analytical=1.0 numerical=1.0 diff=0.0; all seven VERIFY-AUTODIFF
+        specs in 175 pass, and the pre-existing five are unchanged.
+
+        WHAT IT CAUGHT IMMEDIATELY.  With the harness working, grid-reduce-second-stage! was
+        found to be differentiating to a SILENT ZERO GRADIENT (analytical=0.0, numerical=1.0) --
+        no VJP was registered and nothing had complained.  That is the fourth instance of the
+        BUG 073/077/081 pattern in this endeavour and it would have shipped.
+
         FOUND BY.  Endeavour 175, writing the AD spec for grid-reduce-last-man!.
+
+[x] 085 FIXED 2026-09-22.  ANF LIFTS AN ATOMIC'S PLACE INTO A TEMP unless the operator is named
+        in one list in anf-transform.lisp, and a VJP that then cannot find its target DECLINES,
+        which is indistinguishable from a gradient of zero.
+
+        SYMPTOM.  atomic-binop! with #'+ returned analytical=0.0 against a numerical 1.0.  No
+        error, no warning.  The fifth silent-zero-gradient of endeavour 175 after 073, 077, 081
+        and grid-reduce-second-stage.
+
+        TWO WRONG THEORIES, both discarded by measurement rather than by reading code:
+
+          * "the VJP is not registered" -- but errors/11's non-+ refusal is raised from that very
+            function and fires correctly, so it was demonstrably running;
+          * "ATOMIC-BINOP! is missing from autodiff.lisp's primal-replay write-set lists" --
+            true, and it WAS missing, but adding it changed nothing.  Kept regardless, because
+            being absent from those lists makes a write look like a read.
+
+        WHAT SETTLED IT.  A control probe first: atomic-add! with an identical let-bound symbol
+        delta measured 1.0 through the SAME helper (%175-vjp-atomic-linear) on the same path,
+        which cleared the rule and its symbol path.  Then one debug log line printed the form the
+        VJP was actually handed:
+
+            (ATOMIC-BINOP! %ANF-T-4 #'+ CONTRIB)
+
+        ANF had hoisted the place (~ out 0) into a temp.  %175-atomic-place-parts finds no target
+        symbol in %ANF-T-4, so the VJP returned nil -- declining, by design, rather than guessing
+        -- and with no rule left the accumulation contributed nothing.
+
+        CAUSE.  anf-normalize dispatches to %anf-normalize-atomic, which preserves the place, ONLY
+        for operators named in an inline list: ATOMIC-ADD! SUB! INC! DEC! MIN! MAX! XCHG! SET!.
+        Anything else falls to the generic branch, which ANFs every argument including the place.
+
+        FIX.  Added ATOMIC-CAS!, %ATOMIC-CAS-OK! and ATOMIC-BINOP! to that list.
+        %anf-normalize-atomic needed no change -- it already accepts a place plus any number of
+        trailing arguments.  Measured after: analytical=1.0 numerical=1.0 diff=0.0.
+
+        THE GENERAL LESSON, worth more than the fix.  A NEW OPERATOR THAT WRITES TO A PLACE NEEDS
+        THREE REGISTRATIONS, not one, and only the first announces itself when missing:
+
+          1. the expression analyzer -- omit it and you get "Unsupported form", loudly;
+          2. anf-transform.lisp's atomic place list -- omit it and its VJP silently declines;
+          3. autodiff.lisp's replay write-set lists -- omit it and a write is read as a read.
+
+        Only (1) fails loudly.  (2) and (3) fail as a plausible number.
+
+[ ] 086 THE AD REPLAY LISTS NAME "ATOMIC-EXCHANGE!", WHICH IS NOT AN OPERATOR CRISP HAS.
+
+        %ad-replay-fill-targets and %ad-replay-read-syms (src/autodiff.lisp ~5276 / ~5332) both
+        list "ATOMIC-EXCHANGE!".  The operator Crisp actually registers is ATOMIC-XCHG!, with
+        ATOMIC-SET! as its alias (see the registration table in src/analysis/ops.lisp ~810).
+        Neither real name appears in either list, so an exchange would be misread as a READ of
+        its place -- exactly the mechanism of BUG 085.
+
+        LATENT, NOT ACTIVE.  It cannot bite today because atomic-xchg!'s and atomic-set!'s VJPs
+        refuse outright, so neither ever reaches the replay machinery.  It becomes live the moment
+        anyone gives either operator a real derivative.
+
+        NOT FIXED DELIBERATELY.  Adding the right names changes replay behaviour for two shipped
+        operators, which wants its own spec rather than a drive-by edit inside an unrelated
+        endeavour.  Noticed while adding ATOMIC-BINOP! to the same two lists for BUG 085.

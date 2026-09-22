@@ -1,0 +1,33 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: ":local-scratch-vec is required"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 175 -- grid-reduce-second-stage! refuses to invent its own scratch, and says why.
+;;
+;; THE DOC LISTS localScratchVec AS OPTIONAL: "Crisp will generate it if omitted."  It cannot,
+;; today, and this spec pins that gap as a REFUSAL rather than letting it surface as the confusing
+;; downstream error it otherwise produces ("Missing implicit argument ... for make-scratch-vector"
+;; pointing at a line the user never wrote).
+;;
+;; THE REASON IS THE PASS-1 SCANNER.  Implicit kernel parameters for scratch buffers are collected
+;; by a scan that walks the SOURCE let-bindings.  A buffer conjured inside an analyzer's expansion
+;; comes into being after that scan has run, so no parameter is ever created for it and the kernel
+;; is built with an argument it never receives.  Auto-generation therefore needs the scanner to
+;; learn about analyzer-introduced scratch -- a real feature, not a line of sugar.
+;;
+;; TEST-EXPECT is FAIL rather than the PASS+CHECK-FAIL-FLAGS pairing used by errors/05 and
+;; errors/07: this refusal is backend-independent and AD-independent, so there is no pass in which
+;; the kernel compiles.  Contrast those two, whose kernels compile fine forward.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename as
+;; well as the message, so a file called "...-required.crisp" could pass vacuously.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel second_stage_bare (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((gv (make-scratch-vector float 8 :address-space :global)))
+    (let ((acc 0.0))
+      (grid-reduce-second-stage! #'+ acc 0.0 gv out))))

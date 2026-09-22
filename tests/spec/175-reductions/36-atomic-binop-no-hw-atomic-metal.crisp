@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 0 256 2 3
+;; SKIP-WITH[--differentiate]: "multiply is not differentiable by atomic-binop!'s VJP -- errors/11"
+;;
+;; ENDEAVOUR 175 -- atomic-binop! with an operator the HARDWARE DOES NOT HAVE.
+;;
+;; This is the construct's whole reason for existing.  Spec 35 accumulates with +, which is useful
+;; for checking the retry path against a known total but is also exactly what atomic-add! already
+;; does in one instruction.  MULTIPLICATION has no atomic anywhere in either target ISA -- there is
+;; no atom.mul, no OpAtomicIMul -- so a CAS retry loop is the only way to do it at all.
+;;
+;; EIGHT THREADS, NOT SIXTY-FOUR, and the accumulator starts at 1.  A product grows exponentially:
+;; 64 threads contributing 2.0 would be 2^64, past float precision and useless as an assertion.
+;; Eight threads give 2^8 = 256, which is exact in float and unmistakable.  Contention is still
+;; real -- eight threads on one location -- and spec 35 already covers the 64-way case.
+;;
+;; THE ACCUMULATOR IS out[1], NOT out[0], because the harness pre-fills each slot with its own
+;; index and a product seeded at 0 stays 0 forever.  Slot 1 starts at 1, which is multiplication's
+;; identity, so 1 * 2^8 = 256.  That slot choice is load-bearing and not cosmetic.
+;;
+;; WHAT THE UNTOUCHED SLOTS PROVE.  out[0] stays 0 and out[2..3] stay 2 3, so the construct wrote
+;; exactly one location.  An implementation whose CAS pointer arithmetic was off by one would move
+;; 256 into a neighbouring slot and the sum-based specs could not tell.
+;;
+;; ORDER DOES NOT MATTER HERE, which is why the answer is deterministic despite the threads racing:
+;; multiplication is commutative and associative, so any interleaving of the eight updates gives
+;; 256.  An operator without those properties would make this spec flaky rather than wrong, and
+;; that is a property of the OPERATOR the caller chooses, not of the construct.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+;; No hardware atomic exists for this, on either backend.
+(def-function ab-mul (a b)
+  (declare #'(float float => float))
+  (* a b))
+
+(def-kernel binop_no_hw_atomic (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  (atomic-binop! (~ out 1) #'ab-mul 2.0))

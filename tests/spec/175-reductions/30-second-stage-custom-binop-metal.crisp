@@ -1,0 +1,50 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: -1 1 2 3
+;; SKIP-WITH[--differentiate]: "max is not differentiable by second-stage's VJP -- see errors/09"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-second-stage! with an operator that is not +.
+;;
+;; Spec 28's twin for the third stage-2 strategy, and it earns its place for a reason specific to
+;; this construct: second-stage uses the IDENTITY in a place the other strategies do not.  Its
+;; sweep covers a whole workgroup (64 lanes) while only 8 partials exist, so lanes 8..63 take the
+;; caller's identity -- and unlike last-man, where the same situation arises, here the bounds test
+;; is the construct's ONLY defence against reading past the end of the partials vector.
+;;
+;; THE VALUES ARE NEGATIVE ON PURPOSE.  With max over -1..-8 the answer is -1; a sweep that
+;; substituted a hardwired 0.0 for its out-of-range lanes would report 0.  With POSITIVE
+;; contributions both spellings read 8 and the bug would be invisible.  Same reasoning as spec 28,
+;; and it is the whole reason for the sign.
+;;
+;; A SECOND FAILURE THIS CATCHES: an implementation that let the inactive lanes read (~ gv lid)
+;; past the end would pick up whatever the global allocation happens to hold.  Zero-initialised
+;; device memory would give 0 here -- again visibly wrong against -1, and again only because the
+;; real values are negative.
+;;
+;; As in spec 29 the partials are filled in-kernel, standing in for the first pass, because Crisp
+;; cannot express a two-launch sequence sharing device memory (def-orchestration is an exported
+;; symbol with no implementation).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+;; Crisp has no scalar `max`, so the operator is a user-defined #(float float => float).
+(def-function ss-max (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel second_stage_max (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 8 :address-space :global)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (when (< tid 8)
+        (set! (~ gv tid) (- 0.0 (+ (to-float tid) 1.0))))
+      (mem-fence)
+      (sync-workgroup)
+      (let ((acc 0.0))
+        (grid-reduce-second-stage! #'ss-max acc -1.0e30 gv out :local-scratch-vec sv)))))

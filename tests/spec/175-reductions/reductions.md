@@ -11,5 +11,15 @@ Reductions will need significant benchmarking, which will likely need its own en
 [ ] tests that compose phase 1 with phase 2 . all combinations.
 [ ] implement
 [ ] update docs if there were API changes/casualties.  (starts near ideal_001.md line 6300)
+
 [ ] update docs with "implemented/partial/not-implemented" emojis
 
+Doc Update Example:
+```
+&key better than &optional. Spec needs updating. 
+(grid-reduce-last-man! #'+ contrib 0.0 out
+                             :local-scratch-vec sv
+                             :global-scratch-vec gv
+                             :atomic-counter ctr
+                             :election-flag-cell flag)
+```

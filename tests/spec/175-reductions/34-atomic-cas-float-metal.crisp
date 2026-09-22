@@ -1,0 +1,41 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 1 9.5 2 2
+;; SKIP-WITH[--differentiate]: "a CAS result depends on who won a race; its VJP refuses -- errors/10"
+;;
+;; ENDEAVOUR 175 -- atomic-cas! on FLOAT, which is a different code path from spec 33.
+;;
+;; LLVM's cmpxchg TAKES NO FLOAT OPERANDS.  A float CAS must bitcast both values to an integer of
+;; the same width, compare-and-swap there, and bitcast the loaded value back -- the same idiom
+;; CUDA's float atomicCAS uses.  Spec 33 exercises the integer path, where the operands pass
+;; straight through; this exercises the reinterpreting one, and it is the path that matters most
+;; because every reduction on this ladder reduces floats.
+;;
+;; 9.5 RATHER THAN A WHOLE NUMBER, deliberately.  An implementation that truncated through an
+;; integer somewhere -- or bitcast when it meant to convert -- would still produce 9 for a stored
+;; 9.0 and the bug would read as a pass.  A value with a fractional part cannot survive an
+;; accidental integer conversion, so the .5 is the assertion.
+;;
+;;   out[1] starts at 1.0, expected 1.0 -> MATCHES, stores 9.5, returns 1.0
+;;   out[2] starts at 2.0, expected 99.0 -> NO MATCH, stores nothing, returns 2.0
+;;
+;; A NOTE ON BIT-PATTERN COMPARISON, since it is a real semantic and not an implementation
+;; detail: the comparison is on bits, which is what CAS means -- "has memory changed since I read
+;; it" is a question about bits, not about numeric equality.  The visible consequences are that
+;; +0.0 and -0.0 do not match each other and that a NaN never matches itself.  Both are true of
+;; every hardware float CAS, so a retry loop built on this must compare the returned value the
+;; same way rather than assuming numeric equality.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel cas_float_smoke (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((old-ok (atomic-cas! (~ out 1) 1.0 9.5)))
+    (let ((old-fail (atomic-cas! (~ out 2) 99.0 7.0)))
+      (set! (~ out 0) old-ok)
+      (set! (~ out 3) old-fail))))

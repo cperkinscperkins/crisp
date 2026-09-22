@@ -1,0 +1,41 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-vec=1
+;;
+;; ENDEAVOUR 175 -- the + case of atomic-binop! DOES differentiate, and this measures it.
+;;
+;; errors/11 pins what atomic-binop! refuses.  This pins what it delivers, and the pair is the
+;; point: a refusal spec on its own proves only that the operator check fires, not that the
+;; surviving case is right.
+;;
+;; THE RULE IS INHERITED, NOT NEW.  Accumulating a sum into a location gives
+;; d out / d contribution = 1 whatever else landed first and in whatever order, so the adjoint is
+;; the location's adjoint unchanged -- exactly atomic-add!'s rule, which spec 16 measures.  The VJP
+;; literally calls the same helper.  What is NOT inherited, and is the reason this spec exists, is
+;; that atomic-binop!'s forward pass is a CAS RETRY LOOP rather than one instruction: the backward
+;; pass must replace that whole loop with the broadcast rather than try to reverse it.
+;;
+;; WHICH IS WHY A COMPILE-ONLY SPEC WOULD NOT DO.  Had atomic-binop! been written as the doc's
+;; macro, the loop would have expanded before the backward walk and AD would have reversed the CAS
+;; itself -- and it would NOT have errored, because ATOMIC-CAS! is in autodiff.lisp's primal-replay
+;; write-set lists, not in a refusal list.  The failure would have been a plausible-looking wrong
+;; number, which is how BUG 073, 077, 081 and grid-reduce-second-stage's silent zero all presented.
+;; A finite difference is the only check that distinguishes those.
+;;
+;; 64 threads each add one element of A into out[0], so out[0] is the sum of all of A and every
+;; element's gradient is 1.0.  A gradient that came back 0.0 would mean the backward pass dropped
+;; the accumulation; 64.0 would mean it broadcast where it should have passed through.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel diff_atomic_binop_plus (A &out out)
+  (declare #'(mat-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((contrib (~ A (/ tid 16) (rem tid 16))))
+      (atomic-binop! (~ out 0) #'+ contrib))))

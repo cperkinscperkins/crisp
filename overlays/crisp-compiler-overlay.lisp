@@ -1772,3 +1772,834 @@
           ;; adjoint cell must live in the same memory the primal cell does.
           `(,op ,promoted ,@(cdr args)))
         (funcall *orig-175-promote-scratch-init* init))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — grid-reduce-second-stage! : analyzed form (forward).
+;;; ---------------------------------------------------------------------------
+;;; src/analysis/ops.lisp  (beside the other 175 reduction analyzers)
+;;;
+;;;   (grid-reduce-second-stage! fn var identity in-scratch-vec return-vec
+;;;                              :local-scratch-vec sv)
+;;;
+;;; The final sweep of a dual-pass reduction: read partials out of a global vector, reduce them in
+;;; ONE workgroup, store the answer.  It is grid-reduce-last-man!'s elected sweep lifted out and
+;;; made a construct in its own right -- no election, no ticket, no atomics.
+;;;
+;;; THE VAR IS AN OUTPUT, NOT AN INPUT.  This is the one structural difference from everything
+;;; else on the ladder and it is the doc's design, not an accident of this implementation: the
+;;; expansion OVERWRITES someVar with (~ in-scratch-vec local-id) before reducing, so whatever the
+;;; caller had in that binding is discarded and the real input is the vector.  Worth stating
+;;; because it means the VJP cannot be a copy of last-man's broadcast -- the adjoint has to land
+;;; in the scratch vector, and var's incoming adjoint is killed rather than propagated.
+;;;
+;;; :local-scratch-vec IS REQUIRED, where the doc lists it optional.  Same reason last-man's is:
+;;; scratch created inside an ANALYZER's expansion is invisible to the Pass-1 scanner that builds
+;;; the kernel's implicit parameters, so an auto-generated buffer fails with "Missing implicit
+;;; argument".  Auto-generation needs the scanner to learn about analyzer-introduced scratch; it
+;;; is a real feature, not a line of sugar, and it is not this endeavour's.
+;;;
+;;; AN ANALYZED FORM RATHER THAN A MACRO, for the reason established three times over in this
+;;; endeavour (BUG 073/077/081): a macro expands in anf-transform BEFORE the backward walk, so AD
+;;; reverses the EXPANSION and silently produces a wrong gradient for a cross-thread construct.
+;;; Staying an analyzed form is what lets the VJP registry see it at all.
+
+(defun %grid-reduce-second-stage-parts (expr)
+  "Destructures (grid-reduce-second-stage! FN VAR IDENTITY IN-VEC RETURN-VEC &key ...).
+   Returns (values fn var identity in-vec return-vec local-scratch-vec)."
+  (let ((keys (nthcdr 6 expr)))
+    (values (second expr) (third expr) (fourth expr) (fifth expr) (sixth expr)
+            (getf keys :local-scratch-vec))))
+
+(defun %grid-reduce-second-stage-expand (expr)
+  "The forward lowering.  A plain function, not a macro -- see the header."
+  (multiple-value-bind (fn var identity in-vec return-vec sv)
+      (%grid-reduce-second-stage-parts expr)
+    (dolist (pair (list (list fn "a binop") (list var "a var to reduce through")
+                        (list identity "an identity") (list in-vec "an in-scratch-vec")
+                        (list return-vec "a return-vec")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-second-stage!: ~a is required.  The form is (grid-reduce-second-stage! fn var identity in-scratch-vec return-vec :local-scratch-vec sv)."
+                                (second pair))
+               :source-location nil)))
+    (unless sv
+      (error 'crisp-compiler-error
+             :message "grid-reduce-second-stage!: :local-scratch-vec is required -- one element per warp, for the final workgroup reduction.  It must be allocated in the CALLER's scope: scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters, so Crisp cannot generate it for you here."
+             :source-location nil))
+    (let ((lid (gensym "SS-LID"))
+          (n   (gensym "SS-N")))
+      `(progn
+         ;; The construct sweeps in a SINGLE workgroup by definition -- it is the continuation
+         ;; kernel of a dual pass.  Launched with more, every workgroup would store its own
+         ;; partial answer over the others and the result would be a race, so this is refused
+         ;; rather than silently producing one of several possible numbers.
+         (r-t-assert-0 (= (get-num-groups 0) 1)
+                       "grid-reduce-second-stage! must be launched with exactly one workgroup")
+         ;; One thread reads one partial, so the workgroup must be at least as wide as the vector.
+         (r-t-assert-0 (<= (length~ ,in-vec) (get-local-linear-size))
+                       "grid-reduce-second-stage!: local_work_size must be >= the length of in-scratch-vec, or some partials would never be read")
+         (let ((,lid (to-int (get-local-linear-id)))
+               (,n   (to-int (length~ ,in-vec))))
+           ;; Lanes past the end of the partials take the IDENTITY.  Reading past the end instead
+           ;; would be undefined, and defaulting to a hardwired zero would be wrong for every
+           ;; operator but +.
+           (set! ,var (if (< ,lid ,n) (~ ,in-vec ,lid) ,identity))
+           (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+           (when-thread-in-group-is 0
+             (set! (~ ,return-vec 0) ,var)))
+         (compiler-no-op)))))
+
+(defun %analyze-grid-reduce-second-stage (expr env context location)
+  "Analyzer for grid-reduce-second-stage! -- expands and delegates."
+  (analyze-expression (%grid-reduce-second-stage-expand expr) env context location))
+
+(defvar *orig-175g-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus grid-reduce-second-stage!."
+  (funcall *orig-175g-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "GRID-REDUCE-SECOND-STAGE!" pkg) *expression-analyzers*)
+              '%analyze-grid-reduce-second-stage)))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — grid-reduce-second-stage! : the VJP.
+;;; ---------------------------------------------------------------------------
+;;; src/autodiff.lisp  (beside the other 175 register-vjp calls)
+;;;
+;;; MEASURED BEFORE WRITTEN.  With the construct registered as an analyzed form but NO VJP, the
+;;; kernel compiled cleanly under --differentiate -- no error, no warning -- and returned
+;;;
+;;;     A: analytical=0.0 numerical=1.0 diff=1.0
+;;;
+;;; a silent zero gradient.  That is the fourth time in this endeavour (BUG 073, 077, 081) that a
+;;; cross-thread construct has differentiated quietly and wrongly, and the fourth time a finite
+;;; difference is what caught it.  It was only visible at all because BUG 084 was fixed first; the
+;;; harness could not previously launch any kernel holding global scratch, which is every stage-2
+;;; reduction there is.
+;;;
+;;; THE RULE IS NOT LAST-MAN'S, though both reduce a grid to one cell with +.
+;;;
+;;;   * last-man's VAR IS AN INPUT.  Every thread contributes its own value, so out[0] is a sum
+;;;     over threads and each thread's adjoint is a broadcast of the output cell.
+;;;
+;;;   * second-stage's VAR IS AN OUTPUT.  The forward OVERWRITES it from (~ in-scratch-vec lid)
+;;;     before reducing, so out[0] is a sum over the ELEMENTS OF THE VECTOR, and the adjoint has
+;;;     to land in the vector at the lane each thread read.  The var's own incoming adjoint is
+;;;     dead and is killed rather than propagated -- an assignment destroys what was there.
+;;;
+;;; Copying last-man's broadcast here would hand an adjoint to all 64 lanes including the ones
+;;; that contributed only the identity, and would leave the vector's gradient at zero, which is
+;;; exactly the state this replaces.
+;;;
+;;; ONLY THE LANES THAT READ A PARTIAL GET AN ADJOINT.  The bounds test is the same one the
+;;; forward uses, and for the same reason: lanes past the end of the partials contributed the
+;;; identity, and the identity's derivative is zero, not one.
+
+(defun %175-vjp-grid-reduce-second-stage (form ctx)
+  "VJP: out[0] is the sum over in-scratch-vec, so each active lane's adjoint lands in that
+   vector at the lane it read.  The reduced var is an OUTPUT of this form -- see the header --
+   so its incoming adjoint is killed rather than propagated."
+  (multiple-value-bind (fn var identity in-vec return-vec sv)
+      (%grid-reduce-second-stage-parts form)
+    (declare (ignore identity sv))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (and (consp fn) (symbolp (car fn))
+                   (string-equal (symbol-name (car fn)) "FUNCTION")
+                   (string= (symbol-name (second fn)) "+"))
+        (error "grid-reduce-second-stage!: autodiff is supported only for the + reduction.  Summing the partials gives d out / d partial = 1 for every element that was read, so the adjoint is a copy of the output cell into the lane each thread took.  min/max would route the adjoint only to the lane holding the winning partial, which needs an argmin/argmax the forward pass does not record; an arbitrary binop needs that op's partial derivatives at every combining node.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+      (unless (and var (symbolp var) in-vec (symbolp in-vec)
+                   return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-second-stage nil))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg)))
+             (iadj (%tlc-bwd-adj-name in-vec inputs outputs local-adj pkg))
+             (lid  (gensym "SSB-LID"))
+             (n    (gensym "SSB-N")))
+        (log:debug "175 VJP grid-reduce-second-stage!: (~~ ~a lid) := (~~ ~a 0); kill ~a"
+                   iadj radj vadj)
+        `(progn
+           (let ((,lid (to-int (get-local-linear-id)))
+                 (,n   (to-int (length~ ,in-vec))))
+             (when (< ,lid ,n)
+               (set! (~ ,iadj ,lid) (~ ,radj 0))))
+           (set! ,vadj (- ,vadj ,vadj)))))))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-SECOND-STAGE!" (function %175-vjp-grid-reduce-second-stage)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — atomic-cas! : the foundational primitive under atomic-binop!.
+;;; ---------------------------------------------------------------------------
+;;; NEW STRUCT -> src/semantic.lisp (beside semantic-atomic-rmw, ~line 230)
+;;; ANALYZER    -> src/analysis/ops.lisp (beside the other atomic analyzers)
+;;; CODEGEN     -> src/codegen.lisp (beside generate-node-ir for semantic-atomic-rmw, ~3209)
+;;; ETYPECASES  -> src/analysis/core.lisp: semantic-node-type (~2257) and
+;;;                semantic-node-source-location (~2333) each need one clause.
+;;;
+;;;   (atomic-cas! location expected desired)
+;;;
+;;; Compare-and-swap.  Returns the value that was at LOCATION BEFORE the attempt, so the caller
+;;; detects success by comparing it against EXPECTED.
+;;;
+;;; WHY THE OLD VALUE AND NOT A BOOLEAN, where the design doc's sketch uses the result as a
+;;; boolean: the old value is the more primitive of the two (a boolean is derivable from it, not
+;;; the reverse), it is what both target ISAs return, and it keeps "every Crisp atomic returns the
+;;; value before" true without an exception.
+;;;
+;;; A SEPARATE NODE rather than an :op :cas on semantic-atomic-rmw, because CAS takes THREE
+;;; operands and that struct has room for two.  Adding a slot to a live struct is the one thing
+;;; the overlay mechanism cannot do, so a new struct is both the smaller change and the one that
+;;; can be developed without a patch first.
+;;;
+;;; cmpxchg ACCEPTS ONLY INTEGER OR POINTER OPERANDS.  Integers therefore pass straight through,
+;;; and floats bitcast to an integer of the same width and back -- the same trick CUDA's float
+;;; atomicCAS idiom uses.  Pointers need no bitcast: this LLVM uses opaque pointers, so the
+;;; address is already typeless.
+
+(defstruct semantic-atomic-cas
+  "Represents (atomic-cas! location expected desired).
+Returns the value at the location BEFORE the attempt (see the header for why not a boolean)."
+  type          ; the RESULT type: elem-type for :old, int for :success
+  target-node   ; semantic-aref for the memory location
+  expected-node ; the value the caller believes is there
+  desired-node  ; the value to store if it is
+  ;; Which half of cmpxchg's { T, i1 } result this node yields.
+  ;;   :old     -- the value that was there.  What user-facing atomic-cas! returns.
+  ;;   :success -- the swap-happened flag, as a Crisp int (comparisons are typed int).
+  ;; TWO MODES RATHER THAN ONE, because a retry loop cannot correctly derive success from the
+  ;; old value.  Testing (= seen old) is NUMERIC equality where CAS is BITWISE: if memory held
+  ;; -0.0 and the caller expected +0.0, the swap fails while the test says it succeeded, and
+  ;; the update is silently lost.  Rather than expose a bit-reinterpret op just to compare, the
+  ;; flag LLVM already computed is made available directly.
+  (result-mode :old)
+  source-location)
+
+(defvar *orig-175i-semantic-node-type* (fdefinition 'semantic-node-type)
+  "Captured once at overlay load.")
+
+(defun semantic-node-type (node)
+  "Overlay wrapper: semantic-atomic-cas, else the original etypecase.
+   Wrapped rather than extended because the original is an ETYPECASE, which errors on a type it
+   has no clause for."
+  (if (semantic-atomic-cas-p node)
+      (semantic-atomic-cas-type node)
+      (funcall *orig-175i-semantic-node-type* node)))
+
+(defvar *orig-175i-semantic-node-source-location* (fdefinition 'semantic-node-source-location)
+  "Captured once at overlay load.")
+
+(defun semantic-node-source-location (node)
+  "Overlay wrapper: semantic-atomic-cas, else the original etypecase."
+  (if (semantic-atomic-cas-p node)
+      (semantic-atomic-cas-source-location node)
+      (funcall *orig-175i-semantic-node-source-location* node)))
+
+(defun analyze-atomic-cas!-expression (expr env context location)
+  "Analyzes (atomic-cas! target expected desired).
+   The target is analysed in :write mode so an &out parameter can be a CAS target -- the read is
+   part of the write, exactly as for the other atomics and for set!."
+  (unless (= (length expr) 4)
+    (error 'crisp-type-error
+           :message (format nil "atomic-cas!: expected 3 arguments (location expected desired), got ~a"
+                            (1- (length expr)))
+           :source-location location))
+  (let* ((target-form (second expr))
+         (target-node (let ((*analysis-access-mode* :write))
+                        (analyze-expression target-form env context (append location (list 1))))))
+    (unless (semantic-aref-p target-node)
+      (error 'crisp-type-error
+             :message (format nil "atomic-cas!: target must be a memory location like (~~ vec idx), got ~a"
+                              target-form)
+             :source-location location))
+    (let ((elem-type (semantic-aref-type target-node)))
+      (make-semantic-atomic-cas
+       :type elem-type
+       :target-node target-node
+       :expected-node (analyze-expression (third expr) env context (append location (list 2)))
+       :desired-node  (analyze-expression (fourth expr) env context (append location (list 3)))
+       :source-location location))))
+
+(defvar *orig-175i-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus atomic-cas!."
+  (funcall *orig-175i-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "ATOMIC-CAS!" pkg) *expression-analyzers*)
+              'analyze-atomic-cas!-expression)))))
+
+(defun %175-cas-int-width-for (elem-type)
+  "The integer width a CAS on ELEM-TYPE must use, or NIL when ELEM-TYPE is already an integer.
+   cmpxchg takes no float operands, so a float is reinterpreted at the same bit width."
+  (let ((ct (gethash elem-type *crisp-types*)))
+    (when (and ct (eq (crisp-type-category ct) :float))
+      (let ((name (string-upcase (string elem-type))))
+        (cond ((string= name "FLOAT")  32)
+              ((string= name "DOUBLE") 64)
+              (t (error 'crisp-compiler-error
+                        :message (format nil "atomic-cas!: no CAS for element type ~a.  cmpxchg takes integer or pointer operands only, so a float type must be reinterpreted at its own bit width, and only FLOAT (32) and DOUBLE (64) are wired up.  A 16-bit CAS is legal LLVM but no Crisp construct needs one yet."
+                                         elem-type)
+                        :source-location nil)))))))
+
+(defmethod generate-node-ir ((node semantic-atomic-cas) builder module var-env
+                             di-builder di-scope location-map)
+  "Generates a cmpxchg for (atomic-cas! loc expected desired), yielding the PRIOR value.
+   LLVMAtomicOrdering SequentiallyConsistent = 7 for success; 2 (monotonic) on failure, which is
+   the strongest ordering LLVM permits there when success is seq_cst."
+  (let* ((target-aref (semantic-atomic-cas-target-node node))
+         (elem-type   (semantic-atomic-cas-type node))
+         (int-width   (%175-cas-int-width-for elem-type)))
+    (multiple-value-bind (aref-val aref-loc ptr)
+        (generate-node-ir target-aref builder module var-env di-builder di-scope location-map)
+      (declare (ignore aref-val aref-loc))
+      (unless ptr
+        (error "Compiler error in atomic-cas!: target ~a did not produce an address pointer"
+               target-aref))
+      (let* ((exp-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-expected-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (des-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-desired-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (int-ty  (and int-width (if (= int-width 64)
+                                         (crisp.llvm-bindings::llvm-int64-type)
+                                         (crisp.llvm-bindings::llvm-int32-type))))
+             ;; A float CAS compares BIT PATTERNS, which is the correct semantics here and not an
+             ;; approximation: CAS asks "is memory unchanged since I read it", and that is a
+             ;; question about bits.  (It does mean +0.0 and -0.0 are distinguishable, and that a
+             ;; NaN never matches itself -- both are true of every hardware float CAS.)
+             (exp-i (if int-ty (llvm-build-bit-cast builder exp-val int-ty "cas_exp_i") exp-val))
+             (des-i (if int-ty (llvm-build-bit-cast builder des-val int-ty "cas_des_i") des-val)))
+        (log:info "atomic-cas!: elem-type=~a int-width=~a" elem-type int-width)
+        (let* ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg
+                      builder ptr exp-i des-i
+                      7   ;; success: SequentiallyConsistent
+                      2   ;; failure: Monotonic
+                      0)) ;; single-thread=0 (multi-threaded GPU)
+               ;; Field 0 is the value that was loaded; field 1 is the success flag, which Crisp
+               ;; deliberately discards -- see the header on the return convention.
+               (old-i (llvm-build-extract-value builder pair 0 "cas_old"))
+               (old   (if int-ty
+                          (llvm-build-bit-cast builder old-i
+                                               (resolve-type-to-llvm elem-type) "cas_old_f")
+                          old-i)))
+          (values old nil))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — atomic-cas! result modes, and atomic-binop! on top of it.
+;;; ---------------------------------------------------------------------------
+;;; CODEGEN  -> src/codegen.lisp (REPLACES the generate-node-ir appended just above)
+;;; ANALYZER -> src/analysis/ops.lisp
+;;; VJPs     -> src/autodiff.lisp
+
+(defmethod generate-node-ir ((node semantic-atomic-cas) builder module var-env
+                             di-builder di-scope location-map)
+  "Generates a cmpxchg for atomic-cas!, yielding either the PRIOR value or the success flag
+   according to the node's RESULT-MODE.
+   LLVMAtomicOrdering SequentiallyConsistent = 7 for success; 2 (monotonic) on failure, which is
+   the strongest ordering LLVM permits there when the success ordering is seq_cst."
+  (let* ((target-aref (semantic-atomic-cas-target-node node))
+         (mode        (semantic-atomic-cas-result-mode node))
+         ;; For :success the node's TYPE is int (the Crisp boolean); the memory element type has
+         ;; to come from the target instead.
+         (elem-type   (semantic-aref-type target-aref))
+         (int-width   (%175-cas-int-width-for elem-type)))
+    (multiple-value-bind (aref-val aref-loc ptr)
+        (generate-node-ir target-aref builder module var-env di-builder di-scope location-map)
+      (declare (ignore aref-val aref-loc))
+      (unless ptr
+        (error "Compiler error in atomic-cas!: target ~a did not produce an address pointer"
+               target-aref))
+      (let* ((exp-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-expected-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (des-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-desired-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (int-ty  (and int-width (if (= int-width 64)
+                                         (crisp.llvm-bindings::llvm-int64-type)
+                                         (crisp.llvm-bindings::llvm-int32-type))))
+             ;; A float CAS compares BIT PATTERNS, which is what CAS means -- "has memory changed
+             ;; since I read it" is a question about bits, not about numeric equality.  Visible
+             ;; consequences: +0.0 and -0.0 do not match, and a NaN never matches itself.  Both
+             ;; hold for every hardware float CAS, which is precisely why :success exists.
+             (exp-i (if int-ty (llvm-build-bit-cast builder exp-val int-ty "cas_exp_i") exp-val))
+             (des-i (if int-ty (llvm-build-bit-cast builder des-val int-ty "cas_des_i") des-val)))
+        (log:info "atomic-cas!: elem-type=~a int-width=~a mode=~a" elem-type int-width mode)
+        (let ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg
+                     builder ptr exp-i des-i
+                     7   ;; success: SequentiallyConsistent
+                     2   ;; failure: Monotonic
+                     0))) ;; single-thread=0 (multi-threaded GPU)
+          (if (eq mode :success)
+              ;; Field 1 is the i1 "swap happened" flag; widen it to Crisp's int.
+              (let ((flag (llvm-build-extract-value builder pair 1 "cas_ok")))
+                (values (crisp.llvm-bindings::llvm-build-zext
+                         builder flag (resolve-type-to-llvm 'int) "cas_ok_i")
+                        nil))
+              ;; Field 0 is the value that was loaded.
+              (let* ((old-i (llvm-build-extract-value builder pair 0 "cas_old"))
+                     (old   (if int-ty
+                                (llvm-build-bit-cast builder old-i
+                                                     (resolve-type-to-llvm elem-type) "cas_old_f")
+                                old-i)))
+                (values old nil))))))))
+
+(defun %analyze-atomic-cas-ok!-expression (expr env context location)
+  "Analyzes (%atomic-cas-ok! target expected desired) -- a CAS yielding the SUCCESS FLAG as an int.
+
+   COMPILER-INTERNAL, and named with a leading % to say so.  It exists because a bounded retry
+   loop cannot correctly derive success from the returned old value: that test is numeric where
+   CAS is bitwise, so a +0.0/-0.0 transition reads as success and loses the update.  Exposing the
+   flag LLVM already computed is cheaper and exactly right."
+  (let ((node (analyze-atomic-cas!-expression expr env context location)))
+    (setf (semantic-atomic-cas-result-mode node) :success
+          (semantic-atomic-cas-type node) 'int)
+    node))
+
+;;; --- atomic-binop! ---------------------------------------------------------
+;;;
+;;;   (atomic-binop! location binop-f arg)
+;;;
+;;; Applies BINOP-F to the value at LOCATION and ARG, stores the result, and returns the value
+;;; that was there before.  A conditional exchange, built on a BOUNDED CAS retry loop.
+;;;
+;;; AN ANALYZED FORM, NOT A MACRO, where the design doc calls it a macro.  The doc predates what
+;;; this endeavour learned four times over (BUG 073, 077, 081, and second-stage's silent zero): a
+;;; macro expands in anf-transform BEFORE the backward walk, so AD would reverse the CAS retry
+;;; loop itself.  And it would not even refuse -- ATOMIC-CAS! sits in autodiff.lisp's primal-replay
+;;; WRITE-SET lists, not in a refusal list, so the walk would happily produce something wrong.  As
+;;; an analyzed form it keeps a stated VJP: the + case inherits atomic-add!'s rule, everything
+;;; else is refused.
+;;;
+;;; THE BOUND IS DERIVED, NOT GUESSED.  The design doc's sketch used a literal 1000 ("generous but
+;;; finite"), which is a guess in the dangerous direction.  There is an exact bound available: a
+;;; CAS fails only because ANOTHER thread's CAS succeeded, and each contending thread needs to
+;;; succeed only once, so a thread can be beaten at most (contenders - 1) times and (contenders)
+;;; attempts always suffice.  get-global-size is a sound upper bound on contenders -- exact when
+;;; every thread hammers the location, a safe over-estimate when only one thread per workgroup
+;;; does -- and it is a RUNTIME value, which it has to be: the global size is chosen by whoever
+;;; enqueues the kernel, not by the compiler.
+;;;
+;;; AND THE BOUND IS BACKED BY AN ASSERT, which matters more than the bound itself.  If the loop
+;;; ever exhausts, the update is LOST -- a wrong answer with no error, the exact failure shape
+;;; that has bitten this endeavour four times.  With a loud r-t-assert-0 the bound becomes a
+;;; performance knob instead of a correctness risk.  (It also covers the one case the derivation
+;;; does not: atomic-binop! inside a user loop, where total successes can exceed the grid size.
+;;; That case fails loudly here rather than silently.)
+
+(defun %atomic-binop-parts (expr)
+  "Destructures (atomic-binop! LOCATION BINOP-F ARG).  Returns (values location fn arg)."
+  (values (second expr) (third expr) (fourth expr)))
+
+(defun %atomic-binop-expand (expr)
+  "The forward lowering: a bounded CAS retry loop that returns the prior value."
+  (unless (= (length expr) 4)
+    (error 'crisp-compiler-error
+           :message (format nil "atomic-binop!: expected 3 arguments (location binop-f arg), got ~a.  The form is (atomic-binop! location #'op arg)."
+                            (1- (length expr)))
+           :source-location nil))
+  (multiple-value-bind (loc fn arg) (%atomic-binop-parts expr)
+    (let ((a    (gensym "AB-ARG"))
+          (prev (gensym "AB-PREV"))
+          (done (gensym "AB-DONE"))
+          (r    (gensym "AB-R"))
+          (old  (gensym "AB-OLD"))
+          (new  (gensym "AB-NEW")))
+      ;; ARG is bound ONCE outside the loop: it may be an arbitrary expression, and re-evaluating
+      ;; it per retry would be both wasteful and wrong if it had side effects.
+      `(let ((,a ,arg))
+         ;; PREV is seeded from a read so it has the element type without needing a typed zero.
+         ;; It is overwritten by the successful iteration; the seed value is never returned,
+         ;; because the assert below refuses to let the loop finish unsuccessfully.
+         (let ((,prev (~ ,@(cdr loc))))
+           (let ((,done 0))
+             ;; get-global-LINEAR-size, not get-global-size: the latter is named in
+             ;; analysis/core.lisp's builtin list but has no analyzer, so it compiles to
+             ;; "Unsupported form".  The linear form is the total thread count, which is exactly
+             ;; the contender bound wanted here.
+             (dotimes+ (,r (+ (to-int (get-global-linear-size)) 1))
+               (when (= ,done 0)
+                 (let ((,old (~ ,@(cdr loc))))
+                   (let ((,new ,(%175-apply-binop fn old a)))
+                     ;; The success FLAG, not the returned value -- see %atomic-cas-ok!.
+                     (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
+                       ;; On success memory held exactly OLD, which is what we read ourselves,
+                       ;; so the "value before" needs nothing from the CAS itself.
+                       (set! ,prev ,old)
+                       (set! ,done 1))))))
+             (r-t-assert-0 (= ,done 1)
+                           "atomic-binop!: the bounded CAS retry loop exhausted without succeeding, so this update was LOST.  The bound is global_size + 1, which is sound when each thread performs the operation once; it can be exceeded if atomic-binop! runs inside a loop, so that total successes on this location exceed the grid size.")
+             ,prev))))))
+
+(defun %analyze-atomic-binop! (expr env context location)
+  "Analyzer for atomic-binop! -- expands to the bounded CAS loop and delegates."
+  (analyze-expression (%atomic-binop-expand expr) env context location))
+
+(defvar *orig-175j-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus %atomic-cas-ok! and atomic-binop!."
+  (funcall *orig-175j-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "%ATOMIC-CAS-OK!" pkg) *expression-analyzers*)
+              '%analyze-atomic-cas-ok!-expression)
+        (setf (gethash (intern "ATOMIC-BINOP!" pkg) *expression-analyzers*)
+              '%analyze-atomic-binop!)))))
+
+;;; --- VJPs ------------------------------------------------------------------
+
+(defun %175-vjp-atomic-cas (form ctx)
+  "Backward rule for atomic-cas!: refuse.  Its result is which thread won a race, which is not a
+   differentiable function of the inputs -- two runs of the same kernel can legitimately return
+   different values."
+  (declare (ignore form ctx))
+  (error "atomic-cas! is not differentiable.  Its result says which thread won a race for a memory location, and that is not a function of the program's inputs -- two identical runs can return different values, so there is no derivative to take.  Crisp refuses rather than returning a gradient of zero, which would look like a correct answer.  For a differentiable grid accumulation use atomic-add! or one of the grid-reduce-* strategies, whose VJPs are stated and measured."))
+
+(defun %175-vjp-atomic-binop (form ctx)
+  "Backward rule for atomic-binop!: the + case is atomic-add!'s rule; anything else refuses.
+   Reached only because atomic-binop! is an analyzed form -- as a macro the walk would have seen
+   the CAS loop instead and produced a wrong gradient without complaining."
+  (multiple-value-bind (loc fn arg) (%atomic-binop-parts form)
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "atomic-binop! is differentiable only for the + reduction.  Accumulating a SUM into a location gives d out / d contribution = 1, so the adjoint is the location's adjoint unchanged.  An arbitrary binop needs that operator's partial derivatives at the value the location happened to hold when this thread won the race -- which is a different value on every run, so there is nothing stable to differentiate.  Use #'+, or mark the kernel with a differentiate-skip if it is forward-only."))
+    ;; Identical to atomic-add!'s rule: a linear accumulation with coefficient +1.  The helper
+    ;; expects an (atomic-add! LOCATION DELTA) shape, so the form is rebuilt with ARG in the
+    ;; delta slot -- atomic-binop!'s third element is the FUNCTION, and handing the helper this
+    ;; form unchanged would differentiate with respect to #'+ itself.
+    (%175-vjp-atomic-linear (list (first form) loc arg) ctx 1 "atomic-binop!")))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ATOMIC-CAS!" (function %175-vjp-atomic-cas))
+  (register-vjp "%ATOMIC-CAS-OK!" (function %175-vjp-atomic-cas))
+  (register-vjp "ATOMIC-BINOP!" (function %175-vjp-atomic-binop)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — atomic-binop! must be in the AD replay WRITE-SET lists.
+;;; ---------------------------------------------------------------------------
+;;; src/autodiff.lisp — %ad-replay-fill-targets (~5276) and %ad-replay-read-syms (~5332).
+;;; Both functions extracted verbatim and re-appended with two names added to one list each; no
+;;; other line is changed.
+;;;
+;;; MEASURED SYMPTOM.  atomic-binop! with #'+ returned analytical=0.0 against a numerical 1.0 --
+;;; a silent zero gradient -- even though its VJP was registered and demonstrably running (the
+;;; non-+ refusal in errors/11 fires from the same function).
+;;;
+;;; THE VJP WAS NEVER THE PROBLEM.  A control probe settled it: atomic-add! with an identical
+;;; let-bound symbol delta measured 1.0 through the SAME helper, %175-vjp-atomic-linear, on the
+;;; same code path.  So the rule and its symbol path were both fine, which left the machinery
+;;; around them.
+;;;
+;;; THESE TWO LISTS ARE THAT MACHINERY.  Endeavour 149 made the backward kernel replay forward
+;;; STATEMENTS, and these lists tell it which forms WRITE to their first argument rather than
+;;; reading it.  ATOMIC-BINOP! was absent, so the replay treated (~ out 0) as a READ: the output
+;;; was never registered as written, the accumulation fell out of the active set, and the adjoint
+;;; had nowhere to come from.  Nothing errored, because being absent from this list is not an
+;;; error -- it just makes a write look like a read.
+;;;
+;;; NOTE A PRE-EXISTING MISMATCH while here, deliberately NOT fixed: the lists name
+;;; "ATOMIC-EXCHANGE!", but the operator Crisp actually registers is ATOMIC-XCHG! (with
+;;; ATOMIC-SET! as its alias).  Neither real name appears, so an exchange would be misread as a
+;;; read exactly as atomic-binop! was.  It is harmless TODAY only because atomic-xchg!'s VJP
+;;; refuses outright and so never reaches replay -- which means the bug is latent, not absent.
+;;; Filed rather than changed, because widening it is a behaviour change to shipped ops and wants
+;;; its own spec.
+
+(defun %ad-replay-fill-targets (form)
+  "Symbols FORM writes through an INDEXED or whole-tile store, at any depth.
+
+   These are the writes that can FILL a tile, so this drives slice selection; it is
+   also what decides observability, since an indexed write to something that is not
+   scratch is a write to memory somebody else can see.
+
+   Bare `(set! SYM v)` is deliberately NOT collected here -- an ANF scalar temp is
+   assigned constantly and none of it is observable.  Scalar writes are checked
+   separately, and only against the &out list."
+  (let ((acc nil))
+    (labels ((walk (f)
+               (when (consp f)
+                 (let ((op (and (symbolp (car f)) (symbol-name (car f)))))
+                   (cond
+                     ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
+                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!")
+                                      :test #'string=))
+                      (let ((s (%ad-replay-place-sym (second f))))
+                        (when s (pushnew s acc))))
+                     ;; (store-tile SRC DST ...) / (store-tile-at SRC DST ...)
+                     ((and op (member op '("STORE-TILE" "STORE-TILE-AT") :test #'string=))
+                      (let ((dst (third f)))
+                        (cond ((symbolp dst) (when dst (pushnew dst acc)))
+                              (t (let ((s (%ad-replay-place-sym dst)))
+                                   (when s (pushnew s acc)))))))
+                     ((and op (string= op "FILL-TILE"))
+                      (let ((dst (second f)))
+                        (when (symbolp dst) (pushnew dst acc)))))
+                   ;; Descend into EVERY element, the head included.  Not (cdr f):
+                   ;; a LET's binding list is itself a list whose CAR is the first
+                   ;; binding, so skipping cars makes single-binding LETs -- which is
+                   ;; what ANF produces constantly -- invisible to the walk.
+                   (loop for sub = f then (cdr sub)
+                         while (consp sub)
+                         do (walk (car sub)))))))
+      (walk form))
+    acc))
+
+(defun %ad-replay-read-syms (form)
+  "Symbols FORM READS, at any depth: the operand of `(~ SYM ...)` other than in a write
+   place, and the SOURCE operand of load-tile / load-tile-at.
+
+   The write place is skipped deliberately -- `(set! (~ D i) v)` reads nothing from D,
+   and counting it would make every fill look like a read of its own destination."
+  (let ((acc nil))
+    (labels ((walk (f)
+               (when (consp f)
+                 (let ((op (and (symbolp (car f)) (symbol-name (car f)))))
+                   (cond
+                     ;; a write: skip the place, walk only the value operands
+                     ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
+                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!")
+                                      :test #'string=))
+                      ;; an index expression inside the place IS read; walk the place's
+                      ;; subscripts but not its head symbol.
+                      (when (consp (second f))
+                        (dolist (idx (cddr (second f))) (walk idx)))
+                      (dolist (sub (cddr f)) (walk sub)))
+                     ((and op (member op '("LOAD-TILE" "LOAD-TILE-AT") :test #'string=))
+                      (when (symbolp (second f)) (pushnew (second f) acc))
+                      (dolist (sub (cdr f)) (walk sub)))
+                     (t
+                      (when (and op (string= op "~") (symbolp (second f)) (second f))
+                        (pushnew (second f) acc))
+                      ;; every element, head included.  This one is why rung 07 was
+                      ;; missed at first: the read that made the slice unreplayable was
+                      ;; `(%anf-t-N (~ D i))`, the sole binding of a LET, and a walk that
+                      ;; skipped cars never saw it.  The kernel compiled, and the wrong
+                      ;; gradient it would have produced was the exact silent failure the
+                      ;; check exists to prevent.
+                      (loop for sub = f then (cdr sub)
+                            while (consp sub)
+                            do (walk (car sub)))))))))
+      (walk form))
+    acc))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — ANF must not lift an atomic's PLACE into a temp.
+;;; ---------------------------------------------------------------------------
+;;; src/anf-transform.lisp — anf-normalize.  Extracted verbatim; the only change is three names
+;;; added to the atomic dispatch list.  %anf-normalize-atomic needs no change: it already takes a
+;;; place plus any number of trailing arguments.
+;;;
+;;; MEASURED SYMPTOM.  atomic-binop! with #'+ gave analytical=0.0 against a numerical 1.0 -- a
+;;; silent zero gradient, the fifth of this shape in the endeavour.
+;;;
+;;; TWO WRONG THEORIES FIRST, both discarded by measurement rather than by reading:
+;;;   * "the VJP is not registered" -- but errors/11's non-+ refusal fires from that very
+;;;     function, so it was demonstrably running;
+;;;   * "the write-set lists in autodiff.lisp are missing it" -- plausible, and they WERE missing
+;;;     it, but adding it changed nothing.  (Kept anyway: being absent there is a real latent bug.)
+;;;
+;;; WHAT SETTLED IT was a control probe and then a log line.  atomic-add! with an identical
+;;; let-bound symbol delta measured 1.0 through the SAME helper, which cleared the rule itself.
+;;; Debug logging then printed the form the VJP was actually handed:
+;;;
+;;;     (ATOMIC-BINOP! %ANF-T-4 #'+ CONTRIB)
+;;;
+;;; ANF had hoisted the place (~ out 0) into a temp.  %175-atomic-place-parts cannot find a target
+;;; symbol in %ANF-T-4, so the VJP DECLINED -- returned nil, by design, rather than guessing -- and
+;;; with no rule left the accumulation contributed nothing.  atomic-add! never hit this because it
+;;; is on this list and atomic-binop! was not.
+;;;
+;;; WHY DECLINING LOOKS LIKE A ZERO AND NOT AN ERROR is the part worth remembering: returning nil
+;;; from a VJP is the correct way to say "let the walk's own clauses handle this", and for an
+;;; operator the walk has no clause for, that is silence.  A VJP that declines for a reason it did
+;;; not expect is indistinguishable from one that had nothing to contribute.
+
+(defun anf-normalize (expr is-nested?)
+  "Returns (VALUES normalized-expr bindings-list).
+   Phase 1c: added opaque pass-through for load-tile-at / store-tile-at
+   and their internal *-bwd / bare load-tile / store-tile variants."
+  (cond
+   ((anf-is-atomic? expr)
+     (values expr nil))
+
+   ((consp expr)
+     (let ((op (car expr)))
+       (when (and (symbolp op)
+                  (macro-function op)
+                  (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let
+                                          template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
+                                          make-cell make-vector make-matrix make-tensor))))
+             (multiple-value-bind (expanded changed) (macroexpand-1 expr)
+               (when changed
+                     (return-from anf-normalize (anf-normalize expanded is-nested?)))))
+       (cond
+        ((and (symbolp op)
+              (member (symbol-name op)
+                      '("LOAD-TILE-AT" "STORE-TILE-AT"
+                        "%LOAD-TILE-AT-BWD" "%STORE-TILE-AT-BWD"
+                        "LOAD-TILE" "STORE-TILE"
+                        ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
+                        ;; coord / dim LISTS that must stay opaque to ANF.
+                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE"
+                        ;; Endeavour 158: PREFETCH-TILE carries a coord tuple AND a :size
+                        ;; tuple, and ANF flattened BOTH into bindings, so
+                        ;;     (prefetch-tile A (grid-y grid-k) :size (32 16))
+                        ;; arrived at the backward walk as
+                        ;;     (LET ((%ANF-T-1 (GRID-Y GRID-K)) (%ANF-T-2 (32 16))) ...)
+                        ;; where %ANF-T-1 reads as a CALL to a function named GRID-Y --
+                        ;; really a tile-stride index -- reporting "Function GRID-Y is not
+                        ;; differentiable".  Endeavour 146 had ALREADY placed PREFETCH-TILE
+                        ;; on %backward-skip-fn-p as the pure scheduling hint it is; AD
+                        ;; never got to use that entry because ANF destroyed the form
+                        ;; first.  This is the third blocker 142/14's skip note predicted,
+                        ;; named there as "in ANF rather than AD".
+                        ;;
+                        ;; Safe by construction: anf-transform runs on the AD path ONLY
+                        ;; (see src/macros.lisp:982, "the forward still analyses the
+                        ;; original form"), so no shipped prefetch kernel's forward
+                        ;; lowering can be affected by this entry.
+                        "PREFETCH-TILE")
+                      :test #'string=))
+          (if is-nested?
+              (let ((temp (anf-fresh-temp)))
+                (values temp `((,temp ,expr))))
+              (values expr nil)))
+        ((eq op 'set!)
+          (%anf-normalize-set! expr is-nested?))
+        ((member op '(if when unless))
+          (%anf-normalize-if op expr is-nested?))
+        ((member op '(if+ when+ unless+))
+          (%anf-normalize-if+ op expr is-nested?))
+        ((eq op 'cond)
+          (%anf-normalize-cond expr is-nested?))
+        ((eq op 'let)
+          (%anf-normalize-let expr is-nested?))
+        ((eq op 'declare)
+          (if is-nested?
+              (let ((temp (anf-fresh-temp)))
+                (values temp `((,temp ,expr))))
+              (values expr nil)))
+        ((eq op 'return)
+          (multiple-value-bind (new-args bindings) (anf-normalize-args (cdr expr))
+            (let ((anf-ret `(return ,@new-args)))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp (append bindings `((,temp ,anf-ret)))))
+                  (values anf-ret bindings)))))
+        ((eq op 'as)
+          (let ((type-spec (cadr expr))
+                (val (caddr expr)))
+            (multiple-value-bind (new-val bindings) (anf-normalize val t)
+              (let ((anf-as `(as ,type-spec ,new-val)))
+                (if is-nested?
+                    (let ((temp (anf-fresh-temp)))
+                      (values temp (append bindings `((,temp ,anf-as)))))
+                    (values anf-as bindings))))))
+        ((eq op 'make-scratch-cell)
+          (let ((type-spec (cadr expr)))
+            (let ((anf-msc `(make-scratch-cell ,type-spec)))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp `((,temp ,anf-msc))))
+                  (values anf-msc nil)))))
+        ((member op '(make-scratch-vector make-scratch-matrix make-scratch-tensor))
+          (let ((anf-form `(,op ,@(cdr expr))))
+            (if is-nested?
+                (let ((temp (anf-fresh-temp)))
+                  (values temp `((,temp ,anf-form))))
+                (values anf-form nil))))
+        ((member op '(make-cell make-vector make-matrix make-tensor))
+          (let* ((source (cadr expr))
+                 (rest-args (cddr expr)))
+            (multiple-value-bind (new-source source-bindings)
+                (anf-normalize source t)
+              (let ((anf-form `(,op ,new-source ,@rest-args)))
+                (if is-nested?
+                    (let ((temp (anf-fresh-temp)))
+                      (values temp (append source-bindings `((,temp ,anf-form)))))
+                    (values anf-form source-bindings))))))
+        ((member op '(quote template-instantiation compiler-no-op def-function def-kernel def-kernel-exact eval-when))
+          (if is-nested?
+              (let ((temp (anf-fresh-temp)))
+                (values temp `((,temp ,expr))))
+              (values expr nil)))
+        ((eq op 'progn)
+          (let ((anf-body (mapcar #'%anf-transform (cdr expr))))
+            (let ((anf-progn `(progn ,@anf-body)))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp `((,temp ,anf-progn))))
+                  (values anf-progn nil)))))
+        ;; Endeavor 126 (pass 5b): with-precision is a codegen precision annotation,
+        ;; transparent to the derivative STRUCTURE. For the backward/AD pipeline, ANF
+        ;; it as a progn of its body (drop the region wrapper). The FORWARD kernel
+        ;; keeps the region precision (its semantic-with-precision codegen is
+        ;; untouched); only the backward pipeline drops it, so the backward ops use
+        ;; the ambient precision — correct for the gradient value.
+        ((and (symbolp op) (string-equal (symbol-name op) "WITH-PRECISION"))
+          (let ((body (cddr expr)))
+            (if (= (length body) 1)
+                ;; Single value form (the common case): ANF it directly so the
+                ;; backward walk sees the bare expression, not a progn wrapper.
+                (anf-normalize (car body) is-nested?)
+                ;; Multi-form body: fall back to progn semantics.
+                (anf-normalize (cons 'progn body) is-nested?))))
+        ((and (symbolp op) (%dotimes-family-head-p op))
+          (%anf-normalize-dotimes op expr is-nested?))
+        ((and (symbolp op) (string-equal (symbol-name op) "WHILE"))
+          (%anf-normalize-while op expr is-nested?))
+        ((and (symbolp op)
+              (member (symbol-name op)
+                      '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"
+                        "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!"
+                        ;; Endeavour 175 -- see the header above this definition.
+                        "ATOMIC-CAS!" "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!")
+                      :test #'string=))
+          (%anf-normalize-atomic op expr is-nested?))
+        (t
+          (let ((args (cdr expr)))
+            (multiple-value-bind (anf-args bindings) (anf-normalize-args args)
+              (let ((call `(,op ,@anf-args)))
+                (if is-nested?
+                    (let ((temp (anf-fresh-temp)))
+                      (values temp (append bindings `((,temp ,call)))))
+                    (values call bindings)))))))))
+
+   (t (error "Unsupported form for anf-transform: ~S" expr))))

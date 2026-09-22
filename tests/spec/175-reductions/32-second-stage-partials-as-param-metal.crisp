@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6 1 2 3
+;; SKIP-WITH[--differentiate]: "forward shape only -- the VJP is measured in spec 31"
+;;
+;; ENDEAVOUR 175 -- the partials arrive as a KERNEL PARAMETER, not as Crisp scratch.
+;;
+;; THIS IS THE REAL DUAL-PASS SHAPE, and specs 29-31 do not have it.  There the partials vector is
+;; an implicit scratch buffer Crisp allocates.  A genuine two-launch reduction cannot use scratch
+;; for that: scratch is per-dispatch working memory, so kernel 1's output would be gone before
+;; kernel 2 started.  The partials have to be a host-allocated buffer handed to both kernels as an
+;; ordinary parameter -- which is a DIFFERENT descriptor from a different place, and the construct
+;; reads two things out of it that had never been exercised on a param:
+;;
+;;   * (length~ in-vec), which drives both the run-time assert and the bounds test;
+;;   * (~ in-vec lid), the element read itself.
+;;
+;; So this spec is not about enqueueing twice.  Cross-launch visibility is the runtime's guarantee
+;; at the command-list boundary and the construct cannot observe how the buffer was filled.  What
+;; it CAN observe is whether the buffer is a parameter or scratch, and that is worth one test.
+;;
+;; THE NUMBERS COME FROM THE HARNESS PRE-FILL.  Every vector param is allocated with 4 elements
+;; pre-filled with their own index, so partials = [0,1,2,3] and the sum is 6.  out is pre-filled
+;; the same way, so slot 0 becoming 6 while 1..3 stay 1 2 3 shows the construct wrote exactly one
+;; element and did not run off the end.
+;;
+;; LANES 4..63 TAKE THE IDENTITY, since (length~ partials) is 4 against a 64-thread workgroup.  If
+;; length~ returned garbage on a param the assert would trip or the sum would be wrong; 6 is only
+;; reachable if it read 4 correctly.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel second_stage_param (partials &out out)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((acc 0.0))
+      (grid-reduce-second-stage! #'+ acc 0.0 partials out :local-scratch-vec sv))))

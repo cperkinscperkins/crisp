@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "only for the + reduction"
+;; CHECK-FAIL: "only for the + reduction"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 175 -- grid-reduce-second-stage! differentiates only the SUM reduction.
+;;
+;; The third of the trio (errors/05 for reduce-workgroup, errors/07 for last-man) and the same
+;; argument each time: for + the adjoint is a copy of the output cell into the lane each thread
+;; read; for max it routes only to the lane holding the winning partial, which needs an argmax
+;; the forward never recorded; for an arbitrary binop it needs that op's partial derivatives at
+;; every combining node.
+;;
+;; THIS ONE IS NOT A FORMALITY.  Before the VJP existed, this construct compiled CLEANLY under
+;; --differentiate with no rule registered and returned analytical=0.0 against a numerical 1.0 --
+;; a silent zero gradient, the fourth instance in this endeavour after BUG 073, 077 and 081.  The
+;; refusal below and the measured spec 31 are the two halves of not repeating that: one pins what
+;; the construct WILL do, the other pins what it REFUSES to do, and an operator check with no
+;; spec behind it is a claim rather than a behaviour.
+;;
+;; TEST-EXPECT is PASS with CHECK-FAIL-FLAGS because the refusal is AD-only -- spec 30 runs this
+;; same kernel shape forward on hardware and reads -1.  FAIL-WITH is required as well: when the
+;; runner itself differentiates, the default pass becomes a differentiating pass and this kernel
+;; is built to be refused there.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function ss-max-nd (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel diff_second_stage_non_plus (A &out out)
+  (declare #'((matrix float :address-space :global :align :compact :contiguous-term :row-major)
+              &out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4))
+        (gv (make-scratch-vector float 8 :address-space :global)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (when (< tid 8)
+        (set! (~ gv tid) (~ A 0 tid)))
+      (mem-fence)
+      (sync-workgroup)
+      (let ((acc 0.0))
+        (grid-reduce-second-stage! #'ss-max-nd acc -1.0e30 gv out :local-scratch-vec sv)))))

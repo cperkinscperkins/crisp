@@ -1,0 +1,38 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "differentiable only for the + reduction"
+;; CHECK-FAIL: "differentiable only for the + reduction"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 175 -- atomic-binop! differentiates only the + accumulation.
+;;
+;; THE REASON IS SHARPER HERE THAN FOR THE REDUCTIONS.  errors/05, 07 and 09 refuse non-+ because
+;; the forward pass did not record an argmax or a combining tree -- a bookkeeping gap.  For
+;; atomic-binop! the obstacle is worse: an arbitrary operator's derivative depends on the value the
+;; location HAPPENED TO HOLD when this thread won the race, and that value differs from run to run.
+;; There is nothing stable to differentiate, not merely something unrecorded.
+;;
+;; The + case survives precisely because it does not care: accumulating a sum gives
+;; d out / d contribution = 1 regardless of what else landed first or in what order, so the adjoint
+;; is the location's adjoint unchanged -- which is atomic-add!'s rule, already measured in spec 16.
+;; That is the same reason + is the one differentiable case for every strategy on this ladder.
+;;
+;; THIS SPEC IS WHY atomic-binop! IS AN ANALYZED FORM AND NOT A MACRO.  The design doc specifies a
+;; macro.  A macro expands in anf-transform BEFORE the backward walk, so AD would reverse the CAS
+;; retry loop -- and it would NOT refuse, because ATOMIC-CAS! sits in autodiff.lisp's primal-replay
+;; write-set lists rather than in a refusal list.  The walk would produce a confident wrong
+;; gradient for multiply and nothing would object.  Keeping the construct analyzed is what makes
+;; this refusal reachable at all.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function ab-mul-nd (a b)
+  (declare #'(float float => float))
+  (* a b))
+
+(def-kernel diff_binop_non_plus (A &out out)
+  (declare #'((matrix float :address-space :global :align :compact :contiguous-term :row-major)
+              &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  (let ((contrib (~ A 0 (to-int (get-local-linear-id)))))
+    (atomic-binop! (~ out 1) #'ab-mul-nd contrib)))

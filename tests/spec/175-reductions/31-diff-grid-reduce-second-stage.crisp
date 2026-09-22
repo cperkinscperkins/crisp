@@ -1,0 +1,46 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-vec=1
+;;
+;; ENDEAVOUR 175 -- the VJP of grid-reduce-second-stage!.
+;;
+;; Threads 0..7 copy A[0][0..7] into the partials vector and the construct sweeps them, so
+;; out[0] = A[0][0] + ... + A[0][7] and d out / d A[0][2] = 1.
+;;
+;; THE RULE IS NOT LAST-MAN'S, even though both reduce a grid to one cell with +.  Last-man's var
+;; is an INPUT -- every thread contributes its own value -- so its adjoint is a broadcast of the
+;; output cell to every thread.  Second-stage OVERWRITES its var from the partials vector before
+;; reducing, so the var is an OUTPUT, its incoming adjoint is dead, and the gradient has to land
+;; in the VECTOR at the lane each thread read.  Copying last-man's broadcast here would give every
+;; thread the adjoint including the 56 lanes that contributed only the identity.
+;;
+;; WHY THIS SPEC MEASURES A NUMBER INSTEAD OF ASSERTING A SHAPE.  Before it was written the
+;; construct compiled CLEANLY under --differentiate with no VJP registered at all -- no error, no
+;; warning.  That is the exact shape of BUG 073, 077 and 081, each of which was a construct that
+;; differentiated quietly and returned a wrong gradient, and each of which was caught only by a
+;; finite difference.  A compile-only AD spec here would have certified the bug.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel diff_second_stage (A &out out)
+  (declare #'(mat-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  ;; LITERAL 4, not :match-num-warps-per-workgroup: the VERIFY-AUTODIFF runner cannot size a
+  ;; symbolic scratch extent (BUG 074) and dies with ":MATCH-NUM-WARPS-PER-WORKGROUP is not of
+  ;; type NUMBER".  The spec is pinned to bmg, whose simd-width is 16, so 64 threads is exactly
+  ;; 4 warps and the literal is not an approximation.  Specs 29 and 30 use the symbolic form on
+  ;; the same kernel shape, so the sugar itself stays covered.
+  (let ((sv (make-scratch-vector float 4))
+        (gv (make-scratch-vector float 8 :address-space :global)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (when (< tid 8)
+        (set! (~ gv tid) (~ A 0 tid)))
+      (mem-fence)
+      (sync-workgroup)
+      (let ((acc 0.0))
+        (grid-reduce-second-stage! #'+ acc 0.0 gv out :local-scratch-vec sv)))))

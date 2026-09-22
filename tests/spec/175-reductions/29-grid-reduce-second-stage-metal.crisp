@@ -1,0 +1,52 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 36 1 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-second-stage!, the third stage-2 strategy.
+;;
+;;   (grid-reduce-second-stage! fn var identity in-scratch-vec return-vec :local-scratch-vec sv)
+;;
+;; It reads partials out of a global vector, reduces them in ONE workgroup, and stores the answer.
+;; No election, no counter, no atomics -- it is the elected sweep of grid-reduce-last-man! lifted
+;; out and made a construct in its own right.
+;;
+;; THE VAR IS AN OUTPUT HERE, NOT AN INPUT, which is the one structural difference from every
+;; other construct on this ladder and the reason its VJP cannot be a copy of last-man's.  The doc
+;; is explicit: the expansion OVERWRITES someVar with (~ in-scratch-vec local-id) before reducing.
+;; So whatever the caller had in that binding is discarded, and the real input is the vector.
+;;
+;; WHAT THIS SPEC CANNOT TEST, stated plainly rather than left to be assumed.  The construct is
+;; designed for the SECOND of two kernel launches -- kernel 1 writes the partials, kernel 2 sweeps
+;; them.  Crisp cannot express that: def-orchestration is an exported symbol with no
+;; implementation, and every loose kernel in a .crisp file gets its OWN orchestration and its own
+;; .cpp with its own buffers (029-hoist-l0/22).  So there is no way to hand one kernel's global
+;; buffer to another launch and check the result on metal.
+;;
+;; This spec therefore stands in for kernel 1 INSIDE the same kernel: threads 0..7 fill the global
+;; vector, a barrier makes those writes visible, and the construct sweeps them.  That exercises
+;; the whole of what the construct itself does -- the bounds test, the identity for inactive
+;; lanes, the reduction and the store -- and none of what the two-launch composition does.
+;;
+;; 1+2+...+8 = 36.  The vector has 8 entries against a 64-thread workgroup, so lanes 8..63 must
+;; take the identity; if they instead read past the end the answer is garbage rather than 36.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel second_stage_sum (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 8 :address-space :global)))
+    (let ((tid (to-int (get-local-linear-id))))
+      ;; Standing in for kernel 1 of the dual pass.
+      (when (< tid 8)
+        (set! (~ gv tid) (+ (to-float tid) 1.0)))
+      (mem-fence)
+      (sync-workgroup)
+      (let ((acc 0.0))
+        (grid-reduce-second-stage! #'+ acc 0.0 gv out :local-scratch-vec sv)))))
