@@ -589,3 +589,118 @@
               (setf (gethash kname *kernel-dispatch-declarations*) geom)
               (log:info "175: ~a inherits launch geometry ~s from ~a (scheduling keys withheld)"
                         kname (loop for (k nil) on geom by #'cddr collect k) base-sym))))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 076: D7 is a KERNEL property, checked by reachability.
+;;; ---------------------------------------------------------------------------
+;;; src/codegen.lisp (the check) — replaces the per-shuffle check in %shuffle-check-pinned.
+;;;
+;;; THE BUG.  173's D7 asked "is the function I am generating right now pinned?" at every shuffle
+;;; emission.  For a SUB-FUNCTION the answer is always no -- %173-subgroup-pinned-p looks up
+;;; *kernel-dispatch-declarations* under the helper's own name, which has no dispatch
+;;; declarations -- so any warp collective inside any helper was refused, however pinnable the
+;;; calling kernel was.  Subgroup size is a KERNEL execution mode; a helper does not have one.
+;;;
+;;; That blocked the whole point of Crisp's function-typed parameters: a def-function taking
+;;; #'(T T => T) and forwarding it to reduce-warp could not be compiled at all.  Spec 11.
+;;;
+;;; THE FIX, and it is a scope correction rather than a relaxation.  "Does a shuffle run at a
+;;; width nobody guaranteed?" is a question about a KERNEL and everything it reaches, so it is
+;;; asked once per kernel, over the CALL GRAPH:
+;;;
+;;;     a kernel that transitively reaches a warp collective must have a pinned subgroup size.
+;;;
+;;; This is STRICTLY MORE COMPLETE than what it replaces.  The old check could only see shuffles
+;;; in the function it happened to be generating, so a kernel whose only shuffle lived inside a
+;;; helper escaped D7 entirely once helpers were allowed -- the very hole D7 exists to close.
+;;; Reachability closes it.
+;;;
+;;; WHERE IT RUNS.  %emit-spirv-subgroup-size-execution-mode already runs once per kernel at
+;;; function setup and already computes pinnability, so the decision lands beside the fact it
+;;; depends on.  *call-graph* is bound in compile-module and therefore still live at codegen, and
+;;; *fn-normalized-info* carries each function's body -- both are endeavour 120's tables, used
+;;; here for the same interprocedural purpose (see the infer-param-uniformity call that sits
+;;; immediately after the call graph is built).
+;;;
+;;; The scan is SYNTACTIC on purpose: it reads the stored source body rather than asking the
+;;; analyzer, so it does not depend on analysis order and cannot be defeated by a form the
+;;; analyzer rewrites later.  It over-approximates -- a shuffle inside a branch that never runs
+;;; still counts -- which is the safe direction for a guard whose failure mode is a wrong answer.
+
+(defparameter *warp-collective-operator-names*
+  '("SHUFFLE" "SHUFFLE-UP" "SHUFFLE-DOWN" "SHUFFLE-XOR"
+    "REDUCE-WARP" "REDUCE-WORKGROUP")
+  "Operators whose correctness depends on the warp width the kernel actually runs at.
+   reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a
+   user writes, and listing them means the scan works whether or not they have been expanded.")
+
+(defun %175-uses-warp-collective-p (x)
+  "Syntactic: does X mention a warp collective anywhere?  Walks car and cdr separately so a
+   dotted form cannot trip it."
+  (labels ((walk (f)
+             (cond
+               ((and (consp f) (symbolp (car f))
+                     (member (symbol-name (car f)) *warp-collective-operator-names*
+                             :test #'string=))
+                t)
+               ((consp f) (or (walk (car f)) (walk (cdr f))))
+               (t nil))))
+    (walk x)))
+
+(defun %175-fn-uses-warp-collective-p (name)
+  "T if the function NAME's own body mentions a warp collective."
+  (let ((info (and (hash-table-p *fn-normalized-info*) (gethash name *fn-normalized-info*))))
+    (and info (%175-uses-warp-collective-p (getf info :body)))))
+
+(defun %175-reaches-warp-collective-p (kname)
+  "T if KNAME, or anything it transitively calls, mentions a warp collective.
+   Cycle-safe: a recursive call graph would otherwise not terminate."
+  (let ((seen (make-hash-table :test 'eq)))
+    (labels ((visit (n)
+               (cond
+                 ((gethash n seen) nil)
+                 (t (setf (gethash n seen) t)
+                    (or (%175-fn-uses-warp-collective-p n)
+                        (when (hash-table-p *call-graph*)
+                          (loop for callee in (gethash n *call-graph*)
+                                thereis (and (symbolp callee) (visit callee)))))))))
+      (and (visit kname) t))))
+
+(defun %175-check-kernel-warp-collective-pinning (semantic-function pinned-p)
+  "BUG 076 / 173 D7, at kernel scope.  Refuses a SPIR-V kernel that reaches a warp collective
+   without a pinned subgroup size.
+
+   Keeps the original wording (\"cannot be pinned\"), which 173-shuffles/errors/06 matches on."
+  (when (eq *target-backend* :spirv)
+    (let* ((kname (semantic-function-name semantic-function))
+           (info  (and kname (hash-table-p *fn-normalized-info*)
+                       (gethash kname *fn-normalized-info*)))
+           ;; Treat an unrecorded function as a kernel: this emitter is only reached for kernels,
+           ;; and defaulting the other way would silently skip the guard.
+           (entry-p (if info (getf info :entry-point-p) t)))
+      (when (and entry-p (not pinned-p) kname
+                 (%175-reaches-warp-collective-p kname))
+        (error 'crisp-compiler-error
+               :message (format nil "kernel ~a uses a warp collective (directly or through a function it calls), but its SPIR-V subgroup size cannot be pinned, so the warp width it would run at is whatever the driver chooses (8, 16 or 32 on Intel) rather than the width this kernel was compiled against. Pinning needs an active hardware profile naming a :simd-width AND a compile-time (local-size :set-to N) whose total is a whole multiple of it. Crisp refuses rather than assuming 32: a reduction written for one width and run at another returns a wrong answer instead of failing."
+                                kname)
+               :source-location nil)))))
+
+(defun %shuffle-check-pinned (location)
+  "NO LONGER CHECKS ANYTHING -- kept so the emit sites need no edit.  See
+   %175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING, which asks the same question once per KERNEL over
+   the call graph instead of once per emitted shuffle inside whatever function happens to be
+   under construction.  The per-shuffle form could not see past its own function and therefore
+   refused every helper (BUG 076) while missing every kernel whose shuffle was in a helper.
+   On fold-back, delete this and its call in %shuffle-spv."
+  (declare (ignore location))
+  nil)
+
+(defvar *orig-175-emit-spirv-subgroup-size* (fdefinition '%emit-spirv-subgroup-size-execution-mode)
+  "Captured once at overlay load.")
+
+(defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
+  "Overlay wrapper: the original emission, then the kernel-scope D7 check (BUG 076), which needs
+   the pinning verdict the original computes."
+  (funcall *orig-175-emit-spirv-subgroup-size* func module semantic-function)
+  (%175-check-kernel-warp-collective-pinning semantic-function *173-subgroup-pinned*))

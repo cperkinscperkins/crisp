@@ -24,16 +24,22 @@
 ;;
 ;; Slots 2 and 3 keep the harness pre-fill, so the spec also says the election wrote once.
 ;;
-;; KNOWN TO FAIL AT THE TIME OF WRITING, and the failure is the reason the spec exists:
+;; THIS SPEC WAS RED WHEN WRITTEN, and the failure it exposed is BUG 076:
 ;;
 ;;     this kernel uses a shuffle, but its SPIR-V subgroup size cannot be pinned...
 ;;
-;; 173's D7 check reads *kernel-dispatch-declarations* under the name of the function CURRENTLY
+;; 173's D7 check read *kernel-dispatch-declarations* under the name of the function CURRENTLY
 ;; BEING GENERATED.  For a sub-function that is `warp-reduce-with`, which has no dispatch
-;; declarations of its own, so the lookup returns NIL and the kernel's perfectly good
-;; (local-size :set-to 64) is never consulted.  Subgroup size is a KERNEL execution mode; a
-;; helper does not have one.  Isolated with plain #'+ and no templating at all, so it is a
-;; scope bug in D7 rather than anything to do with binops.  See plan/bugs.md.
+;; declarations of its own, so the lookup returned NIL and the kernel's perfectly good
+;; (local-size :set-to 64) was never consulted.  Subgroup size is a KERNEL execution mode; a
+;; helper does not have one.  Isolated with plain #'+ and no templating at all, so it was a scope
+;; bug in D7 rather than anything to do with binops -- it refused EVERY helper containing a warp
+;; collective, which is to say every library factoring of a reduction.
+;;
+;; D7 is now asked once per KERNEL over the call graph: a kernel that transitively reaches a warp
+;; collective must be pinned.  That is strictly more complete than the per-shuffle form, which
+;; could not see past the function it was generating and would have missed a kernel whose only
+;; shuffle lived in a helper.
 ;;
 ;; The reduction is computed UNCONDITIONALLY and only the write is elected -- a warp collective
 ;; inside the election would be refused, and correctly so (errors/04).

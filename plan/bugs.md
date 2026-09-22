@@ -2648,7 +2648,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         of this endeavour's findings -- 066, 072 and this -- are all cases where the forward
         work was complete and the AD-side consequence went unrun.
 
-[ ] 076 A WARP COLLECTIVE INSIDE ANY SUB-FUNCTION IS REFUSED ON SPIR-V, even when the calling
+[x] 076 FIXED -- A WARP COLLECTIVE INSIDE ANY SUB-FUNCTION WAS REFUSED ON SPIR-V, even when the calling
         kernel is perfectly pinnable.  173's D7 check is applied at the wrong SCOPE.
 
             this kernel uses a shuffle, but its SPIR-V subgroup size cannot be pinned...
@@ -2685,3 +2685,22 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 175, writing tests for custom binops at Chris's request.  The
         custom-binop path itself is fine -- spec 10 runs reduce-workgroup with a user-defined
         max on hardware (63 63 63 63).  It is the FORWARDER that cannot compile.
+
+        FIXED.  Endeavour 175 took route (B): D7 is now asked ONCE PER KERNEL over the CALL
+        GRAPH -- a kernel that transitively reaches a warp collective must have a pinned
+        subgroup size.  %175-reaches-warp-collective-p walks *call-graph* from the kernel
+        (cycle-safe) and scans each function's stored body in *fn-normalized-info* for a
+        collective operator; both are endeavour 120's tables, used here for the same
+        interprocedural purpose.  The check runs in
+        %emit-spirv-subgroup-size-execution-mode, which already runs per kernel and already
+        computes pinnability, and the per-shuffle check in %shuffle-check-pinned became a no-op.
+
+        STRICTLY MORE COMPLETE than what it replaced, which is the point: the per-shuffle form
+        could only see the function it was generating, so once helpers were allowed at all, a
+        kernel whose only shuffle lived in a helper would have escaped D7 entirely.  The scan is
+        syntactic and over-approximates (a shuffle in a branch that never runs still counts),
+        which is the safe direction for a guard whose failure mode is a wrong answer.
+
+        Guarded by tests/spec/175-reductions/11 (now green on hardware: 15 120 2 3, two
+        instantiations of one forwarder) and by 173-shuffles/errors/06, which still refuses an
+        unpinnable kernel and pins the original "cannot be pinned" wording.

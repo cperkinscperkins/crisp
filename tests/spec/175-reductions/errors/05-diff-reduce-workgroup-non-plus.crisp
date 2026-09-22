@@ -1,6 +1,13 @@
 ;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "only for the + reduction"
 ;; CHECK-FAIL: "only for the + reduction"
 ;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; FAIL-WITH[--differentiate] is not optional here, and its absence is only visible in the
+;; --differentiate PHASE.  When the runner itself differentiates, the default pass becomes a
+;; differentiating pass -- and this kernel is built to be refused there, so TEST-EXPECT: PASS
+;; alone reports the correct refusal as a failure.  FAIL-WITH says "expected to fail, with this
+;; message" for that phase.  173-shuffles/errors/07 carries the same pair for the same reason.
 ;;
 ;; ENDEAVOUR 175 -- reduce-workgroup differentiates only the SUM reduction, and says why.
 ;;
