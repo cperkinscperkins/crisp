@@ -1,0 +1,52 @@
+;; TEST-EXPECT: PASS
+;; CHECK-FAIL: "only for the + reduction"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 175 -- reduce-workgroup differentiates only the SUM reduction, and says why.
+;;
+;; TEST-EXPECT is PASS with CHECK-FAIL-FLAGS because the refusal is AD-only: the same kernel
+;; compiles cleanly forward (spec 10 runs its twin on hardware), so the default pass must
+;; succeed.  Contrast errors/01 and errors/03, whose refusals are backend-independent and which
+;; therefore use TEST-EXPECT: FAIL.
+;;
+;; WHY THE LINE IS DRAWN AT +, and the reason is mathematical rather than a missing feature:
+;;
+;;   * SUM.  An all-reduce is a fan-in followed by a fan-out, so its transpose is a fan-out
+;;     followed by a fan-in -- an all-reduce again.  Self-transposing, exact, and it needs
+;;     NOTHING recorded from the forward pass.  That is the case spec 09 verifies at 64.0.
+;;
+;;   * MIN / MAX.  The adjoint routes to the thread that supplied the winning value and is zero
+;;     everywhere else.  That is perfectly differentiable, but only if the forward pass STASHED
+;;     the winner -- an argmin/argmax -- and it does not.  Ties need a subgradient convention
+;;     too.  Deferred, not impossible.
+;;
+;;   * ARBITRARY BINOP.  Needs the partial derivatives of the operator at every combining node,
+;;     which means the whole combining tree and its intermediates, i.e. a tape.  This is the case
+;;     where the semantic shortcut genuinely does not rescue you.
+;;
+;; Refusing beats the alternative.  A reduction whose VJP quietly assumed + would return a
+;; plausible number for a max reduction and be wrong, which is the failure mode this endeavour
+;; already hit once: reversing reduce-workgroup's expansion mechanically gave analytical=1.0
+;; against a true 64.0 with no error at all (BUG 073).
+;;
+;; CHECK-FAIL matches "only for the + reduction", a phrase that appears nowhere in the file name
+;; or the kernel name -- CHECK-FAIL matches those too, so a carelessly named spec can satisfy its
+;; own check without the compiler emitting anything.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function wg-max (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel maxed (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((v (~ A row col)))
+          (reduce-workgroup #'wg-max v -1.0e30 :local-scratch-vec sv)
+          (set! (~ C row col) v))))))

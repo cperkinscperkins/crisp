@@ -2647,3 +2647,41 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         autodiff code (the 072 skip list and the reduce-workgroup VJP).  Worth the habit: three
         of this endeavour's findings -- 066, 072 and this -- are all cases where the forward
         work was complete and the AD-side consequence went unrun.
+
+[ ] 076 A WARP COLLECTIVE INSIDE ANY SUB-FUNCTION IS REFUSED ON SPIR-V, even when the calling
+        kernel is perfectly pinnable.  173's D7 check is applied at the wrong SCOPE.
+
+            this kernel uses a shuffle, but its SPIR-V subgroup size cannot be pinned...
+
+        %173-subgroup-pinned-p looks up *kernel-dispatch-declarations* under the name of the
+        function CURRENTLY BEING GENERATED.  For a helper that is the helper's own name, which
+        has no dispatch declarations, so the lookup returns NIL and the calling kernel's
+        (local-size :set-to 64) is never consulted.  Subgroup size is a KERNEL execution mode;
+        a sub-function does not have one.
+
+        ISOLATED with plain #'+ and no templating -- a four-line helper that calls reduce-warp
+        and a one-kernel caller.  Nothing to do with binops or higher-order functions; those
+        merely make it unavoidable.
+
+        WHAT IT BLOCKS.  Any library factoring of a warp reduction, and specifically the
+        monomorphized-binop pattern Crisp is built for: a def-function taking #'(T T => T) and
+        forwarding it to reduce-warp cannot be compiled at all.  Guarded by
+        tests/spec/175-reductions/11, which is RED.
+
+        THE FIX IS A SCOPE DECISION, not a one-liner, because D7 guards a real hazard: on Intel
+        an unpinned kernel runs at a driver-chosen width and a reduction compiled for another
+        width returns a WRONG ANSWER rather than failing.  Three candidates:
+
+          (A) skip D7 for non-entry-point functions.  Helpers compile; but a kernel whose
+              shuffle lives ONLY inside a helper then escapes the check entirely -- the exact
+              hole D7 exists to close.
+          (B) make it a KERNEL property by reachability: mark functions that shuffle during
+              analysis (where *call-graph*, src/analysis/core.lisp, is live), then at codegen
+              require pinning of any kernel that reaches one.  Correct; the most work.
+          (C) module-conservative: if anything in the module shuffles, every kernel must be
+              pinnable.  Safe and cheap, but refuses a module that merely happens to contain an
+              unrelated unpinnable kernel.
+
+        FOUND BY.  Endeavour 175, writing tests for custom binops at Chris's request.  The
+        custom-binop path itself is fine -- spec 10 runs reduce-workgroup with a user-defined
+        max on hardware (63 63 63 63).  It is the FORWARDER that cannot compile.
