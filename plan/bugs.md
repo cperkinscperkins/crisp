@@ -2836,3 +2836,28 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 175 building grid-reduce-atomic!, whose leader election is exactly
         this shape.  The first multi-workgroup kernel in the endeavour accumulated NOTHING; the
         trail ran through the atomic, the reduction and the launch geometry before landing here.
+
+[x] 080 FIXED -- A FLOAT ATOMIC MIN/MAX COULD NOT BE TRANSLATED TO SPIR-V AT ALL.  compile-to-spirv
+        enabled SPV_EXT_shader_atomic_float_add unconditionally and
+        SPV_EXT_shader_atomic_float16_add when needed, but float atomic MIN/MAX is a THIRD,
+        separate extension -- SPV_EXT_shader_atomic_float_min_max -- which nothing requested.
+        llvm-spirv then refused the module:
+
+            Tool invocation failed: ... llvm-spirv.exe
+            --spirv-ext=+SPV_EXT_shader_atomic_float_add ... exited with error code 18
+
+        a message that names the extension which IS enabled and says nothing about the missing
+        one, so it reads as a generic tool failure.
+
+        FIXED by a predicate in the same shape as %ll-uses-fp16-atomic-fadd-p: scan the emitted
+        .ll for `atomicrmw` and ` fmin `/` fmax ` on the SAME line and add the flag.  Narrow on
+        purpose -- an INTEGER atomic min/max needs no extension and must not raise it.
+
+        FOUND BY.  Endeavour 175 adding tests for the other two operators of grid-reduce-atomic!.
+        Its legal set is exactly {+, min, max} because phase 2 is one native instruction, and
+        until now only + was reachable: min/max were blocked FIRST by Crisp having no scalar
+        min/max binop, and then by this.  Both halves are now covered on metal (specs 18 and 19,
+        255 and -255).
+
+        NOTE: this was reachable long before 175 -- any kernel calling (atomic-min! ...) on a
+        float hits it.  082-atomics/05 and /06 use CELLS of int, which is why the suite never did.

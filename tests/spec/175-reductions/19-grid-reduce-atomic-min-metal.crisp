@@ -1,0 +1,38 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: -255 1 2 3
+;; SKIP-WITH[--differentiate]: "min routes the adjoint to the winning thread, which needs an
+;; argmin the forward pass does not record -- refused by design, see errors/06 and BUG 077"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-atomic! with #'min, the last of its three legal operators.
+;;
+;; THE CONTRIBUTIONS ARE NEGATIVE, and that is forced rather than stylistic.  An atomic reduces
+;; against whatever the buffer already holds, and the harness pre-fills out with 0 1 2 3 -- so
+;; slot 0 starts at 0 and a minimum over non-negative contributions would be 0 no matter what the
+;; kernel computed.  The test would then pass with the reduction entirely absent, which is the
+;; worst kind of green.  Contributing -(global linear id) makes the answer -255, a value the
+;; pre-fill cannot produce.
+;;
+;; That asymmetry between this spec and 18 is worth keeping in view: max happens to be testable
+;; against a zero-filled buffer and min is not.  Any future min-flavoured spec against this
+;; harness needs the same care.
+;;
+;; A construct that reduced only within workgroups would leave one workgroup's minimum -- -63,
+;; -127, -191 or -255 -- so three of the four possible wrong answers are distinguishable, and the
+;; fourth coincides with the right one only for the last workgroup.
+;;
+;; The identity is +1.0e30, above anything this kernel produces: the mirror of 18's -1.0e30, and
+;; wrong in the same way if copied carelessly (0.0 would beat every negative contribution here).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_atomic_min (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (- 0 (to-int (get-global-linear-id))))))
+      (grid-reduce-atomic! #'min contrib 1.0e30 out :local-scratch-vec sv))))

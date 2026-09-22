@@ -950,3 +950,177 @@
 
 (eval-when (:load-toplevel :execute)
   (register-vjp "GRID-REDUCE-ATOMIC!" (function %175-vjp-grid-reduce-atomic)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — scalar min / max.
+;;; ---------------------------------------------------------------------------
+;;; src/analysis/ops.lisp
+;;;
+;;; Crisp had no scalar min or max: (max 3.0 7.0) failed with "Unsupported form 'MAX'".  That
+;;; blocked two of grid-reduce-atomic!'s three legal operators -- the design doc specifies it as
+;;; accepting exactly #'+, #'min and #'max, and only + was reachable.  It also forced every
+;;; max-flavoured spec in this endeavour to define its own binop.
+;;;
+;;; ANALYZED FORMS THAT EXPAND, rather than new semantic nodes with their own codegen.  The
+;;; alternative is the def-binary-math-analyzer / def-binary-math-codegen pair that pow and atan2
+;;; use, which would mean two new structs (a patch, since structs cannot be late-bound), two
+;;; etypecase clauses each, a codegen rule and an AD rule.  Expanding to a comparison costs one
+;;; site and gets the rest for free: the `if` and the `>` already have codegen AND backward rules,
+;;; so min/max differentiate the moment they exist.
+;;;
+;;; THE `let` IS NOT OPTIONAL.  (if (> a b) a b) with the raw argument forms would evaluate each
+;;; argument TWICE -- once in the test, once in the branch.  Binding first makes each exactly one
+;;; evaluation, which matters for cost and would matter for correctness the moment an argument
+;;; were anything but pure.
+;;;
+;;; CODEGEN IS NOT THE CONCERN IT LOOKS LIKE.  A compare-and-branch over two bound temporaries is
+;;; what LLVM turns into fcmp + select, which is one instruction on both backends.  What this does
+;;; NOT reproduce is llvm.minnum/maxnum's NaN rule: those return the non-NaN operand, while a
+;;; comparison returns the SECOND argument whenever either side is NaN ((> a b) is false for any
+;;; NaN).  No current caller feeds NaN to a reduction, and the identity values are finite -- but
+;;; that is the reason to move to the intrinsics later, not the codegen shape.
+;;;
+;;; DELIBERATELY BINARY.  Common Lisp's max/min are variadic; Crisp's are not, because they exist
+;;; to be passed as #'(T T => T) binops to the reduction family.  The arity error says so.
+;;;
+;;; NOTE ON THE SYMBOLS: interning "MAX" into :crisp.compiler finds the INHERITED cl:max (the
+;;; package uses :cl and does not shadow it).  Registering an analyzer under that symbol is safe
+;;; -- *expression-analyzers* is consulted only when analysing Crisp source, so the compiler's own
+;;; internal (max ...) calls are untouched.  This is exactly why an analyzer needs no package
+;;; change where a macro would (see the reduce-warp notes).
+
+(defun %175-minmax-expand (expr which location)
+  "Expands (min a b) / (max a b) into a single-evaluation comparison.
+   WHICH is :min or :max."
+  (unless (= (length (rest expr)) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "~(~a~) takes exactly two arguments, got ~a. Crisp's ~(~a~) is BINARY, unlike Common Lisp's variadic one: it exists to be passed as a #(T T => T) binop to the reduction family, which requires a fixed arity. Nest the calls to combine more than two values."
+                            which (length (rest expr)) which)
+           :source-location location))
+  (let ((a (gensym "MM-A"))
+        (b (gensym "MM-B")))
+    `(let ((,a ,(second expr))
+           (,b ,(third expr)))
+       ;; Bound first so each argument is evaluated exactly once -- see the section header.
+       (if (,(if (eq which :max) '> '<) ,a ,b) ,a ,b))))
+
+(defun %analyze-min-expression (expr env context location)
+  "Analyzer for (min a b) -- expands to a comparison and delegates."
+  (analyze-expression (%175-minmax-expand expr :min location) env context location))
+
+(defun %analyze-max-expression (expr env context location)
+  "Analyzer for (max a b) -- expands to a comparison and delegates."
+  (analyze-expression (%175-minmax-expand expr :max location) env context location))
+
+(defvar *orig-175d-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus scalar min / max."
+  (funcall *orig-175d-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "MIN" pkg) *expression-analyzers*) '%analyze-min-expression)
+        (setf (gethash (intern "MAX" pkg) *expression-analyzers*) '%analyze-max-expression)))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — a FLOAT atomic min/max needs SPV_EXT_shader_atomic_float_min_max.
+;;; ---------------------------------------------------------------------------
+;;; src/compiler.lisp  (one clause in the ext-flags list inside compile-to-spirv)
+;;;
+;;; compile-to-spirv already enables SPV_EXT_shader_atomic_float_add unconditionally and
+;;; SPV_EXT_shader_atomic_float16_add when the module needs it.  Float atomic MIN/MAX is a THIRD,
+;;; separate extension, and without it llvm-spirv refuses the module outright:
+;;;
+;;;     Tool invocation failed: ... llvm-spirv.exe --spirv-ext=+SPV_EXT_shader_atomic_float_add
+;;;     ... exited with error code 18
+;;;
+;;; a message that names the extension which IS enabled and says nothing about the one missing.
+;;; Every grid-reduce-atomic! with #'min or #'max emits such an instruction, so that half of the
+;;; construct was unreachable.
+;;;
+;;; The whole function is reproduced because the flag list is built inline inside its let*; only
+;;; the clause above is new.  EXTRACTED from src rather than retyped, so the fold-back diff shows
+;;; exactly that clause and nothing else.
+
+(defun %175-ll-uses-float-atomic-minmax-p (ll-path)
+  "T when the emitted .ll text at LL-PATH contains a floating-point `atomicrmw fmin`/`fmax`,
+   which is what requires SPV_EXT_shader_atomic_float_min_max.
+
+   Deliberately narrow, in the same shape as %ll-uses-fp16-atomic-fadd-p: both `atomicrmw` and
+   the fp opcode must appear on the SAME line, which is how LLVM prints the instruction.  An
+   INTEGER atomic min/max (atomicrmw min / umax / ...) needs no extension and must not raise the
+   flag, which is why only the f-prefixed opcodes are tested."
+  (when (and ll-path (probe-file ll-path))
+    (with-open-file (s ll-path :direction :input :if-does-not-exist nil)
+      (when s
+        (loop for line = (read-line s nil nil)
+              while line
+              thereis (and (search "atomicrmw" line)
+                           (or (search " fmin " line) (search " fmax " line))))))))
+
+(defun compile-to-spirv (module output-path &key debug-p)
+  "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
+  (let* ((base-path (uiop:pathname-directory-pathname output-path))
+         (name (pathname-name output-path))
+         (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
+         (ll-opt-file (merge-pathnames (format nil "~a.opt.ll"  name) base-path))
+         (bc-file     (merge-pathnames (format nil "~a.temp.bc" name) base-path))
+         (spv-file output-path))
+    (%remove-dead-array-returning-functions module)
+    (llvm-set-target module "spir64-unknown-unknown")
+    (when (or (%module-uses-native-builtin-p module)
+              (%module-uses-async-copy-builtin-p module))
+      (%emit-opencl-version-metadata module))
+    (let* ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))
+           (ir-with-metadata (inject-spir-kernel-metadata ir)))
+      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
+        (write-string ir-with-metadata stream)))
+    (let* ((opt-ok        (%run-opt-pipeline ll-file ll-opt-file +spv-opt-pipeline+))
+           (llvm-as-input (if opt-ok ll-opt-file ll-file)))
+      ;; ARM A: -O3 has just discarded the decorations codegen attached, so put them back on
+      ;; the FINAL address arithmetic.  Inert unless CRISP_CACHE_CONTROL is set.
+      (%inject-cache-control-decorations llvm-as-input)
+      (let ((tool (resolve-tool-executable "llvm-as")))
+        (run-tool-command
+         (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
+         :log-prefix "[SPIR-V] ")))
+    (let* ((tool (resolve-tool-executable "llvm-spirv"))
+           (debug-flags (if debug-p '("--spirv-debug-info-version=ocl-100") nil))
+           (ext-flags (append '("--spirv-ext=+SPV_EXT_shader_atomic_float_add")
+                              (when (%ll-uses-fp16-atomic-fadd-p
+                                     (if (probe-file ll-opt-file) ll-opt-file ll-file))
+                                '("--spirv-ext=+SPV_EXT_shader_atomic_float16_add"))
+                              ;; Endeavour 175: a FLOAT atomic min/max needs its own extension.
+                              ;; Without it llvm-spirv exits 18 on any kernel using atomic-min! /
+                              ;; atomic-max! on floats -- i.e. every grid-reduce-atomic! with
+                              ;; #'min or #'max.
+                              (when (%175-ll-uses-float-atomic-minmax-p
+                                     (if (probe-file ll-opt-file) ll-opt-file ll-file))
+                                '("--spirv-ext=+SPV_EXT_shader_atomic_float_min_max"))
+                              (when (%module-uses-coop-matrix-p module)
+                                '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
+                              (when (%module-uses-2d-block-io-p module)
+                                '("--spirv-ext=+SPV_INTEL_2d_block_io"))
+                              (when (%module-uses-subgroup-mma-p module)
+                                '("--spirv-ext=+SPV_INTEL_subgroup_matrix_multiply_accumulate"))
+                              (when (%module-uses-split-barrier-p module)
+                                '("--spirv-ext=+SPV_INTEL_split_barrier"))
+                              (when (%module-uses-bfloat-p module)
+                                '("--spirv-ext=+SPV_KHR_bfloat16"))
+                              (when (and (%cache-control-spec)
+                                         (%module-uses-coop-matrix-p module))
+                                '("--spirv-ext=+SPV_INTEL_cache_controls"))))
+           (flags (append debug-flags ext-flags)))
+      (run-tool-command
+       (append (list tool) flags (list (namestring bc-file) "-o" (namestring spv-file)))
+       :log-prefix "[SPIR-V] "))
+    (unless debug-p
+      (when (probe-file ll-file)     (delete-file ll-file))
+      (when (probe-file ll-opt-file) (delete-file ll-opt-file))
+      (when (probe-file bc-file)     (delete-file bc-file)))
+    (log:info "Generated SPIR-V: ~a" spv-file)))
