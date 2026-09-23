@@ -1,0 +1,44 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 126976 1 2 3
+;; SKIP-WITH[--differentiate]: "composition of forward constructs; the VJPs have their own specs"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- reduce-warp feeding grid-reduce-last-man!, on NVIDIA.  Twin of spec 27.
+;;
+;; THE ONE TWIN IN THIS SET WHOSE NUMBER CHANGES, and the reason is the whole porting hazard:
+;;
+;;   BMG, 16-lane warp:  every lane holds 0+1+...+15 = 120, and 256 threads * 120 =  30720
+;;   H100, 32-lane warp: every lane holds 0+1+...+31 = 496, and 256 threads * 496 = 126976
+;;
+;; Every other twin here sums over ALL THREADS, which is warp-width-blind.  This one is built from a
+;; PER-WARP quantity, so copying 30720 across would have produced a confident wrong expectation and
+;; burnt a GPU rental proving arithmetic wrong.  Each number in this set was classified as
+;; per-thread or per-warp before it was written down, and this is the one that came out different.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel compose_warp_into_last_man (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (let ((contrib (to-float (warp-lane))))
+      ;; Stage 1: every lane ends up holding its warp's total.
+      (reduce-warp #'+ contrib 0.0)
+      ;; Stage 2: that per-warp total is now the per-thread contribution to the grid.
+      (grid-reduce-last-man! #'+ contrib 0.0 out
+                             :local-scratch-vec sv
+                             :global-scratch-vec gv
+                             :atomic-counter ctr
+                             :election-flag-cell flag))))

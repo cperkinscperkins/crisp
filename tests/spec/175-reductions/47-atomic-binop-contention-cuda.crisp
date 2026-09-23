@@ -1,0 +1,39 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 2016 1 2 3
+;; SKIP-WITH[--differentiate]: "forward contention only; the + VJP is measured on the BMG side (spec 37)"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- atomic-binop! under contention, on NVIDIA.  CUDA twin of spec 35.
+;;
+;; 64 threads hammer ONE address, so 0+1+...+63 = 2016 and the retry path is genuinely exercised
+;; rather than incidentally touched.  This is the spec that puts the DERIVED BOUND under test on
+;; this backend: a CAS fails only because another thread's succeeded, so (contenders) attempts
+;; always suffice, and the loop uses global_size + 1.
+;;
+;; A lost update would read as a specific shortfall -- 1998, say -- with nothing to say why, which
+;; is precisely why the construct asserts on exhaustion instead of falling out quietly.  If that
+;; assert fires here but not on BMG, the bound's reasoning is wrong about NVIDIA scheduling, and
+;; that finding would justify the rental on its own.
+;;
+;; WHY THIS NUMBER MATCHES THE BMG TWIN'S, and is not a copy-paste slip: the total is a sum over
+;; ALL THREADS, so it does not depend on how threads group into warps.  Only an expectation
+;; built from a PER-WARP quantity changes with the warp width -- see spec 49, where 30720
+;; becomes 126976 because a 32-lane warp sums to 496 rather than 120.  Classifying each number
+;; as per-thread or per-warp was the actual work in porting this set.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel binop_contention (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-local-linear-id))))
+    (atomic-binop! (~ out 0) #'+ contrib)))

@@ -3187,3 +3187,47 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         -- this is on the 'implemented/partial/not-implemented emoji' pass either way.  Note the
         same excerpt marks atomic-binop! and atomic-op! with an implemented tick, and neither
         existed before 2026-09-22 (atomic-op! still does not).
+
+[ ] 088 mem-fence HAS A DIFFERENT SCOPE ON EACH BACKEND, and grid-reduce-last-man! depends on the
+        stronger one.  PTX is too weak.
+
+            SPIR-V  %gen-spirv-memory-barrier  -> __spirv_MemoryBarrier(1, 520)
+                    MemScope = CrossWorkgroup(1), Semantics = AcquireRelease | CrossWorkgroupMemory
+                    == DEVICE scope.  Correct.
+
+            PTX     %ptx-membar-cta            -> llvm.nvvm.membar.cta -> `membar.cta`
+                    == CTA / WORKGROUP scope.  Too weak.
+
+        Both sites in src/codegen.lisp (~3858 and ~3970) dispatch :mem-fence to those two, so the
+        same Crisp operator means device-scope on one backend and workgroup-scope on the other.
+
+        WHY IT MATTERS.  grid-reduce-last-man! publishes a per-workgroup partial into global scratch
+        and then bumps a ticket counter, and the workgroup that draws the last ticket sweeps every
+        OTHER workgroup's partial.  That is a cross-workgroup publication, so the fence between the
+        store and the counter bump has to order the store for the whole DEVICE.  membar.cta orders it
+        only within the storing CTA, which is precisely not the thread that will read it.
+
+        THE EMITTED PTX IS OTHERWISE CORRECT, which is what makes this subtle -- the ordering
+        survived the lowering, only the scope is wrong:
+
+            st.global.b32        [%rd36], %r42     ; publish this workgroup's partial
+            membar.cta;                            ; <-- should be membar.gl
+            atom.global.add.u32  %r43, [%rd19], 1  ; bump the ticket
+
+        FOUND BY INSPECTION, NOT BY A TEST, and no test would have found it: NVIDIA global writes
+        land in a device-coherent L2 and the atomic acts as a de facto ordering point, so the kernel
+        would very likely produce the right answer anyway.  It would pass, by luck, and the luck
+        would be a property of the cache hierarchy rather than of the memory model.
+
+        THE BMG RESULTS ARE NOT AFFECTED and remain valid evidence -- SPIR-V already fences at
+        CrossWorkgroup scope.  This is a PTX-only defect.
+
+        LIKELY FIX is llvm.nvvm.membar.gl in place of membar.cta for :mem-fence, matching the
+        documented SPIR-V semantics.  NOT a drive-by change: mem-fence is used by the async-tile
+        code and inside other constructs where CTA scope is sufficient and cheaper, so widening it
+        globally trades correctness here against cost there.  The alternative is a scoped fence
+        (mem-fence :workgroup / :device) with the constructs asking for what they need, which is
+        more work and the better answer.
+
+        FOUND BY.  Endeavour 175, inspecting the PTX of the new CUDA twins (spec 42) BEFORE renting
+        an NVIDIA box -- the compile-time check the rental was supposed to depend on.
