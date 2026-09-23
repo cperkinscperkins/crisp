@@ -2880,3 +2880,657 @@ Returns the value at the location BEFORE the attempt (see the header for why not
         ;; commented-out copy of this method above, and would have signalled
         ;; unbound-variable instead of naming the offending builtin.
         (t (error "Unknown GPU builtin ~a" bname))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — (mem-fence :scope :grid | :workgroup).
+;;; ---------------------------------------------------------------------------
+;;; src/analysis/core.lisp  — %gpu-builtin-info (~175) and %analyze-gpu-builtin (~202)
+;;; src/codegen.lisp        — %gen-spirv-memory-barrier-workgroup (new, beside
+;;;                           %gen-spirv-memory-barrier) and the gpu-builtin dispatch
+;;; All three extracted verbatim and re-appended with the additions marked inline.
+;;;
+;;; THE API IS THE ONE IN tests/spec/175-reductions/reductions.md, which specified it before this
+;;; endeavour started and which I had overlooked when I closed BUG 088:
+;;;
+;;;     (mem-fence)                    ; grid scope -- the default
+;;;     (mem-fence :scope :grid)       ; the default, said out loud
+;;;     (mem-fence :scope :workgroup)  ; cheaper; orders memory within this workgroup only
+;;;
+;;; NO NEW STRUCT SLOT.  The scope is carried by minting a second keyword,
+;;; :mem-fence-workgroup, which is the pattern endeavour 157 already used for the split-barrier
+;;; halves and for the same stated reason -- it keeps semantic-gpu-builtin untouched, and a struct
+;;; is the one thing the overlay mechanism cannot change.
+;;;
+;;; WHY :grid IS THE DEFAULT rather than the cheaper option: a fence that is too strong costs only
+;;; performance, while one that is too weak produces a wrong answer that no test reliably catches.
+;;; BUG 088 was exactly that failure -- and it would have passed on real hardware, because NVIDIA
+;;; global writes land in a device-coherent L2 and the neighbouring atomic acted as a de facto
+;;; ordering point.  So the safe scope is free and the cheap one must be requested.
+;;;
+;;; NOTHING IN CRISP CURRENTLY ASKS FOR :workgroup, which is worth recording rather than hiding:
+;;; all three internal users publish across workgroups (sync-wait spins on a :global counter other
+;;; workgroups bump; grid-reduce-last-man! hands a partial to a different workgroup;
+;;; grid-reduce-second-stage! consumes another launch's data).  The parameter exists for kernels
+;;; users write themselves, and so that the cheap case the 088 fix removed is reachable again on
+;;; purpose instead of by backend accident.
+
+(defun %gen-spirv-memory-barrier-workgroup (builder module)
+  "Emits @__spirv_MemoryBarrier(i32 2, i32 264) -- Scope=Workgroup(2),
+   Semantics=AcquireRelease(8) | WorkgroupMemory(256).
+
+   The device-scope twin passes (1, 520): Scope=Device(1) with CrossWorkgroupMemory(512).  Note
+   that %gen-spirv-memory-barrier's own docstring calls that scope \"CrossWorkgroup(1)\" -- a
+   misnomer, since 1 is Device in SPIR-V's Scope enum; CrossWorkgroup is a MEMORY SEMANTICS bit
+   (512), which is the other operand.  The behaviour was always right; only the name was confusing."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name  "__spirv_MemoryBarrier")
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i32-type)
+                        arr))
+         (fn-type  (llvm-function-type (llvm-void-type) param-types 2 nil))
+         (fn       (let ((ex (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p ex)
+                         (llvm-add-function module fn-name fn-type)
+                         ex)))
+         (args     (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 0)
+                           (llvm-const-int i32-type 2 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 1)
+                           (llvm-const-int i32-type 264 nil))
+                     arr)))
+    (llvm-build-call2 builder fn-type fn args 2 "")
+    (cffi:foreign-free param-types)
+    (cffi:foreign-free args)
+    (values nil nil)))
+
+(defun %gpu-builtin-info (builtin-kw)
+  "Returns (base-return-type accepts-dim-p) for a GPU builtin keyword.
+   BASE-RETURN-TYPE: return type when called with no args (nil = void).
+   ACCEPTS-DIM-P: T if the builtin accepts a scalar dimension arg 0/1/2."
+  (case builtin-kw
+    ((:get-global-id :get-local-id :get-workgroup-id :get-num-groups
+      :get-local-work-size :get-global-work-size :get-global-offset
+      :get-global-id-abs)
+     (list 'ulong3 t))
+    (:get-work-dim          (list 'uint  nil))
+    ((:get-local-linear-id :get-local-linear-size
+      :get-global-linear-id :get-global-linear-size
+      :get-total-threads :get-total-groups)
+     (list 'ulong nil))
+    ;; 157: the split halves are ordinary VOID builtins as far as everything downstream is
+    ;; concerned -- minting them as distinct keywords keeps semantic-gpu-builtin untouched.
+    ((:sync-workgroup :sync-warp :mem-fence :sync-cluster
+      :sync-workgroup-arrive :sync-workgroup-wait
+      ;; 175: the workgroup-scoped fence, minted as its own keyword for exactly the reason the
+      ;; comment above gives for the split-barrier halves -- it keeps semantic-gpu-builtin
+      ;; untouched, which an extra slot would not.
+      :mem-fence-workgroup)
+     (list nil nil))
+    ;; 110 — warp helpers (scalar uint, no dim arg)
+    ((:warp-id :warp-lane :warp-count)
+     (list 'uint nil))
+    (t (error "Unknown GPU builtin: ~a" builtin-kw))))
+
+(defun %analyze-gpu-builtin (builtin-kw name-str expr env context location)
+  "Analyzer for all GPU built-in function forms."
+  (declare (ignore env context))
+  (unless *in-dispatch-context*
+    (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :mem-fence-workgroup :sync-cluster))
+    ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
+    ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
+    (%warp-spec-check-sync builtin-kw name-str location))
+  (let* ((info     (%gpu-builtin-info builtin-kw))
+         (base-ty  (first info))
+         (acc-dim  (second info))
+         (args     (rest expr)))
+    (cond
+      ((null args)
+       (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                  :dimension nil
+                                  :type base-ty
+                                  :source-location location))
+      ;; 157: (sync-workgroup :arrive) / (sync-workgroup :wait).  A split barrier separates the
+      ;; announcement from the block so work can sit between them; it is an EXECUTION rendezvous
+      ;; and moves no data, which is why it extends sync-workgroup rather than await/signal.
+      ;; The phase becomes its own builtin keyword so semantic-gpu-builtin needs no new field.
+      ((and (eq builtin-kw :sync-workgroup)
+            (= (length args) 1)
+            (member (first args) (list :arrive :wait)))
+       ;; 157 analysis 1: one window at a time, and it must close.  Both failures HANG rather than
+       ;; miscompute, so they are refused here rather than left to the user to discover on hardware.
+       (cl:when *split-barrier-depth*
+         (cl:if (eq (first args) :arrive)
+                (cl:progn
+                  (cl:when (cl:plusp *split-barrier-depth*)
+                    (error 'crisp-compiler-error
+                      :message "(sync-workgroup :arrive) cannot nest -- a window is already open in this kernel.  There is one rendezvous per scope, not a stack of them; close the first with (sync-workgroup :wait) before opening another."
+                      :source-location location))
+                  (cl:incf *split-barrier-depth*))
+                (cl:progn
+                  (cl:when (cl:zerop *split-barrier-depth*)
+                    (error 'crisp-compiler-error
+                      :message "(sync-workgroup :wait) has no matching (sync-workgroup :arrive) -- the two halves must be paired.  A :wait with nothing to wait on blocks forever."
+                      :source-location location))
+                  (cl:decf *split-barrier-depth*))))
+       (make-semantic-gpu-builtin
+        :builtin-name (if (eq (first args) :arrive) :sync-workgroup-arrive :sync-workgroup-wait)
+        :dimension nil
+        :type nil
+        :source-location location))
+      ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
+       (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
+              (first args)))
+      ;; 175: (mem-fence :scope :grid | :workgroup).  Two args -- the keyword and its value.
+      ;;
+      ;; :grid IS THE DEFAULT, and the asymmetry is deliberate: a fence that is too strong only
+      ;; costs performance, while one that is too weak yields a wrong answer that no test reliably
+      ;; catches.  BUG 088 was precisely that -- a bare (mem-fence) meant device scope on SPIR-V and
+      ;; workgroup scope on PTX, and grid-reduce-last-man! depended on the stronger reading.  So the
+      ;; safe scope is what you get for free and the cheap one has to be asked for.
+      ((and (member builtin-kw '(:mem-fence :mem-fence-workgroup))
+            (= (length args) 2)
+            (eq (first args) :scope))
+       (let ((scope (second args)))
+         (unless (member scope '(:grid :workgroup))
+           (error "mem-fence: :scope must be :grid or :workgroup, got ~S.  :grid (the default) orders memory for the whole device, which is what any cross-workgroup publication needs; :workgroup orders it only within this workgroup and is cheaper.  There is no narrower scope -- a warp-scoped fence would be very nearly a no-op on hardware that runs a warp in lockstep, so Crisp does not offer one."
+                  scope))
+         (make-semantic-gpu-builtin
+          :builtin-name (if (eq scope :workgroup) :mem-fence-workgroup :mem-fence)
+          :dimension nil
+          :type nil
+          :source-location location)))
+      ;; A 1-arg mem-fence is a mis-spelled scope, and saying so beats "takes 0 or 1 arguments".
+      ((and (member builtin-kw '(:mem-fence :mem-fence-workgroup))
+            (= (length args) 1))
+       (error "mem-fence takes no arguments, or the pair :scope :grid / :scope :workgroup, got: ~S.  The keyword is not optional -- (mem-fence :workgroup) is not accepted, because a bare keyword would read as a dimension argument everywhere else in this family."
+              (first args)))
+      ((= (length args) 1)
+       (let ((dim-arg (first args)))
+         (unless acc-dim
+           (error "GPU built-in '~a' does not accept a dimension argument" name-str))
+         (unless (integerp dim-arg)
+           (error "GPU built-in '~a': dimension must be a compile-time integer constant (0, 1, or 2), got: ~a"
+                  name-str dim-arg))
+         (unless (member dim-arg '(0 1 2))
+           (error "GPU built-in '~a': dimension ~a is out of valid range (must be 0, 1, or 2)"
+                  name-str dim-arg))
+         (make-semantic-gpu-builtin :builtin-name builtin-kw
+                                    :dimension dim-arg
+                                    :type 'ulong
+                                    :source-location location)))
+      (t
+       (error "GPU built-in '~a' takes 0 or 1 arguments, got ~a" name-str (length args))))))
+
+(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for a GPU built-in function call.
+   Endeavor 115 Phase 2: full PTX dispatch for all builtins."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let* ((bname (semantic-gpu-builtin-builtin-name node))
+         (dim   (semantic-gpu-builtin-dimension node)))
+    (log:info "Generating GPU builtin IR: ~a dim=~a backend=~a" bname dim *target-backend*)
+    (labels
+        ((vec3-or-scalar (spirv-name)
+           (let ((vec (%get-builtin-vec3 builder module spirv-name)))
+             (if dim
+                 (values (%extract-vec3-i64 builder vec dim
+                                            (format nil "~a_~a" (string-downcase spirv-name) dim))
+                         nil)
+                 (values vec nil)))))
+      (case bname
+        ;; --- Primitive 3D/scalar vector builtins ---
+        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
+        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
+        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
+        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
+        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
+        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
+        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
+        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
+        (:get-global-id-abs
+         (if (eq *target-backend* :ptx)
+             ;; PTX has no GlobalOffset — same as get-global-id
+             (vec3-or-scalar "GlobalInvocationId")
+             (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
+                    (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
+               (if dim
+                   (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
+                          (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
+                     (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
+                   (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil)))))
+        ;; --- WorkDim (hidden kernel parameter, uint) ---
+        (:get-work-dim
+         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
+        ;; --- Synthesized scalar builtins ---
+        (:get-local-linear-id
+         (values (%gen-local-linear-id builder module) nil))
+        (:get-local-linear-size
+         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
+        (:get-global-linear-id
+         (values (%gen-global-linear-id builder module) nil))
+        ((:get-global-linear-size :get-total-threads)
+         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
+        (:get-total-groups
+         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
+        ;; --- 110: warp helpers ---
+        (:warp-id
+         (if (eq *target-backend* :ptx)
+             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
+             (values (%ptx-synthesize-warp-id builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
+        (:warp-lane
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-read-warp-sreg builder module "laneid") nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil)))
+        (:warp-count
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-synthesize-warp-count builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
+        ;; --- Barriers (void) ---
+        ;; Endeavor 152: a cluster-wide rendezvous.  On PTX this is exactly the fence Crisp
+        ;; already emits for cluster entry/exit (%gen-nvvm-cluster-barrier), so the lowering is
+        ;; one that has run on hardware in every clustered kernel, not a new one.
+        ;;
+        ;; EVERYWHERE ELSE IT DEGRADES TO sync-workgroup, and that degrade is EXACT rather than
+        ;; approximate: a cluster of one workgroup IS a workgroup, and NVIDIA's own
+        ;; cluster_group::sync() is barrier_arrive + barrier_wait with no __syncthreads(), so a
+        ;; cluster barrier already covers intra-workgroup convergence.  Verified in Phase 0.
+        (:sync-cluster
+         (if (and (eq *target-backend* :ptx)
+                  (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+             (%gen-nvvm-cluster-barrier builder)
+             (if (eq *target-backend* :ptx)
+                 (%ptx-barrier builder module)
+                 (%gen-spirv-control-barrier builder module))))
+        (:sync-workgroup
+         (if (eq *target-backend* :ptx)
+             (%ptx-barrier builder module)
+             (%gen-spirv-control-barrier builder module)))
+        ;; 157: the two halves of a split workgroup barrier.  PTX is REFUSED rather than
+        ;; approximated -- NVIDIA's bar.arrive / bar.sync are not the same rendezvous, and a silent
+        ;; mis-mapping of a barrier deadlocks a GPU instead of producing a wrong number.
+        (:sync-workgroup-arrive
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :arrive) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.arrive does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :arrive)))
+        (:sync-workgroup-wait
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :wait) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.sync does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :wait)))
+        (:sync-warp
+         (if (eq *target-backend* :ptx)
+             (%ptx-syncwarp builder module)
+             (%gen-spirv-warp-barrier builder module)))
+        (:mem-fence
+         (if (eq *target-backend* :ptx)
+             (%ptx-membar-gl builder module)
+             (%gen-spirv-memory-barrier builder module)))
+        ;; 175: the cheap fence.  membar.cta / Workgroup scope -- %ptx-membar-cta was left in place
+        ;; by the 088 fix for exactly this caller.
+        (:mem-fence-workgroup
+         (if (eq *target-backend* :ptx)
+             (%ptx-membar-cta builder module)
+             (%gen-spirv-memory-barrier-workgroup builder module)))
+        ;; The local is BNAME; `builtin-name` was a stale name carried over from the
+        ;; commented-out copy of this method above, and would have signalled
+        ;; unbound-variable instead of naming the offending builtin.
+        (t (error "Unknown GPU builtin ~a" bname))))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — atomic-op! : the UNARY sibling of atomic-binop!.
+;;; ---------------------------------------------------------------------------
+;;; ANALYZER -> src/analysis/ops.lisp (beside atomic-binop!)
+;;; ANF      -> src/anf-transform.lisp: add "ATOMIC-OP!" to anf-normalize's atomic place list
+;;; AD LISTS -> src/autodiff.lisp: add "ATOMIC-OP!" to %ad-replay-fill-targets / -read-syms
+;;; VJP      -> src/autodiff.lisp
+;;;
+;;;   (atomic-op! location op-f)
+;;;
+;;; Applies a unary #(T => T) to the value at LOCATION and stores the result, returning the value
+;;; that was there before.  Structurally atomic-binop! with one fewer operand, so it reuses the
+;;; same bounded CAS loop, the same derived bound and the same exhaustion assert.
+;;;
+;;; THE DOC TICKED THIS AS IMPLEMENTED AND IT WAS NOT -- atomic-excerpts.md marks both atomic-binop!
+;;; and atomic-op! done, and neither existed before 2026-09-22.
+;;;
+;;; ALL THREE REGISTRATIONS ARE DONE HERE, per BUG 085: the analyzer (which fails loudly if
+;;; missing), anf-normalize's atomic place list (whose absence makes the VJP silently decline, which
+;;; reads as a zero gradient), and autodiff.lisp's replay write-set lists (whose absence makes a
+;;; write look like a read).  Only the first announces itself.
+
+(defun %175-apply-unop (fn a)
+  "The form applying unary FN to A.  A LITERAL #'op becomes a DIRECT call, for the same two
+   reasons %175-apply-binop does it: a direct call is better code, and FUNCALL IS NOT
+   DIFFERENTIABLE -- the AD walk refuses it outright."
+  (if (and (consp fn) (symbolp (car fn)) (string-equal (symbol-name (car fn)) "FUNCTION"))
+      (list (second fn) a)
+      (list 'funcall fn a)))
+
+(defun %atomic-op-parts (expr)
+  "Destructures (atomic-op! LOCATION OP-F).  Returns (values location fn)."
+  (values (second expr) (third expr)))
+
+(defun %atomic-op-expand (expr)
+  "The forward lowering: a bounded CAS retry loop returning the prior value.
+   Mirrors %atomic-binop-expand exactly, minus the value argument."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+           :message (format nil "atomic-op!: expected 2 arguments (location op-f), got ~a.  The form is (atomic-op! location #'op), and the function is UNARY -- for a two-argument operator use (atomic-binop! location #'op arg)."
+                            (1- (length expr)))
+           :source-location nil))
+  (multiple-value-bind (loc fn) (%atomic-op-parts expr)
+    (let ((prev (gensym "AO-PREV"))
+          (done (gensym "AO-DONE"))
+          (r    (gensym "AO-R"))
+          (old  (gensym "AO-OLD"))
+          (new  (gensym "AO-NEW")))
+      ;; No ARG to bind once here -- that is the whole difference from atomic-binop!.
+      `(let ((,prev (~ ,@(cdr loc))))
+         (let ((,done 0))
+           ;; get-global-LINEAR-size: get-global-size is named in analysis/core.lisp's builtin
+           ;; list but has no analyzer.  See %atomic-binop-expand for why the bound is the
+           ;; contender count rather than a constant.
+           (dotimes+ (,r (+ (to-int (get-global-linear-size)) 1))
+             (when (= ,done 0)
+               (let ((,old (~ ,@(cdr loc))))
+                 (let ((,new ,(%175-apply-unop fn old)))
+                   (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
+                     (set! ,prev ,old)
+                     (set! ,done 1))))))
+           (r-t-assert-0 (= ,done 1)
+                         "atomic-op!: the bounded CAS retry loop exhausted without succeeding, so this update was LOST.  The bound is global_size + 1, which is sound when each thread performs the operation once; it can be exceeded if atomic-op! runs inside a loop, so that total successes on this location exceed the grid size.")
+           ,prev)))))
+
+(defun %analyze-atomic-op! (expr env context location)
+  "Analyzer for atomic-op! -- expands to the bounded CAS loop and delegates."
+  (analyze-expression (%atomic-op-expand expr) env context location))
+
+(defvar *orig-175l-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus atomic-op!."
+  (funcall *orig-175l-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "ATOMIC-OP!" pkg) *expression-analyzers*)
+              '%analyze-atomic-op!)))))
+
+(defun %175-vjp-atomic-op (form ctx)
+  "Backward rule for atomic-op!: refuse, and say why it is not a recording gap.
+
+   Unlike atomic-binop! -- whose + case survives because a sum's derivative does not care what
+   else landed first -- atomic-op! has NO value argument at all.  It transforms the location in
+   place, so the only derivative on offer is d new / d old = f'(old), and OLD is the value the
+   location happened to hold when this thread won the race.  Every thread applies f once, so the
+   final value (f composed n times) is deterministic, but WHICH RUNG of that composition each
+   thread occupied is not.  So each thread's adjoint differs from run to run on identical inputs,
+   and there is nothing stable to differentiate rather than something merely unrecorded."
+  (declare (ignore form ctx))
+  (error "atomic-op! is not differentiable.  It has no value argument -- it transforms the location in place -- so the only derivative available is f'(old), where old is whatever the location held when this thread won the CAS race.  The final value is deterministic (every thread applies f exactly once, and composition does not care about order), but each thread's position in that composition chain is not, so the per-thread adjoint differs between identical runs.  Crisp refuses rather than returning a gradient of zero, which would be indistinguishable from a correct answer for an input that genuinely does not participate.  For a differentiable accumulation use (atomic-binop! loc #'+ x) or atomic-add!, whose VJPs are stated and measured."))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ATOMIC-OP!" (function %175-vjp-atomic-op)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — atomic-op!'s OTHER TWO registrations (BUG 085's lesson applied).
+;;; ---------------------------------------------------------------------------
+;;; src/anf-transform.lisp — anf-normalize, atomic place list
+;;; src/autodiff.lisp      — %ad-replay-fill-targets and %ad-replay-read-syms
+;;;
+;;; All three extracted from the overlay's LIVE (last) copies and re-appended with "ATOMIC-OP!"
+;;; added to one list each.  Nothing else differs.
+;;;
+;;; DONE UP FRONT RATHER THAN AFTER A FAILURE, which is the whole point of BUG 085.  A new operator
+;;; that writes to a place needs three registrations and only the ANALYZER fails loudly when it is
+;;; missing.  Leave it out of anf-normalize's list and ANF hoists the place into a temp, the VJP
+;;; cannot find its target, DECLINES -- which is the correct way to say "let the walk handle this"
+;;; -- and the result is a silent zero gradient.  Leave it out of the replay lists and a write is
+;;; analysed as a read.  Neither produces an error; both produce a plausible number.
+;;;
+;;; atomic-op!'s VJP refuses outright, so in principle nothing here is load-bearing TODAY.  It is
+;;; done anyway because "the VJP refuses, so the plumbing does not matter" is exactly how BUG 086
+;;; became latent rather than absent, and the next person to give this operator a real derivative
+;;; should not have to rediscover BUG 085.
+
+(defun anf-normalize (expr is-nested?)
+  "Returns (VALUES normalized-expr bindings-list).
+   Phase 1c: added opaque pass-through for load-tile-at / store-tile-at
+   and their internal *-bwd / bare load-tile / store-tile variants."
+  (cond
+   ((anf-is-atomic? expr)
+     (values expr nil))
+
+   ((consp expr)
+     (let ((op (car expr)))
+       (when (and (symbolp op)
+                  (macro-function op)
+                  (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let
+                                          template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
+                                          make-cell make-vector make-matrix make-tensor))))
+             (multiple-value-bind (expanded changed) (macroexpand-1 expr)
+               (when changed
+                     (return-from anf-normalize (anf-normalize expanded is-nested?)))))
+       (cond
+        ((and (symbolp op)
+              (member (symbol-name op)
+                      '("LOAD-TILE-AT" "STORE-TILE-AT"
+                        "%LOAD-TILE-AT-BWD" "%STORE-TILE-AT-BWD"
+                        "LOAD-TILE" "STORE-TILE"
+                        ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
+                        ;; coord / dim LISTS that must stay opaque to ANF.
+                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE"
+                        ;; Endeavour 158: PREFETCH-TILE carries a coord tuple AND a :size
+                        ;; tuple, and ANF flattened BOTH into bindings, so
+                        ;;     (prefetch-tile A (grid-y grid-k) :size (32 16))
+                        ;; arrived at the backward walk as
+                        ;;     (LET ((%ANF-T-1 (GRID-Y GRID-K)) (%ANF-T-2 (32 16))) ...)
+                        ;; where %ANF-T-1 reads as a CALL to a function named GRID-Y --
+                        ;; really a tile-stride index -- reporting "Function GRID-Y is not
+                        ;; differentiable".  Endeavour 146 had ALREADY placed PREFETCH-TILE
+                        ;; on %backward-skip-fn-p as the pure scheduling hint it is; AD
+                        ;; never got to use that entry because ANF destroyed the form
+                        ;; first.  This is the third blocker 142/14's skip note predicted,
+                        ;; named there as "in ANF rather than AD".
+                        ;;
+                        ;; Safe by construction: anf-transform runs on the AD path ONLY
+                        ;; (see src/macros.lisp:982, "the forward still analyses the
+                        ;; original form"), so no shipped prefetch kernel's forward
+                        ;; lowering can be affected by this entry.
+                        "PREFETCH-TILE")
+                      :test #'string=))
+          (if is-nested?
+              (let ((temp (anf-fresh-temp)))
+                (values temp `((,temp ,expr))))
+              (values expr nil)))
+        ((eq op 'set!)
+          (%anf-normalize-set! expr is-nested?))
+        ((member op '(if when unless))
+          (%anf-normalize-if op expr is-nested?))
+        ((member op '(if+ when+ unless+))
+          (%anf-normalize-if+ op expr is-nested?))
+        ((eq op 'cond)
+          (%anf-normalize-cond expr is-nested?))
+        ((eq op 'let)
+          (%anf-normalize-let expr is-nested?))
+        ((eq op 'declare)
+          (if is-nested?
+              (let ((temp (anf-fresh-temp)))
+                (values temp `((,temp ,expr))))
+              (values expr nil)))
+        ((eq op 'return)
+          (multiple-value-bind (new-args bindings) (anf-normalize-args (cdr expr))
+            (let ((anf-ret `(return ,@new-args)))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp (append bindings `((,temp ,anf-ret)))))
+                  (values anf-ret bindings)))))
+        ((eq op 'as)
+          (let ((type-spec (cadr expr))
+                (val (caddr expr)))
+            (multiple-value-bind (new-val bindings) (anf-normalize val t)
+              (let ((anf-as `(as ,type-spec ,new-val)))
+                (if is-nested?
+                    (let ((temp (anf-fresh-temp)))
+                      (values temp (append bindings `((,temp ,anf-as)))))
+                    (values anf-as bindings))))))
+        ((eq op 'make-scratch-cell)
+          (let ((type-spec (cadr expr)))
+            (let ((anf-msc `(make-scratch-cell ,type-spec)))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp `((,temp ,anf-msc))))
+                  (values anf-msc nil)))))
+        ((member op '(make-scratch-vector make-scratch-matrix make-scratch-tensor))
+          (let ((anf-form `(,op ,@(cdr expr))))
+            (if is-nested?
+                (let ((temp (anf-fresh-temp)))
+                  (values temp `((,temp ,anf-form))))
+                (values anf-form nil))))
+        ((member op '(make-cell make-vector make-matrix make-tensor))
+          (let* ((source (cadr expr))
+                 (rest-args (cddr expr)))
+            (multiple-value-bind (new-source source-bindings)
+                (anf-normalize source t)
+              (let ((anf-form `(,op ,new-source ,@rest-args)))
+                (if is-nested?
+                    (let ((temp (anf-fresh-temp)))
+                      (values temp (append source-bindings `((,temp ,anf-form)))))
+                    (values anf-form source-bindings))))))
+        ((member op '(quote template-instantiation compiler-no-op def-function def-kernel def-kernel-exact eval-when))
+          (if is-nested?
+              (let ((temp (anf-fresh-temp)))
+                (values temp `((,temp ,expr))))
+              (values expr nil)))
+        ((eq op 'progn)
+          (let ((anf-body (mapcar #'%anf-transform (cdr expr))))
+            (let ((anf-progn `(progn ,@anf-body)))
+              (if is-nested?
+                  (let ((temp (anf-fresh-temp)))
+                    (values temp `((,temp ,anf-progn))))
+                  (values anf-progn nil)))))
+        ;; Endeavor 126 (pass 5b): with-precision is a codegen precision annotation,
+        ;; transparent to the derivative STRUCTURE. For the backward/AD pipeline, ANF
+        ;; it as a progn of its body (drop the region wrapper). The FORWARD kernel
+        ;; keeps the region precision (its semantic-with-precision codegen is
+        ;; untouched); only the backward pipeline drops it, so the backward ops use
+        ;; the ambient precision — correct for the gradient value.
+        ((and (symbolp op) (string-equal (symbol-name op) "WITH-PRECISION"))
+          (let ((body (cddr expr)))
+            (if (= (length body) 1)
+                ;; Single value form (the common case): ANF it directly so the
+                ;; backward walk sees the bare expression, not a progn wrapper.
+                (anf-normalize (car body) is-nested?)
+                ;; Multi-form body: fall back to progn semantics.
+                (anf-normalize (cons 'progn body) is-nested?))))
+        ((and (symbolp op) (%dotimes-family-head-p op))
+          (%anf-normalize-dotimes op expr is-nested?))
+        ((and (symbolp op) (string-equal (symbol-name op) "WHILE"))
+          (%anf-normalize-while op expr is-nested?))
+        ((and (symbolp op)
+              (member (symbol-name op)
+                      '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"
+                        "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!"
+                        ;; Endeavour 175 -- see the header above this definition.
+                        "ATOMIC-CAS!" "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
+                      :test #'string=))
+          (%anf-normalize-atomic op expr is-nested?))
+        (t
+          (let ((args (cdr expr)))
+            (multiple-value-bind (anf-args bindings) (anf-normalize-args args)
+              (let ((call `(,op ,@anf-args)))
+                (if is-nested?
+                    (let ((temp (anf-fresh-temp)))
+                      (values temp (append bindings `((,temp ,call)))))
+                    (values call bindings)))))))))
+
+   (t (error "Unsupported form for anf-transform: ~S" expr))))
+
+(defun %ad-replay-fill-targets (form)
+  "Symbols FORM writes through an INDEXED or whole-tile store, at any depth.
+
+   These are the writes that can FILL a tile, so this drives slice selection; it is
+   also what decides observability, since an indexed write to something that is not
+   scratch is a write to memory somebody else can see.
+
+   Bare `(set! SYM v)` is deliberately NOT collected here -- an ANF scalar temp is
+   assigned constantly and none of it is observable.  Scalar writes are checked
+   separately, and only against the &out list."
+  (let ((acc nil))
+    (labels ((walk (f)
+               (when (consp f)
+                 (let ((op (and (symbolp (car f)) (symbol-name (car f)))))
+                   (cond
+                     ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
+                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
+                                      :test #'string=))
+                      (let ((s (%ad-replay-place-sym (second f))))
+                        (when s (pushnew s acc))))
+                     ;; (store-tile SRC DST ...) / (store-tile-at SRC DST ...)
+                     ((and op (member op '("STORE-TILE" "STORE-TILE-AT") :test #'string=))
+                      (let ((dst (third f)))
+                        (cond ((symbolp dst) (when dst (pushnew dst acc)))
+                              (t (let ((s (%ad-replay-place-sym dst)))
+                                   (when s (pushnew s acc)))))))
+                     ((and op (string= op "FILL-TILE"))
+                      (let ((dst (second f)))
+                        (when (symbolp dst) (pushnew dst acc)))))
+                   ;; Descend into EVERY element, the head included.  Not (cdr f):
+                   ;; a LET's binding list is itself a list whose CAR is the first
+                   ;; binding, so skipping cars makes single-binding LETs -- which is
+                   ;; what ANF produces constantly -- invisible to the walk.
+                   (loop for sub = f then (cdr sub)
+                         while (consp sub)
+                         do (walk (car sub)))))))
+      (walk form))
+    acc))
+
+(defun %ad-replay-read-syms (form)
+  "Symbols FORM READS, at any depth: the operand of `(~ SYM ...)` other than in a write
+   place, and the SOURCE operand of load-tile / load-tile-at.
+
+   The write place is skipped deliberately -- `(set! (~ D i) v)` reads nothing from D,
+   and counting it would make every fill look like a read of its own destination."
+  (let ((acc nil))
+    (labels ((walk (f)
+               (when (consp f)
+                 (let ((op (and (symbolp (car f)) (symbol-name (car f)))))
+                   (cond
+                     ;; a write: skip the place, walk only the value operands
+                     ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
+                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
+                                      :test #'string=))
+                      ;; an index expression inside the place IS read; walk the place's
+                      ;; subscripts but not its head symbol.
+                      (when (consp (second f))
+                        (dolist (idx (cddr (second f))) (walk idx)))
+                      (dolist (sub (cddr f)) (walk sub)))
+                     ((and op (member op '("LOAD-TILE" "LOAD-TILE-AT") :test #'string=))
+                      (when (symbolp (second f)) (pushnew (second f) acc))
+                      (dolist (sub (cdr f)) (walk sub)))
+                     (t
+                      (when (and op (string= op "~") (symbolp (second f)) (second f))
+                        (pushnew (second f) acc))
+                      ;; every element, head included.  This one is why rung 07 was
+                      ;; missed at first: the read that made the slice unreplayable was
+                      ;; `(%anf-t-N (~ D i))`, the sole binding of a LET, and a walk that
+                      ;; skipped cars never saw it.  The kernel compiled, and the wrong
+                      ;; gradient it would have produced was the exact silent failure the
+                      ;; check exists to prevent.
+                      (loop for sub = f then (cdr sub)
+                            while (consp sub)
+                            do (walk (car sub)))))))))
+      (walk form))
+    acc))

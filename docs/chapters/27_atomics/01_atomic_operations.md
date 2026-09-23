@@ -11,7 +11,7 @@ Example: `(let ((old (atomic-add! (~ result 0) 1))) ...)`
  This example adds 1 to the first element of the result vector. The variable `old` will
  have whatever was in `(~ result 0)` before the addition occured.
 
-#### atomic-sub!
+#### atomic-sub! ✅
 Subtracts a value from a memory location, updating it. This routine returns the value BEFORE this modification..
 
 Syntax: `(atomic-sub! location delta)`
@@ -100,6 +100,13 @@ grid level operation.  The compiler will emit an error if attempted in the threa
 of a `def-function`. Use `def-grid-function` instead. 
  If writing a `defmacro`, be sure to include `(declare (grid-level))` in its `progn` 
 expansion. 
+
+> ⚠️ **NOT ENFORCED YET (BUG 087).** As of 2026-09-22 a plain `def-function` performing a
+> `:global` atomic compiles cleanly, with no error and no warning -- the refusal described above
+> does not happen. The paragraph records the INTENDED rule, not current behaviour. It matters
+> because a `def-function` is thread-level, so nothing marks the containing dispatch as a grid
+> operation, and both the hoisting code and the uniformity analysis are then working from the
+> wrong premise for any kernel that reaches a global atomic through a helper.
 
 
 

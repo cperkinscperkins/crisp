@@ -1,0 +1,33 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: ":scope must be :grid or :workgroup"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 175 -- mem-fence refuses a scope it cannot honour, and names the ones it can.
+;;
+;; :subgroup is the tempting wrong answer, which is why it is the one used here.  Both backends do
+;; have a subgroup/warp memory scope, so a user could reasonably expect it to work -- but Crisp has
+;; no construct that needs it, and more importantly a warp-scoped fence is very nearly a no-op on
+;; hardware that executes a warp in lockstep.  Accepting it would hand back something that looks
+;; like a fence, costs nothing, and orders nothing that was not already ordered.
+;;
+;; THE REFUSAL NAMES THE LEGAL VALUES rather than just rejecting.  A scope is a closed set of two,
+;; and a user who guessed wrong cannot discover the right spelling from the type system -- there is
+;; nothing to inspect.  Listing them in the message is the difference between one compile and a
+;; search through the design doc.
+;;
+;; TEST-EXPECT is FAIL, not the PASS+CHECK-FAIL-FLAGS pairing used by the AD refusals: this is a
+;; plain argument error in the analyzer, so there is no pass in which the kernel compiles.  Contrast
+;; errors/05, 07, 09 and 12, whose kernels are all fine forward and refused only under
+;; --differentiate.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches the kernel name and the filename as well as the
+;; message, so a file called "...-must-be-grid-or-workgroup.crisp" could pass vacuously.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel fence_bad_scope (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (mem-fence :scope :subgroup)
+  (set! (~ out 0) 1.0))

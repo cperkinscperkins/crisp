@@ -14,8 +14,11 @@
 ;; that was there BEFORE, matching all eight existing Crisp atomics -- so the caller detects
 ;; success by comparing the returned value against EXPECTED, rather than by a separate boolean.
 ;;
-;; THAT RETURN CONVENTION IS A DELIBERATE DIVERGENCE from the design doc's sketch, which uses the
-;; result as a boolean ((when (atomic-cas! ...) ...)).  Returning the old value is the more
+;; THE DOC AGREES, AND I FIRST CLAIMED OTHERWISE.  ideal_001.md has an atomic-cas! section -- inside
+;; an HTML comment marked "THIS IS BEING REMOVED" -- and it says plainly "The old value is always
+;; returned."  So this convention matches the design doc; what it diverges from is only the
+;; IMPLEMENTATION SKETCH under atomic-binop!, which uses the result as a boolean
+;; ((when (atomic-cas! ...) ...)).  Returning the old value is the more
 ;; primitive of the two -- a boolean is derivable from it, the reverse is not -- it is what both
 ;; target ISAs actually give back (LLVM cmpxchg, PTX atom.cas), and it keeps the rule "every
 ;; atomic returns the value before" true without exception.
