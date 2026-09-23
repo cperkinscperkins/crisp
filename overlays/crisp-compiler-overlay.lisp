@@ -2603,3 +2603,110 @@ Returns the value at the location BEFORE the attempt (see the header for why not
                     (values call bindings)))))))))
 
    (t (error "Unsupported form for anf-transform: ~S" expr))))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — grid-reduce-cas! : the fourth stage-2 strategy.
+;;; ---------------------------------------------------------------------------
+;;; ANALYZER -> src/analysis/ops.lisp (beside the other 175 reduction analyzers)
+;;; VJP      -> src/autodiff.lisp
+;;;
+;;;   (grid-reduce-cas! fn var identity return-vec :local-scratch-vec sv)
+;;;
+;;; reduce-workgroup, then each workgroup's leader accumulates its partial into return-vec[0] with
+;;; atomic-binop!.  ZERO GLOBAL SCRATCH -- the low-memory escape hatch for an operator with no
+;;; native atomic, paid for in contention on a single address.
+;;;
+;;; THINNER THAN THE OTHER THREE STRATEGIES, and deliberately so: everything hard already exists.
+;;; atomic-binop! carries the bounded CAS loop, the derived bound and the exhaustion assert;
+;;; reduce-workgroup carries the intra-workgroup reduction; when-thread-in-group-is carries the
+;;; election.  This construct is composition, which is why its spec surface is about whether the
+;;; three compose rather than about CAS mechanics (spec 35 owns those).
+;;;
+;;; IT ACCUMULATES RATHER THAN STORES, matching grid-reduce-atomic! and unlike
+;;; grid-reduce-last-man!.  The doc is explicit ("safely accumulate its partial result into the
+;;; return-vec") and it follows from the mechanism: a CAS loop applies fn to what is already there.
+;;;
+;;; :local-scratch-vec IS REQUIRED where the doc lists it optional -- the same Pass-1 scanner
+;;; limitation the other three strategies hit.  Scratch created inside an analyzer's expansion is
+;;; invisible to the scan that builds implicit kernel parameters.
+
+(defun %grid-reduce-cas-parts (expr)
+  "Destructures (grid-reduce-cas! FN VAR IDENTITY RETURN-VEC &key ...).
+   Returns (values fn var identity return-vec local-scratch-vec)."
+  (let ((keys (nthcdr 5 expr)))
+    (values (second expr) (third expr) (fourth expr) (fifth expr)
+            (getf keys :local-scratch-vec))))
+
+(defun %grid-reduce-cas-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (BUG 073/077/081)."
+  (multiple-value-bind (fn var identity return-vec sv) (%grid-reduce-cas-parts expr)
+    (dolist (pair (list (list fn "a binop") (list var "a var to reduce")
+                        (list identity "an identity") (list return-vec "a return-vec")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-cas!: ~a is required.  The form is (grid-reduce-cas! fn var identity return-vec :local-scratch-vec sv)."
+                                (second pair))
+               :source-location nil)))
+    (unless sv
+      (error 'crisp-compiler-error
+             :message "grid-reduce-cas!: :local-scratch-vec is required -- one element per warp, for the per-workgroup reduction.  It must be allocated in the CALLER's scope: scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters, so Crisp cannot generate it for you here."
+             :source-location nil))
+    `(progn
+       ;; Phase 1 -- every thread of the workgroup ends up holding the workgroup's total.
+       (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+       ;; Phase 2 -- one leader per workgroup folds that total into the single result cell.
+       ;; The CAS loop, its derived bound and its exhaustion assert all live in atomic-binop!.
+       (when-thread-in-group-is 0
+         (atomic-binop! (~ ,return-vec 0) ,fn ,var))
+       (compiler-no-op))))
+
+(defun %analyze-grid-reduce-cas (expr env context location)
+  "Analyzer for grid-reduce-cas! -- expands and delegates."
+  (analyze-expression (%grid-reduce-cas-expand expr) env context location))
+
+(defvar *orig-175k-register-ops-analyzers* (fdefinition 'register-ops-analyzers)
+  "Captured once at overlay load -- chains onto the earlier 175 wrappers.")
+
+(defun register-ops-analyzers ()
+  "Overlay wrapper: previous registrations, plus grid-reduce-cas!."
+  (funcall *orig-175k-register-ops-analyzers*)
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (setf (gethash (intern "GRID-REDUCE-CAS!" pkg) *expression-analyzers*)
+              '%analyze-grid-reduce-cas)))))
+
+(defun %175-vjp-grid-reduce-cas (form ctx)
+  "VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's
+   adjoint -- the same broadcast as grid-reduce-atomic! and grid-reduce-last-man!.
+
+   THE FOURTH STRATEGY WITH THE SAME DERIVATIVE, which is the point rather than a coincidence: all
+   four compute the same function by different schedules, and a derivative depends on WHAT is
+   computed, not on how the work was divided or which memory it passed through.  None of the CAS
+   apparatus -- the retry loop, the contention, the election -- leaves any trace in the backward
+   pass."
+  (multiple-value-bind (fn var identity return-vec sv) (%grid-reduce-cas-parts form)
+    (declare (ignore identity sv))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (and (consp fn) (symbolp (car fn))
+                   (string-equal (symbol-name (car fn)) "FUNCTION")
+                   (string= (symbol-name (second fn)) "+"))
+        (error "grid-reduce-cas!: autodiff is supported only for the + reduction.  A SUM over the grid gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell.  For an arbitrary binop the adjoint would depend on the value the result cell happened to hold when this workgroup's leader won the CAS, which differs from run to run -- there is nothing stable to differentiate, not merely something unrecorded.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+      (unless (and var (symbolp var) return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-cas nil))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg))))
+        (log:debug "175 VJP grid-reduce-cas!: ~a := (~~ ~a 0)" vadj radj)
+        `(set! ,vadj (~ ,radj 0))))))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-CAS!" (function %175-vjp-grid-reduce-cas)))

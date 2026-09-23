@@ -3148,3 +3148,42 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         NOT FIXED DELIBERATELY.  Adding the right names changes replay behaviour for two shipped
         operators, which wants its own spec rather than a drive-by edit inside an unrelated
         endeavour.  Noticed while adding ATOMIC-BINOP! to the same two lists for BUG 085.
+
+[ ] 087 THE "ATOMICS ON :GLOBAL MAKE A FUNCTION GRID-LEVEL" RULE IS NOT ENFORCED.
+
+        The design doc states it plainly (see tests/spec/175-reductions/atomic-excerpts.md, the
+        'atomics and grid level operations' section): "Using any atomic operation on :global
+        memory makes the containing function or macro into a grid level operation.  The compiler
+        will emit an error if attempted in the thread level context of a def-function.  Use
+        def-grid-function instead."
+
+        IT DOES NOT.  Measured:
+
+            (def-function thread-level-abuse (v x)
+              (declare #'(vec-t float => float))     ; vec-t is :address-space :global
+              (atomic-add! (~ v 0) x))
+
+        compiles cleanly, exit 0, no warning.  A plain def-function performing a global atomic is
+        accepted where the doc promises refusal.
+
+        SCOPE.  All eight shipped atomics (add/sub/inc/dec/min/max/xchg/set).  PRE-EXISTING --
+        found while checking whether endeavour 175's new atomic-cas! / atomic-binop! needed a
+        grid-level registration, not caused by them.
+
+        atomic-binop! IS refused there, but ACCIDENTALLY and with a misleading message.  Its
+        bounded-retry expansion calls get-global-linear-size, which is kernel-only, so the user
+        sees "GPU built-in 'GET-GLOBAL-LINEAR-SIZE' is only valid inside a kernel (dispatch
+        context)" -- true, but it names an internal detail of an expansion the user never wrote
+        rather than the rule they broke.  Right outcome, wrong reason, and it would stop being
+        the right outcome if the bound were ever derived some other way.
+
+        WHY IT MATTERS rather than being a docs nit: a def-function is thread-level, so nothing
+        establishes that the containing dispatch is a grid operation.  The declaration exists so
+        the hoisting code and the uniformity analysis know what they are looking at, and both are
+        silently working from the wrong premise for any kernel that reaches a global atomic
+        through a helper.
+
+        EITHER the check gets implemented, OR the doc's paragraph is wrong and should be corrected
+        -- this is on the 'implemented/partial/not-implemented emoji' pass either way.  Note the
+        same excerpt marks atomic-binop! and atomic-op! with an implemented tick, and neither
+        existed before 2026-09-22 (atomic-op! still does not).

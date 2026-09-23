@@ -2338,6 +2338,13 @@
 ;;; is runtime-agnostic top-to-bottom.
 
 (defun runtime-init ()
+  ;; BUG 084 follow-up: drop any :global scratch pointers left over from a previous pass before
+  ;; allocating new ones.  runtime-shutdown clears this list and IS unwind-protected, so normally
+  ;; it is already empty -- but %vad-zero-global-scratch writes through every pointer in it on
+  ;; EVERY launch, so a single skipped shutdown would turn stale freed pointers into a
+  ;; segfault rather than an error.  Cheap insurance against a failure mode that cannot be
+  ;; debugged from its symptom.  Nothing leaks: the allocations died with their context.
+  (setf *vad-global-scratch-allocs* nil)
   "Initialise the active runtime (per *AD-RUNTIME*) and return
    (values context queue).  For :opencl, both are OpenCL handles.  For
    :l0, CONTEXT is a ze_context_handle_t and QUEUE is NIL (L0 launches
