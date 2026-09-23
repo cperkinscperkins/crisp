@@ -189,7 +189,11 @@
     ;; 157: the split halves are ordinary VOID builtins as far as everything downstream is
     ;; concerned -- minting them as distinct keywords keeps semantic-gpu-builtin untouched.
     ((:sync-workgroup :sync-warp :mem-fence :sync-cluster
-      :sync-workgroup-arrive :sync-workgroup-wait)
+      :sync-workgroup-arrive :sync-workgroup-wait
+      ;; 175: the workgroup-scoped fence, minted as its own keyword for exactly the reason the
+      ;; comment above gives for the split-barrier halves -- it keeps semantic-gpu-builtin
+      ;; untouched, which an extra slot would not.
+      :mem-fence-workgroup)
      (list nil nil))
     ;; 110 — warp helpers (scalar uint, no dim arg)
     ((:warp-id :warp-lane :warp-count)
@@ -204,7 +208,7 @@
   (declare (ignore env context))
   (unless *in-dispatch-context*
     (error "GPU built-in '~a' is only valid inside a kernel (dispatch context)" name-str))
-  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :sync-cluster))
+  (when (member builtin-kw '(:sync-workgroup :sync-warp :mem-fence :mem-fence-workgroup :sync-cluster))
     ;; Endeavor 139 (decision B): inside a warp-spec role block, forbid sync-workgroup (deadlock),
     ;; allow warp-scoped sync-warp / mem-fence; outside, the normal thread-divergent check.
     (%warp-spec-check-sync builtin-kw name-str location))
@@ -248,6 +252,30 @@
         :source-location location))
       ((and (eq builtin-kw :sync-workgroup) (= (length args) 1))
        (error "sync-workgroup takes no argument, or one of :arrive / :wait (the split barrier's two halves), got: ~S"
+              (first args)))
+      ;; 175: (mem-fence :scope :grid | :workgroup).  Two args -- the keyword and its value.
+      ;;
+      ;; :grid IS THE DEFAULT, and the asymmetry is deliberate: a fence that is too strong only
+      ;; costs performance, while one that is too weak yields a wrong answer that no test reliably
+      ;; catches.  BUG 088 was precisely that -- a bare (mem-fence) meant device scope on SPIR-V and
+      ;; workgroup scope on PTX, and grid-reduce-last-man! depended on the stronger reading.  So the
+      ;; safe scope is what you get for free and the cheap one has to be asked for.
+      ((and (member builtin-kw '(:mem-fence :mem-fence-workgroup))
+            (= (length args) 2)
+            (eq (first args) :scope))
+       (let ((scope (second args)))
+         (unless (member scope '(:grid :workgroup))
+           (error "mem-fence: :scope must be :grid or :workgroup, got ~S.  :grid (the default) orders memory for the whole device, which is what any cross-workgroup publication needs; :workgroup orders it only within this workgroup and is cheaper.  There is no narrower scope -- a warp-scoped fence would be very nearly a no-op on hardware that runs a warp in lockstep, so Crisp does not offer one."
+                  scope))
+         (make-semantic-gpu-builtin
+          :builtin-name (if (eq scope :workgroup) :mem-fence-workgroup :mem-fence)
+          :dimension nil
+          :type nil
+          :source-location location)))
+      ;; A 1-arg mem-fence is a mis-spelled scope, and saying so beats "takes 0 or 1 arguments".
+      ((and (member builtin-kw '(:mem-fence :mem-fence-workgroup))
+            (= (length args) 1))
+       (error "mem-fence takes no arguments, or the pair :scope :grid / :scope :workgroup, got: ~S.  The keyword is not optional -- (mem-fence :workgroup) is not accepted, because a bare keyword would read as a dimension argument everywhere else in this family."
               (first args)))
       ((= (length args) 1)
        (let ((dim-arg (first args)))
@@ -2328,7 +2356,9 @@ in single-pass mode."
     (semantic-spirv-async-copy        (semantic-spirv-async-copy-type node))
     (semantic-spirv-group-wait        (semantic-spirv-group-wait-type node))
     (semantic-shuffle                 (semantic-shuffle-type node))
-    (semantic-mma-accumulate          (semantic-mma-accumulate-type node))))
+    (semantic-mma-accumulate          (semantic-mma-accumulate-type node))
+    ;; Endeavour 175: atomic compare-and-swap.
+    (semantic-atomic-cas              (semantic-atomic-cas-type node))))
 
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
@@ -2400,7 +2430,9 @@ in single-pass mode."
     (semantic-cp-async-commit         (semantic-cp-async-commit-source-location node))
     (semantic-spirv-async-copy        (semantic-spirv-async-copy-source-location node))
     (semantic-spirv-group-wait        (semantic-spirv-group-wait-source-location node))
-    (semantic-mma-accumulate          (semantic-mma-accumulate-source-location node))))
+    (semantic-mma-accumulate          (semantic-mma-accumulate-source-location node))
+    ;; Endeavour 175: atomic compare-and-swap.
+    (semantic-atomic-cas              (semantic-atomic-cas-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)

@@ -708,7 +708,7 @@
   "The width argument of a raw shuffle form, or (warp-size) when it was left to default."
   (or (fourth expr) (list (intern "WARP-SIZE" (find-package :crisp.compiler)))))
 
-(defun %shuffle-backward (v expr emit-fn local-adj-fn)
+(defun %shuffle-backward-base (v expr emit-fn local-adj-fn)
   "Emits the adjoint updates for a raw shuffle form bound to V.  See the section header."
   (let* ((op (%shuffle-form-op expr))
          (value (second expr))
@@ -748,6 +748,32 @@
            (error "~A: no VJP is registered for an indexed shuffle with a runtime target lane.  Its transpose is a genuine scatter-add -- several lanes may read the same source, so the adjoint must sum an unknown number of contributions, which is not a shuffle at all.  A CONSTANT target is no simpler: every lane then reads the SAME lane, so the form is a broadcast whose transpose is a warp-wide reduction rather than a permutation.  Use shuffle-xor (self-transposing), shuffle-up or shuffle-down, all of which differentiate exactly; or if this kernel really is forward-only, SKIP-WITH[--differentiate]."
                   (car expr)))))
       t)))
+
+;;; Endeavour 175 — the 173 shuffle VJPs, ahead of the original walk.
+
+(defun %shuffle-backward (v expr emit-fn local-adj-fn)
+  "handles the :idx (broadcast) case 173 refused; everything else unchanged."
+  (if (and (eq (%shuffle-form-op expr) :idx)
+           (%175-raw-integer-literal (third expr)))
+      (let* ((value (second expr))
+             (idx   (third expr))
+             (tail  (cddr expr))
+             (w     (%shuffle-form-width-form expr))
+             (g     (funcall local-adj-fn v)))
+        (log:debug "175 broadcast VJP: ~a := ~a" v expr)
+        (if (and value (symbolp value))
+            (funcall emit-fn (%175-broadcast-vjp-form
+                              g (funcall local-adj-fn value) idx tail w `(- ,g ,g)))
+            (log:debug "175 broadcast VJP: operand ~a is not a symbol; nothing to accumulate" value))
+        t)
+      (if (eq (%shuffle-form-op expr) :idx)
+          ;; KEEP THE PHRASE "runtime target lane".  173-shuffles/errors/07 matches on it
+          ;; (CHECK-FAIL), and "no VJP is registered for an indexed shuffle" is its FAIL-WITH
+          ;; string -- rewording either silently turns that spec from a real check into a
+          ;; failure, which is how this was caught.
+          (error "~A: no VJP is registered for an indexed shuffle with a runtime target lane.  A CONSTANT target lane IS supported: every lane then reads the same lane, so the form is a broadcast whose transpose is a segment-wide sum, which differentiates exactly.  The distinction that matters is UNIFORM vs LANE-VARYING, not constant vs runtime -- a lane-varying index is a general gather, where several lanes may read the same source and others none, so its transpose is a scatter-add of unknown multiplicity and not a shuffle at all.  A uniform RUNTIME index is differentiable in principle, but Crisp cannot tell it apart here because the uniformity pre-pass runs after the autodiff walk.  Use a constant target lane, or shuffle-xor / shuffle-up / shuffle-down, all of which differentiate exactly; or if this kernel really is forward-only, SKIP-WITH[--differentiate]."
+                 (car expr))
+          (%shuffle-backward-base v expr emit-fn local-adj-fn))))
 
 
 ;;; Endeavour 170: autodiff for the hardware-supported math ops.
@@ -1227,7 +1253,7 @@
 ;;; Unchanged for every fp32/tf32 kernel: a float element is not narrow, so promoted-elem is
 ;;; what it always was.
 ;;; ======================================================================
-(defun %promote-scratch-init-for-ad (init)
+(defun %promote-scratch-init-for-ad-base (init)
   "Promotes the type in a make-scratch-* form to its float adjoint equivalent.
    E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4).
 
@@ -1256,6 +1282,27 @@
      ((string-equal (symbol-name op) "MAKE-SCRATCH-CELL")
       `(,op ,(%promote-to-float-adjoint canonical)))
      (t init))))
+
+;;; Endeavour 175 — a scratch CELL is not a tensor (BUG 047).
+
+(defun %promote-scratch-init-for-ad (init)
+  "MAKE-SCRATCH-CELL is handled directly; every other scratch form defers to the
+   original.  A cell has no tensor spec to canonicalise (BUG 047)."
+  (let ((op (car init)))
+    (if (and (symbolp op) (string-equal (symbol-name op) "MAKE-SCRATCH-CELL"))
+        (let* ((args (cdr init))
+               (elem (first args))
+               ;; Same promotion rule the tensor paths use: an adjoint accumulates many
+               ;; contributions, so an integer or narrow-float element widens to a float one.
+               (promoted (cond
+                           ((%crisp-integer-scalar-type-p elem)
+                            (%integer-scalar-to-float-scalar elem))
+                           ((%crisp-narrow-float-scalar-p elem) 'float)
+                           (t elem))))
+          ;; Trailing arguments (e.g. :address-space :global) are preserved verbatim -- the
+          ;; adjoint cell must live in the same memory the primal cell does.
+          `(,op ,promoted ,@(cdr args)))
+        (%promote-scratch-init-for-ad-base init))))
 
 
 (defun %augment-scratch-adj-bindings (bindings kernel-pkg)
@@ -4222,7 +4269,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 ;; NOTE (145 P3b): this is the P1 body, renamed so the final %backward-skip-fn-p (further
 ;; down, which adds MAKE-REGISTER-TILE) can delegate to it instead of duplicating the list.
 ;; When folding back into src/, merge the two into one definition.
-(defun %backward-skip-fn-p-145p1 (fn-sym)
+(defun %backward-skip-fn-p-145p1-base (fn-sym)
   "Returns T if FN-SYM should be silently skipped in the AD backward walk.
 
    Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS join the gradient-inert shape
@@ -4296,6 +4343,20 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                                         ;; ("Function WARP-LANE is not differentiable").
                                         "WARP-ID" "WARP-LANE" "WARP-COUNT")
                when (prefix-or-mangled-p prefix) return t)))))
+
+;;; Endeavour 175 — the 173 warp builtins join the gradient-inert coordinate queries.
+;;; An EXACT-name test ahead of the base, not four more entries in the base's list: the base
+;;; matches through PREFIX-OR-MANGLED-P, which did not catch these (BUG 072) even though
+;;; WARP-ID / WARP-LANE / WARP-COUNT were already listed there.
+
+(defun %backward-skip-fn-p-145p1 (fn-sym)
+  "the 173 warp builtins join the gradient-inert coordinate queries."
+  (or (and (symbolp fn-sym)
+           (member (symbol-name fn-sym)
+                   '("WARP-SIZE" "WARP-ID" "WARP-LANE" "WARP-COUNT")
+                   :test #'string=)
+           t)
+      (%backward-skip-fn-p-145p1-base fn-sym)))
 
 (defun %mma-ad-prelower-mmts (form)
   "Endeavor 145 P8: pre-lower matrix-multiply-tile-stride ahead of the AD pre-pass.
@@ -5289,7 +5350,8 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                  (let ((op (and (symbolp (car f)) (symbol-name (car f)))))
                    (cond
                      ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
-                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!")
+                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
                                       :test #'string=))
                       (let ((s (%ad-replay-place-sym (second f))))
                         (when s (pushnew s acc))))
@@ -5342,7 +5404,8 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                    (cond
                      ;; a write: skip the place, walk only the value operands
                      ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
-                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!")
+                                           "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
                                       :test #'string=))
                       ;; an index expression inside the place IS read; walk the place's
                       ;; subscripts but not its head symbol.
@@ -6341,3 +6404,347 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
           (let ((pruned (prune form)))
             (log:debug "164: pruned ~a dead scratch binding(s): ~a" (length dead) dead)
             pruned)))))
+
+
+;;;; ===========================================================================
+;;;; Endeavour 175 — reductions and atomics: the backward rules.
+;;;; ===========================================================================
+
+(defun %175-broadcast-vjp-form (g value-adj idx tail width-form zero)
+  "The adjoint statement for a broadcast shuffle.  See the section header for the derivation."
+  (let* ((explicit-width (second tail))            ; (index [width]) -- width if written
+         (w-lit (or (and (integerp explicit-width) explicit-width) (%173-warp-size)))
+         (tot (intern "%RW-TOT" (find-package :crisp.compiler)))
+         (st  (intern "%RW-S"   (find-package :crisp.compiler)))
+         (xor-tail (when explicit-width (list explicit-width))))
+    `(let ((,tot ,g))
+       (dec-times-by-half+ (,st ,(floor w-lit 2))
+         (set! ,tot (+ (shuffle-xor ,tot ,st ,@xor-tail) ,tot)))
+       (set! ,value-adj
+             (+ ,value-adj
+                (if (= (rem (to-ulong (warp-lane)) (to-ulong ,width-form))
+                       (rem (to-ulong ,idx) (to-ulong ,width-form)))
+                    ,tot
+                    ,zero))))))
+
+(defun %175-raw-integer-literal (form)
+  "The integer value of a raw literal FORM, or NIL.
+
+   Needed because the AD walk sees RAW forms and Crisp spells a typed literal as a SUFFIXED
+   SYMBOL: `2ul` is read by the CL reader as the symbol |2UL|, and only later does
+   %try-parse-typed-literal (src/analysis/core.lisp) turn it into a ulong semantic-literal.  So
+   (integerp (third expr)) is false for exactly the form this VJP is written for.
+
+   Only the INTEGER suffixes are accepted.  A float-suffixed literal (2.0f, 3d) is not a legal
+   lane index, so returning NIL for it is correct rather than merely conservative."
+  (cond
+    ((integerp form) form)
+    ((symbolp form)
+     (let* ((name (symbol-name form))
+            (npos (or (position-if-not #'digit-char-p name) (length name))))
+       (when (and (> npos 0)
+                  (member (subseq name npos)
+                          '("" "U" "L" "UL" "S" "US" "C" "UC")
+                          :test #'string=))
+         (parse-integer name :end npos))))
+    (t nil)))
+
+(defun %175-atomic-place-parts (place)
+  "TARGET and INDICES of an atomic's place, or NIL if it is not a (~ t i...) form.
+   Matched by symbol-name: a kernel's reader may intern ~ into its own package."
+  (when (and (consp place) (symbolp (car place))
+             (string= (symbol-name (car place)) "~"))
+    (values (second place) (cddr place))))
+
+(defun %175-vjp-atomic-linear (form ctx sign op-name)
+  "Backward rule for an atomic that is LINEAR in its value argument.
+   SIGN is +1 for add!, -1 for sub!."
+  (let ((place (second form))
+        (val   (third form)))
+    (multiple-value-bind (target indices) (%175-atomic-place-parts place)
+      (cond
+        ;; Not a place we understand, or a non-symbol value: decline rather than guess, and let
+        ;; the walk's own clauses report it.
+        ((or (null target) (not (symbolp val))) nil)
+        (t
+         (let* ((inputs    (getf ctx :inputs))
+                (outputs   (getf ctx :outputs))
+                (local-adj (getf ctx :local-adj))
+                (pkg       (getf ctx :kernel-pkg)))
+           (when (member target inputs)
+             (error "Cannot differentiate: kernel mutates input parameter ~A via (~A (~~ ~A) ...). Only output parameters may be written."
+                    target op-name target))
+           (let* ((tgt-adj (if (member target outputs)
+                               (intern (format nil "~A_GRAD" (symbol-name target))
+                                       (symbol-package target))
+                               (%tlc-bwd-adj-name target inputs outputs local-adj pkg)))
+                  (vadj (funcall local-adj val))
+                  (contrib `(~ ,tgt-adj ,@indices)))
+             (log:debug "175 VJP ~a: ~a ~a= ~a" op-name vadj (if (plusp sign) "+" "-") contrib)
+             ;; NO zeroing of the destination adjoint -- see the section header.
+             `(set! ,vadj ,(if (plusp sign)
+                               `(+ ,vadj ,contrib)
+                               `(- ,vadj ,contrib))))))))))
+
+(defun %175-vjp-atomic-refuse (form ctx op-name why)
+  "Backward rule for an atomic Crisp cannot differentiate: refuse, with the reason."
+  (declare (ignore form ctx))
+  (error "~A is not differentiable.  ~A~%~
+          Crisp refuses rather than returning a gradient of zero, which is what it did before~%~
+          BUG 077: a kernel accumulating with an atomic compiled, ran, and reported an~%~
+          analytical derivative of 0.0 where the true value was 1.0, with no diagnostic.~%~
+          atomic-add! and atomic-sub! DO differentiate (they are linear in their value).~%~
+          If this kernel is genuinely forward-only, mark it SKIP-WITH[--differentiate]."
+         op-name why))
+
+(defun %175-vjp-reduce-warp (form ctx)
+  "VJP for reduce-warp: a warp all-reduce is self-transposing, so the backward pass is another
+   reduce-warp of the adjoint.  See the section header."
+  (let* ((fn  (second form))
+         (var (third form))
+         (local-adj (getf ctx :local-adj)))
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "reduce-warp: autodiff is supported only for the + reduction.  The transpose of a SUM all-reduce is another sum all-reduce, which is exact and needs nothing recorded from the forward pass.  min/max would route the adjoint to the lane that supplied the winning value, which requires the forward pass to stash an argmin/argmax; an arbitrary binop needs the partial derivatives of that op at every butterfly step.  Neither is recorded.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+    (unless (and var (symbolp var))
+      (return-from %175-vjp-reduce-warp nil))
+    (let ((vadj (funcall local-adj var)))
+      (log:debug "175 VJP reduce-warp: all-reduce of ~a" vadj)
+      ;; In place, mirroring the forward, and WITHOUT active-threads: the inactive lanes' adjoints
+      ;; are zero and contribute nothing to the sum.
+      `(reduce-warp ,fn ,vadj 0.0))))
+
+(defun %175-vjp-reduce-workgroup (form ctx)
+  "VJP for reduce-workgroup: an all-reduce is self-transposing, so the backward pass is another
+   all-reduce of the adjoint.  See the section header for the derivation and spec 09 for the
+   measured value (64, against 1.0 for the mechanical reversal)."
+  (let* ((fn         (second form))
+         (var        (third form))
+         (keys       (cddddr form))
+         (scratch    (getf keys :local-scratch-vec))
+         (return-vec (getf keys :return-vec))
+         (local-adj  (getf ctx :local-adj)))
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "reduce-workgroup: autodiff is supported only for the + reduction.  The transpose of a SUM reduction is another sum reduction, which is exact and needs nothing recorded from the forward pass.  min/max would route the adjoint to the winning thread, which requires the forward pass to stash an argmin/argmax; an arbitrary binop needs the partial derivatives of that op at every combining node, i.e. the whole combining tree and its intermediates.  Neither is recorded today.  Use the + reduction, or mark the kernel SKIP-WITH[--differentiate] if it is forward-only."))
+    (when return-vec
+      (error "reduce-workgroup: :return-vec is not differentiable yet.  The per-workgroup partial written to that vector is a SECOND output of this form, so a correct VJP must also collect whatever gradient flows back through it.  The expansion that writes it is hidden inside the analyzer, so the walk cannot see that store and the contribution would be silently dropped.  Refusing rather than returning an incomplete gradient.  Drop the key, or write the element yourself after the reduction."))
+    (unless (and var (symbolp var))
+      (return-from %175-vjp-reduce-workgroup nil))
+    (let ((vbar (funcall local-adj var)))
+      (log:debug "175 VJP reduce-workgroup: all-reduce of ~a" vbar)
+      ;; In place, mirroring the forward -- the operation consumes v and produces v, so the
+      ;; input adjoint REPLACES the output adjoint rather than accumulating onto it.
+      `(reduce-workgroup ,fn ,vbar 0.0 :local-scratch-vec ,scratch))))
+
+(defun %175-vjp-grid-reduce-atomic (form ctx)
+  "VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's
+   adjoint.  One global load per thread -- no atomics, no barriers, no scratch."
+  (multiple-value-bind (fn var identity return-vec scratch) (%grid-reduce-atomic-parts form)
+    (declare (ignore identity scratch))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (string-equal (or (%grid-atomic-op-name fn) "") "ATOMIC-ADD!")
+        (error "grid-reduce-atomic!: autodiff is supported only for the + reduction.  A SUM over the grid gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell.  min/max would route the adjoint only to the thread that supplied the winning value, which needs an argmin/argmax the forward pass does not record -- the same gap atomic-min!/atomic-max! have on their own (BUG 077).  Use the + reduction, or mark the kernel SKIP-WITH[--differentiate] if it is forward-only."))
+      (unless (and var (symbolp var) return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-atomic nil))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             ;; The gradient HANDLE of the output tensor, not a scalar adjoint.  local-adj alone
+             ;; yields a scalar here and the emitted (~ radj 0) then fails to typecheck with
+             ;; "No matching function overload found for '~' with argument types (FLOAT INT)".
+             ;; Same resolution the atomic VJP uses.
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg))))
+        (log:debug "175 VJP grid-reduce-atomic!: ~a := (~~ ~a 0)" vadj radj)
+        ;; OVERWRITE, mirroring the forward: the construct consumes VAR (the doc says its value is
+        ;; indeterminate afterwards), so the input adjoint REPLACES the output adjoint.
+        `(set! ,vadj (~ ,radj 0))))))
+
+(defun %175-vjp-grid-reduce-last-man (form ctx)
+  "VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's
+   adjoint -- identical to grid-reduce-atomic!'s rule, because the two constructs compute the
+   same function by different schedules.  A derivative depends on WHAT is computed, not on how
+   the work was divided, which is worth stating: the elaborate last-man machinery leaves no trace
+   in the backward pass at all."
+  (multiple-value-bind (fn var identity return-vec sv gv ctr)
+      (%grid-reduce-last-man-parts form)
+    (declare (ignore identity sv gv ctr))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (and (consp fn) (symbolp (car fn))
+                   (string-equal (symbol-name (car fn)) "FUNCTION")
+                   (string= (symbol-name (second fn)) "+"))
+        (error "grid-reduce-last-man!: autodiff is supported only for the + reduction.  A SUM over the grid gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell.  min/max would route the adjoint only to the thread that supplied the winning value, which needs an argmin/argmax the forward pass does not record; an arbitrary binop needs the partial derivatives of that op at every combining node.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+      (unless (and var (symbolp var) return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-last-man nil))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg))))
+        (log:debug "175 VJP grid-reduce-last-man!: ~a := (~~ ~a 0)" vadj radj)
+        `(set! ,vadj (~ ,radj 0))))))
+
+(defun %175-vjp-grid-reduce-second-stage (form ctx)
+  "VJP: out[0] is the sum over in-scratch-vec, so each active lane's adjoint lands in that
+   vector at the lane it read.  The reduced var is an OUTPUT of this form -- see the header --
+   so its incoming adjoint is killed rather than propagated."
+  (multiple-value-bind (fn var identity in-vec return-vec sv)
+      (%grid-reduce-second-stage-parts form)
+    (declare (ignore identity sv))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (and (consp fn) (symbolp (car fn))
+                   (string-equal (symbol-name (car fn)) "FUNCTION")
+                   (string= (symbol-name (second fn)) "+"))
+        (error "grid-reduce-second-stage!: autodiff is supported only for the + reduction.  Summing the partials gives d out / d partial = 1 for every element that was read, so the adjoint is a copy of the output cell into the lane each thread took.  min/max would route the adjoint only to the lane holding the winning partial, which needs an argmin/argmax the forward pass does not record; an arbitrary binop needs that op's partial derivatives at every combining node.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+      (unless (and var (symbolp var) in-vec (symbolp in-vec)
+                   return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-second-stage nil))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg)))
+             (iadj (%tlc-bwd-adj-name in-vec inputs outputs local-adj pkg))
+             (lid  (gensym "SSB-LID"))
+             (n    (gensym "SSB-N")))
+        (log:debug "175 VJP grid-reduce-second-stage!: (~~ ~a lid) := (~~ ~a 0); kill ~a"
+                   iadj radj vadj)
+        `(progn
+           (let ((,lid (to-int (get-local-linear-id)))
+                 (,n   (to-int (length~ ,in-vec))))
+             (when (< ,lid ,n)
+               (set! (~ ,iadj ,lid) (~ ,radj 0))))
+           (set! ,vadj (- ,vadj ,vadj)))))))
+
+(defun %175-vjp-grid-reduce-cas (form ctx)
+  "VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's
+   adjoint -- the same broadcast as grid-reduce-atomic! and grid-reduce-last-man!.
+
+   THE FOURTH STRATEGY WITH THE SAME DERIVATIVE, which is the point rather than a coincidence: all
+   four compute the same function by different schedules, and a derivative depends on WHAT is
+   computed, not on how the work was divided or which memory it passed through.  None of the CAS
+   apparatus -- the retry loop, the contention, the election -- leaves any trace in the backward
+   pass."
+  (multiple-value-bind (fn var identity return-vec sv) (%grid-reduce-cas-parts form)
+    (declare (ignore identity sv))
+    (let ((local-adj (getf ctx :local-adj)))
+      (unless (and (consp fn) (symbolp (car fn))
+                   (string-equal (symbol-name (car fn)) "FUNCTION")
+                   (string= (symbol-name (second fn)) "+"))
+        (error "grid-reduce-cas!: autodiff is supported only for the + reduction.  A SUM over the grid gives d out / d x = 1 for every thread, so the adjoint is a plain broadcast of the output cell.  For an arbitrary binop the adjoint would depend on the value the result cell happened to hold when this workgroup's leader won the CAS, which differs from run to run -- there is nothing stable to differentiate, not merely something unrecorded.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+      (unless (and var (symbolp var) return-vec (symbolp return-vec))
+        (return-from %175-vjp-grid-reduce-cas nil))
+      (let* ((inputs  (getf ctx :inputs))
+             (outputs (getf ctx :outputs))
+             (pkg     (getf ctx :kernel-pkg))
+             (vadj (funcall local-adj var))
+             (radj (if (member return-vec outputs)
+                       (intern (format nil "~A_GRAD" (symbol-name return-vec))
+                               (symbol-package return-vec))
+                       (%tlc-bwd-adj-name return-vec inputs outputs local-adj pkg))))
+        (log:debug "175 VJP grid-reduce-cas!: ~a := (~~ ~a 0)" vadj radj)
+        `(set! ,vadj (~ ,radj 0))))))
+
+(defun %175-vjp-atomic-cas (form ctx)
+  "Backward rule for atomic-cas!: refuse.  Its result is which thread won a race, which is not a
+   differentiable function of the inputs -- two runs of the same kernel can legitimately return
+   different values."
+  (declare (ignore form ctx))
+  (error "atomic-cas! is not differentiable.  Its result says which thread won a race for a memory location, and that is not a function of the program's inputs -- two identical runs can return different values, so there is no derivative to take.  Crisp refuses rather than returning a gradient of zero, which would look like a correct answer.  For a differentiable grid accumulation use atomic-add! or one of the grid-reduce-* strategies, whose VJPs are stated and measured."))
+
+(defun %175-vjp-atomic-binop (form ctx)
+  "Backward rule for atomic-binop!: the + case is atomic-add!'s rule; anything else refuses.
+   Reached only because atomic-binop! is an analyzed form -- as a macro the walk would have seen
+   the CAS loop instead and produced a wrong gradient without complaining."
+  (multiple-value-bind (loc fn arg) (%atomic-binop-parts form)
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "atomic-binop! is differentiable only for the + reduction.  Accumulating a SUM into a location gives d out / d contribution = 1, so the adjoint is the location's adjoint unchanged.  An arbitrary binop needs that operator's partial derivatives at the value the location happened to hold when this thread won the race -- which is a different value on every run, so there is nothing stable to differentiate.  Use #'+, or mark the kernel with a differentiate-skip if it is forward-only."))
+    ;; Identical to atomic-add!'s rule: a linear accumulation with coefficient +1.  The helper
+    ;; expects an (atomic-add! LOCATION DELTA) shape, so the form is rebuilt with ARG in the
+    ;; delta slot -- atomic-binop!'s third element is the FUNCTION, and handing the helper this
+    ;; form unchanged would differentiate with respect to #'+ itself.
+    (%175-vjp-atomic-linear (list (first form) loc arg) ctx 1 "atomic-binop!")))
+
+(defun %175-vjp-atomic-op (form ctx)
+  "Backward rule for atomic-op!: refuse, and say why it is not a recording gap.
+
+   Unlike atomic-binop! -- whose + case survives because a sum's derivative does not care what
+   else landed first -- atomic-op! has NO value argument at all.  It transforms the location in
+   place, so the only derivative on offer is d new / d old = f'(old), and OLD is the value the
+   location happened to hold when this thread won the race.  Every thread applies f once, so the
+   final value (f composed n times) is deterministic, but WHICH RUNG of that composition each
+   thread occupied is not.  So each thread's adjoint differs from run to run on identical inputs,
+   and there is nothing stable to differentiate rather than something merely unrecorded."
+  (declare (ignore form ctx))
+  (error "atomic-op! is not differentiable.  It has no value argument -- it transforms the location in place -- so the only derivative available is f'(old), where old is whatever the location held when this thread won the CAS race.  The final value is deterministic (every thread applies f exactly once, and composition does not care about order), but each thread's position in that composition chain is not, so the per-thread adjoint differs between identical runs.  Crisp refuses rather than returning a gradient of zero, which would be indistinguishable from a correct answer for an input that genuinely does not participate.  For a differentiable accumulation use (atomic-binop! loc #'+ x) or atomic-add!, whose VJPs are stated and measured."))
+
+
+;;; Endeavour 175 — the backward rules are registered here.
+;;;
+;;; Each block is the overlay's verbatim, minus the FMAKUNBOUND shims it carried: those
+;;; removed the REDUCE-WARP / REDUCE-WORKGROUP macros at load time, and in src there are no
+;;; such macros to remove -- both constructs are analyzed forms precisely so the registry
+;;; below can see them (BUG 081).
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ATOMIC-ADD!"
+                (lambda (f c) (%175-vjp-atomic-linear f c 1 "atomic-add!")))
+  (register-vjp "ATOMIC-SUB!"
+                (lambda (f c) (%175-vjp-atomic-linear f c -1 "atomic-sub!")))
+  ;; No value argument: the increment is a constant, so zero really is the gradient.
+  (register-vjp "ATOMIC-INC!" (lambda (f c) (declare (ignore f c)) :inert))
+  (register-vjp "ATOMIC-DEC!" (lambda (f c) (declare (ignore f c)) :inert))
+  (register-vjp "ATOMIC-MIN!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-min!"
+                               "Its adjoint routes only to the thread that supplied the winning value, which requires the forward pass to have recorded an argmin.  Nothing records it.")))
+  (register-vjp "ATOMIC-MAX!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-max!"
+                               "Its adjoint routes only to the thread that supplied the winning value, which requires the forward pass to have recorded an argmax.  Nothing records it.")))
+  (register-vjp "ATOMIC-XCHG!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-xchg!"
+                               "It both overwrites the place and RETURNS the old value, so it has two outputs; a correct rule must account for whatever the returned value feeds.")))
+  (register-vjp "ATOMIC-SET!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-set!"
+                               "It both overwrites the place and RETURNS the old value, so it has two outputs; a correct rule must account for whatever the returned value feeds.")))
+  (register-vjp "ATOMIC-CAS!"
+                (lambda (f c) (%175-vjp-atomic-refuse
+                               f c "atomic-cas!"
+                               "The write is CONDITIONAL on a comparison, so the derivative depends on whether the swap happened -- a fact the forward pass does not record."))))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-ATOMIC!" (function %175-vjp-grid-reduce-atomic)))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-LAST-MAN!" (function %175-vjp-grid-reduce-last-man)))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-SECOND-STAGE!" (function %175-vjp-grid-reduce-second-stage)))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ATOMIC-CAS!" (function %175-vjp-atomic-cas))
+  (register-vjp "%ATOMIC-CAS-OK!" (function %175-vjp-atomic-cas))
+  (register-vjp "ATOMIC-BINOP!" (function %175-vjp-atomic-binop)))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "GRID-REDUCE-CAS!" (function %175-vjp-grid-reduce-cas)))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ATOMIC-OP!" (function %175-vjp-atomic-op)))

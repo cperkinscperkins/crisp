@@ -417,7 +417,13 @@
    #:sync-workgroup #:sync-warp #:mem-fence
    #:warp-id #:warp-lane #:warp-count
    ;; Endeavour 173: warp-size folds to a literal; the four shuffles are warp collectives.
-   #:warp-size #:shuffle #:shuffle-up #:shuffle-down #:shuffle-xor))
+   #:warp-size #:shuffle #:shuffle-up #:shuffle-down #:shuffle-xor
+   ;; Endeavour 175: thread-selection sugar.  Exported here and imported by
+   ;; :crisp-language below, so both packages share ONE symbol -- which is what lets a single
+   ;; defmacro in src/macros.lisp serve both.  (The overlay could not do this: mutating a
+   ;; package export list at overlay-load time makes build.lisp's later targets fail with a
+   ;; package-variance error, so it copied MACRO-FUNCTION between two distinct symbols instead.)
+   #:when-thread-in-warp-is #:when-thread-in-group-is))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -528,6 +534,9 @@
                 #:warp-id #:warp-lane #:warp-count
                 ;; Endeavour 173
                 #:warp-size #:shuffle #:shuffle-up #:shuffle-down #:shuffle-xor
+
+                ;; Endeavour 175: thread-selection sugar (see the export side above).
+                #:when-thread-in-warp-is #:when-thread-in-group-is
 
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~

@@ -855,4 +855,508 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
   (setf (gethash 'truncate *expression-analyzers*) #'analyze-truncate-expression)
   (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
   (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
-  (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression))
+  (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression)
+
+  ;; ---- Endeavour 175: reductions, atomics, and the warp-collective check ----
+  ;; Registered under BOTH packages by name, which is why none of these needed a
+  ;; package.lisp change -- an analyzer is found by symbol name, not by an exported
+  ;; symbol.  (The two WHEN-THREAD-IN-* macros DID need one: MACRO-FUNCTION is per
+  ;; symbol, so those are exported from :crisp.compiler and imported into
+  ;; :crisp-language rather than registered here.)
+  ;;
+  ;; MIN and MAX are in this list because Crisp had no scalar min/max at all; they are
+  ;; not reductions, but they arrived with them.
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (dolist (pair '(
+                        ("%WARP-COLLECTIVE-CHECK"    %analyze-warp-collective-check)
+                        ("REDUCE-WARP"               %analyze-reduce-warp)
+                        ("REDUCE-WORKGROUP"          %analyze-reduce-workgroup)
+                        ("GRID-REDUCE-ATOMIC!"       %analyze-grid-reduce-atomic)
+                        ("GRID-REDUCE-LAST-MAN!"     %analyze-grid-reduce-last-man)
+                        ("GRID-REDUCE-SECOND-STAGE!" %analyze-grid-reduce-second-stage)
+                        ("GRID-REDUCE-CAS!"          %analyze-grid-reduce-cas)
+                        ("ATOMIC-CAS!"               analyze-atomic-cas!-expression)
+                        ("%ATOMIC-CAS-OK!"           %analyze-atomic-cas-ok!-expression)
+                        ("ATOMIC-BINOP!"             %analyze-atomic-binop!)
+                        ("ATOMIC-OP!"                %analyze-atomic-op!)
+                        ("MIN"                       %analyze-min-expression)
+                        ("MAX"                       %analyze-max-expression)))
+          (setf (gethash (intern (first pair) pkg) *expression-analyzers*)
+                (second pair)))))))
+
+
+;;;; ===========================================================================
+;;;; Endeavour 175 — reductions and atomics: analyzers and expanders.
+;;;; ===========================================================================
+
+(defparameter *grid-atomic-operator-map*
+  '(("+" . "ATOMIC-ADD!") ("MIN" . "ATOMIC-MIN!") ("MAX" . "ATOMIC-MAX!"))
+  "Operators grid-reduce-atomic! accepts, and the native atomic each lowers to.  The hardware
+   provides exactly these three; anything else has no single-instruction form.")
+
+(defun %reduce-warp-check-active-threads (active-threads)
+  "Refuses a LITERAL active-threads wider than the warp it reduces.  A runtime value is left
+   alone -- same split as 173's D5 xor-mask rule, where a literal mask is checked and a runtime
+   one is the reduction idiom.  The design doc calls this case undefined behaviour; there is no
+   reason to leave it undefined when the value is right there at compile time, and a silently
+   wrong sum is the worst of the available outcomes."
+  (let ((warp (%173-warp-size)))
+    (when (and (integerp active-threads) (> active-threads warp))
+      (error 'crisp-compiler-error
+             :message (format nil "reduce-warp: ~a active threads is wider than the warp it reduces (~a lanes under the active hardware profile). A warp reduction cannot reach beyond its own warp; to combine more threads than that, reduce within each warp and then across warps (reduce-workgroup)."
+                              active-threads warp)
+             :source-location nil))))
+
+(defun %analyze-warp-collective-check (expr env context location)
+  "Analyzer for (%warp-collective-check \"name\") -- runs D6 and emits nothing."
+  (declare (ignore env context))
+  (%shuffle-check-not-divergent (or (second expr) :|this warp collective|) location)
+  (make-semantic-literal :value-type 'int :value 0 :source-location location))
+
+(defun %175-apply-binop (fn a b)
+  "The form applying binop FN to A and B.  A LITERAL #'op is inlined as a DIRECT call rather
+   than emitted as (funcall #'op a b) -- two reasons, the second decisive:
+
+     * a direct call is simply better code than an indirect one through a function value;
+     * FUNCALL IS NOT DIFFERENTIABLE.  The AD walk refuses it (\"Function FUNCALL is not
+       differentiable\"), so a reduction emitting funcall cannot be differentiated at all --
+       whereas (+ a b) is differentiated by the ordinary arithmetic rules.
+
+   A non-literal FN (a variable holding a function value) still goes through funcall and is
+   still not differentiable; that is a genuine AD gap, not something this can paper over."
+  (if (and (consp fn) (symbolp (car fn)) (string-equal (symbol-name (car fn)) "FUNCTION"))
+      (list (second fn) a b)
+      (list 'funcall fn a b)))
+
+(defun %175-apply-unop (fn a)
+  "The form applying unary FN to A.  A LITERAL #'op becomes a DIRECT call, for the same two
+   reasons %175-apply-binop does it: a direct call is better code, and FUNCALL IS NOT
+   DIFFERENTIABLE -- the AD walk refuses it outright."
+  (if (and (consp fn) (symbolp (car fn)) (string-equal (symbol-name (car fn)) "FUNCTION"))
+      (list (second fn) a)
+      (list 'funcall fn a)))
+
+(defun %reduce-warp-expand (expr)
+  "Forward lowering of (reduce-warp FN VAR IDENTITY &optional ACTIVE-THREADS).
+   A plain function rather than a macro: keeping the construct unexpanded is what lets the VJP
+   registry see it (BUG 081)."
+  (let* ((fn (second expr))
+         (var (third expr))
+         (identity (fourth expr))
+         (active-threads (fifth expr))
+         (s (gensym "RW-S")))
+    (%reduce-warp-check-active-threads active-threads)
+    `(progn
+       (%warp-collective-check :reduce-warp)
+       ,@(when active-threads
+           (list `(set! ,var (if (< (to-int (warp-lane)) ,active-threads) ,var ,identity))))
+       ;; Butterfly stride warp/2, resolved at ANALYSIS time to a literal: (warp-size) folds to a
+       ;; UINT so `/` would reject the INT 2, and dec-times-by-half+ wants a provably uniform
+       ;; limit, which a literal is by construction.
+       (dec-times-by-half+ (,s ,(floor (%173-warp-size) 2))
+         (set! ,var ,(%175-apply-binop fn `(shuffle-xor ,var ,s) var)))
+       (compiler-no-op))))
+
+(defun %analyze-reduce-warp (expr env context location)
+  "Analyzer for reduce-warp -- expands and delegates."
+  (analyze-expression (%reduce-warp-expand expr) env context location))
+
+(defun %reduce-workgroup-expand (expr)
+  "The forward lowering of (reduce-workgroup FN VAR IDENTITY &key ...).  A plain function, not a
+   macro: as a macro this expanded inside anf-transform and the backward walk never saw the
+   construct.  The analyzer below calls it; the VJP registry sees the unexpanded form."
+  (let* ((fn        (second expr))
+         (var       (third expr))
+         (identity  (fourth expr))
+         (keys      (cddddr expr))
+         (scratch   (getf keys :local-scratch-vec))
+         (return-vec (getf keys :return-vec))
+         (s   (gensym "RWG-S"))
+         (nw  (gensym "RWG-NW"))
+         (lid (gensym "RWG-LID")))
+    (unless scratch
+      (error 'crisp-compiler-error
+             :message "reduce-workgroup: :local-scratch-vec is required in this build.  Auto-generating it needs VAR's element type at analysis time, which Crisp cannot yet supply.  Pass e.g. (make-scratch-vector float :match-num-warps-per-workgroup)."
+             :source-location nil))
+    `(progn
+       ;; Phase 1 -- each warp reduces itself; every lane then holds its warp's partial.
+       (reduce-warp ,fn ,var ,identity)
+       (when-thread-in-warp-is 0
+         (set! (~ ,scratch (to-int (warp-id))) ,var))
+       (sync-workgroup)
+       ;; Phase 2 -- halving sweep over the per-warp partials.  The barrier is INSIDE the loop
+       ;; and OUTSIDE the guard: reductions-excerpt.md has it the other way round, which Crisp
+       ;; refuses (a workgroup collective in divergent control flow) and which would also leave
+       ;; successive passes unseparated.  The loop is the + variant so every thread runs the
+       ;; same iteration count and meets the same barriers.
+       (let ((,nw (/ (get-local-linear-size) (to-ulong (warp-size))))
+             (,lid (to-int (get-local-linear-id))))
+         (dec-times-by-half+ (,s (/ ,nw 2ul))
+           (when (< ,lid (to-int ,s))
+             (set! (~ ,scratch ,lid)
+                   ,(%175-apply-binop fn
+                                      `(~ ,scratch ,lid)
+                                      `(~ ,scratch (+ ,lid (to-int ,s))))))
+           (sync-workgroup))
+         ;; Slot 0 holds the workgroup total; every thread reads it.  With one warp the sweep
+         ;; runs zero iterations (BUG 065's gate) and slot 0 already holds that warp's partial,
+         ;; separated from these reads by the barrier above.
+         (set! ,var (~ ,scratch 0)))
+       ,@(when return-vec
+           (list `(when-thread-in-group-is 0
+                    (set! (~ ,return-vec (to-int (get-workgroup-id 0))) ,var))))
+       (compiler-no-op))))
+
+(defun %analyze-reduce-workgroup (expr env context location)
+  "Analyzer for reduce-workgroup -- expands and delegates.  Being an ANALYZED form rather than a
+   macro is what keeps the construct visible to the autodiff walk (see the section header)."
+  (analyze-expression (%reduce-workgroup-expand expr) env context location))
+
+(defun %grid-atomic-op-name (fn)
+  "The atomic operator name for a literal #'op, or NIL if OP has no hardware atomic."
+  (when (and (consp fn) (symbolp (car fn))
+             (string-equal (symbol-name (car fn)) "FUNCTION")
+             (symbolp (second fn)))
+    (cdr (assoc (symbol-name (second fn)) *grid-atomic-operator-map* :test #'string-equal))))
+
+(defun %grid-reduce-atomic-parts (expr)
+  "Destructures (grid-reduce-atomic! FN VAR IDENTITY RETURN-VEC &key ...).
+   Returns (values fn var identity return-vec scratch)."
+  (let ((keys (cdr (cdddr (cdr expr)))))   ; everything after the four positional arguments
+    (values (second expr) (third expr) (fourth expr) (fifth expr)
+            (getf keys :local-scratch-vec))))
+
+(defun %grid-reduce-atomic-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (see the section header)."
+  (multiple-value-bind (fn var identity return-vec scratch) (%grid-reduce-atomic-parts expr)
+    (let ((atomic (%grid-atomic-op-name fn)))
+      (unless return-vec
+        (error 'crisp-compiler-error
+               :message "grid-reduce-atomic!: a return-vec is required -- it is the single global element the grid accumulates into.  Call it as (grid-reduce-atomic! #'+ var identity return-vec :local-scratch-vec sv)."
+               :source-location nil))
+      (unless scratch
+        (error 'crisp-compiler-error
+               :message "grid-reduce-atomic!: :local-scratch-vec is required in this build.  Auto-generating it needs VAR's element type at analysis time, which Crisp cannot yet supply.  Pass e.g. (make-scratch-vector float :match-num-warps-per-workgroup)."
+               :source-location nil))
+      (unless atomic
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-atomic!: ~s has no native hardware atomic, so there is no instruction for phase 2 to emit.  Only +, min and max qualify -- the hardware provides exactly those.  For an arbitrary commutative operator use grid-reduce-cas! (a CAS loop; no extra memory, high contention) or grid-reduce-last-man! (a global scratch buffer; no contention)."
+                                fn)
+               :source-location nil))
+      `(progn
+         ;; Phase 1 -- every thread of the workgroup ends up holding the workgroup's total.
+         (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,scratch)
+         ;; Phase 2 -- ONE leader per workgroup contributes that total to the grid cell.  Electing
+         ;; a single thread is what makes the atomic correct: without it all 64 would add the same
+         ;; workgroup total and the result would be scaled by the workgroup size.
+         (when-thread-in-group-is 0
+           (,(intern atomic (find-package :crisp.compiler)) (~ ,return-vec 0) ,var))
+         (compiler-no-op)))))
+
+(defun %analyze-grid-reduce-atomic (expr env context location)
+  "Analyzer for grid-reduce-atomic! -- expands and delegates."
+  (analyze-expression (%grid-reduce-atomic-expand expr) env context location))
+
+(defun %175-minmax-expand (expr which location)
+  "Expands (min a b) / (max a b) into a single-evaluation comparison.
+   WHICH is :min or :max."
+  (unless (= (length (rest expr)) 2)
+    (error 'crisp-compiler-error
+           :message (format nil "~(~a~) takes exactly two arguments, got ~a. Crisp's ~(~a~) is BINARY, unlike Common Lisp's variadic one: it exists to be passed as a #(T T => T) binop to the reduction family, which requires a fixed arity. Nest the calls to combine more than two values."
+                            which (length (rest expr)) which)
+           :source-location location))
+  (let ((a (gensym "MM-A"))
+        (b (gensym "MM-B")))
+    `(let ((,a ,(second expr))
+           (,b ,(third expr)))
+       ;; Bound first so each argument is evaluated exactly once -- see the section header.
+       (if (,(if (eq which :max) '> '<) ,a ,b) ,a ,b))))
+
+(defun %analyze-min-expression (expr env context location)
+  "Analyzer for (min a b) -- expands to a comparison and delegates."
+  (analyze-expression (%175-minmax-expand expr :min location) env context location))
+
+(defun %analyze-max-expression (expr env context location)
+  "Analyzer for (max a b) -- expands to a comparison and delegates."
+  (analyze-expression (%175-minmax-expand expr :max location) env context location))
+
+(defun %grid-reduce-last-man-parts (expr)
+  "Destructures (grid-reduce-last-man! FN VAR IDENTITY RETURN-VEC &key ...).
+   Returns (values fn var identity return-vec local global counter flag)."
+  (let ((keys (cdr (cdddr (cdr expr)))))
+    (values (second expr) (third expr) (fourth expr) (fifth expr)
+            (getf keys :local-scratch-vec)
+            (getf keys :global-scratch-vec)
+            (getf keys :atomic-counter)
+            (getf keys :election-flag-cell))))
+
+(defun %grid-reduce-last-man-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (BUG 073/077/081)."
+  (multiple-value-bind (fn var identity return-vec sv gv ctr flag)
+      (%grid-reduce-last-man-parts expr)
+    (dolist (pair (list (list return-vec "a return-vec" "the single global element the grid reduces into")
+                        (list sv ":local-scratch-vec" "one element per warp, for the per-workgroup reduction")
+                        (list gv ":global-scratch-vec" "one element per WORKGROUP, holding the partials")
+                        (list ctr ":atomic-counter"   "a zero-initialised GLOBAL uint cell, used to draw tickets")
+                        (list flag ":election-flag-cell" "a LOCAL uint cell, broadcasting the ticket result from thread 0 to its workgroup")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-last-man!: ~a is required -- ~a.  It must be allocated in the CALLER's scope: scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters."
+                                (second pair) (third pair))
+               :source-location nil)))
+    (let ((lid (gensym "LM-LID"))
+          (ng  (gensym "LM-NG"))
+          (val (gensym "LM-VAL")))
+      `(progn
+         ;; The final sweep is ONE reduce-workgroup, so every partial must fit in one workgroup.
+         (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
+                       "grid-reduce-last-man!: the number of workgroups exceeds local_work_size, so the final sweep cannot cover every partial in one pass")
+         ;; Phase 1 -- every thread of this workgroup ends up holding the workgroup's total.
+         (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+         ;; Phase 2 -- publish this workgroup's partial.
+         (when-thread-in-group-is 0
+           (set! (~ ,gv (to-int (get-workgroup-id 0))) ,var))
+         ;; The store must be visible before the counter announces this workgroup has arrived.
+         ;; OUTSIDE the election because a fence in divergent control flow is refused (BUG 082,
+         ;; over-strict but load-bearing for sync-wait).  Ordering survives regardless: it is
+         ;; thread 0's OWN program order that carries it -- store, then fence, then atomic.
+         (mem-fence)
+         (when-thread-in-group-is 0
+           ;; atomic-add! yields the value BEFORE the addition, so exactly one workgroup in the
+           ;; grid draws num_groups-1.  Verified on hardware, not assumed.
+           (set! (~ ,flag)
+                 (if (= (atomic-add! (~ ,ctr) 1u)
+                        (- (to-uint (get-num-groups 0)) 1u))
+                     1u 0u)))
+         ;; Publish the verdict to the rest of the workgroup.
+         (sync-workgroup)
+         ;; Uniform by construction -- every thread reads the same cell after a barrier.  It has
+         ;; to be when+ rather than when: the body contains a reduce-workgroup, and a workgroup
+         ;; collective inside a merely thread-divergent conditional is refused.
+         ;; THE LOSERS FALL STRAIGHT THROUGH HERE AND RETIRE.
+         (when+ (= (~ ,flag) 1u)
+           (let ((,lid (to-int (get-local-linear-id)))
+                 (,ng  (to-int (get-num-groups 0))))
+             (let ((,val (if (< ,lid ,ng) (~ ,gv ,lid) ,identity)))
+               (reduce-workgroup ,fn ,val ,identity :local-scratch-vec ,sv)
+               (when-thread-in-group-is 0
+                 (set! (~ ,return-vec 0) ,val)))))
+         (compiler-no-op)))))
+
+(defun %analyze-grid-reduce-last-man (expr env context location)
+  "Analyzer for grid-reduce-last-man! -- expands and delegates."
+  (analyze-expression (%grid-reduce-last-man-expand expr) env context location))
+
+(defun %grid-reduce-second-stage-parts (expr)
+  "Destructures (grid-reduce-second-stage! FN VAR IDENTITY IN-VEC RETURN-VEC &key ...).
+   Returns (values fn var identity in-vec return-vec local-scratch-vec)."
+  (let ((keys (nthcdr 6 expr)))
+    (values (second expr) (third expr) (fourth expr) (fifth expr) (sixth expr)
+            (getf keys :local-scratch-vec))))
+
+(defun %grid-reduce-second-stage-expand (expr)
+  "The forward lowering.  A plain function, not a macro -- see the header."
+  (multiple-value-bind (fn var identity in-vec return-vec sv)
+      (%grid-reduce-second-stage-parts expr)
+    (dolist (pair (list (list fn "a binop") (list var "a var to reduce through")
+                        (list identity "an identity") (list in-vec "an in-scratch-vec")
+                        (list return-vec "a return-vec")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-second-stage!: ~a is required.  The form is (grid-reduce-second-stage! fn var identity in-scratch-vec return-vec :local-scratch-vec sv)."
+                                (second pair))
+               :source-location nil)))
+    (unless sv
+      (error 'crisp-compiler-error
+             :message "grid-reduce-second-stage!: :local-scratch-vec is required -- one element per warp, for the final workgroup reduction.  It must be allocated in the CALLER's scope: scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters, so Crisp cannot generate it for you here."
+             :source-location nil))
+    (let ((lid (gensym "SS-LID"))
+          (n   (gensym "SS-N")))
+      `(progn
+         ;; The construct sweeps in a SINGLE workgroup by definition -- it is the continuation
+         ;; kernel of a dual pass.  Launched with more, every workgroup would store its own
+         ;; partial answer over the others and the result would be a race, so this is refused
+         ;; rather than silently producing one of several possible numbers.
+         (r-t-assert-0 (= (get-num-groups 0) 1)
+                       "grid-reduce-second-stage! must be launched with exactly one workgroup")
+         ;; One thread reads one partial, so the workgroup must be at least as wide as the vector.
+         (r-t-assert-0 (<= (length~ ,in-vec) (get-local-linear-size))
+                       "grid-reduce-second-stage!: local_work_size must be >= the length of in-scratch-vec, or some partials would never be read")
+         (let ((,lid (to-int (get-local-linear-id)))
+               (,n   (to-int (length~ ,in-vec))))
+           ;; Lanes past the end of the partials take the IDENTITY.  Reading past the end instead
+           ;; would be undefined, and defaulting to a hardwired zero would be wrong for every
+           ;; operator but +.
+           (set! ,var (if (< ,lid ,n) (~ ,in-vec ,lid) ,identity))
+           (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+           (when-thread-in-group-is 0
+             (set! (~ ,return-vec 0) ,var)))
+         (compiler-no-op)))))
+
+(defun %analyze-grid-reduce-second-stage (expr env context location)
+  "Analyzer for grid-reduce-second-stage! -- expands and delegates."
+  (analyze-expression (%grid-reduce-second-stage-expand expr) env context location))
+
+(defun %grid-reduce-cas-parts (expr)
+  "Destructures (grid-reduce-cas! FN VAR IDENTITY RETURN-VEC &key ...).
+   Returns (values fn var identity return-vec local-scratch-vec)."
+  (let ((keys (nthcdr 5 expr)))
+    (values (second expr) (third expr) (fourth expr) (fifth expr)
+            (getf keys :local-scratch-vec))))
+
+(defun %grid-reduce-cas-expand (expr)
+  "The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what
+   lets the VJP registry see it (BUG 073/077/081)."
+  (multiple-value-bind (fn var identity return-vec sv) (%grid-reduce-cas-parts expr)
+    (dolist (pair (list (list fn "a binop") (list var "a var to reduce")
+                        (list identity "an identity") (list return-vec "a return-vec")))
+      (unless (first pair)
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce-cas!: ~a is required.  The form is (grid-reduce-cas! fn var identity return-vec :local-scratch-vec sv)."
+                                (second pair))
+               :source-location nil)))
+    (unless sv
+      (error 'crisp-compiler-error
+             :message "grid-reduce-cas!: :local-scratch-vec is required -- one element per warp, for the per-workgroup reduction.  It must be allocated in the CALLER's scope: scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters, so Crisp cannot generate it for you here."
+             :source-location nil))
+    `(progn
+       ;; Phase 1 -- every thread of the workgroup ends up holding the workgroup's total.
+       (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
+       ;; Phase 2 -- one leader per workgroup folds that total into the single result cell.
+       ;; The CAS loop, its derived bound and its exhaustion assert all live in atomic-binop!.
+       (when-thread-in-group-is 0
+         (atomic-binop! (~ ,return-vec 0) ,fn ,var))
+       (compiler-no-op))))
+
+(defun %analyze-grid-reduce-cas (expr env context location)
+  "Analyzer for grid-reduce-cas! -- expands and delegates."
+  (analyze-expression (%grid-reduce-cas-expand expr) env context location))
+
+(defun analyze-atomic-cas!-expression (expr env context location)
+  "Analyzes (atomic-cas! target expected desired).
+   The target is analysed in :write mode so an &out parameter can be a CAS target -- the read is
+   part of the write, exactly as for the other atomics and for set!."
+  (unless (= (length expr) 4)
+    (error 'crisp-type-error
+           :message (format nil "atomic-cas!: expected 3 arguments (location expected desired), got ~a"
+                            (1- (length expr)))
+           :source-location location))
+  (let* ((target-form (second expr))
+         (target-node (let ((*analysis-access-mode* :write))
+                        (analyze-expression target-form env context (append location (list 1))))))
+    (unless (semantic-aref-p target-node)
+      (error 'crisp-type-error
+             :message (format nil "atomic-cas!: target must be a memory location like (~~ vec idx), got ~a"
+                              target-form)
+             :source-location location))
+    (let ((elem-type (semantic-aref-type target-node)))
+      (make-semantic-atomic-cas
+       :type elem-type
+       :target-node target-node
+       :expected-node (analyze-expression (third expr) env context (append location (list 2)))
+       :desired-node  (analyze-expression (fourth expr) env context (append location (list 3)))
+       :source-location location))))
+
+(defun %analyze-atomic-cas-ok!-expression (expr env context location)
+  "Analyzes (%atomic-cas-ok! target expected desired) -- a CAS yielding the SUCCESS FLAG as an int.
+
+   COMPILER-INTERNAL, and named with a leading % to say so.  It exists because a bounded retry
+   loop cannot correctly derive success from the returned old value: that test is numeric where
+   CAS is bitwise, so a +0.0/-0.0 transition reads as success and loses the update.  Exposing the
+   flag LLVM already computed is cheaper and exactly right."
+  (let ((node (analyze-atomic-cas!-expression expr env context location)))
+    (setf (semantic-atomic-cas-result-mode node) :success
+          (semantic-atomic-cas-type node) 'int)
+    node))
+
+(defun %atomic-binop-parts (expr)
+  "Destructures (atomic-binop! LOCATION BINOP-F ARG).  Returns (values location fn arg)."
+  (values (second expr) (third expr) (fourth expr)))
+
+(defun %atomic-binop-expand (expr)
+  "The forward lowering: a bounded CAS retry loop that returns the prior value."
+  (unless (= (length expr) 4)
+    (error 'crisp-compiler-error
+           :message (format nil "atomic-binop!: expected 3 arguments (location binop-f arg), got ~a.  The form is (atomic-binop! location #'op arg)."
+                            (1- (length expr)))
+           :source-location nil))
+  (multiple-value-bind (loc fn arg) (%atomic-binop-parts expr)
+    (let ((a    (gensym "AB-ARG"))
+          (prev (gensym "AB-PREV"))
+          (done (gensym "AB-DONE"))
+          (r    (gensym "AB-R"))
+          (old  (gensym "AB-OLD"))
+          (new  (gensym "AB-NEW")))
+      ;; ARG is bound ONCE outside the loop: it may be an arbitrary expression, and re-evaluating
+      ;; it per retry would be both wasteful and wrong if it had side effects.
+      `(let ((,a ,arg))
+         ;; PREV is seeded from a read so it has the element type without needing a typed zero.
+         ;; It is overwritten by the successful iteration; the seed value is never returned,
+         ;; because the assert below refuses to let the loop finish unsuccessfully.
+         (let ((,prev (~ ,@(cdr loc))))
+           (let ((,done 0))
+             ;; get-global-LINEAR-size, not get-global-size: the latter is named in
+             ;; analysis/core.lisp's builtin list but has no analyzer, so it compiles to
+             ;; "Unsupported form".  The linear form is the total thread count, which is exactly
+             ;; the contender bound wanted here.
+             (dotimes+ (,r (+ (to-int (get-global-linear-size)) 1))
+               (when (= ,done 0)
+                 (let ((,old (~ ,@(cdr loc))))
+                   (let ((,new ,(%175-apply-binop fn old a)))
+                     ;; The success FLAG, not the returned value -- see %atomic-cas-ok!.
+                     (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
+                       ;; On success memory held exactly OLD, which is what we read ourselves,
+                       ;; so the "value before" needs nothing from the CAS itself.
+                       (set! ,prev ,old)
+                       (set! ,done 1))))))
+             (r-t-assert-0 (= ,done 1)
+                           "atomic-binop!: the bounded CAS retry loop exhausted without succeeding, so this update was LOST.  The bound is global_size + 1, which is sound when each thread performs the operation once; it can be exceeded if atomic-binop! runs inside a loop, so that total successes on this location exceed the grid size.")
+             ,prev))))))
+
+(defun %analyze-atomic-binop! (expr env context location)
+  "Analyzer for atomic-binop! -- expands to the bounded CAS loop and delegates."
+  (analyze-expression (%atomic-binop-expand expr) env context location))
+
+(defun %atomic-op-parts (expr)
+  "Destructures (atomic-op! LOCATION OP-F).  Returns (values location fn)."
+  (values (second expr) (third expr)))
+
+(defun %atomic-op-expand (expr)
+  "The forward lowering: a bounded CAS retry loop returning the prior value.
+   Mirrors %atomic-binop-expand exactly, minus the value argument."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+           :message (format nil "atomic-op!: expected 2 arguments (location op-f), got ~a.  The form is (atomic-op! location #'op), and the function is UNARY -- for a two-argument operator use (atomic-binop! location #'op arg)."
+                            (1- (length expr)))
+           :source-location nil))
+  (multiple-value-bind (loc fn) (%atomic-op-parts expr)
+    (let ((prev (gensym "AO-PREV"))
+          (done (gensym "AO-DONE"))
+          (r    (gensym "AO-R"))
+          (old  (gensym "AO-OLD"))
+          (new  (gensym "AO-NEW")))
+      ;; No ARG to bind once here -- that is the whole difference from atomic-binop!.
+      `(let ((,prev (~ ,@(cdr loc))))
+         (let ((,done 0))
+           ;; get-global-LINEAR-size: get-global-size is named in analysis/core.lisp's builtin
+           ;; list but has no analyzer.  See %atomic-binop-expand for why the bound is the
+           ;; contender count rather than a constant.
+           (dotimes+ (,r (+ (to-int (get-global-linear-size)) 1))
+             (when (= ,done 0)
+               (let ((,old (~ ,@(cdr loc))))
+                 (let ((,new ,(%175-apply-unop fn old)))
+                   (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
+                     (set! ,prev ,old)
+                     (set! ,done 1))))))
+           (r-t-assert-0 (= ,done 1)
+                         "atomic-op!: the bounded CAS retry loop exhausted without succeeding, so this update was LOST.  The bound is global_size + 1, which is sound when each thread performs the operation once; it can be exceeded if atomic-op! runs inside a loop, so that total successes on this location exceed the grid size.")
+           ,prev)))))
+
+(defun %analyze-atomic-op! (expr env context location)
+  "Analyzer for atomic-op! -- expands to the bounded CAS loop and delegates."
+  (analyze-expression (%atomic-op-expand expr) env context location))

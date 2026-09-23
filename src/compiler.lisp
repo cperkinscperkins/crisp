@@ -706,6 +706,22 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
               (log:warn "cache-control: CRISP_CACHE_CONTROL is set but NO coop-matrix load pointer was decorated -- the arm is INERT; do not read its timing as a result about cache control."))
             n))))))
 
+(defun %175-ll-uses-float-atomic-minmax-p (ll-path)
+  "T when the emitted .ll text at LL-PATH contains a floating-point `atomicrmw fmin`/`fmax`,
+   which is what requires SPV_EXT_shader_atomic_float_min_max.
+
+   Deliberately narrow, in the same shape as %ll-uses-fp16-atomic-fadd-p: both `atomicrmw` and
+   the fp opcode must appear on the SAME line, which is how LLVM prints the instruction.  An
+   INTEGER atomic min/max (atomicrmw min / umax / ...) needs no extension and must not raise the
+   flag, which is why only the f-prefixed opcodes are tested."
+  (when (and ll-path (probe-file ll-path))
+    (with-open-file (s ll-path :direction :input :if-does-not-exist nil)
+      (when s
+        (loop for line = (read-line s nil nil)
+              while line
+              thereis (and (search "atomicrmw" line)
+                           (or (search " fmin " line) (search " fmax " line))))))))
+
 (defun compile-to-spirv (module output-path &key debug-p)
   "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
@@ -738,6 +754,13 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
                               (when (%ll-uses-fp16-atomic-fadd-p
                                      (if (probe-file ll-opt-file) ll-opt-file ll-file))
                                 '("--spirv-ext=+SPV_EXT_shader_atomic_float16_add"))
+                              ;; Endeavour 175: a FLOAT atomic min/max needs its own extension.
+                              ;; Without it llvm-spirv exits 18 on any kernel using atomic-min! /
+                              ;; atomic-max! on floats -- i.e. every grid-reduce-atomic! with
+                              ;; #'min or #'max.
+                              (when (%175-ll-uses-float-atomic-minmax-p
+                                     (if (probe-file ll-opt-file) ll-opt-file ll-file))
+                                '("--spirv-ext=+SPV_EXT_shader_atomic_float_min_max"))
                               (when (%module-uses-coop-matrix-p module)
                                 '("--spirv-ext=+SPV_KHR_cooperative_matrix"))
                               (when (%module-uses-2d-block-io-p module)
