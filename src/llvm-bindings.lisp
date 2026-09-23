@@ -1050,3 +1050,12 @@
 (defcfun ("LLVMIsNull" llvm-is-null) :boolean
   "T if VAL is a null/zero constant."
   (val :pointer))
+
+(defcfun ("LLVMBuildAtomicCmpXchg" llvm-build-atomic-cmpxchg) :pointer
+  (builder          :pointer)
+  (ptr              :pointer)
+  (cmp              :pointer)
+  (new              :pointer)
+  (success-ordering :int)
+  (failure-ordering :int)
+  (single-thread    :int))
