@@ -3253,3 +3253,54 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Endeavour 175, inspecting the PTX of the new CUDA twins (spec 42) BEFORE renting
         an NVIDIA box -- the compile-time check the rental was supposed to depend on.
+
+[ ] 089 LIBDEVICE IS LINKED WHOLE AND NEVER DEAD-STRIPPED, so one unlowerable intrinsic in a
+        function nobody calls makes the entire module unloadable.
+
+        SYMPTOM.  On an H100 pod run, four specs failed at RUNTIME with "a PTX JIT compilation
+        failed" -- 122-ffi/07-ffi-libdevice, 128-transcendentals/13-sin-ptx-metal,
+        128-transcendentals/14-sin-fast-ptx-metal, 170-hardware-supported-math-ops/43-approx-metal-cuda.
+        The .cu compiled fine (nvcc OK); the driver rejected the PTX module.
+
+        ptxas NAMES IT EXACTLY:
+
+            ptxas 13-sin-ptx-metal.ptx, line 10; fatal : Parsing error near '.nvvm': syntax error
+
+        and line 10 is
+
+            .extern .func (.param .b32 func_retval0) llvm.nvvm.tanh.approx.f32
+
+        An NVVM intrinsic emitted as an EXTERN CALL instead of being lowered to the
+        tanh.approx.f32 instruction.  `.nvvm` is not a legal PTX identifier, so ptxas rejects the
+        whole file and the driver's JIT fails.
+
+        THE CHAIN.  The module carries 370 FUNCTIONS -- essentially all of libdevice -- for a
+        kernel whose only transcendental is sin.  They are all `.visible`, so nothing can dead-strip
+        them.  One of those never-called functions, __nv_fast_tanhf (line 3027), uses
+        llvm.nvvm.tanh.approx.f32, which this LLVM's NVPTX backend does not lower.  The code never
+        executes; ptxas parses the file regardless.
+
+        NOT AN ARCH MISMATCH.  The module is .version 7.0 / .target sm_80, and tanh.approx.f32
+        needs PTX ISA 7.0+ and sm_75+, so it is legal for this target.  The backend simply did not
+        lower the intrinsic.
+
+        LIKELY FIX, and it is what nvcc and clang both do after linking libdevice: run `internalize`
+        keeping only the kernel entry points, then `globaldce`.  That drops all 370 unused libdevice
+        functions, so __nv_fast_tanhf never reaches PTX -- and the emitted modules get dramatically
+        smaller as a side benefit.  (As always, treat this fix line as a hypothesis: the OBSERVATION
+        above is measured, the remedy is not yet tested.)
+
+        WHY IT PASSED THE DAY BEFORE is NOT established and is deliberately not guessed at here.
+        The libdevice file on the pod is dated Feb 2025, so it is not a new toolkit.  Candidates
+        worth checking: whether the opt pipeline's internalize/DCE behaviour changed, and how
+        `.target` is selected.
+
+        WHY NO LOCAL RUN CATCHES IT.  All three directories pass on the BMG box (81 specs) because
+        nothing there JITs the PTX -- Crisp only GENERATES it.  This class of defect is invisible
+        without NVIDIA hardware, which is the argument for the pod run rather than against it.
+
+        NOT ENDEAVOUR 175.  No reductions, atomics, fences or CAS are involved; the failures are
+        confined to the libdevice link path.
+
+        FOUND BY.  Reading the emitted PTX on the pod -- four ssh round-trips and one compile, no
+        suite run.
