@@ -3188,7 +3188,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         same excerpt marks atomic-binop! and atomic-op! with an implemented tick, and neither
         existed before 2026-09-22 (atomic-op! still does not).
 
-[ ] 088 mem-fence HAS A DIFFERENT SCOPE ON EACH BACKEND, and grid-reduce-last-man! depends on the
+[x] 088 FIXED 2026-09-22.  mem-fence HAD A DIFFERENT SCOPE ON EACH BACKEND, and grid-reduce-last-man! depends on the
         stronger one.  PTX is too weak.
 
             SPIR-V  %gen-spirv-memory-barrier  -> __spirv_MemoryBarrier(1, 520)
@@ -3222,12 +3222,34 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         THE BMG RESULTS ARE NOT AFFECTED and remain valid evidence -- SPIR-V already fences at
         CrossWorkgroup scope.  This is a PTX-only defect.
 
-        LIKELY FIX is llvm.nvvm.membar.gl in place of membar.cta for :mem-fence, matching the
-        documented SPIR-V semantics.  NOT a drive-by change: mem-fence is used by the async-tile
-        code and inside other constructs where CTA scope is sufficient and cheaper, so widening it
-        globally trades correctness here against cost there.  The alternative is a scoped fence
-        (mem-fence :workgroup / :device) with the constructs asking for what they need, which is
-        more work and the better answer.
+        FIX.  New %ptx-membar-gl emitting llvm.nvvm.membar.gl, and the live
+        generate-node-ir (semantic-gpu-builtin) -- the SECOND of the two defmethods in codegen.lisp;
+        the first sits inside a #| |# block -- extracted verbatim with that one call substituted in
+        its :mem-fence branch.  %ptx-membar-cta is deliberately LEFT IN PLACE to serve a scoped
+        fence later.  Verified in the emitted PTX:
+
+            st.global.b32        [%rd36], %r42     ; publish this workgroup's partial
+            membar.gl;                             ; DEVICE scope
+            atom.global.add.u32  %r43, [%rd19], 1  ; bump the ticket
+
+        MY OWN "LIKELY FIX" PARAGRAPH HERE WAS WRONG and is replaced.  It claimed widening the fence
+        would trade correctness in last-man against cost in the async-tile code, and that a scoped
+        (mem-fence :workgroup / :device) was therefore the better answer.  That was speculation.
+        Grepping for the actual users refuted it -- there are three, and ALL THREE are
+        cross-workgroup:
+
+          * sync-wait (src/macros.lisp) spins on a :global counter that OTHER workgroups increment
+            via sync-arrive, so it was under-fenced on PTX too -- a second latent defect this fixes;
+          * grid-reduce-last-man! publishes a partial that a DIFFERENT workgroup sweeps;
+          * grid-reduce-second-stage! exists to consume another LAUNCH's data.
+
+        No async-tile code uses mem-fence at all.  So there was no trade-off to weigh and no scope
+        parameter needed -- raising PTX to match SPIR-V's documented CrossWorkgroup semantics is
+        simply the bug fix.  A stronger fence cannot break correctness either, only cost.
+
+        VERIFIED.  Unit 341/341, E2E default 1256/1256, negative 280/280.  087-gpu-builtins 21/21
+        and 118-async-misc 5/5 were checked first as the fence-sensitive directories.  No spec
+        validator asserted on `membar.cta`, and the SPIR-V path is untouched, so BMG is unchanged.
 
         FOUND BY.  Endeavour 175, inspecting the PTX of the new CUDA twins (spec 42) BEFORE renting
         an NVIDIA box -- the compile-time check the rental was supposed to depend on.

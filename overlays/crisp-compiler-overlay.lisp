@@ -2710,3 +2710,173 @@ Returns the value at the location BEFORE the attempt (see the header for why not
 
 (eval-when (:load-toplevel :execute)
   (register-vjp "GRID-REDUCE-CAS!" (function %175-vjp-grid-reduce-cas)))
+
+
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 175 — BUG 088: mem-fence was WORKGROUP scope on PTX, DEVICE scope on SPIR-V.
+;;; ---------------------------------------------------------------------------
+;;; src/codegen.lisp — new %ptx-membar-gl, and the live generate-node-ir (semantic-gpu-builtin)
+;;; extracted verbatim with ONE call changed in its :mem-fence branch.  Nothing else differs.
+;;;
+;;; THE TWO BACKENDS DISAGREED ABOUT WHAT mem-fence MEANS:
+;;;
+;;;     SPIR-V  __spirv_MemoryBarrier(1, 520)
+;;;             MemScope = CrossWorkgroup(1), Semantics = AcquireRelease | CrossWorkgroupMemory
+;;;             == DEVICE scope.
+;;;
+;;;     PTX     llvm.nvvm.membar.cta  ->  `membar.cta`
+;;;             == CTA / WORKGROUP scope.  Strictly weaker.
+;;;
+;;; SPIR-V is the one that matches what the operator is FOR, so this raises PTX to meet it rather
+;;; than inventing a new semantic.
+;;;
+;;; EVERY ACTUAL USER WANTS DEVICE SCOPE, which is what settles the design question.  I had written
+;;; in the bug report that widening the fence would trade correctness here against cost in the
+;;; async-tile code -- that was speculation, and grepping refuted it.  The complete user list is:
+;;;
+;;;   * sync-wait (src/macros.lisp) -- spins on a :global counter that OTHER workgroups increment
+;;;     through sync-arrive.  Cross-workgroup by construction.
+;;;   * grid-reduce-last-man! -- publishes a per-workgroup partial that a DIFFERENT workgroup
+;;;     sweeps.  Cross-workgroup by construction.
+;;;   * grid-reduce-second-stage! -- CTA scope would do for the in-kernel fill our specs use, but
+;;;     the construct exists to consume another LAUNCH's data, so device scope is the honest one.
+;;;
+;;; No async-tile code uses mem-fence at all.  So there is no trade-off to make and no need for a
+;;; scoped (mem-fence :workgroup / :device) parameter yet -- if one is ever wanted,
+;;; %ptx-membar-cta is deliberately left in place to serve it.
+;;;
+;;; WHY NO TEST CAUGHT THIS, and would not have: NVIDIA global writes land in a device-coherent L2
+;;; and the neighbouring atomic acts as a de facto ordering point, so last-man would very likely
+;;; have produced the right total anyway.  It would have passed on the pod, with the luck residing
+;;; in the cache hierarchy rather than in the memory model.  Found by reading the emitted PTX of
+;;; the new CUDA twins BEFORE renting a box, which is the whole argument for compile-verifying
+;;; first.
+;;;
+;;; The BMG results are untouched -- the SPIR-V path is not modified by this change.
+
+(defun %ptx-membar-gl (builder module)
+  "Emits @llvm.nvvm.membar.gl() -- PTX `membar.gl`, a DEVICE-scope memory fence.
+
+   membar.cta only orders memory as seen by other threads in the same CTA, which is precisely not
+   the reader in any cross-workgroup publication.  membar.gl orders it for the whole device.
+   (.sys, system scope, would also cover the host and peer devices and is more than any current
+   Crisp construct needs.)"
+  (let* ((fn-name "llvm.nvvm.membar.gl")
+         (void-type (llvm-void-type))
+         (fn-type   (llvm-function-type void-type (cffi:null-pointer) 0 nil))
+         (fn        (%spirv-get-or-create-fn module fn-name void-type
+                                             (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "")
+    (values nil nil)))
+
+(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
+  "Generates LLVM IR for a GPU built-in function call.
+   Endeavor 115 Phase 2: full PTX dispatch for all builtins."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let* ((bname (semantic-gpu-builtin-builtin-name node))
+         (dim   (semantic-gpu-builtin-dimension node)))
+    (log:info "Generating GPU builtin IR: ~a dim=~a backend=~a" bname dim *target-backend*)
+    (labels
+        ((vec3-or-scalar (spirv-name)
+           (let ((vec (%get-builtin-vec3 builder module spirv-name)))
+             (if dim
+                 (values (%extract-vec3-i64 builder vec dim
+                                            (format nil "~a_~a" (string-downcase spirv-name) dim))
+                         nil)
+                 (values vec nil)))))
+      (case bname
+        ;; --- Primitive 3D/scalar vector builtins ---
+        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
+        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
+        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
+        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
+        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
+        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
+        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
+        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
+        (:get-global-id-abs
+         (if (eq *target-backend* :ptx)
+             ;; PTX has no GlobalOffset — same as get-global-id
+             (vec3-or-scalar "GlobalInvocationId")
+             (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
+                    (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
+               (if dim
+                   (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
+                          (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
+                     (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
+                   (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil)))))
+        ;; --- WorkDim (hidden kernel parameter, uint) ---
+        (:get-work-dim
+         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
+        ;; --- Synthesized scalar builtins ---
+        (:get-local-linear-id
+         (values (%gen-local-linear-id builder module) nil))
+        (:get-local-linear-size
+         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
+        (:get-global-linear-id
+         (values (%gen-global-linear-id builder module) nil))
+        ((:get-global-linear-size :get-total-threads)
+         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
+        (:get-total-groups
+         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
+        ;; --- 110: warp helpers ---
+        (:warp-id
+         (if (eq *target-backend* :ptx)
+             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
+             (values (%ptx-synthesize-warp-id builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
+        (:warp-lane
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-read-warp-sreg builder module "laneid") nil)
+             (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil)))
+        (:warp-count
+         (if (eq *target-backend* :ptx)
+             (values (%ptx-synthesize-warp-count builder module) nil)
+             (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
+        ;; --- Barriers (void) ---
+        ;; Endeavor 152: a cluster-wide rendezvous.  On PTX this is exactly the fence Crisp
+        ;; already emits for cluster entry/exit (%gen-nvvm-cluster-barrier), so the lowering is
+        ;; one that has run on hardware in every clustered kernel, not a new one.
+        ;;
+        ;; EVERYWHERE ELSE IT DEGRADES TO sync-workgroup, and that degrade is EXACT rather than
+        ;; approximate: a cluster of one workgroup IS a workgroup, and NVIDIA's own
+        ;; cluster_group::sync() is barrier_arrive + barrier_wait with no __syncthreads(), so a
+        ;; cluster barrier already covers intra-workgroup convergence.  Verified in Phase 0.
+        (:sync-cluster
+         (if (and (eq *target-backend* :ptx)
+                  (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
+             (%gen-nvvm-cluster-barrier builder)
+             (if (eq *target-backend* :ptx)
+                 (%ptx-barrier builder module)
+                 (%gen-spirv-control-barrier builder module))))
+        (:sync-workgroup
+         (if (eq *target-backend* :ptx)
+             (%ptx-barrier builder module)
+             (%gen-spirv-control-barrier builder module)))
+        ;; 157: the two halves of a split workgroup barrier.  PTX is REFUSED rather than
+        ;; approximated -- NVIDIA's bar.arrive / bar.sync are not the same rendezvous, and a silent
+        ;; mis-mapping of a barrier deadlocks a GPU instead of producing a wrong number.
+        (:sync-workgroup-arrive
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :arrive) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.arrive does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :arrive)))
+        (:sync-workgroup-wait
+         (if (eq *target-backend* :ptx)
+             (error 'crisp-compiler-error
+               :message "(sync-workgroup :wait) is SPIR-V only.  The PTX backend has no equivalent rendezvous -- bar.sync does not carry the same semantics -- so Crisp refuses rather than emitting a barrier that means something else.  Use the fused (sync-workgroup) on this backend."
+               :source-location nil)
+             (%gen-spirv-split-barrier builder module :wait)))
+        (:sync-warp
+         (if (eq *target-backend* :ptx)
+             (%ptx-syncwarp builder module)
+             (%gen-spirv-warp-barrier builder module)))
+        (:mem-fence
+         (if (eq *target-backend* :ptx)
+             (%ptx-membar-gl builder module)
+             (%gen-spirv-memory-barrier builder module)))
+        ;; The local is BNAME; `builtin-name` was a stale name carried over from the
+        ;; commented-out copy of this method above, and would have signalled
+        ;; unbound-variable instead of naming the offending builtin.
+        (t (error "Unknown GPU builtin ~a" bname))))))
