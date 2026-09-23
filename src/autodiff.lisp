@@ -6748,3 +6748,15 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 
 (eval-when (:load-toplevel :execute)
   (register-vjp "ATOMIC-OP!" (function %175-vjp-atomic-op)))
+
+;;; Endeavour 175 — reduce-warp and reduce-workgroup.
+;;;
+;;; These two were nearly lost in the fold: in the overlay each register-vjp shared an eval-when
+;;; with a shim that removed the superseded MACRO, and that shim tested (MACRO-FUNCTION sym) before
+;;; unbinding.  A filter meant to drop the three package-visibility shims keyed on the same words
+;;; and swallowed these blocks whole.  The symptom was exact and familiar: analytical=1.0 against a
+;;; numerical 64.0 / 16.0 — BUG 081's signature, a reduction differentiating to the identity —
+;;; plus errors/05's non-plus refusal silently not firing, because the refusal lives in the VJP.
+(eval-when (:load-toplevel :execute)
+  (register-vjp "REDUCE-WARP" (function %175-vjp-reduce-warp))
+  (register-vjp "REDUCE-WORKGROUP" (function %175-vjp-reduce-workgroup)))
