@@ -600,3 +600,27 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   condition-node
   body
   source-location)
+
+
+;;;; Endeavour 175 — atomic compare-and-swap.  A SEPARATE node rather than an :op :cas on
+;;;; semantic-atomic-rmw, because CAS takes THREE operands and that struct has room for two.
+;;;; Lives here (loaded well before src/codegen) so the generate-node-ir method specialising on
+;;;; this type has the type to specialise on.
+
+(defstruct semantic-atomic-cas
+  "Represents (atomic-cas! location expected desired).
+Returns the value at the location BEFORE the attempt (see the header for why not a boolean)."
+  type          ; the RESULT type: elem-type for :old, int for :success
+  target-node   ; semantic-aref for the memory location
+  expected-node ; the value the caller believes is there
+  desired-node  ; the value to store if it is
+  ;; Which half of cmpxchg's { T, i1 } result this node yields.
+  ;;   :old     -- the value that was there.  What user-facing atomic-cas! returns.
+  ;;   :success -- the swap-happened flag, as a Crisp int (comparisons are typed int).
+  ;; TWO MODES RATHER THAN ONE, because a retry loop cannot correctly derive success from the
+  ;; old value.  Testing (= seen old) is NUMERIC equality where CAS is BITWISE: if memory held
+  ;; -0.0 and the caller expected +0.0, the swap fails while the test says it succeeded, and
+  ;; the update is silently lost.  Rather than expose a bit-reinterpret op just to compare, the
+  ;; flag LLVM already computed is made available directly.
+  (result-mode :old)
+  source-location)

@@ -1,0 +1,41 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 100 1 2 3
+;; SKIP-WITH[--differentiate]: "elects a thread by coordinate; no differentiable value"
+;;
+;; BOTH BACKENDS SHARE ONE EXPECTATION, unlike most of this endeavour's metal specs, because this
+;; one is genuinely warp-width independent: it elects ONE thread of the workgroup and writes
+;; out[0], so neither the value nor the buffer pattern moves between a 16-lane and a 32-lane warp.
+;; Contrast 06, whose per-warp election writes out[warp-id] and therefore fills four slots on BMG
+;; and two on NVIDIA -- that one needs a separate twin.  (The CUDA run SKIPs locally without nvcc.)
+;;
+;; ENDEAVOUR 175 -- when-thread-in-group-is.  TDD: written before the implementation.
+;;
+;;   (when-thread-in-group-is <id> body...)   =>   runs body only in that thread of the WORKGROUP
+;;
+;; ideal_001.md specifies this as an implicit (when (= someId (get-local-id 0)) ...).  One
+;; workgroup here, so exactly ONE thread in the whole launch may run the body.
+;;
+;; WHY THE VALUE IS DERIVED FROM THE WRITER'S OWN ID.  The body writes
+;; 100 + get-local-linear-id, so the expected 100 says the writer was thread 0 specifically.
+;; A guard that let every thread through would leave whichever thread finished last -- some
+;; value in 100..163 -- and a guard that elected the wrong thread would show that value rather
+;; than silently passing.  Writing a bare constant would pass under all three.
+;;
+;; SLOTS 1 2 3 MUST KEEP THE HARNESS PRE-FILL (1 2 3).  That is the other half of the claim:
+;; this form elects one thread of the workgroup, NOT one per warp.  Contrast 06, where the
+;; same launch writes all four slots because the election is per-warp.  Run together, the two
+;; specs pin the distinction that makes these separate forms.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel group_leader_writes (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (when-thread-in-group-is 0
+    (set! (~ out 0) (to-float (+ 100 (to-int (get-local-linear-id)))))))

@@ -737,11 +737,20 @@
        (9 (bind-local-scratch-matrix-arg
            kernel (getf p :base)
            (getf p :rows) (getf p :cols) (getf p :elem-bytes)))
-       (6 (bind-local-scratch-vector-arg
-           kernel (getf p :base)
-           (getf p :n-elements) (getf p :elem-bytes)))
-       (3 (bind-local-scratch-cell-arg
-           kernel (getf p :base) (getf p :elem-bytes)))
+       ;; BUG 084: :global scratch is a device allocation, not SLM.  The address space rides
+       ;; on the metacrisp implicit-param record, so this is a lookup and not an inference.
+       (6 (if (eq (getf p :address-space) :global)
+              (bind-global-scratch-vector-arg
+               kernel (getf p :base)
+               (getf p :n-elements) (getf p :elem-bytes))
+              (bind-local-scratch-vector-arg
+               kernel (getf p :base)
+               (getf p :n-elements) (getf p :elem-bytes))))
+       (3 (if (eq (getf p :address-space) :global)
+              (bind-global-scratch-cell-arg
+               kernel (getf p :base) (getf p :elem-bytes))
+              (bind-local-scratch-cell-arg
+               kernel (getf p :base) (getf p :elem-bytes))))
        ;; Any other width is a rank-N tile (a RING is rank 3, width 12).  It
        ;; needs :dims; without them we cannot build the descriptor, and
        ;; guessing would under-bind exactly as the old catch-all did.
@@ -1931,6 +1940,10 @@
            kernel base-index buffer :byte-size byte-size :offset offset))
 
 (defun launch-kernel-1d (queue kernel &key (global-size 1) (group-size 1))
+  ;; BUG 084: global implicit scratch is per-dispatch working memory, and VERIFY-AUTODIFF
+  ;; re-launches the forward kernel once per finite-difference probe.  See
+  ;; %VAD-ZERO-GLOBAL-SCRATCH for why leaving it dirty silently zeroes the numerical gradient.
+  (%vad-zero-global-scratch)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-launch-kernel-1d)
              (:l0     'l0-opencl-launch-kernel-1d)
@@ -2202,6 +2215,120 @@
 
 
 ;;; ======================================================================
+;;; === GLOBAL scratch binding (BUG 084) =================================
+;;; ======================================================================
+;;;
+;;; Until this existed, %VAD-BIND-IMPLICIT-PARAM dispatched purely on :arg-width and every
+;;; branch bound a LOCAL scratch tile -- NULL pArgValue plus a byte size, which is how you ask
+;;; L0 for shared local memory.  A :global scratch buffer is not that.  It is an ordinary
+;;; ptr addrspace(1) kernel parameter that needs a real allocation, so binding it as SLM handed
+;;; the kernel a bogus global pointer and the first write took the device down with
+;;; ZE_RESULT_ERROR_DEVICE_LOST.  It was not a compiler fault at all: the kernels build
+;;; correctly and run correctly under the L0 hoister, which allocates these properly.
+;;;
+;;; THIS BLOCKED EVERY GRID-LEVEL GRADIENT, not one spec.  A stage-2 reduction is cross-workgroup
+;;; by definition, and the only memory two workgroups share is global -- so no grid reduction
+;;; could have its gradient measured against a finite difference.  Endeavour 175 had already
+;;; produced three constructs that compiled clean and returned silently wrong gradients
+;;; (BUG 073, 077, 081), each caught ONLY by a finite difference, so the missing check was the
+;;; one that matters most here.
+;;;
+;;; THE BUFFERS ARE ZERO-FILLED, which is load-bearing rather than tidiness.  grid-reduce-last-man!
+;;; draws tickets from a global counter and elects the workgroup that draws num_groups-1; if that
+;;; counter starts at garbage, either no workgroup elects itself (the answer is never stored) or
+;;; several do.  The L0 hoister zero-initialises these for the same reason.
+
+(defvar *vad-global-scratch-allocs* nil
+  "Device allocations made for :global implicit scratch params, freed by RUNTIME-SHUTDOWN.
+   Kept because these are per-launch buffers with no other owner -- the descriptor args that
+   reference them are plain integers, so nothing else holds the pointer.")
+
+(defun l0-bind-global-scratch-vector-arg (kernel base-index n-elements elem-bytes)
+  "Binds a :global 1-D compact scratch vector at BASE-INDEX (6 args).
+   Unlike the :local twin the first arg is a real device POINTER, not a byte size with a null
+   value; the five descriptor words that follow are identical."
+  (let* ((byte-size (* n-elements elem-bytes))
+         (buf (l0-alloc-shared *ad-context* byte-size (max elem-bytes 4))))
+    (push (cons buf byte-size) *vad-global-scratch-allocs*)
+    (cffi:with-foreign-object (pp :pointer)
+      (setf (cffi:mem-ref pp :pointer) buf)
+      (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                              (cffi:foreign-type-size :pointer) pp)))
+    (cffi:with-foreign-objects ((arg1 :uint64) (arg2 :uint64)
+                                (arg3 :uint64) (arg4 :uint64) (arg5 :uint64))
+      (setf (cffi:mem-ref arg1 :uint64) byte-size
+            (cffi:mem-ref arg2 :uint64) 0
+            (cffi:mem-ref arg3 :uint64) 1
+            (cffi:mem-ref arg4 :uint64) n-elements
+            (cffi:mem-ref arg5 :uint64) n-elements)
+      (loop for k from 1 to 5
+            for a in (list arg1 arg2 arg3 arg4 arg5)
+            do (check-ze (ze-kernel-set-argument-value kernel (+ base-index k)
+                                                       (cffi:foreign-type-size :uint64) a))))))
+
+(defun l0-bind-global-scratch-cell-arg (kernel base-index byte-size)
+  "Binds a :global scratch cell at BASE-INDEX (3 args: pointer, byte-size, offset)."
+  (let ((buf (l0-alloc-shared *ad-context* byte-size (max byte-size 4))))
+    (push (cons buf byte-size) *vad-global-scratch-allocs*)
+    (cffi:with-foreign-objects ((pp :pointer) (p-bs :uint64) (p-off :uint64))
+      (setf (cffi:mem-ref pp :pointer) buf
+            (cffi:mem-ref p-bs :uint64) byte-size
+            (cffi:mem-ref p-off :uint64) 0)
+      (check-ze (ze-kernel-set-argument-value kernel (+ base-index 0)
+                                              (cffi:foreign-type-size :pointer) pp))
+      (check-ze (ze-kernel-set-argument-value kernel (+ base-index 1)
+                                              (cffi:foreign-type-size :uint64) p-bs))
+      (check-ze (ze-kernel-set-argument-value kernel (+ base-index 2)
+                                              (cffi:foreign-type-size :uint64) p-off)))))
+
+(defun %vad-global-scratch-unsupported (what)
+  (error "VERIFY-AUTODIFF: this kernel has a :global implicit scratch ~a, which only the :l0 ~
+          runtime can allocate today; current runtime is ~A.  The :global path was added for ~
+          BUG 084 against L0 because that is where the grid-level reductions are verified; the ~
+          CUDA twin is the same shape (cuMemAlloc plus the same descriptor words) and simply ~
+          has not been needed yet."
+         what *ad-runtime*))
+
+(defun bind-global-scratch-vector-arg (kernel base-index n-elements elem-bytes)
+  (ecase *ad-runtime*
+    (:l0 (l0-bind-global-scratch-vector-arg kernel base-index n-elements elem-bytes))
+    ((:opencl :cuda) (%vad-global-scratch-unsupported "vector"))))
+
+(defun bind-global-scratch-cell-arg (kernel base-index byte-size)
+  (ecase *ad-runtime*
+    (:l0 (l0-bind-global-scratch-cell-arg kernel base-index byte-size))
+    ((:opencl :cuda) (%vad-global-scratch-unsupported "cell"))))
+
+(defun %vad-zero-global-scratch ()
+  "Re-zeroes every :global implicit scratch buffer.  Called before EVERY launch, not once at
+   bind time, because these buffers carry state across dispatches and VERIFY-AUTODIFF launches
+   the forward kernel many times -- once per finite-difference probe.
+
+   THIS IS NOT HOUSEKEEPING, it is required for correctness, and grid-reduce-last-man! is the
+   construct that proves it.  Its election works by having each workgroup draw a ticket from a
+   global counter and letting the one that draws num_groups-1 store the answer.  Zero the
+   counter once and the FIRST launch elects correctly; on the second it starts at num_groups,
+   nobody draws the winning ticket, and the result is simply never written.  The measured
+   symptom was a perfect analytical gradient against a numerical one of exactly 0.0 -- the
+   perturbed re-launches were all returning the unmodified output buffer.
+
+   Nothing is lost by zeroing: implicit scratch is per-dispatch working memory by definition.
+   A kernel that wanted state across launches would take a real parameter."
+  (when (eq *ad-runtime* :l0)
+    (dolist (entry *vad-global-scratch-allocs*)
+      (let ((buf (car entry)) (bytes (cdr entry)))
+        (dotimes (i bytes)
+          (setf (cffi:mem-aref buf :uint8 i) 0))))))
+
+(defun %vad-free-global-scratch (context)
+  "Frees the device allocations made for :global implicit scratch params."
+  (when (eq *ad-runtime* :l0)
+    (dolist (entry *vad-global-scratch-allocs*)
+      (ignore-errors (ze-mem-free context (car entry)))))
+  (setf *vad-global-scratch-allocs* nil))
+
+
+;;; ======================================================================
 ;;; === Runtime init / shutdown / per-object release =====================
 ;;; ======================================================================
 ;;;
@@ -2211,6 +2338,13 @@
 ;;; is runtime-agnostic top-to-bottom.
 
 (defun runtime-init ()
+  ;; BUG 084 follow-up: drop any :global scratch pointers left over from a previous pass before
+  ;; allocating new ones.  runtime-shutdown clears this list and IS unwind-protected, so normally
+  ;; it is already empty -- but %vad-zero-global-scratch writes through every pointer in it on
+  ;; EVERY launch, so a single skipped shutdown would turn stale freed pointers into a
+  ;; segfault rather than an error.  Cheap insurance against a failure mode that cannot be
+  ;; debugged from its symptom.  Nothing leaks: the allocations died with their context.
+  (setf *vad-global-scratch-allocs* nil)
   "Initialise the active runtime (per *AD-RUNTIME*) and return
    (values context queue).  For :opencl, both are OpenCL handles.  For
    :l0, CONTEXT is a ze_context_handle_t and QUEUE is NIL (L0 launches
@@ -2280,6 +2414,8 @@
      (when queue   (cl-release-command-queue queue))
      (when context (cl-release-context context)))
     (:l0
+     ;; BUG 084: free any :global implicit-scratch allocations BEFORE the context goes.
+     (%vad-free-global-scratch context)
      (when context (ze-context-destroy context))
      (setf *ad-device* nil
            *ad-context* nil))

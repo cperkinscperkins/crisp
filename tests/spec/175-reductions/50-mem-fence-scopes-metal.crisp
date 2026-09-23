@@ -1,0 +1,61 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; COMPILE-WITH[--hardware-profile=h100 --ir-target=ptx]: PASS
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 36 1 2 3
+;; SKIP-WITH[--differentiate]: "fence scope is a forward-only concern; fences carry no gradient"
+;;
+;; ENDEAVOUR 175 -- (mem-fence :scope :workgroup) and (mem-fence :scope :grid).
+;;
+;;   (mem-fence)                     ; grid scope -- the DEFAULT, unchanged
+;;   (mem-fence :scope :grid)        ; the default, said explicitly
+;;   (mem-fence :scope :workgroup)   ; cheaper, orders memory within this workgroup only
+;;
+;; WHY THE SCOPE HAD TO BECOME EXPLICIT, and it is not cosmetic.  Until BUG 088 the same bare
+;; (mem-fence) meant DEVICE scope on SPIR-V and WORKGROUP scope on PTX -- one operator, two
+;; different guarantees, and grid-reduce-last-man! silently depended on the stronger one.  088
+;; fixed that by raising PTX to device scope, which is the right default because every construct
+;; using a fence today publishes across workgroups.  But that made the cheap case unreachable: a
+;; fence that only needs to order memory inside one workgroup was now paying for membar.gl.  The
+;; :scope argument restores it, deliberately, instead of leaving it as an accident of the backend.
+;;
+;; THE DEFAULT IS :grid, NOT :workgroup, and that choice is the safe direction: a fence that is too
+;; strong costs performance, while one that is too weak produces a wrong answer that no test can
+;; reliably catch -- which is exactly what 088 was.  A caller who wants the cheap fence has to say
+;; so.
+;;
+;; WHAT THIS SPEC PROVES.  Both spellings compile on both backends, and a kernel using the
+;; workgroup-scoped fence still computes correctly on hardware.  It deliberately does NOT assert
+;; which instruction was emitted -- that claim is checked by reading the PTX (membar.gl for :grid,
+;; membar.cta for :workgroup) and the SPIR-V memory-barrier operands, because a HOIST-EXPECT on a
+;; buffer value cannot distinguish a strong fence from a weak one.  Both produce 36 here; that is
+;; the point and the limitation.
+;;
+;; THE ARITHMETIC.  Threads 0..7 fill a workgroup-local scratch vector, a workgroup-scoped fence
+;; plus a barrier publish those writes to the rest of the workgroup, and thread 0 sums them:
+;; 1+2+...+8 = 36.  The fence is genuinely within one workgroup here, which is the case :workgroup
+;; exists for -- a single workgroup writing local scratch that its own threads then read.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel mem_fence_scopes (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 8)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (when (< tid 8)
+        (set! (~ sv tid) (+ (to-float tid) 1.0)))
+      ;; The cheap fence: these writes and reads are all inside this one workgroup.
+      (mem-fence :scope :workgroup)
+      (sync-workgroup)
+      ;; And the explicit form of the default, which must also compile and must be a no-op
+      ;; difference from a bare (mem-fence).
+      (mem-fence :scope :grid)
+      (when-thread-in-group-is 0
+        (let ((acc 0.0))
+          (dotimes (i 8)
+            (set! acc (+ acc (~ sv i))))
+          (set! (~ out 0) acc))))))

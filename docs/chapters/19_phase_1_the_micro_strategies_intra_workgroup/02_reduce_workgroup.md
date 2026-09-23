@@ -1,4 +1,4 @@
-# `reduce-workgroup` 📝
+# `reduce-workgroup` ✅
 
 
 `(reduce-workgroup someFunction <someVar> identity &key return-vec local-scratch-vec message)`

@@ -1,0 +1,55 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: -1 1 2 3
+;; SKIP-WITH[--differentiate]: "max is not differentiable by last-man's VJP -- see errors/07"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-last-man! with an operator that is not +.
+;;
+;; This is the strategy's ADVERTISED ADVANTAGE over grid-reduce-atomic!, so it needs a test
+;; rather than a sentence.  The atomic strategy is limited to the three operators the hardware
+;; provides an atomic for (+, min, max); last-man finishes with an ordinary reduce-workgroup and
+;; is therefore supposed to accept any commutative binop.  Spec 25 reduces with +, which is
+;; exactly the operator that would still work if the binop were being ignored and + hardwired.
+;;
+;; THE BINOP IS USED IN TWO PLACES inside the expansion -- the per-workgroup phase-1 reduction and
+;; the elected workgroup's phase-2 sweep over the global partials.  An implementation that
+;; threaded it through one and hardwired + into the other passes spec 25 and fails here.
+;;
+;; THE VALUES ARE NEGATIVE ON PURPOSE, to put the IDENTITY under test as well.  The sweep reduces
+;; over a full workgroup (64 lanes) while only num_groups (4) partials exist, so lanes 4..63 must
+;; contribute the caller's identity.  With max over -1..-256 the answer is -1; a sweep that used a
+;; hardwired 0.0 for its out-of-range lanes would report 0, and with POSITIVE contributions both
+;; would read 255 and the bug would be invisible.  That is the whole reason for the sign.
+;;
+;; Thread G contributes -(G+1), so the 256 values are -1 .. -256 and their maximum is -1 -- which
+;; is also the FIRST thread's value, so a sweep that only ever saw workgroup 0's partial would
+;; also read -1.  Spec 25 is what rules that out: it reduces with + across all four workgroups and
+;; reads 32640, which no single workgroup can produce.  The two specs cover each other's blind
+;; spot, which is why neither is redundant.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+;; Crisp has no scalar `max`, so the operator is a user-defined #(float float => float).  That is
+;; the stronger test anyway: it proves the construct accepts an arbitrary binop rather than
+;; pattern-matching a known set of builtin operator symbols.
+(def-function lm-max (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel last_man_custom_binop (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (let ((contrib (- 0.0 (+ (to-float (get-global-linear-id)) 1.0))))
+      (grid-reduce-last-man! #'lm-max contrib -1.0e30 out
+                             :local-scratch-vec sv
+                             :global-scratch-vec gv
+                             :atomic-counter ctr
+                             :election-flag-cell flag))))

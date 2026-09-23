@@ -1,0 +1,48 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 63 63 63 63
+;; SKIP-WITH[--differentiate]: "max is not differentiable by reduce-workgroup's VJP -- see errors/05"
+;;
+;; ENDEAVOUR 175 -- reduce-workgroup with an operator that is not +.
+;;
+;; someFunction is a real argument at the WORKGROUP level too, not just the warp level.  Spec 05
+;; pins this for reduce-warp; this is its twin one level up, and it matters more here because
+;; reduce-workgroup uses the binop TWICE in different places -- once inside the per-warp
+;; butterfly (phase 1) and once in the inter-warp sweep over scratch (phase 2).  An
+;; implementation that threaded the operator through one and hardwired + into the other would
+;; pass spec 08 (which reduces with +, so both agree) and fail here.
+;;
+;; WHY max, AND WHY A USER FUNCTION.  Crisp has no `max`: (max 3.0 7.0) fails with
+;; "Unsupported form 'MAX'".  The design doc specifies grid-reduce-atomic! as accepting exactly
+;; #'+, #'min and #'max, so two of its three legal operators do not exist yet.  Passing a
+;; user-defined binop is also the stronger test -- it proves the construct accepts an arbitrary
+;; #(T T => T) rather than pattern-matching a known set of builtin operator symbols.
+;;
+;; EXPECTED VALUES.  Each of the 64 threads contributes its own linear id, so the workgroup
+;; maximum is 63 and every thread must hold it.  A reduction that completed phase 1 but not
+;; phase 2 would write the four per-warp maxima instead -- 15, 31, 47, 63 -- which are visibly
+;; distinct, and whose LAST element is the correct answer.  That last detail is why all four
+;; slots are checked rather than just one: reading back only warp 3's slot would pass with
+;; phase 2 entirely absent.
+;;
+;; The writer is each warp's LAST lane, so this also re-checks the post-condition that every
+;; thread of the workgroup ends up holding the result, not merely the leaders.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function wg-max (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel reduce_workgroup_max (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-local-linear-id))))
+      (reduce-workgroup #'wg-max contrib -1.0e30 :local-scratch-vec sv)
+      (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+        (set! (~ out (to-int (warp-id))) contrib)))))

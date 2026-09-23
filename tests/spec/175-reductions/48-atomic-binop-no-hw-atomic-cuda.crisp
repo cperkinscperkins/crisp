@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 0 256 2 3
+;; SKIP-WITH[--differentiate]: "multiply is not differentiable by atomic-binop!'s VJP -- errors/11"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- atomic-binop! with an operator the hardware lacks, on NVIDIA.  Twin of spec 36.
+;;
+;; There is no atom.mul in PTX at any width, so a CAS retry loop is the only way to do this at all.
+;; That makes this the spec that justifies the construct's existence on this backend specifically.
+;;
+;; Eight threads contributing 2.0 give 2^8 = 256, which is exact in float; 64 threads would be 2^64
+;; and useless as an assertion.  The accumulator is out[1] because the harness pre-fills each slot
+;; with its own index and a product seeded at 0 stays 0 forever -- slot 1 starts at 1, which is
+;; multiplication's identity.  That slot choice is load-bearing, not cosmetic.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+;; No hardware atomic exists for this, on either backend.
+(def-function ab-mul (a b)
+  (declare #'(float float => float))
+  (* a b))
+
+(def-kernel binop_no_hw_atomic (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  (atomic-binop! (~ out 1) #'ab-mul 2.0))

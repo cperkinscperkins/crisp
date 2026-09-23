@@ -1,0 +1,56 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=16.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; ENDEAVOUR 175 -- does reduce-warp differentiate?  ISOLATED.
+;;
+;; THIS SPEC EXISTS BECAUSE THE ANSWER WAS ASSUMED AND NEVER MEASURED.  reduce-warp is a macro
+;; that expands to a shuffle-xor butterfly, and shuffle-xor carries an explicit VJP (173) -- so
+;; the reasoning went that AD would fall out for free, and specs 03/04/05 all carry a
+;; differentiate-skip directive for unrelated reasons.  Nothing checked it.
+;;
+;; (That directive is named obliquely on purpose.  Writing it out in full here made the spec
+;;  runner match it as a REAL directive in this file's own header and skip the whole spec --
+;;  silently, reported as a pass.  A directive name in prose is a directive.)  Spec 23 then measured
+;; a composition through reduce-warp and read analytical=1.0 against a hardware finite difference
+;; of 16.0, which is what sent the question back here.
+;;
+;; THE MATHS.  Every lane of a warp ends up holding its warp's total, so
+;;
+;;     C[t] = sum over t's warp of A       for every thread t
+;;
+;; and each A element is therefore counted once per lane of its warp -- 16 times on bmg.  With
+;; sum(C) as the scalar objective,
+;;
+;;     d(sum C) / dA[0,2] = 16.0
+;;
+;; THE NUMBER IS THE WARP WIDTH, which makes the failure modes legible rather than arbitrary:
+;;
+;;     16.0  the butterfly's transpose applied           (correct)
+;;      1.0  the reduction treated as the IDENTITY       (the adjoint never fanned out)
+;;      0.0  the reduction dropped entirely
+;;
+;; 1.0 and 0.0 are exactly the two shapes this endeavour has already hit -- BUG 073 (cross-thread
+;; dataflow lost) and BUG 077 (no rule at all) -- so the value discriminates the interesting
+;; failures rather than merely being non-zero.
+;;
+;; output-mat, NOT output-vec, so VERIFY-AUTODIFF computes a real finite difference and the
+;; expectation is corroborated by hardware rather than by this comment (BUG 078).
+;;
+;; 32-lane note: on NVIDIA every lane would hold 0..31's total and the answer would be 32.0.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_reduce_warp (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (reduce-warp #'+ v 0.0)
+        (set! (~ C row col) v)))))

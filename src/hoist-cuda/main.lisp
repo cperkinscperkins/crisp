@@ -541,7 +541,129 @@
 ;;; Main function emission — init, module load, arg setup, launch, readback
 ;;; -----------------------------------------------------------------------
 
-(defun emit-main (stream kernel-name ptx-path declared-sig aliases records &optional dispatch-info compute-units)
+
+;;;; ===========================================================================
+;;;; Endeavour 175 — SYMBOLIC scratch sizes on the CUDA side.
+;;;; ===========================================================================
+;;;;
+;;;; A scratch tensor may be sized with a KEYWORD rather than an integer --
+;;;; (make-scratch-vector float :match-num-warps-per-workgroup).  The compiler passes that through
+;;;; into the metacrisp as :size-expr, and the two resolution points below turn it into a number.
+;;;;
+;;;; WHY CUDA RESOLVES TO AN INTEGER WHILE L0 EMITS A C++ EXPRESSION.  The asymmetry is deliberate
+;;;; and was chosen with eyes open.
+;;;;
+;;;; On L0 each workgroup-local tensor gets its OWN allocation --
+;;;; zeKernelSetArgumentValue(kernel, i, bytes, nullptr) -- so one buffer's size is independent of
+;;;; every other, and phrasing it as a C++ expression over named geometry constants costs nothing
+;;;; and lets the launcher re-size itself when retuned.
+;;;;
+;;;; CUDA carves ALL local scratch out of ONE dynamic-shared blob: compute-total-shared-bytes sums
+;;;; every local param into a single number, that number becomes the sharedMemBytes launch
+;;;; argument, and each param is handed a running byte OFFSET into the blob (the BUG 046 fix).
+;;;; Making one size an expression makes the blob total an expression, and then this decision in
+;;;; %emit-launch-base can no longer be made at generation time:
+;;;;
+;;;;     (when (and shared-bytes (> shared-bytes 32768))
+;;;;       ... cuFuncSetAttribute(..., CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, N))
+;;;;
+;;;; Whether to request the >48KB opt-in is a HOIST-TIME choice about a value that would only exist
+;;;; at launch.  Plumbing that properly means expression-valued offsets, an expression-valued blob
+;;;; total, and a runtime-conditional attribute call -- reworking the shared-memory path that BUG
+;;;; 046 only just stabilised.
+;;;;
+;;;; THE PRACTICAL LIMITATION, stated plainly: retuning a CUDA launcher's block size means
+;;;; REGENERATING it, because its scratch sizes were fixed when it was generated.  The L0 launcher
+;;;; re-sizes itself.
+
+(defvar *cuda-wg-size* nil
+  "Endeavour 175: the DECLARED workgroup size (total threads) for the kernel currently being
+   emitted, or NIL when no (local-size :set-to ...) was declared.  Bound per kernel by EMIT-MAIN.")
+
+(defun %cuda-scratch-warp-size ()
+  "Lanes per warp for scratch sizing on NVIDIA: always 32.
+
+   DELIBERATELY NOT the active profile's :simd-width, and this is a correctness point rather than a
+   simplification.  The compiler's %173-warp-size -- the value the KERNEL computes its warp count
+   from -- short-circuits to 32 whenever the target is :ptx, on the grounds that NVIDIA's warp has
+   been 32 lanes on every part ever shipped; :simd-width describes the SPIR-V subgroup width a
+   driver would otherwise choose.
+
+   So reading :simd-width here would desync the host from the kernel in exactly the case 173 calls
+   out: --hardware-profile=bmg with --ir-target=ptx, which a dual-backend spec produces.  The
+   kernel would compute ceil(wg/32) warps while the host sized the buffer for ceil(wg/16) -- twice
+   as many slots, and a reduction reading the tail would find garbage.  Mirroring the PTX branch
+   keeps the two in step by construction.
+
+   If a future NVIDIA part ever ships a warp that is not 32, this and %173-warp-size's PTX branch
+   must change TOGETHER."
+  32)
+
+(defun %cuda-scratch-symbolic-size-p (size-expr)
+  "T when SIZE-EXPR is a symbolic (keyword) scratch size rather than a concrete extent."
+  (keywordp size-expr))
+
+(defun %cuda-resolve-symbolic-size (size-expr param-name)
+  "The integer element count for a symbolic rank-1 scratch size, from the DECLARED geometry.
+   Errors with an explanation rather than guessing when the geometry is not declared."
+  (let ((name (symbol-name size-expr))
+        (wg   *cuda-wg-size*)
+        (warp (%cuda-scratch-warp-size)))
+    (flet ((need-wg ()
+             (or wg
+                 (error "Scratch tensor ~a: :size-expr ~a needs the workgroup size, but this~%~
+                         kernel declares no compile-time (local-size :set-to N).~%~
+                         The CUDA hoister resolves a symbolic scratch size to a NUMBER at~%~
+                         generation time, because all workgroup-local scratch shares one~%~
+                         dynamic-shared blob whose total must be known to size the launch.~%~
+                         Either declare a local-size, or give this buffer an explicit integer extent."
+                        param-name size-expr))))
+      (cond
+        ((string-equal name "MATCH-WORKGROUP-SIZE")
+         (need-wg))
+        ((string-equal name "MATCH-NUM-WARPS-PER-WORKGROUP")
+         ;; CEILING, matching the design doc's (ceil (get-local-work-size) (get-warp-size)) and the
+         ;; L0 resolver.  A workgroup that is not a whole multiple of the warp still has a final
+         ;; PARTIAL warp whose leader writes a slot; floor would size the buffer one element short
+         ;; and that write would land past the end.
+         (ceiling (need-wg) warp))
+        ((string-equal name "MATCH-NUM-WORKGROUPS")
+         (error "Scratch tensor ~a: :size-expr :match-num-workgroups is not implemented yet.~%~
+                 Its value is the grid's group count, which the generated launcher may compute at~%~
+                 RUNTIME from the device's SM count -- so it is not available here.~%~
+                 For now, size this buffer with an explicit integer."
+                param-name))
+        (t
+         (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%~
+                 The sizes this hoister can resolve are :match-workgroup-size and~%~
+                 :match-num-warps-per-workgroup.  (:match-warp-tile is recorded in the metacrisp~%~
+                 for tooling but has no host-side meaning, so it cannot size a buffer here.)"
+                param-name size-expr))))))
+
+(defun %cuda-declared-wg-size (dispatch-info)
+  "Total declared threads per workgroup from DISPATCH-INFO, or NIL when no compile-time local-size
+   was declared.  Reads (local-size :set-to ...) exactly as %emit-launch-base does, so the scratch
+   size and the block size cannot disagree about what the workgroup is."
+  (let* ((local-decl (and dispatch-info (getf dispatch-info :local-size)))
+         (ls-rest    (when local-decl (cdr local-decl)))
+         (ls-set-to  (when ls-rest (getf ls-rest :set-to))))
+    (cond
+      ((integerp ls-set-to) ls-set-to)
+      ((consp ls-set-to)
+       ;; Product of the declared dims, defaulting each missing one to 1.
+       (let ((x (or (first ls-set-to) 1))
+             (y (or (second ls-set-to) 1))
+             (z (or (third ls-set-to) 1)))
+         (and (integerp x) (integerp y) (integerp z) (* x y z))))
+      (t nil))))
+
+;;; NO generate-cuda-launcher HOOK IS NEEDED.  An earlier draft latched the profile's :simd-width
+;;; into a special, which meant re-parsing the metacrisp a second time just to reach the plist,
+;;; since emit-main receives only :compute-units.  Pinning the warp at 32 (see
+;;; %cuda-scratch-warp-size) makes the profile irrelevant here, so the extra parse went away.  The
+;;; workgroup size is the only geometry this needs, and emit-main already has it.
+
+(defun %emit-main-base (stream kernel-name ptx-path declared-sig aliases records &optional dispatch-info compute-units)
   "Generate C++ main function for CUDA Driver API launcher.
 COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units and
 overrides the runtime SM-count query in the grid-size heuristic."
@@ -584,6 +706,22 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "    std::cout << \"Success!\" << std::endl;~%")
     (format stream "    return 0;~%")
     (format stream "}~%")))
+
+(defun emit-main (stream kernel-name ptx-path declared-sig aliases records
+                  &optional dispatch-info compute-units)
+  "Binds the declared workgroup size for the symbolic scratch resolvers, then emits via
+   %EMIT-MAIN-BASE.
+
+   Bound HERE because both resolution points run inside that call -- emit-kernel-args for the
+   extents, compute-total-shared-bytes for the dynamic-shared blob total -- so one binding covers
+   both and they cannot disagree about what the workgroup is.
+
+   Split base-plus-wrapper rather than wrapping the 40-line body in a LET, which is the same shape
+   EMIT-LAUNCH / %EMIT-LAUNCH-BASE already use a few hundred lines down."
+  (let ((*cuda-wg-size* (%cuda-declared-wg-size dispatch-info)))
+    (%emit-main-base stream kernel-name ptx-path declared-sig aliases records
+                     dispatch-info compute-units)))
+
 
 (defun emit-cuda-init (stream)
   "Emit CUDA Driver API initialization."
@@ -671,8 +809,17 @@ overrides the runtime SM-count query in the grid-size heuristic."
                (count (cond ((integerp size-expr) (expt size-expr rank))
                             ((and (listp size-expr) (every (function integerp) size-expr))
                              (reduce (function *) size-expr))
-                            ;; %cuda-scratch-dims hard-errors on anything else, so such a
-                            ;; tensor never reaches an emitter and contributes nothing.
+                            ;; 175: a rank-1 SYMBOLIC size resolves to a count from the declared
+                            ;; geometry.  It belongs in THIS cond rather than in a wrapper, because
+                            ;; this function exists so the sizer and the emitters cannot disagree --
+                            ;; and %cuda-scratch-dims resolves the same size the same way.  Teaching
+                            ;; one and not the other would give a kernel correct extents inside a
+                            ;; blob too small to hold them.
+                            ((and (%cuda-scratch-symbolic-size-p size-expr) (= rank 1))
+                             (%cuda-resolve-symbolic-size size-expr (getf param :name)))
+                            ;; %cuda-scratch-dims hard-errors on anything still here (a symbolic
+                            ;; size at rank > 1, or a malformed one), so such a tensor never
+                            ;; reaches an emitter and contributes nothing.
                             (t nil))))
           (when count (values (* count elem-bytes) :tensor)))
         (let ((count (if (%array-type-p (cell-base-type param-type))
@@ -792,9 +939,23 @@ overrides the runtime SM-count query in the grid-size heuristic."
 
 (defun %cuda-scratch-dims (size-expr rank param-name)
   "Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE
-   tensor: all RANK dims equal it — e.g. make-scratch-matrix float 4 -> 4x4) or a LIST
-   of RANK integers (a non-square tensor — e.g. make-scratch-matrix float (16 8))."
+   tensor: all RANK dims equal it — e.g. make-scratch-matrix float 4 -> 4x4), a LIST
+   of RANK integers (a non-square tensor — e.g. make-scratch-matrix float (16 8)), or —
+   at rank 1 only — a SYMBOLIC keyword size resolved from the declared geometry.
+
+   175: rank > 1 is refused for a symbolic size.  It names ONE length, and the scalar rule below
+   would make a SQUARE tensor of that size in every dimension — for a workgroup-derived size that
+   is wg^rank elements of shared memory (64^3 = 262144 for a 64-thread group), which is never what
+   anyone meant.  The existing rank-3 uses in 074/01 and 074/03 never reached a hoist run to find
+   this out."
   (cond
+    ((%cuda-scratch-symbolic-size-p size-expr)
+     (if (= rank 1)
+         (list (%cuda-resolve-symbolic-size size-expr param-name))
+         (error "Scratch tensor ~a: a symbolic :size-expr (~a) names ONE length, so it is only~%~
+                 meaningful for a rank-1 scratch vector; this tensor has rank ~d.~%~
+                 Give explicit per-dimension extents instead, e.g. (make-scratch-matrix float (8 16))."
+                param-name size-expr rank)))
     ((integerp size-expr) (make-list rank :initial-element size-expr))
     ((and (listp size-expr) (= (length size-expr) rank) (every #'integerp size-expr))
      size-expr)

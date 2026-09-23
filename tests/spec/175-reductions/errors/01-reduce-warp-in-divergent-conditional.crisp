@@ -1,0 +1,47 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "warp collective"
+;;
+;; TEST-EXPECT is FAIL, and no CHECK-FAIL-FLAGS, because this refusal is backend-independent:
+;; %shuffle-check-not-divergent consults only *in-divergent-conditional*, so it fires on the
+;; default pass too.  Modelled on 173-shuffles/errors/04, which is the same check one level
+;; down.  (The TEST-EXPECT: PASS + CHECK-FAIL-FLAGS shape belongs to an error that fires ONLY
+;; under particular flags -- 173 errors/06, whose D7 pinning check is SPIR-V-only and whose
+;; default pass therefore has to succeed.  Using that shape here made the default pass expect a
+;; clean compile and report the correct refusal as a failure.)
+;;
+;; ENDEAVOUR 175 -- reduce-warp is a WARP COLLECTIVE and every lane must reach it.  TDD.
+;;
+;; reduce-warp is built from shuffle-xor, so it inherits 173's D6 convergence rule: the lanes
+;; that arrive would be exchanging registers with lanes that never will.  The design doc says
+;; the same thing in its own vocabulary -- the reference implementation carries
+;; (declare (warp-convergent)), "tells compiler cannot be called in divergent branch".
+;;
+;; THE POINT OF WRITING THIS AS ITS OWN SPEC rather than trusting D6 to fire: whether the
+;; rejection happens at all depends on an implementation choice that has not been made yet.
+;; If reduce-warp is a MACRO expanding to shuffle-xor before analysis, D6 fires for free and
+;; the message names `shuffle-xor` -- a construct the user never wrote.  If it is an analyzed
+;; form of its own, it needs its own convergence check.  Either way this spec must pass, and
+;; whichever way it is built, the error a user sees should mention reduce-warp, not the
+;; primitive it expanded into.
+;;
+;; The gate is on (get-local-id), which is genuinely thread-divergent WITHIN a warp.  A
+;; workgroup-uniform condition (if+ / when+, or one on get-workgroup-id) is fine and is NOT
+;; what this spec is about; neither is a 139 warp-specialization role block, where every lane
+;; of any one warp takes the same role and a warp collective stays converged.
+;;
+;; Named neutrally: CHECK-FAIL matches against the kernel name and the FILE name too, so a
+;; kernel called something like `divergent_warp_collective` would satisfy the check without
+;; the compiler ever emitting a diagnostic.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel gated_sum (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (warp-lane))))
+    ;; Thread-divergent: only the first half of each warp enters.
+    (when (< (to-int (get-local-linear-id)) 8)
+      (reduce-warp #'+ contrib 0.0))
+    (when (= (to-int (warp-lane)) 0)
+      (set! (~ out (to-int (warp-id))) contrib))))

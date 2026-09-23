@@ -11,7 +11,7 @@ Example: `(let ((old (atomic-add! (~ result 0) 1))) ...)`
  This example adds 1 to the first element of the result vector. The variable `old` will
  have whatever was in `(~ result 0)` before the addition occured.
 
-#### atomic-sub!
+#### atomic-sub! ✅
 Subtracts a value from a memory location, updating it. This routine returns the value BEFORE this modification..
 
 Syntax: `(atomic-sub! location delta)`
@@ -101,19 +101,47 @@ of a `def-function`. Use `def-grid-function` instead.
  If writing a `defmacro`, be sure to include `(declare (grid-level))` in its `progn` 
 expansion. 
 
+> ⚠️ **NOT ENFORCED YET (BUG 087).** As of 2026-09-22 a plain `def-function` performing a
+> `:global` atomic compiles cleanly, with no error and no warning -- the refusal described above
+> does not happen. The paragraph records the INTENDED rule, not current behaviour. It matters
+> because a `def-function` is thread-level, so nothing marks the containing dispatch as a grid
+> operation, and both the hoisting code and the uniformity analysis are then working from the
+> wrong premise for any kernel that reaches a global atomic through a helper.
 
 
-<!--
 
-THIS IS BEING REMOVED.  
-
-#### atomic-cas!
-(Compare-and-Swap) Compares the value at a memory location with an expected value. If they are the same, it writes a new value. The old value is always returned. This is the most powerful atomic primitive and can be used to build any other atomic operation.
+#### atomic-cas! ✅
+(Compare-and-Swap) Compares the value at a memory location with an expected value. If they are the
+same, it writes a new value. **The old value is always returned**, as with every other Crisp atomic,
+so the caller detects success by comparing the returned value against the one it expected. This is
+the most powerful atomic primitive, and every other atomic can be built from it.
 
 Syntax: `(atomic-cas! location expected-value new-value)`
 
 Example: `(atomic-cas! (~ current-value-vec 0) 0 1)`
--->
+
+**You cannot spin on it, and that is deliberate.** A CAS is normally used in a retry loop -- read,
+compute, swap, and go round again if somebody beat you to it -- and such a loop is unbounded by
+nature. Crisp is intentionally not Turing-complete, so there is no unbounded loop to write it with:
+`while` is not part of the surface language, and `dotimes` / `dotimes+` both take a bound. A retry
+loop you write yourself is therefore necessarily bounded, and you must decide the bound.
+
+**`atomic-binop!` and `atomic-op!` are that loop, already written.** They wrap `atomic-cas!` in a
+bounded retry whose limit is derived rather than guessed -- a CAS fails only because another thread's
+CAS succeeded, and each contending thread needs to succeed just once, so the number of contenders is
+a sufficient bound -- and they assert loudly if it is ever exhausted, because a silently abandoned
+retry is a lost update. Prefer them unless you specifically need a single attempt.
+
+**On floating point, the comparison is on bit patterns.** `cmpxchg` takes only integer operands, so
+a float CAS reinterprets both values at the same width, which is also how CUDA's float `atomicCAS`
+idiom works. Two consequences are worth knowing: `+0.0` and `-0.0` do not match each other, and a
+NaN never matches itself. Both hold for every hardware float CAS.
+
+**Not differentiable.** A CAS returns which thread won a race, which is not a function of the
+program's inputs -- two identical runs can legitimately return different values -- so there is no
+derivative to take. `--differentiate` refuses it rather than returning a gradient of zero, which
+would be indistinguishable from a correct answer. For a differentiable accumulation use
+`atomic-add!`, `(atomic-binop! loc #'+ x)`, or one of the `grid-reduce-*` strategies.
 
 #### Example: Summing a Vector to One Value.
 

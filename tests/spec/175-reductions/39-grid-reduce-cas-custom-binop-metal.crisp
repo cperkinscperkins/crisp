@@ -1,0 +1,47 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 255 1 2 3
+;; SKIP-WITH[--differentiate]: "max is not differentiable by grid-reduce-cas! -- errors/12"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-cas! with an operator that is not +.
+;;
+;; The construct exists FOR this case: any commutative binop, with zero global scratch.  Spec 38
+;; reduces with +, which is exactly the operator that would still work if the binop were being
+;; ignored and + hardwired somewhere.
+;;
+;; THE BINOP MUST REACH TWO PLACES: the reduce-workgroup in phase 1, and the atomic-binop! in
+;; phase 2.  An implementation that threaded it through one and hardwired + into the other passes
+;; spec 38 and fails here -- and this is the strategy where that mistake is easiest to make,
+;; because phase 2 looks like grid-reduce-atomic!'s hardware instruction but is not one.
+;;
+;; 256 threads each contribute their global linear id, so the grid maximum is 255.
+;;
+;; POSITIVE VALUES HERE, unlike specs 28 and 30 which used negatives on purpose.  The reason is
+;; forced and worth stating: grid-reduce-cas! ACCUMULATES into return-vec[0], so that slot's
+;; starting value participates in the reduction, and the harness pre-fills it with 0.  For max
+;; that makes 0 an implicit extra contributor -- harmless when every real value is >= 0, and
+;; wrong if any were negative.  It also means this spec cannot test the identity plumbing the way
+;; specs 28 and 30 do; that difference is a property of accumulate-vs-store, not an oversight.
+;;
+;; A CALLER WANTING max OVER NEGATIVE DATA must seed return-vec[0] with the operator's identity
+;; before the launch.  That is the caller's job for every accumulating strategy,
+;; grid-reduce-atomic! included, and it is the practical cost of needing no scratch buffer.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+;; A user function, not the builtin atomic-max!: the point is that an arbitrary binop reaches
+;; both phases, not that the hardware happens to have this one.
+(def-function cas-max (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel grid_reduce_cas_max (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-cas! #'cas-max contrib 0.0 out :local-scratch-vec sv))))

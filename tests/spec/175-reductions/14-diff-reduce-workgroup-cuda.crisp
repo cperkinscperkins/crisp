@@ -1,0 +1,48 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x16@0:0.01 at.A=0,2 expect.A=64.0 group=64 h=0.5 atol=5e-1 output-mat=4x16
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-21, no NVIDIA box available.  VALIDATE THIS FIRST on
+;; !!! the next pod run before reading a failure here as a compiler defect.  173 spec 12 is the
+;; !!! cautionary case: its unrun directive turned out to be unexpressible by the harness (BUG 067).
+;;
+;; ENDEAVOUR 175 -- the CUDA twin of 09-diff-reduce-workgroup.
+;;
+;; WHY A SEPARATE FILE.  parse-verify-autodiff allows AT MOST ONE VERIFY-AUTODIFF line per spec and
+;; signals "Multiple VERIFY-AUTODIFF directives in one spec" otherwise -- the [CUDA] tag does not
+;; exempt it.  Same reason 173 split 09/13 and 10/14.
+;;
+;; THE EXPECTED DERIVATIVE IS WIDTH-INDEPENDENT, and that is worth stating because most of this
+;; endeavour's expectations are not.  All 64 threads write the total to their own output element, so
+;; sum(C) = 64 * total and d(sum C)/dA = 64 regardless of whether those 64 threads are 4 warps of 16
+;; or 2 warps of 32.  The number 64 here is the THREAD COUNT, not the warp width -- contrast
+;; 01-diff-shuffle-broadcast, whose 16.0 IS the warp width and would become 32.0 on NVIDIA.
+;;
+;; WHAT THIS TWIN ACTUALLY TESTS, given the value does not move: that the SEMANTIC VJP survives the
+;; PTX path.  The backward pass emits a second reduce-workgroup on the adjoint (an all-reduce is
+;; self-transposing), which means another scratch round-trip and another set of barriers in the
+;; _GRAD kernel -- through the CUDA hoister's single-blob shared-memory layout rather than L0's
+;; per-tensor allocations.  Getting 64.0 on BMG says the derivative is right; getting it here would
+;; say the derivative survives a different host-side memory model.
+;;
+;; THE SCRATCH IS SIZED 2, NOT 4, and the difference is load-bearing.  BUG 074 means
+;; verify-autodiff-runner.lisp cannot resolve a symbolic size, so the count is written by hand --
+;; and the correct hand-written count is ceil(64/32) = 2 on NVIDIA where spec 09 uses 4 for
+;; ceil(64/16) on BMG.  An EXACT size is chosen deliberately over a safely-oversized one: 4 would
+;; also work here (the sweep only touches slots 0..num-warps-1), so it would hide an off-by-one in
+;; the warp count, whereas 2 turns that mistake into an out-of-bounds write.  Restore the symbolic
+;; form in both specs when the runner grows a resolver.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_reduce_workgroup_cuda (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 2)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((v (~ A row col)))
+          (reduce-workgroup #'+ v 0.0 :local-scratch-vec sv)
+          ;; Every thread writes the total, so sum(C) = 64 * total.
+          (set! (~ C row col) v))))))

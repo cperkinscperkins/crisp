@@ -1,0 +1,57 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-vec=1
+;;
+;; This spec was compile-only for a while: BUG 084 stopped VERIFY-AUTODIFF launching any kernel
+;; that declared global scratch, which is every stage-2 reduction there is.  The harness bound
+;; every implicit scratch param as workgroup-local SLM, so the ticket counter arrived as a bogus
+;; addrspace(1) pointer and the first write took the device down.  Fixed by dispatching on the
+;; address space the metacrisp already recorded; the number below is measured, not asserted.
+;;
+;; ENDEAVOUR 175 -- the VJP of grid-reduce-last-man!.
+;;
+;; out[0] is the sum over the whole grid, so d out / d x = 1 for every thread and the adjoint is
+;; a plain broadcast of the output cell -- xbar_t = outbar[0].  Identical to grid-reduce-atomic!'s
+;; rule, and that identity is the interesting part rather than a coincidence: the two constructs
+;; compute the SAME FUNCTION by wildly different schedules, and a derivative depends on what is
+;; computed, not on how the work was divided.  The whole last-man apparatus -- the global
+;; partials, the ticket, the election, the single sweeping workgroup -- leaves no trace in the
+;; backward pass at all.
+;;
+;; ONE WORKGROUP HERE, deliberately.  The input has 64 elements and VERIFY-AUTODIFF launches one
+;; thread per element, so a multi-workgroup launch would have threads reading past the end.  Spec
+;; 25 covers the multi-workgroup forward path on metal (4 workgroups, 32640, with the election
+;; measured).  The VJP does not vary with workgroup count -- it is a broadcast either way -- so
+;; the single-workgroup case is the right place to pin the NUMBER.
+;;
+;; With one workgroup last-man degenerates gracefully: num_groups-1 = 0, the sole workgroup draws
+;; ticket 0, elects itself, and sweeps its own single partial.  That is worth exercising in its
+;; own right -- an off-by-one in the ticket comparison would make NO workgroup elect itself and
+;; the result would never be stored.
+;;
+;; output-vec=1 with a MATRIX input, which does produce a real finite difference.  (BUG 078 is
+;; about a vector INPUT, not a vector output -- an error in the original diagnosis, corrected.)
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel diff_grid_reduce_last_man (A &out out)
+  (declare #'(mat-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((v (~ A row col)))
+          (grid-reduce-last-man! #'+ v 0.0 out
+                                 :local-scratch-vec sv
+                                 :global-scratch-vec gv
+                                 :atomic-counter ctr
+                                 :election-flag-cell flag))))))

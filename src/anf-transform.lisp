@@ -334,7 +334,9 @@
         ((and (symbolp op)
               (member (symbol-name op)
                       '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"
-                        "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!")
+                        "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!"
+                        ;; Endeavour 175 -- see the header above this definition.
+                        "ATOMIC-CAS!" "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
                       :test #'string=))
           (%anf-normalize-atomic op expr is-nested?))
         (t

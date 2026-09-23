@@ -1,0 +1,59 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 30720 1 2 3
+;; SKIP-WITH[--differentiate]: "composition of forward constructs; the VJPs have their own specs"
+;;
+;; ENDEAVOUR 175 -- reduce-warp feeding grid-reduce-cas!.  The LAST hole in the composition matrix.
+;;
+;; With this, every stage-1 -> stage-2 pairing that is meaningful is covered:
+;;
+;;   reduce-warp -> grid-reduce-atomic!        spec 20  (+ spec 23 differentiated)
+;;   reduce-warp -> grid-reduce-last-man!      spec 27  (+ spec 49 on CUDA)
+;;   reduce-warp -> grid-reduce-cas!           THIS SPEC (+ spec 53 on CUDA)
+;;   reduce-warp -> grid-reduce-second-stage!  MEANINGLESS -- see below
+;;
+;; WHY SECOND-STAGE IS NOT A GAP.  It OVERWRITES its var from the partials vector before reducing,
+;; so whatever a preceding reduce-warp computed is discarded on the next line.  A spec for it would
+;; assert that an ignored value is ignored.  Recorded here so nobody later reads the matrix as
+;; three-of-four and goes looking for the fourth.
+;;
+;; AND WHY reduce-workgroup -> anything IS REDUNDANT: all three of atomic, last-man and cas already
+;; contain a reduce-workgroup internally, so feeding them a workgroup-reduced value just multiplies
+;; the total by the workgroup size.  That over-count is expressible and is exactly what these
+;; warp-level compositions already demonstrate, one level down.
+;;
+;; THE ARITHMETIC, deliberately not a plain sum of the inputs, so the composition is distinguishable
+;; from either half alone:
+;;
+;;   lane L of a 16-lane bmg warp contributes L
+;;   reduce-warp        -> every lane of every warp now holds 0+1+...+15 = 120
+;;   grid-reduce-cas!   -> 256 threads each contributing 120 = 30720
+;;
+;; Drop the reduce-warp and the grid sums raw lane ids (1920); drop the grid reduction and the
+;; buffer keeps its pre-fill.  Both are far from 30720 and from each other.
+;;
+;; THE SAME NUMBER AS SPECS 20 AND 27, which is the point rather than a coincidence: four
+;; strategies computing one function should agree.  What separates them is how they FAIL -- cas!
+;; asserts if its retry bound is exhausted, last-man leaves the pre-fill if no workgroup elects
+;; itself, and atomic! cannot fail either way.
+;;
+;; THE MULTIPLIER IS THE WARP WIDTH, so 30720 is bmg-specific; the CUDA twin reads 126976.
+;;
+;; The reduce-warp runs UNCONDITIONALLY in every lane -- it is a warp collective and gating it is
+;; refused (errors/04).  Only the grid reduction elects a leader, inside the construct.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel compose_warp_into_cas (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (warp-lane))))
+      ;; Stage 1: every lane ends up holding its warp's total.
+      (reduce-warp #'+ contrib 0.0)
+      ;; Stage 2: that per-warp total is now this thread's contribution to the grid.
+      (grid-reduce-cas! #'+ contrib 0.0 out :local-scratch-vec sv))))

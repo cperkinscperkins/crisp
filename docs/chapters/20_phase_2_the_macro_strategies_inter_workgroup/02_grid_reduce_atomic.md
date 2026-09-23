@@ -1,7 +1,7 @@
-# `grid-reduce-atomic!` 📝
+# `grid-reduce-atomic!` ✅
 
 
-`(grid-reduce-atomic! someFunction <someVar> identity &out return-vec &optional localScratchVec &key message)`
+`(grid-reduce-atomic! someFunction <someVar> identity &out return-vec &key local-scratch-vec message)`
 
 `grid-reduce-atomic!` is the "dead simple" single-pass inter-workgroup reduction. It first reduces the variable locally using `reduce-workgroup` (Phase 1), and then the leader thread of each workgroup safely accumulates its partial result into the global `return-vec` using a native hardware atomic operation (Phase 2).
 
@@ -25,8 +25,13 @@ Attempting to use this macro with any other operation will result in a compilati
 * `<someVar>`: The local variable being reduced.
 * `identity`: The identity value for `someFunction` (e.g., `0` for `#'+`).
 * `return-vec`: A required vector of length 1 (a `single-result`) in `:global` memory where the final value is accumulated.
-* `localScratchVec`: (Optional) Writeable local memory used for the Phase 1 `reduce-workgroup` sweep. Its size must equal the number of warps in a single workgroup. If omitted, Crisp generates it for you.
-* `:message`: (Optional) If Crisp generates the `localScratchVec`, this string is attached to the allocation to inform the hoisting code.
+* `:local-scratch-vec`: Writeable local memory used for the Phase 1 `reduce-workgroup` sweep, one
+  element per warp in the workgroup (`:match-num-warps-per-workgroup` sizes it for you).
+  Required, and allocated by the CALLER -- scratch created inside the construct's own
+  expansion is invisible to the Pass-1 scanner that builds a kernel's implicit parameters, so
+  Crisp cannot generate it for you.  Auto-generation needs that scanner to learn about
+  analyzer-introduced scratch, which is a real feature and not a line of sugar.
+* `:message`: (Optional) String attached to the allocation to inform the hoisting code.
 
 **Post-Conditions & Return:**
 

@@ -2479,3 +2479,828 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         lowering generates a crisp-language LET* form.  Guarded by
         tests/spec/004-let/errors/01-let-star-rejected.crisp.  Five pre-existing specs used
         let* (092/08, 170/26, 170/28, 170/29, 172/08) and were converted to let.
+
+[x] 070 FIXED -- A SYMBOLIC SCRATCH SIZE COMPILED, EMITTED METADATA, AND THEN DIED AT HOIST.
+        (make-scratch-vector float :match-workgroup-size) and its siblings were accepted by the
+        front end and written verbatim into the metacrisp as :size-expr, but NOTHING ever
+        resolved them.  %extract-scratch-size-expr (src/analysis/structs.lisp) takes the size
+        argument as (second args) without examining it, the compiler passes it straight through,
+        and both hoisters then accepted only an integer or a list of integers:
+
+            Error: Scratch tensor sv_from_wg_warp_scratch_1: :size-expr
+                   MATCH-NUM-WARPS-PER-WORKGROUP is neither an integer nor a list of 1 integers.
+
+        So the vocabulary was designed and documented but had no consumer anywhere in the chain.
+
+        WHY IT HID FOR SO LONG.  No spec combined a symbolic size with a hoist run.  074 uses
+        :match-workgroup-size in compile-only specs (074/01's own header admits its validator was
+        never written), and 075 asserts :match-warp-tile in metadata validators that never resolve
+        it either.  Both pass with the feature entirely absent.
+
+        FOUND BY.  Endeavour 175, which needs it: EVERY reduction macro in the design
+        (reduce-workgroup, grid-reduce-atomic!, -cas!, -last-man!, -second-stage!) auto-generates
+        its scratchpad with :match-num-warps-per-workgroup, so none of them could work.
+
+        FIXED.  Endeavour 175, in the HOISTERS rather than the compiler -- deliberately.  Crisp is
+        kernel-only with no runtime: the generated .cpp/.cu is sample host code the user may adapt
+        or discard, and the real launch geometry is chosen by whoever enqueues.  (local-size ...)
+        is author INTENT for fitting the launcher, not a fact to compile against, so folding the
+        size to a literal at compile time would bake in an assumption the host may violate -- a
+        kernel handed a 4-element buffer could be launched with 8 warps and corrupt silently.
+        Guarded by tests/spec/175-reductions/02-scratch-match-num-warps.crisp, which makes the
+        size OBSERVABLE (4 warp leaders stamp their ids, thread 0 sums exactly 4 slots => 6)
+        rather than merely declaring a symbolic vector; verified on BMG.
+        Scoped to RANK 1: a symbolic size names one length, and the scalar rule makes a SQUARE
+        tensor, so rank-3 :match-workgroup-size would mean wg^3 elements of SLM (074/01 and
+        074/03 do exactly that and never noticed).  :match-num-workgroups is refused for now --
+        under :strategy :strided the group count is computed at RUNTIME from the device, so it
+        does not exist at hoist time; it arrives with grid-reduce-last-man!.
+
+[ ] 071 THE TWO HOISTERS RESOLVE SYMBOLIC SCRATCH SIZES DIFFERENTLY.  Not a defect in either
+        backend -- a documented asymmetry, recorded so it is not mistaken for one later.
+
+        L0 emits a C++ EXPRESSION over named geometry constants (wg_size, warp_size), so editing
+        the generated launcher's geometry re-sizes every dependent scratch buffer.  Each local
+        tensor gets its own zeKernelSetArgumentValue(..., bytes, nullptr), so the sizes are
+        independent and an expression costs nothing.
+
+        CUDA folds to an INTEGER from the declared geometry.  All workgroup-local scratch shares
+        ONE dynamic-shared blob: compute-total-shared-bytes sums it, that number becomes the
+        sharedMemBytes launch argument, and each param is handed a running byte offset into it
+        (the BUG 046 fix).  An expression-valued total would break this hoist-time decision in
+        %emit-launch-base, which chooses whether to request the >48KB opt-in:
+
+            (when (and shared-bytes (> shared-bytes 32768))
+              ... cuFuncSetAttribute(..., MAX_DYNAMIC_SHARED_SIZE_BYTES, N))
+
+        That is a decision about a value which, made dynamic, would not exist until launch.
+
+        CONSEQUENCE: retuning a CUDA launcher's block size requires REGENERATING it, because its
+        scratch sizes were fixed when it was generated.  The L0 launcher re-sizes itself.
+        Closing the gap means expression-valued offsets, an expression-valued blob total, and a
+        runtime-conditional attribute call -- reworking the shared-memory path BUG 046 only just
+        stabilised.  Deferred on purpose, not overlooked.
+
+        RELATED WART (L0, same endeavour): the workgroup size appears TWICE in the generated L0
+        launcher -- as wg_size_x/wg_size_y and again as literals in zeKernelSetGroupSize.  Phrasing
+        the call against the constants works but breaks nine STRATEGY-EXPECT directives
+        (089-strategy/10,11,12,13,15,16x2,17 and 118-async-misc/10), which pin that call's literal
+        text -- that being exactly what 089-strategy exists to check.  Updating them is a
+        deliberate change to what the suite pins; until then the emitted comment names the second
+        site so the edit is discoverable.
+
+[x] 072 FIXED -- THE 173 WARP BUILTINS WERE MISSING FROM THE AUTODIFF SKIP LIST, so any
+        differentiated kernel mentioning (warp-size), (warp-id), (warp-lane) or (warp-count)
+        was refused with a message pointing away from the fix:
+
+            Function WARP-SIZE is not differentiable.  Wrap the kernel in 'forward-only'
+            if differentiation is not needed...
+
+        The kernel IS differentiable; a warp width has no derivative, exactly as a local id
+        has none.  %backward-skip-fn-p-145p1 (src/autodiff.lisp) already lists every sibling --
+        GET-LOCAL-ID, GET-LOCAL-LINEAR-SIZE, GET-NUM-GROUPS, SYNC-WORKGROUP and the rest --
+        and endeavour 173 added four more of the same kind without adding them here.
+
+        WHY 173 DID NOT NOTICE.  Every 173 spec using these builtins in a differentiated kernel
+        carries SKIP-WITH[--differentiate] for an unrelated reason, and the two that do
+        differentiate (09, 10) use only shuffle-xor / -up / -down, whose operands are VALUES
+        rather than coordinates.  So no kernel had ever put a warp builtin in the path of the
+        backward walk.  Same shape as BUG 066: 173's forward work was complete and its AD-side
+        registration was not.
+
+        FOUND BY.  Endeavour 175 spec 09, the first differentiated kernel to call (warp-size).
+        FIXED.  Endeavour 175: the four names join the gradient-inert prefix list.
+
+[ ] 073 CROSS-THREAD DATAFLOW THROUGH SCRATCH IS INVISIBLE TO THE AUTODIFF WALK, so a
+        reduction written by hand differentiates to a SILENTLY WRONG gradient.
+
+        MEASURED, not theorised.  tests/spec/175-reductions/09 runs a workgroup sum where all
+        64 threads read the total, so d(sum C)/dA = 64.  On BMG:
+
+            analytical=1.0   numerical=64.00012   diff=63.000122
+
+        The finite difference (ground truth, on hardware) says 64.  The compiler said 1.0 --
+        which is precisely the derivative you get if the reduction were the IDENTITY.  The
+        backward pass lost the whole reduction.
+
+        CAUSE.  The AD walk models SINGLE-THREAD dataflow.  It reverses one thread's
+        instruction stream correctly, but thread j's write to sv[j] being read by thread i is a
+        CROSS-THREAD edge, and no per-thread walk can see it.  The fan-in therefore vanishes and
+        the chain collapses to v -> v.
+
+        THE GENERAL RULE, worth stating because it is not obvious: communication between
+        threads needs a STATED VJP; it cannot be recovered by reversing instructions.
+        reduce-warp differentiates correctly ONLY because shuffle-xor carries an explicit VJP
+        (173) that models the cross-lane transpose.  Shared memory has no such rule.
+
+        SCOPE IS WIDER THAN reduce-workgroup.  Giving reduce-workgroup a semantic VJP fixes the
+        library construct, but a USER who writes their own scratch-based reduction and asks for
+        --differentiate still gets a silently wrong answer.  Open question worth deciding: should
+        the compiler REFUSE to differentiate a kernel whose backward walk crosses a local-scratch
+        write/read pair it cannot transpose, rather than quietly producing a number?  A wrong
+        gradient with no failure is the worst outcome available, and it is what ships today.
+
+        FOUND BY.  Endeavour 175, measuring whether reduce-workgroup's AD could be left to the
+        ordinary backward walk (it cannot).  Spec 09 pins the ANSWER (64) rather than any
+        mechanism, so it stays valid whatever the construct is built from.
+
+[ ] 074 THE VERIFY-AUTODIFF RUNNER IS A THIRD CONSUMER OF :size-expr AND STILL CANNOT RESOLVE A
+        SYMBOLIC SCRATCH SIZE.  BUG 070 taught both hoisters to resolve :match-num-warps-per-
+        workgroup and friends; tests/verify-autodiff-runner.lisp allocates scratch buffers of its
+        own and was missed, so a VERIFY-AUTODIFF spec whose kernel uses a symbolic size dies with
+
+            Runner error: The value :MATCH-NUM-WARPS-PER-WORKGROUP is not of type NUMBER
+
+        That is a RUNNER failure, not a compile or hoist failure, so 070's fix did not cover it
+        and its specs did not catch it.  The runner knows the launch geometry it is about to use
+        (it sets group size itself), so it can resolve these the same way the L0 hoister does.
+
+        FOUND BY.  Endeavour 175 spec 09, which wants the symbolic form and currently hard-codes
+        an explicit 4 with a comment saying why.  Restore the symbolic form when this is fixed.
+
+[x] 075 FIXED -- BUG 066's _GRAD INHERITANCE COPIED THE WHOLE DISPATCH PLIST, so a derivative
+        advertised SCHEDULING declarations nobody gave it.
+
+        066 let a _GRAD kernel inherit its forward twin's dispatch declarations so 156's SPIR-V
+        subgroup pinning could find a local-size.  It copied the entire plist -- but that plist
+        holds more than launch geometry: src/metadata.lisp reads :cluster-size and
+        :cluster-size-decl out of it, and :mma-lowering and :effective-cluster-size live there
+        too.  So the BACKWARD kernel's metacrisp began carrying a cluster size, which
+        152-DSMEM-Cluster/05 exists to forbid:
+
+            the BACKWARD kernel's metacrisp carries :cluster-size.  Scheduling declarations
+            must not propagate into a derivative -- cluster-size says where bytes arrive, not
+            what is computed.
+
+        FIXED by a WHITELIST: a gradient kernel is LAUNCHED like its forward twin, so it
+        inherits :global-size / :local-size / :num-groups, and is not SCHEDULED like it, so
+        everything else stays behind.  Deliberately a whitelist rather than a blacklist -- a new
+        scheduling key added to the plist later must not start leaking into derivatives because
+        nobody remembered to exclude it.
+
+        WHY IT SURVIVED SO LONG.  The check is a --metadata validator on the BACKWARD kernel, so
+        it runs only in the --differentiate phase -- which CI runs and local work usually does
+        not.  173's overlay carried the same over-broad copy from the start; folding 066 into
+        src/ preserved it rather than introducing it.
+
+        FOUND BY.  Endeavour 175, running the full --differentiate phase after touching shared
+        autodiff code (the 072 skip list and the reduce-workgroup VJP).  Worth the habit: three
+        of this endeavour's findings -- 066, 072 and this -- are all cases where the forward
+        work was complete and the AD-side consequence went unrun.
+
+[x] 076 FIXED -- A WARP COLLECTIVE INSIDE ANY SUB-FUNCTION WAS REFUSED ON SPIR-V, even when the calling
+        kernel is perfectly pinnable.  173's D7 check is applied at the wrong SCOPE.
+
+            this kernel uses a shuffle, but its SPIR-V subgroup size cannot be pinned...
+
+        %173-subgroup-pinned-p looks up *kernel-dispatch-declarations* under the name of the
+        function CURRENTLY BEING GENERATED.  For a helper that is the helper's own name, which
+        has no dispatch declarations, so the lookup returns NIL and the calling kernel's
+        (local-size :set-to 64) is never consulted.  Subgroup size is a KERNEL execution mode;
+        a sub-function does not have one.
+
+        ISOLATED with plain #'+ and no templating -- a four-line helper that calls reduce-warp
+        and a one-kernel caller.  Nothing to do with binops or higher-order functions; those
+        merely make it unavoidable.
+
+        WHAT IT BLOCKS.  Any library factoring of a warp reduction, and specifically the
+        monomorphized-binop pattern Crisp is built for: a def-function taking #'(T T => T) and
+        forwarding it to reduce-warp cannot be compiled at all.  Guarded by
+        tests/spec/175-reductions/11, which is RED.
+
+        THE FIX IS A SCOPE DECISION, not a one-liner, because D7 guards a real hazard: on Intel
+        an unpinned kernel runs at a driver-chosen width and a reduction compiled for another
+        width returns a WRONG ANSWER rather than failing.  Three candidates:
+
+          (A) skip D7 for non-entry-point functions.  Helpers compile; but a kernel whose
+              shuffle lives ONLY inside a helper then escapes the check entirely -- the exact
+              hole D7 exists to close.
+          (B) make it a KERNEL property by reachability: mark functions that shuffle during
+              analysis (where *call-graph*, src/analysis/core.lisp, is live), then at codegen
+              require pinning of any kernel that reaches one.  Correct; the most work.
+          (C) module-conservative: if anything in the module shuffles, every kernel must be
+              pinnable.  Safe and cheap, but refuses a module that merely happens to contain an
+              unrelated unpinnable kernel.
+
+        FOUND BY.  Endeavour 175, writing tests for custom binops at Chris's request.  The
+        custom-binop path itself is fine -- spec 10 runs reduce-workgroup with a user-defined
+        max on hardware (63 63 63 63).  It is the FORWARDER that cannot compile.
+
+        FIXED.  Endeavour 175 took route (B): D7 is now asked ONCE PER KERNEL over the CALL
+        GRAPH -- a kernel that transitively reaches a warp collective must have a pinned
+        subgroup size.  %175-reaches-warp-collective-p walks *call-graph* from the kernel
+        (cycle-safe) and scans each function's stored body in *fn-normalized-info* for a
+        collective operator; both are endeavour 120's tables, used here for the same
+        interprocedural purpose.  The check runs in
+        %emit-spirv-subgroup-size-execution-mode, which already runs per kernel and already
+        computes pinnability, and the per-shuffle check in %shuffle-check-pinned became a no-op.
+
+        STRICTLY MORE COMPLETE than what it replaced, which is the point: the per-shuffle form
+        could only see the function it was generating, so once helpers were allowed at all, a
+        kernel whose only shuffle lived in a helper would have escaped D7 entirely.  The scan is
+        syntactic and over-approximates (a shuffle in a branch that never runs still counts),
+        which is the safe direction for a guard whose failure mode is a wrong answer.
+
+        Guarded by tests/spec/175-reductions/11 (now green on hardware: 15 120 2 3, two
+        instantiations of one forwarder) and by 173-shuffles/errors/06, which still refuses an
+        unpinnable kernel and pins the original "cannot be pinned" wording.
+
+[x] 077 FIXED -- atomic-add! INTO AN &out PARAMETER PRODUCED A ZERO GRADIENT, SILENTLY.  A grid-level
+        accumulation compiles under --differentiate and returns analytical=0.0 where the true
+        derivative is 1.0.
+
+        MEASURED.  tests/spec/175-reductions/16 is four lines: each of four threads atomically
+        adds its own input element into out[0], so out[0] = SUM of A and d(out[0])/dA[2] = 1.0
+        exactly -- independent of thread count, warp width, and accumulation ORDER, which matters
+        because atomics do not guarantee order.  The harness reports
+
+            FAIL (A: analytical=0.0 expected=1.0 diff=1.0 > atol=0.01)
+
+        Not wrong by a factor: the gradient never flows back to the input at all.
+
+        CAUSE.  The autodiff machinery knows atomic-add! only as a WRITTEN PLACE -- it appears in
+        the primal-replay place collector (src/autodiff.lisp, alongside SET! and the other
+        atomics) so a replay knows the location was touched.  Nothing propagates a derivative
+        through it.  The two other mentions of ATOMIC-ADD! in that file are the MMA VJP EMITTING
+        one to accumulate gradients, not differentiating a user's.  It is not on the
+        gradient-inert skip list either, which would at least have been a deliberate choice --
+        it simply has no backward rule.
+
+        SAME CLASS AS BUG 073, one level up.  073 is cross-THREAD dataflow through shared scratch
+        being invisible to a per-thread backward walk; this is cross-WORKGROUP dataflow through a
+        global atomic, invisible for the same reason.  The general rule stands: communication
+        between threads needs a STATED derivative and cannot be recovered by reversing
+        instructions.
+
+        CONSEQUENCE FOR grid-reduce-atomic!.  Its phase 2 is exactly this atomic, so the construct
+        cannot be differentiated by COMPOSITION of its parts, which was the plan: reduce-workgroup
+        now has a correct VJP (spec 09) and the atomic does not.  It needs a stated VJP of its own,
+        the same way reduce-workgroup did.  The rule is simple -- out = SUM over the whole grid of
+        x_t, so xbar_t = outbar[0] in every thread, a broadcast of one global cell needing no
+        communication at all.
+
+        THE USER-FACING TRAP IS WIDER than the reduction library.  Anyone hand-writing a
+        grid-level accumulation with atomic-add! and asking for --differentiate gets zeros with no
+        diagnostic.  Worth deciding, with 073, whether the compiler should REFUSE to differentiate
+        an atomic write it has no rule for rather than quietly returning nothing.
+
+        FOUND BY.  Endeavour 175, checking grid-reduce-atomic!'s dependencies before implementing
+        it.  The construct's forward path is otherwise ready: (grid-level) / (workgroup-level)
+        declarations already exist and are enforced by %check-context-declarations, and
+        atomic-add! / -min! / -max! are all registered.
+
+        CONFIRMED BY A/B, because the first measurement used a harness path that turned out to be
+        unreliable on its own (VERIFY-AUTODIFF with output-vec reports `expected=` rather than
+        `numerical=` -- it does not compute a finite difference, so it could not corroborate).
+        Re-run with output-mat, which does compute one, and with the rule toggled:
+
+            rule OFF:  analytical=0.0  numerical=1.0      <- the defect
+            rule ON :  analytical=1.0  numerical=1.0      <- fixed
+
+        The hardware finite difference is ground truth in both rows, so the bug was real and the
+        fix is verified rather than merely plausible.
+
+        FIXED.  Endeavour 175 registers VJPs for the atomics, split by whether the operation is
+        LINEAR in its value argument:
+
+          atomic-add!  ->  vbar += adj(place)        linear, coefficient +1
+          atomic-sub!  ->  vbar -= adj(place)        linear, coefficient -1
+          atomic-inc! / -dec!  ->  :inert            no value argument; the increment is a
+                                                     constant, so zero really IS the gradient
+          atomic-min! / -max!  ->  REFUSED           the adjoint routes only to the thread that
+                                                     supplied the winning value, which needs an
+                                                     argmin/argmax the forward pass never records
+          atomic-xchg! / -set! / -cas!  ->  REFUSED  two outputs, or a conditional write
+
+        THE RULE WAS ALREADY WRITTEN DOWN, which is what made it cheap: %gfw-process-set! emits
+        exactly `(set! v_adj (+ v_adj (~ t_GRAD i)))` for (set! (~ t i) v), and `out[i] = v` and
+        `out[i] += v` have the SAME derivative with respect to v.  ONE DIFFERENCE was easy to miss
+        by copying: in the SCRATCH branch %gfw-process-set! also ZEROES the destination adjoint,
+        because a set! destroys the old value.  An atomic-add! accumulates onto it, so zeroing
+        there would drop a real contribution -- it is deliberately absent.
+
+        Guarded by tests/spec/175-reductions/16, which pins the NUMBER (1.0) against a finite
+        difference rather than merely compiling.
+
+[ ] 078 VERIFY-AUTODIFF DOES NOT COMPUTE A FINITE DIFFERENCE FOR A VECTOR INPUT (A=[...]), so
+        such a spec checks the analytical gradient against the DIRECTIVE's own expectation and
+        nothing else.  The report reads `analytical=X expected=Y` where a matrix-input spec reads
+        `analytical=X numerical=Y`.
+
+        CORRECTED 2026-09-22.  This entry originally blamed output-vec, which is WRONG: spec 23
+        uses `A=4x16 ... output-vec=1` and does get a finite difference.  The axis is the INPUT --
+        a matrix input is differenced, a vector input is not.  The original diagnosis came from
+        spec 16's first draft, which changed input and output shape together and so could not
+        separate them.  Two variables, one experiment.
+
+        That is a weaker test than it looks: the whole value of VERIFY-AUTODIFF is corroborating
+        the compiler against an independent measurement on hardware, and with output-vec there is
+        no independent measurement -- only the author's arithmetic, which is exactly the thing
+        most likely to be wrong in a subtle case.
+
+        FOUND BY.  Endeavour 175 spec 16, first written with output-vec=1 because the design doc
+        specifies grid-reduce-atomic!'s return-vec as a length-1 vector.  It reported
+        analytical=0.0 with no numerical column; the spec was rewritten to output-mat=4x16, which
+        produced the finite difference that made the A/B above conclusive.  Sibling of BUG 074 --
+        both are the VERIFY-AUTODIFF runner being narrower than the directive surface suggests.
+
+[ ] 079 A COMPARISON AGAINST (get-local-id 0) IS UNRELIABLE ON SPIR-V -- the branch is never
+        taken, and whether it misbehaves depends on what ELSE in the kernel reads the builtin.
+
+        MEASURED on BMG.  One kernel, two elections, both plain (set! (~ out i) <literal>):
+
+            (when (= (to-int (get-local-id 0))      0) (set! (~ out 0) 11.0))   -> NOT taken
+            (when (= (to-int (get-local-linear-id)) 0) (set! (~ out 1) 22.0))   -> taken once
+
+        giving `BUFFER out: 0 22 2 3`.  A counting probe confirms it directly: with
+        atomic-add! counting the threads that pass, (get-local-id 0) == 0 elects ZERO of 64
+        threads while (get-local-linear-id) == 0 elects exactly one.
+
+        THE VALUE PATH IS FINE -- only the comparison misbehaves.  The same probe wrote
+        (to-float (get-local-id 0)) for the thread whose linear id is 5 and read back 5.
+
+        NOT VISIBLE IN THE LLVM IR, which is what makes it nasty.  The two forms compile to
+        structurally identical IR -- the same addrspace(1) builtin global, the same
+        `extractelement <3 x i64> ..., i32 0`, the same `icmp eq i32 ..., 0`, the same branch.
+        So the divergence happens AFTER LLVM IR: in the LLVM->SPIR-V translation or the -O3 pass
+        that runs on that path.  Compare BUG's-worth of precedent in o3-strips-spirv-decorations:
+        -O3 is already known to discard SPIR-V decorations and to need them re-attached after.
+
+        CONTEXT-DEPENDENT, which is why it went unnoticed.  tests/spec/175-reductions/07 used
+        this exact comparison (via when-thread-in-group-is) and PASSED on hardware -- its body
+        reads get-local-linear-id, and something about that keeps the election honest.  Removing
+        the read, or putting a second election in the same kernel, makes it fail.  So a spec can
+        pass for a reason unrelated to the property it claims to test.
+
+        WORKED AROUND, NOT FIXED.  Endeavour 175's when-thread-in-group-is now elects on
+        (get-local-linear-id) instead, which is also the better spelling for a 1-D election --
+        the flattened index is unambiguous whatever the workgroup's dimensionality.  ideal_001.md
+        specifies the form as an implicit (when (= someId (get-local-id 0)) ...), so the doc
+        wants amending too.  The underlying defect remains for any user who writes the
+        comparison by hand.
+
+        FOUND BY.  Endeavour 175 building grid-reduce-atomic!, whose leader election is exactly
+        this shape.  The first multi-workgroup kernel in the endeavour accumulated NOTHING; the
+        trail ran through the atomic, the reduction and the launch geometry before landing here.
+
+[x] 080 FIXED -- A FLOAT ATOMIC MIN/MAX COULD NOT BE TRANSLATED TO SPIR-V AT ALL.  compile-to-spirv
+        enabled SPV_EXT_shader_atomic_float_add unconditionally and
+        SPV_EXT_shader_atomic_float16_add when needed, but float atomic MIN/MAX is a THIRD,
+        separate extension -- SPV_EXT_shader_atomic_float_min_max -- which nothing requested.
+        llvm-spirv then refused the module:
+
+            Tool invocation failed: ... llvm-spirv.exe
+            --spirv-ext=+SPV_EXT_shader_atomic_float_add ... exited with error code 18
+
+        a message that names the extension which IS enabled and says nothing about the missing
+        one, so it reads as a generic tool failure.
+
+        FIXED by a predicate in the same shape as %ll-uses-fp16-atomic-fadd-p: scan the emitted
+        .ll for `atomicrmw` and ` fmin `/` fmax ` on the SAME line and add the flag.  Narrow on
+        purpose -- an INTEGER atomic min/max needs no extension and must not raise it.
+
+        FOUND BY.  Endeavour 175 adding tests for the other two operators of grid-reduce-atomic!.
+        Its legal set is exactly {+, min, max} because phase 2 is one native instruction, and
+        until now only + was reachable: min/max were blocked FIRST by Crisp having no scalar
+        min/max binop, and then by this.  Both halves are now covered on metal (specs 18 and 19,
+        255 and -255).
+
+        NOTE: this was reachable long before 175 -- any kernel calling (atomic-min! ...) on a
+        float hits it.  082-atomics/05 and /06 use CELLS of int, which is why the suite never did.
+
+[x] 081 FIXED -- reduce-warp DIFFERENTIATED TO THE IDENTITY -- analytical=1.0 where the hardware finite
+        difference says 16.0 (the warp width).  A SILENTLY wrong gradient.
+
+        MEASURED.  tests/spec/175-reductions/24 reduces a 4x16 matrix within each warp and writes
+        the result back, so every element is counted once per lane of its warp:
+
+            analytical=1.0   numerical=16.00003   diff=15.0000305
+
+        1.0 is the derivative of the IDENTITY: the fan-out never happened.
+
+        THE ASSUMPTION THAT FAILED, stated plainly because it was mine and it sounded right:
+        reduce-warp is a MACRO expanding to a shuffle-xor butterfly, shuffle-xor carries an
+        explicit VJP (173), therefore AD falls out for free.  It does not.  The expansion is an
+        IN-PLACE mutation inside a loop --
+
+            (dec-times-by-half+ (s warp/2) (set! v (+ (shuffle-xor v s) v)))
+
+        -- and reversing that is not the same problem as reversing a single shuffle-xor.  Same
+        family as BUG 073: a construct whose cross-thread behaviour lives in its EXPANSION rather
+        than in a stated rule.
+
+        WHY NOTHING CAUGHT IT.  Specs 03/04/05 exercise reduce-warp on metal but all carry a
+        differentiate-skip for unrelated reasons, and every AD spec in the endeavour went through
+        reduce-workgroup (which has its own VJP) or a bare shuffle.  reduce-warp's own AD had
+        never been measured.
+
+        FOUND BY.  Endeavour 175, adding COMPOSITION tests at Chris's request -- spec 23 chains
+        reduce-warp into grid-reduce-atomic! and read 1.0 against a measured 16.0, which sent the
+        question back to reduce-warp alone (spec 24).  Testing the rungs together found what
+        testing them separately had not.
+
+        LIKELY FIX, by the precedent this endeavour has already set twice: make reduce-warp an
+        ANALYZED FORM with a stated VJP instead of a macro.  A warp all-reduce is a fan-in
+        followed by a fan-out, so it is SELF-TRANSPOSING -- the backward pass is another
+        reduce-warp on the adjoint, exactly as reduce-workgroup's is.  That also removes it from
+        the list of constructs needing a package.lisp change, since an analyzer needs none.
+
+        FIXED as predicted: reduce-warp is now an ANALYZED FORM carrying a stated VJP instead of
+        a macro, so the backward walk applies a rule rather than reversing a butterfly.
+
+            spec 24 (alone)     analytical=16.0  numerical=16.00003
+            spec 23 (composed)  analytical=16.0  numerical=16.0
+
+        active-threads is deliberately DROPPED in the backward: a partial reduction seeds the
+        inactive lanes with the identity, so their adjoints are zero and reducing the adjoint
+        across the full warp is still correct.
+
+        CONSEQUENCE FOR THE FOLD-BACK: reduce-warp no longer needs a package.lisp change.  An
+        analyzer is registered under both package symbols by name; only a MACRO needs the symbols
+        to be identical.  That leaves when-thread-in-warp-is / when-thread-in-group-is as the
+        only forms in this endeavour requiring one.
+
+[ ] 082 mem-fence IS REFUSED IN DIVERGENT CONTROL FLOW THOUGH IT IS NOT A COLLECTIVE -- but
+        that check is LOAD-BEARING for sync-wait, so the fix is not a blanket exemption.
+
+        %analyze-gpu-builtin routes :sync-workgroup, :sync-warp, :mem-fence and :sync-cluster
+        through %warp-spec-check-sync, which -- outside a warp-specialization block -- handed all
+        four to %tlc-check-not-divergent.  So a fence inside any thread-divergent conditional was
+        refused with a claim that is FALSE for a fence:
+
+            MEM-FENCE cannot appear inside a thread-divergent conditional ... It contains an
+            internal sync-workgroup that would deadlock when only some threads enter the branch.
+
+        mem-fence lowers to %ptx-membar-cta (PTX membar.cta) and %gen-spirv-memory-barrier
+        (SPIR-V OpMemoryBarrier, CrossWorkgroup scope, AcquireRelease semantics).  Both are pure
+        MEMORY fences ordering one thread's own accesses; neither waits for anyone, so there is
+        nothing to deadlock.  The wording was inherited from %tlc-check-not-divergent, written
+        for load-tile-at, which genuinely does contain an internal sync-workgroup.
+
+        WHAT IT BLOCKED: publish-then-signal, the standard way to hand data between workgroups --
+        store, fence, then bump a counter -- which is how the design doc writes
+        grid-reduce-last-man! and the only correct place for the fence.  Hoisting it out of the
+        election is a valid workaround but a worse one: every thread then fences to order a store
+        only one of them performed.
+
+        ATTEMPTED AND REVERTED.  Exempting :mem-fence from %warp-spec-check-sync fixes the
+        symptom and breaks something real: sync-wait's lowering goes through the SAME check, and
+        it was the only thing refusing an arrival-barrier WAIT inside a divergent conditional --
+        which genuinely deadlocks.  118-async-misc/errors/02-arrival-sync-divergent caught it on
+        the next negative run (274 -> 273), and the fact that that spec matches on the MEM-FENCE
+        wording is itself the tell: the diagnostic is already attributed to the wrong construct.
+
+        THE REAL FIX is to move the divergence check onto sync-wait, where convergence genuinely
+        is required, and let the fence go free.  Left open rather than half-done.
+
+        NOT BLOCKING grid-reduce-last-man!, which hoists the fence OUT of the leader election.
+        Ordering survives because it is thread 0's OWN program order that carries it: its store
+        precedes its fence precedes its atomic.  The other threads fence for nothing, which costs
+        little and is honest.
+
+[x] 083 FIXED -- make-scratch-* SILENTLY DISCARDED :address-space :global, so a "global" scratch
+        buffer was allocated as PER-WORKGROUP local memory.
+
+        Both branches of %scratch-tensor-canonical-spec ended with
+
+            (append raw-spec '(:address-space :local :align :compact))
+
+        with the address space hardcoded.  (make-scratch-vector float 4 :address-space :global)
+        compiled, emitted metadata reading :address-space :local, and the L0 hoister allocated
+        SLM -- one private copy per workgroup:
+
+            // LOCAL scratch tensor: gv (rank=1, float, 4 elems, 16 bytes)
+            zeKernelSetArgumentValue(kernel, 3, 16ULL, nullptr);
+
+        MEASURED CONSEQUENCE: four workgroups each wrote a distinct partial and the workgroup
+        that swept them saw ONLY ITS OWN -- `0 0 102 0`, where 102 was the sweeper's own value.
+        No error, no warning; the reduction was quietly a quarter right.
+
+        WHAT MADE IT CONFUSING: the atomic COUNTER in the same kernel is a CELL, takes
+        %make-global-scratch-cell's separate path, gets real device memory and IS shared -- so
+        the cross-workgroup ELECTION worked perfectly while the cross-workgroup DATA did not.
+
+        THE HOISTER NEEDED NO CHANGE.  %l0-emit-global-scratch-tensor-arg already existed and the
+        dispatch already routed a non-local tensor with a :size-expr to it (device memory plus the
+        zero-initialised staging mirror from endeavour 166).  Only the analyzer dropped the key.
+
+        FIXED by honouring :address-space, and refusing anything but :local / :global rather than
+        downgrading.  The key is located by SEARCHING FOR IT, not by parsing a plist tail: the
+        keyword tail starts at a different position per form, and a SYMBOLIC SIZE is itself a
+        keyword, so scanning for the first keyword picks up :match-num-warps-per-workgroup.
+
+        FOUND BY.  Endeavour 175's grid-reduce-last-man!, the first construct in Crisp needing
+        cross-workgroup DATA rather than just a cross-workgroup counter.
+
+[x] 084 FIXED 2026-09-22.  VERIFY-AUTODIFF BOUND EVERY IMPLICIT SCRATCH PARAM AS LOCAL, so any :global scratch
+        buffer gets no device allocation and the launch dies
+        with L0 0x70000001 (DEVICE_LOST) at zeCommandQueueSynchronize.
+
+        BISECTED to one binding.  The same kernel, differing only by whether it declares
+        (make-scratch-cell uint :address-space :global):
+
+            with the cell:     FAIL  L0 error 0x70000001 in ZE-COMMAND-QUEUE-SYNCHRONIZE
+            without the cell:  PASS  analytical=1.0 numerical=1.0000019
+
+        No election, no barriers, no reduction involved in the failing case -- a bare kernel that
+        allocates the cell, bumps it once, and atomically accumulates into its output.
+
+        NOT the compiler.  The differentiated kernel BUILDS cleanly and its _GRAD body is correct
+        on inspection (the VJP replaced the construct; the backward contains no replayed election
+        and no atomics).  The failure is in the runner's handling of the implicit parameter.
+
+        TWO HARNESS GAPS WERE FIXED ON THE WAY HERE and are worth distinguishing from this one:
+        BUG 047 (a scratch CELL run through the tensor spec builder) was a real COMPILER bug, and
+        tests/run-specs.lisp's %vad-read-implicit-params had no case for a UINT element type.
+        Both are fixed; this remains.
+
+        BLOCKS.  tests/spec/175-reductions/26 -- the VJP of grid-reduce-last-man!, which needs a
+        global uint cell for its ticket counter, so the construct's derivative cannot be measured
+        against a finite difference at all until this is fixed.  The spec keeps its COMPILE-WITH
+        passes (the backward kernel builds) but its NUMBER is unverified, which given this
+        endeavour's history -- three constructs that compiled and returned wrong gradients
+        silently -- is not a comfortable place to leave it.
+
+        SCOPE CORRECTED, AND ROOT CAUSE FOUND (2026-09-22).  Filed first as "a global scratch
+        CELL", which was too narrow -- I had bisected a kernel that happened to use a cell and
+        stopped there.  A kernel with a global scratch VECTOR and no cell at all (spec 31, the
+        grid-reduce-second-stage! VJP) fails identically, so the trigger is the ADDRESS SPACE,
+        not the shape.
+
+        THE CAUSE IS IN THE HARNESS, in %vad-bind-implicit-param (tests/verify-autodiff-runner.lisp,
+        ~line 718).  Its dispatch branches ONLY on :arg-width -- 3 / 6 / 9 to cell / vector /
+        matrix -- and every branch calls a bind-LOCAL-scratch-* function.  There is no
+        address-space test anywhere in it; its own docstring says so outright ("Everything else is
+        a local scratch tile, dispatched on its physical width").  A :global scratch buffer is a
+        real ptr addrspace(1) parameter that needs a device allocation, so binding it as SLM hands
+        the kernel a bogus global pointer and the first write faults.  That single cause explains
+        both the cell and the vector observation.
+
+        THE METADATA FOR A FIX ALREADY EXISTS.  The metacrisp implicit-param record carries the
+        address space explicitly -- BUG 083's fix is what put it there:
+
+            :implicit-params ((:name "gv_from_diff_second_stage_2"
+                               :type (tensor float 1 :global :compact :last)
+                               :size-expr 8 :address-space :global :range (0 5))
+                              (:name "sv_from_diff_second_stage_1"
+                               :type (tensor float 1 :local :compact :last)
+                               :size-expr 4 :address-space :local :range (6 11)))
+
+        So the fix is a branch on (getf p :address-space): allocate device memory of
+        size-expr * elem-bytes and bind pointer + descriptor, as the L0 hoister's
+        %l0-emit-global-scratch-tensor-arg already does, instead of binding SLM.
+
+        WHY IT MATTERS MORE THAN ONE SPEC.  Every stage-2 reduction needs global scratch by
+        nature -- that is what makes it cross-workgroup.  So as long as this stands, NO grid-level
+        reduction can have its gradient measured against a finite difference, and this endeavour
+        has already produced three constructs (BUG 073, 077, 081) that compiled clean and returned
+        silently wrong gradients.  Compile-only AD specs would have certified all three.
+
+        THE FIX HAD TWO HALVES, and the second was only visible once the first worked.
+
+        (1) BIND BY ADDRESS SPACE.  tests/run-specs.lisp's %vad-read-implicit-params read the
+            address space from the metacrisp and then DROPPED it when building the plist, so the
+            binder never had it.  Carry it through, and dispatch in %vad-bind-implicit-param to
+            new l0-bind-global-scratch-{vector,cell}-arg, which allocate real shared memory and
+            pass a POINTER where the local path passes a null value plus a byte size.
+
+        (2) RE-ZERO BEFORE EVERY LAUNCH, not once at bind time.  With (1) alone, spec 26 went
+            from DEVICE_LOST to a perfect analytical=1.0 against a numerical of exactly 0.0.
+            The cause is that grid-reduce-last-man!'s ticket counter is STATEFUL ACROSS
+            DISPATCHES: zero it once and the first launch elects correctly, but VERIFY-AUTODIFF
+            re-launches the forward kernel once per finite-difference probe, and on every later
+            launch the counter starts at num_groups, nobody draws the winning ticket, and the
+            answer is never stored.  Every probe read back the unperturbed buffer, so the
+            numerical gradient was 0.  %vad-zero-global-scratch now runs from launch-kernel-1d.
+
+        WORTH KEEPING.  Both failure modes -- a wrong address space and stale scratch -- present
+        as a CLEAN-LOOKING NUMBER rather than an error, and the second one produced a gradient
+        pair (1.0 vs 0.0) that reads exactly like a compiler bug in the VJP.  It was not; the VJP
+        was right and the forward was not being re-run.
+
+        MEASURED AFTER THE FIX.  175/26 (last-man) analytical=1.0 numerical=1.0 diff=0.0;
+        175/31 (second-stage) analytical=1.0 numerical=1.0 diff=0.0; all seven VERIFY-AUTODIFF
+        specs in 175 pass, and the pre-existing five are unchanged.
+
+        WHAT IT CAUGHT IMMEDIATELY.  With the harness working, grid-reduce-second-stage! was
+        found to be differentiating to a SILENT ZERO GRADIENT (analytical=0.0, numerical=1.0) --
+        no VJP was registered and nothing had complained.  That is the fourth instance of the
+        BUG 073/077/081 pattern in this endeavour and it would have shipped.
+
+        FOUND BY.  Endeavour 175, writing the AD spec for grid-reduce-last-man!.
+
+[x] 085 FIXED 2026-09-22.  ANF LIFTS AN ATOMIC'S PLACE INTO A TEMP unless the operator is named
+        in one list in anf-transform.lisp, and a VJP that then cannot find its target DECLINES,
+        which is indistinguishable from a gradient of zero.
+
+        SYMPTOM.  atomic-binop! with #'+ returned analytical=0.0 against a numerical 1.0.  No
+        error, no warning.  The fifth silent-zero-gradient of endeavour 175 after 073, 077, 081
+        and grid-reduce-second-stage.
+
+        TWO WRONG THEORIES, both discarded by measurement rather than by reading code:
+
+          * "the VJP is not registered" -- but errors/11's non-+ refusal is raised from that very
+            function and fires correctly, so it was demonstrably running;
+          * "ATOMIC-BINOP! is missing from autodiff.lisp's primal-replay write-set lists" --
+            true, and it WAS missing, but adding it changed nothing.  Kept regardless, because
+            being absent from those lists makes a write look like a read.
+
+        WHAT SETTLED IT.  A control probe first: atomic-add! with an identical let-bound symbol
+        delta measured 1.0 through the SAME helper (%175-vjp-atomic-linear) on the same path,
+        which cleared the rule and its symbol path.  Then one debug log line printed the form the
+        VJP was actually handed:
+
+            (ATOMIC-BINOP! %ANF-T-4 #'+ CONTRIB)
+
+        ANF had hoisted the place (~ out 0) into a temp.  %175-atomic-place-parts finds no target
+        symbol in %ANF-T-4, so the VJP returned nil -- declining, by design, rather than guessing
+        -- and with no rule left the accumulation contributed nothing.
+
+        CAUSE.  anf-normalize dispatches to %anf-normalize-atomic, which preserves the place, ONLY
+        for operators named in an inline list: ATOMIC-ADD! SUB! INC! DEC! MIN! MAX! XCHG! SET!.
+        Anything else falls to the generic branch, which ANFs every argument including the place.
+
+        FIX.  Added ATOMIC-CAS!, %ATOMIC-CAS-OK! and ATOMIC-BINOP! to that list.
+        %anf-normalize-atomic needed no change -- it already accepts a place plus any number of
+        trailing arguments.  Measured after: analytical=1.0 numerical=1.0 diff=0.0.
+
+        THE GENERAL LESSON, worth more than the fix.  A NEW OPERATOR THAT WRITES TO A PLACE NEEDS
+        THREE REGISTRATIONS, not one, and only the first announces itself when missing:
+
+          1. the expression analyzer -- omit it and you get "Unsupported form", loudly;
+          2. anf-transform.lisp's atomic place list -- omit it and its VJP silently declines;
+          3. autodiff.lisp's replay write-set lists -- omit it and a write is read as a read.
+
+        Only (1) fails loudly.  (2) and (3) fail as a plausible number.
+
+[ ] 086 THE AD REPLAY LISTS NAME "ATOMIC-EXCHANGE!", WHICH IS NOT AN OPERATOR CRISP HAS.
+
+        %ad-replay-fill-targets and %ad-replay-read-syms (src/autodiff.lisp ~5276 / ~5332) both
+        list "ATOMIC-EXCHANGE!".  The operator Crisp actually registers is ATOMIC-XCHG!, with
+        ATOMIC-SET! as its alias (see the registration table in src/analysis/ops.lisp ~810).
+        Neither real name appears in either list, so an exchange would be misread as a READ of
+        its place -- exactly the mechanism of BUG 085.
+
+        LATENT, NOT ACTIVE.  It cannot bite today because atomic-xchg!'s and atomic-set!'s VJPs
+        refuse outright, so neither ever reaches the replay machinery.  It becomes live the moment
+        anyone gives either operator a real derivative.
+
+        NOT FIXED DELIBERATELY.  Adding the right names changes replay behaviour for two shipped
+        operators, which wants its own spec rather than a drive-by edit inside an unrelated
+        endeavour.  Noticed while adding ATOMIC-BINOP! to the same two lists for BUG 085.
+
+[ ] 087 THE "ATOMICS ON :GLOBAL MAKE A FUNCTION GRID-LEVEL" RULE IS NOT ENFORCED.
+
+        The design doc states it plainly (see tests/spec/175-reductions/atomic-excerpts.md, the
+        'atomics and grid level operations' section): "Using any atomic operation on :global
+        memory makes the containing function or macro into a grid level operation.  The compiler
+        will emit an error if attempted in the thread level context of a def-function.  Use
+        def-grid-function instead."
+
+        IT DOES NOT.  Measured:
+
+            (def-function thread-level-abuse (v x)
+              (declare #'(vec-t float => float))     ; vec-t is :address-space :global
+              (atomic-add! (~ v 0) x))
+
+        compiles cleanly, exit 0, no warning.  A plain def-function performing a global atomic is
+        accepted where the doc promises refusal.
+
+        SCOPE.  All eight shipped atomics (add/sub/inc/dec/min/max/xchg/set).  PRE-EXISTING --
+        found while checking whether endeavour 175's new atomic-cas! / atomic-binop! needed a
+        grid-level registration, not caused by them.
+
+        atomic-binop! IS refused there, but ACCIDENTALLY and with a misleading message.  Its
+        bounded-retry expansion calls get-global-linear-size, which is kernel-only, so the user
+        sees "GPU built-in 'GET-GLOBAL-LINEAR-SIZE' is only valid inside a kernel (dispatch
+        context)" -- true, but it names an internal detail of an expansion the user never wrote
+        rather than the rule they broke.  Right outcome, wrong reason, and it would stop being
+        the right outcome if the bound were ever derived some other way.
+
+        WHY IT MATTERS rather than being a docs nit: a def-function is thread-level, so nothing
+        establishes that the containing dispatch is a grid operation.  The declaration exists so
+        the hoisting code and the uniformity analysis know what they are looking at, and both are
+        silently working from the wrong premise for any kernel that reaches a global atomic
+        through a helper.
+
+        EITHER the check gets implemented, OR the doc's paragraph is wrong and should be corrected
+        -- this is on the 'implemented/partial/not-implemented emoji' pass either way.  Note the
+        same excerpt marks atomic-binop! and atomic-op! with an implemented tick, and neither
+        existed before 2026-09-22 (atomic-op! still does not).
+
+[x] 088 FIXED 2026-09-22.  mem-fence HAD A DIFFERENT SCOPE ON EACH BACKEND, and grid-reduce-last-man! depends on the
+        stronger one.  PTX is too weak.
+
+            SPIR-V  %gen-spirv-memory-barrier  -> __spirv_MemoryBarrier(1, 520)
+                    MemScope = CrossWorkgroup(1), Semantics = AcquireRelease | CrossWorkgroupMemory
+                    == DEVICE scope.  Correct.
+
+            PTX     %ptx-membar-cta            -> llvm.nvvm.membar.cta -> `membar.cta`
+                    == CTA / WORKGROUP scope.  Too weak.
+
+        Both sites in src/codegen.lisp (~3858 and ~3970) dispatch :mem-fence to those two, so the
+        same Crisp operator means device-scope on one backend and workgroup-scope on the other.
+
+        WHY IT MATTERS.  grid-reduce-last-man! publishes a per-workgroup partial into global scratch
+        and then bumps a ticket counter, and the workgroup that draws the last ticket sweeps every
+        OTHER workgroup's partial.  That is a cross-workgroup publication, so the fence between the
+        store and the counter bump has to order the store for the whole DEVICE.  membar.cta orders it
+        only within the storing CTA, which is precisely not the thread that will read it.
+
+        THE EMITTED PTX IS OTHERWISE CORRECT, which is what makes this subtle -- the ordering
+        survived the lowering, only the scope is wrong:
+
+            st.global.b32        [%rd36], %r42     ; publish this workgroup's partial
+            membar.cta;                            ; <-- should be membar.gl
+            atom.global.add.u32  %r43, [%rd19], 1  ; bump the ticket
+
+        FOUND BY INSPECTION, NOT BY A TEST, and no test would have found it: NVIDIA global writes
+        land in a device-coherent L2 and the atomic acts as a de facto ordering point, so the kernel
+        would very likely produce the right answer anyway.  It would pass, by luck, and the luck
+        would be a property of the cache hierarchy rather than of the memory model.
+
+        THE BMG RESULTS ARE NOT AFFECTED and remain valid evidence -- SPIR-V already fences at
+        CrossWorkgroup scope.  This is a PTX-only defect.
+
+        FIX.  New %ptx-membar-gl emitting llvm.nvvm.membar.gl, and the live
+        generate-node-ir (semantic-gpu-builtin) -- the SECOND of the two defmethods in codegen.lisp;
+        the first sits inside a #| |# block -- extracted verbatim with that one call substituted in
+        its :mem-fence branch.  %ptx-membar-cta is deliberately LEFT IN PLACE to serve a scoped
+        fence later.  Verified in the emitted PTX:
+
+            st.global.b32        [%rd36], %r42     ; publish this workgroup's partial
+            membar.gl;                             ; DEVICE scope
+            atom.global.add.u32  %r43, [%rd19], 1  ; bump the ticket
+
+        MY OWN "LIKELY FIX" PARAGRAPH HERE WAS WRONG and is replaced.  It claimed widening the fence
+        would trade correctness in last-man against cost in the async-tile code, and that a scoped
+        (mem-fence :workgroup / :device) was therefore the better answer.  That was speculation.
+        Grepping for the actual users refuted it -- there are three, and ALL THREE are
+        cross-workgroup:
+
+          * sync-wait (src/macros.lisp) spins on a :global counter that OTHER workgroups increment
+            via sync-arrive, so it was under-fenced on PTX too -- a second latent defect this fixes;
+          * grid-reduce-last-man! publishes a partial that a DIFFERENT workgroup sweeps;
+          * grid-reduce-second-stage! exists to consume another LAUNCH's data.
+
+        No async-tile code uses mem-fence at all.  So there was no trade-off to weigh and no scope
+        parameter needed -- raising PTX to match SPIR-V's documented CrossWorkgroup semantics is
+        simply the bug fix.  A stronger fence cannot break correctness either, only cost.
+
+        VERIFIED.  Unit 341/341, E2E default 1256/1256, negative 280/280.  087-gpu-builtins 21/21
+        and 118-async-misc 5/5 were checked first as the fence-sensitive directories.  No spec
+        validator asserted on `membar.cta`, and the SPIR-V path is untouched, so BMG is unchanged.
+
+        FOUND BY.  Endeavour 175, inspecting the PTX of the new CUDA twins (spec 42) BEFORE renting
+        an NVIDIA box -- the compile-time check the rental was supposed to depend on.
+
+[ ] 089 LIBDEVICE IS LINKED WHOLE AND NEVER DEAD-STRIPPED, so one unlowerable intrinsic in a
+        function nobody calls makes the entire module unloadable.
+
+        SYMPTOM.  On an H100 pod run, four specs failed at RUNTIME with "a PTX JIT compilation
+        failed" -- 122-ffi/07-ffi-libdevice, 128-transcendentals/13-sin-ptx-metal,
+        128-transcendentals/14-sin-fast-ptx-metal, 170-hardware-supported-math-ops/43-approx-metal-cuda.
+        The .cu compiled fine (nvcc OK); the driver rejected the PTX module.
+
+        ptxas NAMES IT EXACTLY:
+
+            ptxas 13-sin-ptx-metal.ptx, line 10; fatal : Parsing error near '.nvvm': syntax error
+
+        and line 10 is
+
+            .extern .func (.param .b32 func_retval0) llvm.nvvm.tanh.approx.f32
+
+        An NVVM intrinsic emitted as an EXTERN CALL instead of being lowered to the
+        tanh.approx.f32 instruction.  `.nvvm` is not a legal PTX identifier, so ptxas rejects the
+        whole file and the driver's JIT fails.
+
+        THE CHAIN.  The module carries 370 FUNCTIONS -- essentially all of libdevice -- for a
+        kernel whose only transcendental is sin.  They are all `.visible`, so nothing can dead-strip
+        them.  One of those never-called functions, __nv_fast_tanhf (line 3027), uses
+        llvm.nvvm.tanh.approx.f32, which this LLVM's NVPTX backend does not lower.  The code never
+        executes; ptxas parses the file regardless.
+
+        NOT AN ARCH MISMATCH.  The module is .version 7.0 / .target sm_80, and tanh.approx.f32
+        needs PTX ISA 7.0+ and sm_75+, so it is legal for this target.  The backend simply did not
+        lower the intrinsic.
+
+        LIKELY FIX, and it is what nvcc and clang both do after linking libdevice: run `internalize`
+        keeping only the kernel entry points, then `globaldce`.  That drops all 370 unused libdevice
+        functions, so __nv_fast_tanhf never reaches PTX -- and the emitted modules get dramatically
+        smaller as a side benefit.  (As always, treat this fix line as a hypothesis: the OBSERVATION
+        above is measured, the remedy is not yet tested.)
+
+        WHY IT PASSED THE DAY BEFORE is NOT established and is deliberately not guessed at here.
+        The libdevice file on the pod is dated Feb 2025, so it is not a new toolkit.  Candidates
+        worth checking: whether the opt pipeline's internalize/DCE behaviour changed, and how
+        `.target` is selected.
+
+        WHY NO LOCAL RUN CATCHES IT.  All three directories pass on the BMG box (81 specs) because
+        nothing there JITs the PTX -- Crisp only GENERATES it.  This class of defect is invisible
+        without NVIDIA hardware, which is the argument for the pod run rather than against it.
+
+        NOT ENDEAVOUR 175.  No reductions, atomics, fences or CAS are involved; the failures are
+        confined to the libdevice link path.
+
+        FOUND BY.  Reading the emitted PTX on the pod -- four ssh round-trips and one compile, no
+        suite run.

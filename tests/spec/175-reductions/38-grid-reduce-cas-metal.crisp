@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP has its own spec"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-cas!, the fourth and last stage-2 strategy.
+;;
+;;   (grid-reduce-cas! fn var identity return-vec :local-scratch-vec sv)
+;;
+;; reduce-workgroup, then each workgroup's leader accumulates its partial into return-vec[0] with
+;; atomic-binop! -- a bounded CAS retry loop.  ZERO GLOBAL SCRATCH, which is the whole point: it is
+;; the low-memory escape hatch for an operator that has no native atomic.  The cost is contention,
+;; since every leader hammers the same address.
+;;
+;; 256 threads in 4 workgroups each contribute their global linear id, so 0+1+...+255 = 32640.
+;;
+;; IT ACCUMULATES, IT DOES NOT STORE, which is the visible difference from grid-reduce-last-man!
+;; and the same behaviour as grid-reduce-atomic!.  32640 is only the right expectation here because
+;; slot 0 starts at 0; spec 21 shows the distinction plainly where a slot starting at 1 reads
+;; 32641.  A store-instead-of-accumulate implementation would pass this spec and fail that one.
+;;
+;; ONLY FOUR CONTENDERS, so the retry path is barely exercised here -- spec 35 does that with 64
+;; threads on one address.  What this spec adds is that the leader election, the workgroup
+;; reduction and the CAS accumulation compose correctly, which is a different claim from either.
+;;
+;; THE RETRY BOUND IS global_size + 1 = 257 against 4 actual contenders, a deliberate
+;; over-estimate: get-global-linear-size bounds the contenders from above in every arrangement,
+;; and being generous costs nothing because the loop exits on success.  If it were ever too small
+;; the construct's own r-t-assert-0 fires rather than the total quietly reading low.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_cas (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-cas! #'+ contrib 0.0 out :local-scratch-vec sv))))

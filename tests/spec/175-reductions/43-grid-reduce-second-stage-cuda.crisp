@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 36 1 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP is measured on the BMG side (spec 31)"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- grid-reduce-second-stage! on NVIDIA.  CUDA twin of spec 29.
+;;
+;; 1+2+...+8 = 36.  The partials are filled in-kernel, standing in for the first pass, because
+;; Crisp cannot express a two-launch sequence sharing device memory -- def-orchestration is an
+;; exported symbol with no implementation anywhere in src/.  That limitation is backend-independent,
+;; so this twin inherits it unchanged rather than working around it.
+;;
+;; WHAT IS GENUINELY DIFFERENT ON PTX is the visibility of that in-kernel fill: eight threads write
+;; the global partials vector and all 64 read it after a fence and a barrier.  On BMG that ordering
+;; is measured; here it depends on fence.sc.sys and bar.sync composing the same way.
+;;
+;; The single-workgroup assert (num_groups == 1) is satisfied by global-size 64 / local-size 64.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel second_stage_sum (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 8 :address-space :global)))
+    (let ((tid (to-int (get-local-linear-id))))
+      ;; Standing in for kernel 1 of the dual pass.
+      (when (< tid 8)
+        (set! (~ gv tid) (+ (to-float tid) 1.0)))
+      (mem-fence)
+      (sync-workgroup)
+      (let ((acc 0.0))
+        (grid-reduce-second-stage! #'+ acc 0.0 gv out :local-scratch-vec sv)))))

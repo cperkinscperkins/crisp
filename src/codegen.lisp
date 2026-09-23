@@ -3969,8 +3969,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (%gen-spirv-warp-barrier builder module)))
         (:mem-fence
          (if (eq *target-backend* :ptx)
-             (%ptx-membar-cta builder module)
+             (%ptx-membar-gl builder module)
              (%gen-spirv-memory-barrier builder module)))
+        ;; 175: the cheap fence.  membar.cta / Workgroup scope -- %ptx-membar-cta was left in place
+        ;; by the 088 fix for exactly this caller.
+        (:mem-fence-workgroup
+         (if (eq *target-backend* :ptx)
+             (%ptx-membar-cta builder module)
+             (%gen-spirv-memory-barrier-workgroup builder module)))
         ;; The local is BNAME; `builtin-name` was a stale name carried over from the
         ;; commented-out copy of this method above, and would have signalled
         ;; unbound-variable instead of naming the offending builtin.
@@ -5773,15 +5779,13 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
    %shuffle-check-pinned (endeavour 173, D7).")
 
 (defun %173-ensure-grad-dispatch-decls (semantic-function)
-  "BUG 066: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under its OWN name,
-   so %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and declined to
-   pin.  Every differentiated kernel on Intel was therefore running at a subgroup size the
-   driver chose, including MMA kernels whose warp counts are computed from :simd-width -- the
-   backward pass silently opted out of the contract the forward pass has.
+  "BUG 066: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under its OWN name, so
+   %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and declined to pin --
+   leaving every differentiated kernel on Intel running at a driver-chosen subgroup size while
+   its forward twin was pinned.
 
-   The gradient kernel is launched with the SAME geometry as its forward kernel, so it
-   inherits the same declarations.  Doing it HERE rather than in 173's D7 gate means 156's own
-   pinning starts working, not merely that endeavour's check.
+   The gradient kernel is launched with the same GEOMETRY as its forward kernel, so it inherits
+   those keys and only those; see *GRAD-INHERITABLE-DISPATCH-KEYS* for why the rest stay behind.
 
    If another generated-kernel suffix ever joins _GRAD, this needs widening."
   (let* ((kname (semantic-function-name semantic-function))
@@ -5794,8 +5798,15 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (base-sym (find-symbol base (symbol-package kname)))
              (decls (and base-sym (gethash base-sym *kernel-dispatch-declarations*))))
         (when decls
-          (setf (gethash kname *kernel-dispatch-declarations*) decls)
-          (log:info "173: ~a inherits dispatch declarations from ~a" kname base-sym))))))
+          (let ((geom nil))
+            (dolist (k *grad-inheritable-dispatch-keys*)
+              (let ((v (getf decls k :%absent)))
+                (unless (eq v :%absent)
+                  (setf geom (append geom (list k v))))))
+            (when geom
+              (setf (gethash kname *kernel-dispatch-declarations*) geom)
+              (log:info "175: ~a inherits launch geometry ~s from ~a (scheduling keys withheld)"
+                        kname (loop for (k nil) on geom by #'cddr collect k) base-sym))))))))
 
 (defun %emit-spirv-subgroup-size-execution-mode (func module semantic-function)
   "Endeavour 156 Phase 0: pin kernel FUNC's subgroup size to the active hardware profile's
@@ -5847,7 +5858,11 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                    kname simd total (floor total simd)))))
     ;; 173: the per-kernel verdict on one line.  This is the log that exposed BUG 066 -- a
     ;; forward kernel reading T beside its _GRAD twin reading NIL.
-    (log:debug "173: subgroup pinned for ~a = ~a" kname *173-subgroup-pinned*)))
+    (log:debug "173: subgroup pinned for ~a = ~a" kname *173-subgroup-pinned*))
+  ;; Endeavour 175 (BUG 076): the kernel-scope D7 check, which needs the pinning verdict this
+  ;; function has just computed.  Appended here rather than called from the caller because
+  ;; *173-SUBGROUP-PINNED* is only meaningful at this point.
+  (%175-check-kernel-warp-collective-pinning semantic-function *173-subgroup-pinned*))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Endeavour 173 — shuffle codegen (PTX + SPIR-V).
@@ -6009,22 +6024,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
        nil))))
 
 (defun %shuffle-check-pinned (location)
-  "Endeavour 173, D7.  On Intel the driver picks the subgroup size (8, 16 or 32) unless the
-   kernel pins it, and a reduction written for 16 lanes that runs on 32 does not crash -- it
-   returns a wrong answer.  So a shuffling kernel that cannot be pinned is refused rather than
-   compiled against an assumed 32.  NVIDIA is exempt: its warp has been 32 lanes on every
-   architecture shipped, so there is nothing to pin.
-
-   Reads *173-SUBGROUP-PINNED*, which %emit-spirv-subgroup-size-execution-mode sets at function
-   setup -- BEFORE any body node is generated -- so the flag is always current by the time a
-   shuffle asks about it."
-  ;; Only the real SPIR-V target.  :ptx has nothing to pin (NVIDIA's warp is 32 by
-  ;; architecture), and :generic / :cpu are the front-end passes, which emit no device code
-  ;; and must keep compiling exactly as they did before.
-  (when (and (eq *target-backend* :spirv) (not *173-subgroup-pinned*))
-    (error 'crisp-compiler-error
-           :message "this kernel uses a shuffle, but its SPIR-V subgroup size cannot be pinned, so the warp width it would run at is whatever the driver chooses (8, 16 or 32 on Intel) rather than the width this kernel was compiled against. Pinning needs an active hardware profile naming a :simd-width AND a compile-time (local-size :set-to N) whose total is a whole multiple of it. Crisp refuses rather than assuming 32: a reduction written for one width and run at another returns a wrong answer instead of failing"
-           :source-location location)))
+  "NO LONGER CHECKS ANYTHING -- kept so the emit sites need no edit.  See
+   %175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING, which asks the same question once per KERNEL over
+   the call graph instead of once per emitted shuffle inside whatever function happens to be
+   under construction.  The per-shuffle form could not see past its own function and therefore
+   refused every helper (BUG 076) while missing every kernel whose shuffle was in a helper.
+   On fold-back, delete this and its call in %shuffle-spv."
+  (declare (ignore location))
+  nil)
 
 
 (defun %kernel-mma-lowering (semantic-function)
@@ -6706,3 +6713,188 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                 (list (llvm-const-int i32 2 nil)
                       (llvm-const-int i32 2 nil)
                       (llvm-const-int i32 264 nil)))))
+
+
+;;;; ===========================================================================
+;;;; Endeavour 175 — reductions and atomics: codegen and the D7 pinning check.
+;;;; ===========================================================================
+
+(defparameter *grad-inheritable-dispatch-keys*
+  '(:global-size :local-size :num-groups)
+  "The dispatch-declaration keys a _GRAD kernel inherits from its forward twin: LAUNCH GEOMETRY
+   only.  Deliberately a whitelist rather than a blacklist -- a new scheduling key added to the
+   plist later must not start leaking into derivatives merely because nobody remembered to
+   exclude it.  See 152-DSMEM-Cluster/05.")
+
+(defparameter *warp-collective-operator-names*
+  '("SHUFFLE" "SHUFFLE-UP" "SHUFFLE-DOWN" "SHUFFLE-XOR"
+    "REDUCE-WARP" "REDUCE-WORKGROUP")
+  "Operators whose correctness depends on the warp width the kernel actually runs at.
+   reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a
+   user writes, and listing them means the scan works whether or not they have been expanded.")
+
+(defun %175-uses-warp-collective-p (x)
+  "Syntactic: does X mention a warp collective anywhere?  Walks car and cdr separately so a
+   dotted form cannot trip it."
+  (labels ((walk (f)
+             (cond
+               ((and (consp f) (symbolp (car f))
+                     (member (symbol-name (car f)) *warp-collective-operator-names*
+                             :test #'string=))
+                t)
+               ((consp f) (or (walk (car f)) (walk (cdr f))))
+               (t nil))))
+    (walk x)))
+
+(defun %175-fn-uses-warp-collective-p (name)
+  "T if the function NAME's own body mentions a warp collective."
+  (let ((info (and (hash-table-p *fn-normalized-info*) (gethash name *fn-normalized-info*))))
+    (and info (%175-uses-warp-collective-p (getf info :body)))))
+
+(defun %175-reaches-warp-collective-p (kname)
+  "T if KNAME, or anything it transitively calls, mentions a warp collective.
+   Cycle-safe: a recursive call graph would otherwise not terminate."
+  (let ((seen (make-hash-table :test 'eq)))
+    (labels ((visit (n)
+               (cond
+                 ((gethash n seen) nil)
+                 (t (setf (gethash n seen) t)
+                    (or (%175-fn-uses-warp-collective-p n)
+                        (when (hash-table-p *call-graph*)
+                          (loop for callee in (gethash n *call-graph*)
+                                thereis (and (symbolp callee) (visit callee)))))))))
+      (and (visit kname) t))))
+
+(defun %175-check-kernel-warp-collective-pinning (semantic-function pinned-p)
+  "BUG 076 / 173 D7, at kernel scope.  Refuses a SPIR-V kernel that reaches a warp collective
+   without a pinned subgroup size.
+
+   Keeps the original wording (\"cannot be pinned\"), which 173-shuffles/errors/06 matches on."
+  (when (eq *target-backend* :spirv)
+    (let* ((kname (semantic-function-name semantic-function))
+           (info  (and kname (hash-table-p *fn-normalized-info*)
+                       (gethash kname *fn-normalized-info*)))
+           ;; Treat an unrecorded function as a kernel: this emitter is only reached for kernels,
+           ;; and defaulting the other way would silently skip the guard.
+           (entry-p (if info (getf info :entry-point-p) t)))
+      (when (and entry-p (not pinned-p) kname
+                 (%175-reaches-warp-collective-p kname))
+        (error 'crisp-compiler-error
+               :message (format nil "kernel ~a uses a warp collective (directly or through a function it calls), but its SPIR-V subgroup size cannot be pinned, so the warp width it would run at is whatever the driver chooses (8, 16 or 32 on Intel) rather than the width this kernel was compiled against. Pinning needs an active hardware profile naming a :simd-width AND a compile-time (local-size :set-to N) whose total is a whole multiple of it. Crisp refuses rather than assuming 32: a reduction written for one width and run at another returns a wrong answer instead of failing."
+                                kname)
+               :source-location nil)))))
+
+(defun %ptx-membar-gl (builder module)
+  "Emits @llvm.nvvm.membar.gl() -- PTX `membar.gl`, a DEVICE-scope memory fence.
+
+   membar.cta only orders memory as seen by other threads in the same CTA, which is precisely not
+   the reader in any cross-workgroup publication.  membar.gl orders it for the whole device.
+   (.sys, system scope, would also cover the host and peer devices and is more than any current
+   Crisp construct needs.)"
+  (let* ((fn-name "llvm.nvvm.membar.gl")
+         (void-type (llvm-void-type))
+         (fn-type   (llvm-function-type void-type (cffi:null-pointer) 0 nil))
+         (fn        (%spirv-get-or-create-fn module fn-name void-type
+                                             (cffi:null-pointer) 0)))
+    (llvm-build-call2 builder fn-type fn (cffi:null-pointer) 0 "")
+    (values nil nil)))
+
+(defun %gen-spirv-memory-barrier-workgroup (builder module)
+  "Emits @__spirv_MemoryBarrier(i32 2, i32 264) -- Scope=Workgroup(2),
+   Semantics=AcquireRelease(8) | WorkgroupMemory(256).
+
+   The device-scope twin passes (1, 520): Scope=Device(1) with CrossWorkgroupMemory(512).  Note
+   that %gen-spirv-memory-barrier's own docstring calls that scope \"CrossWorkgroup(1)\" -- a
+   misnomer, since 1 is Device in SPIR-V's Scope enum; CrossWorkgroup is a MEMORY SEMANTICS bit
+   (512), which is the other operand.  The behaviour was always right; only the name was confusing."
+  (let* ((i32-type (llvm-int32-type))
+         (fn-name  "__spirv_MemoryBarrier")
+         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) i32-type)
+                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i32-type)
+                        arr))
+         (fn-type  (llvm-function-type (llvm-void-type) param-types 2 nil))
+         (fn       (let ((ex (llvm-get-named-function module fn-name)))
+                     (if (cffi:null-pointer-p ex)
+                         (llvm-add-function module fn-name fn-type)
+                         ex)))
+         (args     (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 0)
+                           (llvm-const-int i32-type 2 nil))
+                     (setf (cffi:mem-aref arr 'llvm-value-ref 1)
+                           (llvm-const-int i32-type 264 nil))
+                     arr)))
+    (llvm-build-call2 builder fn-type fn args 2 "")
+    (cffi:foreign-free param-types)
+    (cffi:foreign-free args)
+    (values nil nil)))
+
+(defun %175-cas-int-width-for (elem-type)
+  "The integer width a CAS on ELEM-TYPE must use, or NIL when ELEM-TYPE is already an integer.
+   cmpxchg takes no float operands, so a float is reinterpreted at the same bit width."
+  (let ((ct (gethash elem-type *crisp-types*)))
+    (when (and ct (eq (crisp-type-category ct) :float))
+      (let ((name (string-upcase (string elem-type))))
+        (cond ((string= name "FLOAT")  32)
+              ((string= name "DOUBLE") 64)
+              (t (error 'crisp-compiler-error
+                        :message (format nil "atomic-cas!: no CAS for element type ~a.  cmpxchg takes integer or pointer operands only, so a float type must be reinterpreted at its own bit width, and only FLOAT (32) and DOUBLE (64) are wired up.  A 16-bit CAS is legal LLVM but no Crisp construct needs one yet."
+                                         elem-type)
+                        :source-location nil)))))))
+
+(defmethod generate-node-ir ((node semantic-atomic-cas) builder module var-env
+                             di-builder di-scope location-map)
+  "Generates a cmpxchg for atomic-cas!, yielding either the PRIOR value or the success flag
+   according to the node's RESULT-MODE.
+   LLVMAtomicOrdering SequentiallyConsistent = 7 for success; 2 (monotonic) on failure, which is
+   the strongest ordering LLVM permits there when the success ordering is seq_cst."
+  (let* ((target-aref (semantic-atomic-cas-target-node node))
+         (mode        (semantic-atomic-cas-result-mode node))
+         ;; For :success the node's TYPE is int (the Crisp boolean); the memory element type has
+         ;; to come from the target instead.
+         (elem-type   (semantic-aref-type target-aref))
+         (int-width   (%175-cas-int-width-for elem-type)))
+    (multiple-value-bind (aref-val aref-loc ptr)
+        (generate-node-ir target-aref builder module var-env di-builder di-scope location-map)
+      (declare (ignore aref-val aref-loc))
+      (unless ptr
+        (error "Compiler error in atomic-cas!: target ~a did not produce an address pointer"
+               target-aref))
+      (let* ((exp-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-expected-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (des-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-desired-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (int-ty  (and int-width (if (= int-width 64)
+                                         (crisp.llvm-bindings::llvm-int64-type)
+                                         (crisp.llvm-bindings::llvm-int32-type))))
+             ;; A float CAS compares BIT PATTERNS, which is what CAS means -- "has memory changed
+             ;; since I read it" is a question about bits, not about numeric equality.  Visible
+             ;; consequences: +0.0 and -0.0 do not match, and a NaN never matches itself.  Both
+             ;; hold for every hardware float CAS, which is precisely why :success exists.
+             (exp-i (if int-ty (llvm-build-bit-cast builder exp-val int-ty "cas_exp_i") exp-val))
+             (des-i (if int-ty (llvm-build-bit-cast builder des-val int-ty "cas_des_i") des-val)))
+        (log:info "atomic-cas!: elem-type=~a int-width=~a mode=~a" elem-type int-width mode)
+        (let ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg
+                     builder ptr exp-i des-i
+                     7   ;; success: SequentiallyConsistent
+                     2   ;; failure: Monotonic
+                     0))) ;; single-thread=0 (multi-threaded GPU)
+          (if (eq mode :success)
+              ;; Field 1 is the i1 "swap happened" flag; widen it to Crisp's int.
+              (let ((flag (llvm-build-extract-value builder pair 1 "cas_ok")))
+                (values (crisp.llvm-bindings::llvm-build-zext
+                         builder flag (resolve-type-to-llvm 'int) "cas_ok_i")
+                        nil))
+              ;; Field 0 is the value that was loaded.
+              (let* ((old-i (llvm-build-extract-value builder pair 0 "cas_old"))
+                     (old   (if int-ty
+                                (llvm-build-bit-cast builder old-i
+                                                     (resolve-type-to-llvm elem-type) "cas_old_f")
+                                old-i)))
+                (values old nil))))))))

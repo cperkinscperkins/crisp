@@ -1,0 +1,49 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 32641 2 3
+;; SKIP-WITH[--differentiate]: "composition of forward constructs; the VJPs have their own specs"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-atomic! must equal the composition it is sugar for.
+;;
+;; The design doc describes "The Easy Button Combo" as doing "a standard reduce-workgroup, and
+;; have thread 0 do a grid-reduce-atomic!".  grid-reduce-atomic! IS that pairing, packaged.  This
+;; spec runs both in one kernel and checks they agree, which is the claim the sugar makes and
+;; which no spec has yet tested:
+;;
+;;   slot 0 -- (grid-reduce-atomic! #'+ ...)
+;;   slot 1 -- reduce-workgroup, then the group leader accumulating by hand
+;;
+;; Both reduce the same 256 values (each thread's global linear id), so both must reach 32640.
+;;
+;; THE TWO EXPECTED NUMBERS DIFFER BY ONE, AND THAT IS NOT A TYPO.  An atomic accumulates onto
+;; whatever the buffer already holds, and the harness pre-fills out with 0 1 2 3 -- so slot 0
+;; starts at 0 and reads 32640, while slot 1 starts at 1 and reads 32641.  Writing 32640 in both
+;; places would be the natural mistake, and it would be wrong.  The off-by-one is the initial
+;; value showing through, which is worth pinning: it is the same property that makes a min
+;; reduction untestable against a zero-filled buffer (spec 19).
+;;
+;; SEPARATE SCRATCH VECTORS for the two reductions.  The doc says a local-scratch-vec's contents
+;; are indeterminate after a reduction completes, which implies one buffer could be reused for
+;; both -- but a missing barrier between the two uses would then show up as a RACE rather than a
+;; deterministic failure, and a flaky spec is worse than an uncovered case.  Reuse stays untested
+;; on purpose; if it is meant to be supported it wants a spec that can fail reliably.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel compose_handwritten_equivalence (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv-a (make-scratch-vector float :match-num-warps-per-workgroup))
+        (sv-b (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((a (to-float (get-global-linear-id)))
+          (b (to-float (get-global-linear-id))))
+      ;; The packaged form.
+      (grid-reduce-atomic! #'+ a 0.0 out :local-scratch-vec sv-a)
+      ;; The same thing spelled out: workgroup reduction, then one leader per workgroup.
+      (reduce-workgroup #'+ b 0.0 :local-scratch-vec sv-b)
+      (when-thread-in-group-is 0
+        (atomic-add! (~ out 1) b)))))

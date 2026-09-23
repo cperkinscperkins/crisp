@@ -1,0 +1,44 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 126976 1 2 3
+;; SKIP-WITH[--differentiate]: "composition of forward constructs; the VJPs have their own specs"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- reduce-warp feeding grid-reduce-cas! on NVIDIA.  CUDA twin of spec 52.
+;;
+;; THE NUMBER CHANGES, like spec 49's and for the same reason -- this expectation is built from a
+;; PER-WARP quantity, so it scales with the warp width:
+;;
+;;   BMG, 16-lane warp:  every lane holds 0+1+...+15 = 120, and 256 threads * 120 =  30720
+;;   H100, 32-lane warp: every lane holds 0+1+...+31 = 496, and 256 threads * 496 = 126976
+;;
+;; Specs 49 and 53 are the only two twins in this endeavour whose numbers differ from their BMG
+;; originals.  Every other stage-2 expectation sums over ALL THREADS and is warp-width-blind.  That
+;; classification -- per-thread or per-warp -- is the whole porting hazard, and copying 30720 here
+;; would have burnt a GPU rental proving arithmetic wrong.
+;;
+;; WHAT THIS ADDS OVER SPEC 44, which already runs grid-reduce-cas! on CUDA: this one puts a WARP
+;; COLLECTIVE in front of it, so the shfl butterfly and the CAS retry loop have to coexist in one
+;; kernel.  On PTX those are unrelated mechanisms -- shfl.sync.bfly and atom.global.cas -- and the
+;; interesting question is whether the warp reduction's convergence requirements survive being
+;; followed by a loop whose trip count differs per thread.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel compose_warp_into_cas (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (warp-lane))))
+      ;; Stage 1: every lane ends up holding its warp's total.
+      (reduce-warp #'+ contrib 0.0)
+      ;; Stage 2: that per-warp total is now this thread's contribution to the grid.
+      (grid-reduce-cas! #'+ contrib 0.0 out :local-scratch-vec sv))))

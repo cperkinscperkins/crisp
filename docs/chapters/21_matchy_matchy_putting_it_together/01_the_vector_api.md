@@ -7,6 +7,14 @@ Because reducing a 1D vector or tensor is so common, Crisp provides a high-level
 
 Instead of manually writing the strided loops and managing the scratchpads, you simply tell `reduce-vec` which Macro Strategy to employ:
 
+
+The `strategy` is one of:
+```
+(def-enum reduction-strategy :atomic :last-man-standing :cas )
+```
+The "second stage" isn't available because it requires a second kernel enqueue.
+
+
 ```lisp
 ;; Example: The "Easy Button" atomic strategy
 (reduce-vec #'+ my-large-vector 0.0 :out result-cell :strategy :atomic)

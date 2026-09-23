@@ -1,7 +1,7 @@
-# `grid-reduce-cas!` 📝
+# `grid-reduce-cas!` ✅
 
 
-`(grid-reduce-cas! someFunction <someVar> identity &out return-vec &optional localScratchVec)`
+`(grid-reduce-cas! someFunction <someVar> identity &out return-vec &key local-scratch-vec)`
 
 `grid-reduce-cas!` is a single-pass grid reduction that works with *any* commutative binary operation. It first reduces the variable locally using `reduce-workgroup`, and then the leader thread of each workgroup uses a global Compare-And-Swap (CAS) loop via `atomic-binop!` to safely accumulate its partial result into the `return-vec`.
 
@@ -11,7 +11,11 @@ This macro is the ultimate "low memory escape hatch." Unlike `grid-reduce-last-m
 **Arguments:**
 
 * `return-vec`: A required vector of length 1 (a `single-result`) where the final value is accumulated.
-* `localScratchVec`: (Optional) Writeable local memory sized to the number of warps in the workgroup. Generated automatically if omitted.
+* `:local-scratch-vec`: Writeable local memory, one element per warp in the workgroup.
+  Required, and allocated by the CALLER -- scratch created inside the construct's own
+  expansion is invisible to the Pass-1 scanner that builds a kernel's implicit parameters, so
+  Crisp cannot generate it for you.  Auto-generation needs that scanner to learn about
+  analyzer-introduced scratch, which is a real feature and not a line of sugar.
 
 **Result:**
 After the operation, the value of `<someVar>` in any thread is indeterminant. `return-vec[0]` will hold the final global reduction.

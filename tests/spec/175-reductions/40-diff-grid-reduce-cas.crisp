@@ -1,0 +1,44 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64 output-vec=1
+;;
+;; ENDEAVOUR 175 -- the VJP of grid-reduce-cas!, and the fourth strategy to carry the same rule.
+;;
+;; out[0] is the sum over the grid, so d out / d x = 1 for every thread and the adjoint is a plain
+;; broadcast of the output cell.  Identical to grid-reduce-atomic!, grid-reduce-last-man! and
+;; (for the vector case) grid-reduce-second-stage!.
+;;
+;; THAT ALL FOUR AGREE IS THE INTERESTING PART, not a coincidence to be glossed over: they compute
+;; the same function by wildly different schedules -- a hardware atomic, a global partials buffer
+;; with an election, a second kernel launch, and a CAS retry loop -- and a derivative depends on
+;; WHAT is computed, not on how the work was divided or which memory it passed through.  None of
+;; the CAS apparatus appears in the backward pass at all.
+;;
+;; WHICH IS EXACTLY WHY IT IS MEASURED HERE RATHER THAN ASSERTED BY ANALOGY.  "Same function, same
+;; derivative" is a sound argument and it is still not evidence: grid-reduce-second-stage! had the
+;; identical argument available and was returning a silent 0.0, because its VJP was never reached.
+;; Being right about the rule says nothing about whether the rule runs.
+;;
+;; LITERAL 4 for the scratch, not :match-num-warps-per-workgroup: the VERIFY-AUTODIFF runner cannot
+;; size a symbolic scratch extent (BUG 074) and dies with ":MATCH-NUM-WARPS-PER-WORKGROUP is not of
+;; type NUMBER".  bmg's simd-width is 16 and the workgroup is 64 threads, so 4 warps is exact, not
+;; an approximation.  Specs 38 and 39 use the symbolic form on the same kernel shape.
+;;
+;; ONE WORKGROUP, so there is exactly one CAS contender and the retry path never spins.  That is
+;; deliberate: VERIFY-AUTODIFF launches one thread per input element, so a multi-workgroup launch
+;; would read past the end of A.  Contention is spec 35's job and the VJP does not vary with it.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel diff_grid_reduce_cas (A &out out)
+  (declare #'(mat-t &out vec-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((contrib (~ A (/ tid 16) (rem tid 16))))
+        (grid-reduce-cas! #'+ contrib 0.0 out :local-scratch-vec sv)))))

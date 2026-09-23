@@ -140,15 +140,15 @@
 ## **Reductions: Shop Local, Act Global 📝**
 
 ## **Phase 1: The Micro Strategies (Intra-Workgroup)**
-- [`reduce-warp` 📝](19_phase_1_the_micro_strategies_intra_workgroup/01_reduce_warp.md)
-- [`reduce-workgroup` 📝](19_phase_1_the_micro_strategies_intra_workgroup/02_reduce_workgroup.md)
+- [`reduce-warp` ✅](19_phase_1_the_micro_strategies_intra_workgroup/01_reduce_warp.md)
+- [`reduce-workgroup` ✅](19_phase_1_the_micro_strategies_intra_workgroup/02_reduce_workgroup.md)
 
 ## **Phase 2: The Macro Strategies (Inter-Workgroup)**
 - [**Phase 2 Trade-off Matrix**](20_phase_2_the_macro_strategies_inter_workgroup/01_phase_2_trade_off_matrix.md)
-- [`grid-reduce-atomic!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/02_grid_reduce_atomic.md)
-- [`grid-reduce-cas!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/03_grid_reduce_cas.md)
-- [`grid-reduce-last-man!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/04_grid_reduce_last_man.md)
-- [`grid-reduce-dual-pass!` 📝](20_phase_2_the_macro_strategies_inter_workgroup/05_grid_reduce_dual_pass.md)
+- [`grid-reduce-atomic!` ✅](20_phase_2_the_macro_strategies_inter_workgroup/02_grid_reduce_atomic.md)
+- [`grid-reduce-cas!` ✅](20_phase_2_the_macro_strategies_inter_workgroup/03_grid_reduce_cas.md)
+- [`grid-reduce-last-man!` ✅](20_phase_2_the_macro_strategies_inter_workgroup/04_grid_reduce_last_man.md)
+- [`grid-reduce-second-stage!` ✅](20_phase_2_the_macro_strategies_inter_workgroup/05_grid_reduce_second_stage.md)
 - [`Strategy D: Cooperative Grid Sync (Hardware Dependent)`](20_phase_2_the_macro_strategies_inter_workgroup/06_strategy_d_cooperative_grid_sync_hardware_dependent.md)
 
 ## **Matchy Matchy: Putting it Together**

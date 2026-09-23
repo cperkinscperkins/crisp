@@ -1,25 +1,24 @@
-;;;; crisp-compiler-overlay.lisp — late-bound fixes for the CRISP.COMPILER package.
+;;;; HOT-PATCH OVERLAY for CRISP.COMPILER
 ;;;;
-;;;; APPEND full replacement definitions here while developing; they are loaded after src/ and
-;;;; win by late binding.  Do NOT patch in place -- append, and note above each one which src
-;;;; file it belongs to, so it can be folded back later.
+;;;; INSTRUCTIONS:
+;;;; 1. APPEND new/fixed function definitions to the end of this file.
+;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
+;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
-;;;; TWO THINGS THAT BITE (both learned the hard way, endeavour 165):
+;;;; EMPTY as of 2026-09-22 — endeavour 175 folded into src/.
 ;;;;
-;;;;   * A HANDLER REGISTERED BY OBJECT IS NOT LATE-BOUND.  src/autodiff.lisp does
-;;;;     (register-vjp "MMA-ACCUMULATE-VIA-TILE" #'%vjp-mma-accumulate-via-tile), which captures
-;;;;     the function OBJECT at load time.  Redefining that defun here is DEAD CODE until you
-;;;;     also re-register.  The failure is partial and therefore nasty: a callee overridden by
-;;;;     name goes live while its caller stays stale.
-;;;;
-;;;;   * NEVER PUT A DOUBLE QUOTE INSIDE A DOCSTRING.  It closes the string early and the rest of
-;;;;     the prose becomes BODY FORMS -- the first bare word is then an unbound variable, and the
-;;;;     build emits no warning.  It fails only when the function is CALLED.  Cost: a red CI.
-;;;;
-;;;; Emptied 2026-09-20: everything folded into src/ (endeavour 173 -- the four warp shuffles,
-;;;; (warp-size), the let* rejection and BUG 066's _GRAD dispatch-declaration fix -- into
-;;;; src/semantic.lisp, src/package.lisp, src/analysis/core.lisp, src/analysis/ops.lisp,
-;;;; src/analysis/control.lisp, src/autodiff.lisp, src/codegen.lisp and src/mma.lisp).
-;;;; Previously emptied 2026-09-19 (endeavour 172) and 2026-09-18 (endeavour 167).
+;;;; Four things did NOT move, and that is deliberate:
+;;;;   * the REDUCE-WARP and REDUCE-WORKGROUP defmacros, and the two eval-whens that
+;;;;     FMAKUNBOUND them.  Both constructs became analyzed forms so the VJP registry could
+;;;;     see them (BUG 081); the macros existed only because an overlay cannot un-write its
+;;;;     own earlier definition.  Folding them in would have resurrected dead code AND made
+;;;;     anf-transform expand the form again before the backward walk.
+;;;;   * the three eval-whens that copied MACRO-FUNCTION between packages.  src/package.lisp
+;;;;     exports the two WHEN-THREAD-IN-* macros from :crisp.compiler and imports them into
+;;;;     :crisp-language, so there is one symbol rather than two.
+;;;;   * %WARP-SPEC-CHECK-SYNC, whose live copy was a pure pass-through (the BUG 082 revert),
+;;;;     so folding it meant changing nothing.
+;;;;   * the eleven chained REGISTER-OPS-ANALYZERS wrappers, collapsed into one block of 13
+;;;;     registrations at the end of the real function in src/analysis/ops.lisp.
 
 (in-package :crisp.compiler)

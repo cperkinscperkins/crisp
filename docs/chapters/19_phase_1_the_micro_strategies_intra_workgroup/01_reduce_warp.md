@@ -1,4 +1,4 @@
-# `reduce-warp` 📝
+# `reduce-warp` ✅
 
 
 `(reduce-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)))`

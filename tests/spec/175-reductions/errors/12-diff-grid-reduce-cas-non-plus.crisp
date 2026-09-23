@@ -1,0 +1,43 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "only for the + reduction"
+;; CHECK-FAIL: "only for the + reduction"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 175 -- grid-reduce-cas! differentiates only the SUM reduction.
+;;
+;; The fourth and last of the set (errors/05 reduce-workgroup, 07 last-man, 09 second-stage), and
+;; the reason here is the STRONGEST of the four.  For the others the obstacle is bookkeeping: the
+;; forward pass did not stash an argmax or a combining tree.  For grid-reduce-cas! an arbitrary
+;; binop's adjoint would depend on the value the result cell HAPPENED TO HOLD when this workgroup's
+;; leader won the CAS -- which differs from run to run on identical inputs.  There is nothing
+;; stable to differentiate, not merely something unrecorded.
+;;
+;; + survives precisely because it does not care what else landed first or in what order:
+;; d out / d contribution = 1 regardless, so the adjoint is the output cell's adjoint broadcast to
+;; every thread.  Spec 40 measures that case at 1.0.
+;;
+;; AN UNEXERCISED REFUSAL IS A CLAIM, NOT A BEHAVIOUR, which is the whole reason this file exists.
+;; Drop the operator check and spec 39 stays green (it never differentiates) and spec 40 stays
+;; green (it only reduces with +), while max would start returning a confident wrong gradient.
+;; Three constructs in this endeavour did exactly that -- BUG 073, 077, 081 -- plus
+;; grid-reduce-second-stage! and atomic-binop! both caught mid-flight at analytical=0.0.
+;;
+;; TEST-EXPECT is PASS with CHECK-FAIL-FLAGS because the refusal is AD-only: spec 39 runs this same
+;; kernel shape forward on hardware and reads 255.  FAIL-WITH is required too, because when the
+;; runner differentiates the default pass becomes a differentiating pass.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function cas-max-nd (a b)
+  (declare #'(float float => float))
+  (if (> a b) a b))
+
+(def-kernel diff_cas_non_plus (A &out out)
+  (declare #'((matrix float :address-space :global :align :compact :contiguous-term :row-major)
+              &out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((contrib (~ A (/ tid 16) (rem tid 16))))
+        (grid-reduce-cas! #'cas-max-nd contrib 0.0 out :local-scratch-vec sv)))))

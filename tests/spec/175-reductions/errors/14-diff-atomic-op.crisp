@@ -1,0 +1,53 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "atomic-op! is not differentiable"
+;; CHECK-FAIL: "atomic-op! is not differentiable"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 175 -- atomic-op! has no derivative, and the reason differs from its siblings'.
+;;
+;; THE REFUSALS ON THIS LADDER ARE NOT ALL THE SAME SHAPE, and this is the fourth distinct reason:
+;;
+;;   * reduce-workgroup / last-man / second-stage / cas! refuse non-+ because the forward pass did
+;;     not RECORD what the backward needs -- an argmax, or a combining tree.  A bookkeeping gap.
+;;   * atomic-binop! refuses non-+ because an arbitrary operator's adjoint depends on the value the
+;;     location held when this thread won the race.  + survives because a sum does not care.
+;;   * atomic-cas! refuses outright: its result says WHICH THREAD WON, which is not a function of
+;;     the program's inputs at all.
+;;   * atomic-op! refuses outright for a subtler reason: it has NO VALUE ARGUMENT.  It transforms
+;;     the location in place, so the only derivative on offer is f'(old).
+;;
+;; AND NOTE WHAT IS DETERMINISTIC HERE AND WHAT IS NOT, because the distinction is the whole
+;; argument.  Every thread applies f exactly once, so the final value is f composed n times over
+;; the initial value -- and function composition does not care which thread went first.  So the
+;; FORWARD result is perfectly deterministic, which is why spec 51 can assert 80 on hardware.  But
+;; WHICH RUNG of that composition chain a given thread occupied is decided by the race, so each
+;; thread's f'(old) differs between identical runs.  A deterministic output does not imply a
+;; deterministic derivative, and that is the trap this spec pins.
+;;
+;; THERE IS NO SURVIVING CASE, unlike atomic-binop! where #'+ is differentiable and measured (spec
+;; 37).  A linear f would in fact be safe -- f(x) = x + c has f'(x) = 1 regardless of rung -- but
+;; detecting linearity of an arbitrary user function is a different feature, and guessing at it
+;; would be the kind of silent wrongness this endeavour has already produced five times.  The
+;; honest answer is to refuse and name the alternative.
+;;
+;; TEST-EXPECT is PASS with CHECK-FAIL-FLAGS because the refusal is AD-only -- spec 51 runs this
+;; same construct forward on hardware and reads 80.  FAIL-WITH is required as well: when the runner
+;; itself differentiates, the default pass becomes a differentiating pass and this kernel is built
+;; to be refused there.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function scale-by-two (a)
+  (declare #'(float => float))
+  (* a 2.0))
+
+(def-kernel diff_atomic_op (A &out out)
+  (declare #'((matrix float :address-space :global :align :compact :contiguous-term :row-major)
+              &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  ;; A is read so the kernel has a live input for the adjoint to flow back to; the refusal happens
+  ;; before that matters.
+  (let ((seed (~ A 0 0)))
+    (set! (~ out 1) seed)
+    (atomic-op! (~ out 1) #'scale-by-two)))

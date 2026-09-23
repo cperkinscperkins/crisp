@@ -1,0 +1,48 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 2016 2016 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP twin is spec 14"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-21, no NVIDIA box available.  VALIDATE THIS FIRST on
+;; !!! the next pod run before reading a failure here as a compiler defect.
+;;
+;; ENDEAVOUR 175 -- the CUDA twin of 08-reduce-workgroup-sum-metal.
+;;
+;; THIS IS THE MOST VALUABLE TWIN IN THE SET, because reduce-workgroup is where the NVIDIA risk
+;; actually concentrates.  reduce-warp is a thin macro over 173's shuffles, which were H100-verified
+;; when 173 shipped.  reduce-workgroup is different: it routes the value through LOCAL SCRATCH
+;; across BARRIERS, and the CUDA hoister carves all local scratch out of ONE dynamic-shared blob
+;; with running byte offsets (the BUG 046 layout) where L0 gives each tensor its own allocation.
+;; That is genuinely different host-side machinery, exercised here for the first time.
+;;
+;; THE VALUE IS WIDTH-INDEPENDENT; THE BUFFER PATTERN IS NOT.  Every thread contributes its own
+;; linear id, so the workgroup total is 0+1+...+63 = 2016 however the threads are grouped.  But the
+;; writer is each warp's LAST lane storing into out[warp-id], and NVIDIA has two warps where BMG
+;; has four -- so slots 2 and 3 keep the harness pre-fill here and are written on BMG.  That
+;; difference is why this needs a twin at all rather than a second TEST-HOIST line on 08.
+;;
+;; A PARTIAL REDUCTION IS STILL VISIBLY WRONG.  If phase 2 (the inter-warp sweep) failed, the two
+;; slots would hold the per-warp partials instead: warp W covers linear ids 32W..32W+31, summing
+;; 32*32W + 496, i.e. 496 and 2032.  Neither is 2016, and 2032 is deliberately worth noting -- it
+;; is close enough to 2016 to be missed by a careless reading, which is why the expectation is
+;; written out rather than eyeballed.
+;;
+;; STATICALLY PRE-VERIFIED: the generated .cu sizes the scratch to `2 elems, 8 bytes`, which is
+;; ceil(64/32) and agrees with what the kernel computes at run time from
+;; get-local-linear-size / warp-size.  Host and kernel agreeing about the warp count is exactly the
+;; property BUG 070's note warns can silently diverge, so it was checked before writing this.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel reduce_workgroup_sum_cuda (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-local-linear-id))))
+      (reduce-workgroup #'+ contrib 0.0 :local-scratch-vec sv)
+      (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+        (set! (~ out (to-int (warp-id))) contrib)))))

@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP is measured on the BMG side (specs 16 and 23)"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- grid-reduce-atomic! on NVIDIA.  CUDA twin of spec 17.
+;;
+;; Phase 2 is a hardware atomic here, so what this checks on PTX is that the NATIVE instruction is
+;; emitted for this operator and element type rather than being quietly lowered to a CAS loop, and
+;; that the workgroup reduction feeding it composes shfl and bar.sync correctly at 32 lanes.
+;;
+;; WHY THIS NUMBER MATCHES THE BMG TWIN'S, and is not a copy-paste slip: the total is a sum over
+;; ALL THREADS, so it does not depend on how threads group into warps.  Only an expectation
+;; built from a PER-WARP quantity changes with the warp width -- see spec 49, where 30720
+;; becomes 126976 because a 32-lane warp sums to 496 rather than 120.  Classifying each number
+;; as per-thread or per-warp was the actual work in porting this set.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_atomic_sum (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-atomic! #'+ contrib 0.0 out :local-scratch-vec sv))))

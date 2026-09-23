@@ -5468,14 +5468,46 @@ This routine inserts a local barrier. It ensures that all threads in the workgro
 This routine inserts a warp-level barrier. It ensures that all threads within the same warp (or sub-group) have reached the exact same execution point before any of them proceed. This barrier includes a memory fence scoped specifically to the warp, guaranteeing that memory writes made by threads in the warp are visible to all other threads in that same warp. Use it when coordinating fine-grained data exchanges, register shuffles, or when preventing race conditions during warp-synchronous programming. On CUDA it will map to `__syncwarp()` and in SPIR-V to the sub-group equivalent, such as `sub_group_barrier`.
 
 #### mem-fence ✅
-(mem-fence &key local global)
-This routine inserts a memory fence to enforce the ordering of memory operations. Unlike a barrier, a fence does not synchronize thread execution.
 
-A fence guarantees that all writes to a memory space (e.g., :global) before the fence are visible to other threads before any reads or writes after the fence are executed by this thread. This is an advanced feature for preventing subtle race conditions in complex algorithms, especially those involving atomic operations or producer-consumer patterns between different workgroups.
+```
+(mem-fence)                    ; grid scope -- the default
+(mem-fence :scope :grid)       ; the default, said out loud
+(mem-fence :scope :workgroup)  ; cheaper; orders memory within this workgroup only
+```
 
-On CUDA, (mem-fence :global) maps to __threadfence(). On OpenCL, it maps to mem_fence(CLK_GLOBAL_MEM_FENCE).
+A fence enforces the ORDERING of memory operations without synchronizing thread execution. That is
+what separates it from the other coordination primitives, and it makes fences their own group in
+Crisp's vocabulary:
 
-<!-- WHAT are the comparables for LevelZero? -->
+* a **barrier** (`sync-workgroup`, `sync-warp`) makes threads wait for each other;
+* a **fence** (`mem-fence`) makes one thread's writes VISIBLE to others, and makes nobody wait;
+* an **arrival object** (`make-arrival-sync`, `sync-arrive`, `sync-wait`) counts participants.
+
+A fence guarantees that all writes this thread made before it become visible to other threads before
+any of its later reads or writes do. It is an advanced tool for producer-consumer patterns between
+workgroups, and for ordering a store against a following atomic.
+
+**The scope is the whole subtlety, and the default is the safe one.** `:grid` orders memory for the
+entire device, which is what any CROSS-WORKGROUP publication needs -- one workgroup storing a value
+that another will read. `:workgroup` orders it only among threads of this workgroup, and is cheaper.
+Grid is the default because a fence that is too strong costs only performance, while one that is too
+weak gives a wrong answer that testing does not reliably catch. BUG 088 was exactly that: `mem-fence`
+emitted workgroup scope on PTX and device scope on SPIR-V, and `grid-reduce-last-man!` silently
+depended on the stronger reading. It would have produced correct-looking results on NVIDIA hardware
+anyway, because a device-coherent L2 and a neighbouring atomic masked the missing guarantee.
+
+| | `:grid` (default) | `:workgroup` |
+|---|---|---|
+| NVIDIA PTX | `membar.gl` (= `__threadfence()`) | `membar.cta` (= `__threadfence_block()`) |
+| SPIR-V / Level Zero | `OpMemoryBarrier`, Device scope + CrossWorkgroupMemory | `OpMemoryBarrier`, Workgroup scope + WorkgroupMemory |
+| OpenCL (historical) | `mem_fence(CLK_GLOBAL_MEM_FENCE)` | `mem_fence(CLK_LOCAL_MEM_FENCE)` |
+
+Level Zero needs no separate answer: it consumes the same SPIR-V module, so the `OpMemoryBarrier`
+row covers it.
+
+There is no narrower scope. A warp-scoped fence would be very nearly a no-op on hardware that runs a
+warp in lockstep, so `:scope :subgroup` is refused rather than offered as a false economy.
+
 
 
 
@@ -6316,7 +6348,7 @@ By mixing and matching these strategies, you can tailor your reductions for spee
 
 These are your workhorses. They take a variable (like `<someVar>`) and a commutative operation (like `#'+` or `#'max`), and reduce them across the local execution unit. They do not touch global memory.
 
-### `reduce-warp` 📝
+### `reduce-warp` ✅
 
 `(reduce-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)))`
 
@@ -6376,7 +6408,7 @@ The example below will output "warp total: 640" repeatedly, once for each warp, 
 
 ```
 
-### `reduce-workgroup` 📝
+### `reduce-workgroup` ✅
 
 `(reduce-workgroup someFunction <someVar> identity &key return-vec local-scratch-vec message)`
 
@@ -6485,11 +6517,11 @@ Crisp offers four different Inter-Workgroup strategies to gather these partial r
 | **`grid-reduce-atomic!`** | `#'+`, `#'min`, `#'max` only | **None** | **Fast.** Hardware optimized atomics. |
 | **`grid-reduce-last-man!`** | Any Commutative | Size of `num_workgroups` | **Very Fast.** Single pass, zero contention. |
 | **`grid-reduce-cas!`** | Any Commutative | **None** | **Slow (High Contention).** CAS loop serializes grid. |
-| **`grid-reduce-dual-pass!`** | Any Commutative | Size of `num_workgroups` | **Moderate.** Safe, but incurs 2nd kernel launch overhead. |
+| **`grid-reduce-second-stage!`** | Any Commutative | Size of `num_workgroups` | **Moderate.** Safe, but requires manual 2nd kernel launch. |
 
-### `grid-reduce-atomic!` 📝
+### `grid-reduce-atomic!` ✅
 
-`(grid-reduce-atomic! someFunction <someVar> identity &out return-vec &optional localScratchVec &key message)`
+`(grid-reduce-atomic! someFunction <someVar> identity &out return-vec &key local-scratch-vec message)`
 
 `grid-reduce-atomic!` is the "dead simple" single-pass inter-workgroup reduction. It first reduces the variable locally using `reduce-workgroup` (Phase 1), and then the leader thread of each workgroup safely accumulates its partial result into the global `return-vec` using a native hardware atomic operation (Phase 2).
 
@@ -6513,8 +6545,13 @@ Attempting to use this macro with any other operation will result in a compilati
 * `<someVar>`: The local variable being reduced.
 * `identity`: The identity value for `someFunction` (e.g., `0` for `#'+`).
 * `return-vec`: A required vector of length 1 (a `single-result`) in `:global` memory where the final value is accumulated.
-* `localScratchVec`: (Optional) Writeable local memory used for the Phase 1 `reduce-workgroup` sweep. Its size must equal the number of warps in a single workgroup. If omitted, Crisp generates it for you.
-* `:message`: (Optional) If Crisp generates the `localScratchVec`, this string is attached to the allocation to inform the hoisting code.
+* `:local-scratch-vec`: Writeable local memory used for the Phase 1 `reduce-workgroup` sweep, one
+  element per warp in the workgroup (`:match-num-warps-per-workgroup` sizes it for you).
+  Required, and allocated by the CALLER -- scratch created inside the construct's own
+  expansion is invisible to the Pass-1 scanner that builds a kernel's implicit parameters, so
+  Crisp cannot generate it for you.  Auto-generation needs that scanner to learn about
+  analyzer-introduced scratch, which is a real feature and not a line of sugar.
+* `:message`: (Optional) String attached to the allocation to inform the hoisting code.
 
 **Post-Conditions & Return:**
 
@@ -6548,9 +6585,9 @@ Attempting to use this macro with any other operation will result in a compilati
 
 ```
 
-### `grid-reduce-cas!` 📝
+### `grid-reduce-cas!` ✅
 
-`(grid-reduce-cas! someFunction <someVar> identity &out return-vec &optional localScratchVec)`
+`(grid-reduce-cas! someFunction <someVar> identity &out return-vec &key local-scratch-vec)`
 
 `grid-reduce-cas!` is a single-pass grid reduction that works with *any* commutative binary operation. It first reduces the variable locally using `reduce-workgroup`, and then the leader thread of each workgroup uses a global Compare-And-Swap (CAS) loop via `atomic-binop!` to safely accumulate its partial result into the `return-vec`.
 
@@ -6560,7 +6597,11 @@ This macro is the ultimate "low memory escape hatch." Unlike `grid-reduce-last-m
 **Arguments:**
 
 * `return-vec`: A required vector of length 1 (a `single-result`) where the final value is accumulated.
-* `localScratchVec`: (Optional) Writeable local memory sized to the number of warps in the workgroup. Generated automatically if omitted.
+* `:local-scratch-vec`: Writeable local memory, one element per warp in the workgroup.
+  Required, and allocated by the CALLER -- scratch created inside the construct's own
+  expansion is invisible to the Pass-1 scanner that builds a kernel's implicit parameters, so
+  Crisp cannot generate it for you.  Auto-generation needs that scanner to learn about
+  analyzer-introduced scratch, which is a real feature and not a line of sugar.
 
 **Result:**
 After the operation, the value of `<someVar>` in any thread is indeterminant. `return-vec[0]` will hold the final global reduction.
@@ -6589,9 +6630,9 @@ After the operation, the value of `<someVar>` in any thread is indeterminant. `r
 
 ```
 
-### `grid-reduce-last-man!` 📝
+### `grid-reduce-last-man!` ✅
 
-`(grid-reduce-last-man! someFunction <someVar> identity &out return-vec &optional localScratchVec globalScratchVec atomicCounter &key message)`
+`(grid-reduce-last-man! someFunction <someVar> identity &out return-vec &key local-scratch-vec global-scratch-vec atomic-counter election-flag-cell message)`
 
 `grid-reduce-last-man!` is usually the fastest, most flexible single-pass grid reduction available. It works with *any* commutative binary operation without incurring the massive contention penalty of a global Compare-And-Swap loop, and without the scheduling overhead of launching a second "continuation" kernel.
 
@@ -6613,10 +6654,20 @@ It accomplishes this via a cooperative finish.
 * `<someVar>`: The local variable being reduced.
 * `identity`: The identity value for `someFunction`.
 * `return-vec`: A required vector of length 1 (a `single-result`) in `:global` memory.
-* `localScratchVec`: (Optional) Writeable local memory sized to the number of warps in the workgroup. Generated automatically if omitted.
-* `globalScratchVec`: (Optional) Writeable global memory. Its size must equal the number of workgroups (`global_work_size / local_work_size`). Generated automatically if omitted.
-* `atomicCounter`: (Optional) A single global memory cell (usually `:uint32`) initialized to 0, used to track completed workgroups. Generated automatically if omitted.
-* `:message`: (Optional) String attached to auto-generated scratch allocations to inform the hoisting code.
+* `:local-scratch-vec`: Writeable local memory, one element per warp in the workgroup.
+* `:global-scratch-vec`: Writeable **`:global`** memory, one element per WORKGROUP
+  (`global_work_size / local_work_size`), holding the partials.
+* `:atomic-counter`: A zero-initialised `:global` `uint` cell, used to draw tickets.
+* `:election-flag-cell`: A **workgroup-local** `uint` cell, which broadcasts the ticket result from
+  thread 0 to the rest of its workgroup.  It is what lets the LOSING workgroups retire
+  immediately instead of sweeping a buffer whose result they would discard -- the early
+  retirement that is this strategy's whole advantage over a second kernel launch.  It is always
+  `uint`, never the reduction's element type, so it does not follow `<someVar>`.
+  Required, and allocated by the CALLER -- scratch created inside the construct's own
+  expansion is invisible to the Pass-1 scanner that builds a kernel's implicit parameters, so
+  Crisp cannot generate it for you.  Auto-generation needs that scanner to learn about
+  analyzer-introduced scratch, which is a real feature and not a line of sugar.
+* `:message`: (Optional) String attached to the allocations to inform the hoisting code.
 
 **Post-Conditions & Return:**
 
@@ -6681,82 +6732,67 @@ It accomplishes this via a cooperative finish.
 
 ```
 
-### `grid-reduce-dual-pass!` 📝
 
-`(grid-reduce-dual-pass! someFunction <someVar> identity continuation-kernel-name &optional globalScratchVec localScratchVec)`
+### `grid-reduce-second-stage!` ✅
 
-`grid-reduce-dual-pass!` represents the traditional, highly safe approach to inter-workgroup reduction. Unlike the single-pass strategies, it physically splits the grid reduction across two separate kernel invocations to entirely avoid atomic contention or spinning locks.
+`(grid-reduce-second-stage! someFunction <someVar> identity in-scratch-vec &out return-vec &key local-scratch-vec)`
 
-**Mechanics:**
-It performs Phase 1 of the reduction (`reduce-workgroup`) and stores each workgroup's partial result into a global scratch vector. Then, the macro automatically defines and hoists a brand new **continuation kernel** to handle Phase 2. This second kernel consists of a single workgroup that sweeps up the global scratch buffer and writes the final value to a result cell.
+`grid-reduce-second-stage!` is designed exclusively for the final sweep of a dual-pass reduction. It is meant to be called inside a continuation kernel launched with a single workgroup. It reads the partial results from `in-scratch-vec` (populated by Kernel 1), reduces them, and stores the ultimate answer in `return-vec`.
 
-**The Trade-off:**
-
-* **Pros:** Highly safe, works with *any* commutative operation, and involves absolutely zero atomic contention.
-* **Cons:** Requires launching two separate kernels, incurring scheduling overhead. It also requires the host (or device graph) to manage the subsequent kernel execution.
-
-**Special Compiler Constraints:**
-Because this macro dynamically generates the AST for a completely separate continuation kernel, both `someFunction` and `identity` **must be compile-time identifiable**. The compiler will emit an error if it cannot resolve them at compile time.
-
-Additionally, the continuation kernel will be hoisted with a different execution configuration from the parent kernel. Specifically, its `local_work_size` will be derived to be exactly the size of the `globalScratchVec`.
+**Special Constraints:**
+This macro executes an assertion ensuring it is launched with exactly one workgroup (`num_groups == 1`), and that the `local_work_size` is large enough to handle the number of elements in `in-scratch-vec`.
 
 **Arguments:**
 
-* `someFunction`: Any commutative `binop-type` `#(T T => T)`. (Must be known at compile time).
-* `<someVar>`: The local variable being reduced.
-* `identity`: The identity value for `someFunction`. (Must be known at compile time).
-* `continuation-kernel-name`: A string or symbol used to name the generated Phase 2 kernel.
-* `globalScratchVec`: (Optional) Writeable global memory. Its size must equal the number of workgroups. Crisp will generate it if omitted.
-* `localScratchVec`: (Optional) Writeable local memory used for the Phase 1 sweep. Its size must equal the number of warps in a single workgroup. Crisp will generate it if omitted.
+* `someFunction`: Any commutative `binop-type` `#(T T => T)`.
+* `<someVar>`: A local binding to hold the intermediate calculations.
+* `identity`: The identity value for `someFunction`.
+* `in-scratch-vec`: The `:global` vector containing the partial results from the first kernel pass.
+* `return-vec`: A required vector of length 1 (a `single-result`) where the final value is accumulated.
+* `:local-scratch-vec`: Writeable local memory used for the final sweep, one element per warp in
+  the workgroup.
+  Required, and allocated by the CALLER -- scratch created inside the construct's own
+  expansion is invisible to the Pass-1 scanner that builds a kernel's implicit parameters, so
+  Crisp cannot generate it for you.  Auto-generation needs that scanner to learn about
+  analyzer-introduced scratch, which is a real feature and not a line of sugar.
 
 **Post-Conditions & Return:**
 
-* **Variable State:** After the operation, the value of `<someVar>` in any thread is indeterminant.
-* **Continuation Kernel Output:** The generated `continuation-kernel-name` will accept a single-element result cell as its final argument, where the ultimate answer will be stored.
-* **Returns:** `nil` (but leaves a `launch-kernel` instruction in the AST for the hoisting code).
+* **Memory State:** `return-vec[0]` will hold the final global reduction.
+* **Returns:** `nil`.
 
 **Possible Implementation:**
 
 ```lisp
-;; -- grid-reduce-dual-pass! --
-(defmacro grid-reduce-dual-pass! (someFunction someVar identity continuation-kernel-name
-                                  &optional (globalScratchVec (make-scratch-vector (type-of someVar) :match-num-workgroups :address-space :global))
-                                            (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup))) 
-   (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-   (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-   
-   `(let-kernel ((continuation-k  (l-s-v g-s-v result-cell)
-                  (declare (kernel-name ,continuation-kernel-name)
-                           (type l-s-v (scratch-vec-type (type-of ,someVar)))
-                           (type g-s-v (scratch-vec-type (type-of ,someVar) :global))
-                           (type result-cell (cell (type-of ,someVar)))
-                           (local-size :derive-from g-s-v :msg (string-concat ,continuation-kernel-name "requires a local_work_size at least as big as the global-scratch-vector")))
-                      (let ((num-items (length~ g-s-v))
-                            (local-id (get-local-id))
-                            ;; Each thread in the workgroup loads one partial result.
-                            ;; If there are more threads than items, inactive threads get the identity.
-                            (val (if (< local-id num-items)
-                                      (~ g-s-v local-id)
-                                      ,identity)))
-                        
-                        ;; Perform a standard Phase 1 workgroup reduction on the partial results.
-                        (reduce-workgroup ,someFunction val ,identity :local-scratch-vec l-s-v)
-                        
-                        ;; The final result is now in 'val' of all wg threads.
-                        ;; To avoid contention, only thread 0 writes the final result to the output cell.
-                        (when (= local-id 0)
-                          (set! (~ result-cell) val))) ))
+;; -- grid-reduce-second-stage! -- 
+(defmacro grid-reduce-second-stage! (someFunction someVar identity in-scratch-vec return-vec 
+                                     &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
+                                     &key message)
+  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
+  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
+  `(progn
+    (declare (grid-level) (num-groups :max 1))
+    
+    (r-t-assert-0 (== (get-num-groups) 1) "grid-reduce-second-stage! must be launched with exactly one workgroup")
+    (r-t-assert-0 (<= (length~ ,in-scratch-vec) (get-local-work-size)) "local_work_size must be >= the length of in-scratch-vec")
 
-      (declare (grid-level))
-      ;; Phase 1: Micro Strategy (Intra-Workgroup)
-      ;; After reduce-workgroup, the globalScratchVec will contain one value per group.
-      (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec :return-vec ,globalScratchVec)
+    (let ((num-items (length~ ,in-scratch-vec))
+          (local-id (get-local-id)))
       
-       ;; This isn't a runtime invocation. It demonstrates to the hoisting code 
-       ;; HOW this function expects the continuation kernel to be dispatched.
-      (launch-kernel (continuation-k ,globalScratchVec ,localScratchVec (allocate-cell (type-of ,someVar)))))
+      ;; Load partials into the local variable. Inactive threads get the identity.
+      (set! ,someVar (if (< local-id num-items)
+                         (~ ,in-scratch-vec local-id)
+                         ,identity))
+                         
+      ;; Perform a standard workgroup reduction
+      (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
+      
+      ;; Thread 0 writes the ultimate answer
+      (when-thread-in-group-is 0
+        (set! (~ ,return-vec 0) ,someVar)))))
 
 ```
+
 
 ### `Strategy D: Cooperative Grid Sync (Hardware Dependent)`
 
@@ -6787,6 +6823,14 @@ Because reducing a 1D vector or tensor is so common, Crisp provides a high-level
 `(reduce-vec someFunction vec identity &key out strategy)`
 
 Instead of manually writing the strided loops and managing the scratchpads, you simply tell `reduce-vec` which Macro Strategy to employ:
+
+
+The `strategy` is one of:
+```
+(def-enum reduction-strategy :atomic :last-man-standing :cas )
+```
+The "second stage" isn't available because it requires a second kernel enqueue.
+
 
 ```lisp
 ;; Example: The "Easy Button" atomic strategy
@@ -8135,7 +8179,7 @@ Example: `(let ((old (atomic-add! (~ result 0) 1))) ...)`
  This example adds 1 to the first element of the result vector. The variable `old` will
  have whatever was in `(~ result 0)` before the addition occured.
 
-#### atomic-sub!
+#### atomic-sub! ✅
 Subtracts a value from a memory location, updating it. This routine returns the value BEFORE this modification..
 
 Syntax: `(atomic-sub! location delta)`
@@ -8225,19 +8269,47 @@ of a `def-function`. Use `def-grid-function` instead.
  If writing a `defmacro`, be sure to include `(declare (grid-level))` in its `progn` 
 expansion. 
 
+> ⚠️ **NOT ENFORCED YET (BUG 087).** As of 2026-09-22 a plain `def-function` performing a
+> `:global` atomic compiles cleanly, with no error and no warning -- the refusal described above
+> does not happen. The paragraph records the INTENDED rule, not current behaviour. It matters
+> because a `def-function` is thread-level, so nothing marks the containing dispatch as a grid
+> operation, and both the hoisting code and the uniformity analysis are then working from the
+> wrong premise for any kernel that reaches a global atomic through a helper.
 
 
-<!--
 
-THIS IS BEING REMOVED.  
-
-#### atomic-cas!
-(Compare-and-Swap) Compares the value at a memory location with an expected value. If they are the same, it writes a new value. The old value is always returned. This is the most powerful atomic primitive and can be used to build any other atomic operation.
+#### atomic-cas! ✅
+(Compare-and-Swap) Compares the value at a memory location with an expected value. If they are the
+same, it writes a new value. **The old value is always returned**, as with every other Crisp atomic,
+so the caller detects success by comparing the returned value against the one it expected. This is
+the most powerful atomic primitive, and every other atomic can be built from it.
 
 Syntax: `(atomic-cas! location expected-value new-value)`
 
 Example: `(atomic-cas! (~ current-value-vec 0) 0 1)`
--->
+
+**You cannot spin on it, and that is deliberate.** A CAS is normally used in a retry loop -- read,
+compute, swap, and go round again if somebody beat you to it -- and such a loop is unbounded by
+nature. Crisp is intentionally not Turing-complete, so there is no unbounded loop to write it with:
+`while` is not part of the surface language, and `dotimes` / `dotimes+` both take a bound. A retry
+loop you write yourself is therefore necessarily bounded, and you must decide the bound.
+
+**`atomic-binop!` and `atomic-op!` are that loop, already written.** They wrap `atomic-cas!` in a
+bounded retry whose limit is derived rather than guessed -- a CAS fails only because another thread's
+CAS succeeded, and each contending thread needs to succeed just once, so the number of contenders is
+a sufficient bound -- and they assert loudly if it is ever exhausted, because a silently abandoned
+retry is a lost update. Prefer them unless you specifically need a single attempt.
+
+**On floating point, the comparison is on bit patterns.** `cmpxchg` takes only integer operands, so
+a float CAS reinterprets both values at the same width, which is also how CUDA's float `atomicCAS`
+idiom works. Two consequences are worth knowing: `+0.0` and `-0.0` do not match each other, and a
+NaN never matches itself. Both hold for every hardware float CAS.
+
+**Not differentiable.** A CAS returns which thread won a race, which is not a function of the
+program's inputs -- two identical runs can legitimately return different values -- so there is no
+derivative to take. `--differentiate` refuses it rather than returning a gradient of zero, which
+would be indistinguishable from a correct answer. For a differentiable accumulation use
+`atomic-add!`, `(atomic-binop! loc #'+ x)`, or one of the `grid-reduce-*` strategies.
 
 #### Example: Summing a Vector to One Value.
 

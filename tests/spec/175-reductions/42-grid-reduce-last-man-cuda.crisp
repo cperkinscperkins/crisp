@@ -1,0 +1,59 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;; SKIP-WITH[--differentiate]: "forward semantics only -- the VJP is measured on the BMG side (spec 26)"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- grid-reduce-last-man! on NVIDIA.  CUDA twin of spec 25.
+;;
+;; THE HIGHEST-VALUE TWIN IN THIS SET, because it is the only one whose correctness rests on a
+;; MEMORY MODEL rather than on arithmetic.  The construct stores a partial, fences, then bumps a
+;; ticket counter -- and the election is wrong if any workgroup can observe the counter before the
+;; store.  That fence was placed and verified against INTEL behaviour.  NVIDIA's model is a
+;; different animal.  It emits fence.sc.sys (system scope), which should be sufficient, and
+;; "should be" is exactly what this spec exists to replace with a measurement.
+;;
+;; IT ALSO EXERCISES THE TICKET SEMANTICS: atom.global.add must return the value BEFORE the
+;; addition, so that exactly one workgroup draws num_groups-1.  Note what this number can and
+;; cannot show.  If NO workgroup elects itself, slot 0 keeps its pre-fill of 0 and the failure is
+;; obvious.  If SEVERAL do, they each store the same grid total and the buffer still reads 32640 --
+;; so a pass here proves an election happened, not that it was unique.
+;;
+;; The construct's run-time assert, num_groups (4) <= local_work_size (64), holds unchanged.
+;; sv is :match-num-warps-per-workgroup, which resolves to 2 on h100's 32-wide SIMD against 4 on
+;; BMG -- confirmed in the generated .cu, and a good reason never to hardcode it.
+;;
+;; WHY THIS NUMBER MATCHES THE BMG TWIN'S, and is not a copy-paste slip: the total is a sum over
+;; ALL THREADS, so it does not depend on how threads group into warps.  Only an expectation
+;; built from a PER-WARP quantity changes with the warp width -- see spec 49, where 30720
+;; becomes 126976 because a 32-lane warp sums to 496 rather than 120.  Classifying each number
+;; as per-thread or per-warp was the actual work in porting this set.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_last_man (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float 4 :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        ;; The election flag is WORKGROUP-LOCAL and always uint, whatever the reduction's type.
+        ;; Caller-supplied for the same reason the buffers above are: scratch created inside an
+        ;; analyzer's expansion is invisible to the Pass-1 scanner that builds the kernel's
+        ;; implicit parameters.  It is what lets the LOSING workgroups retire immediately instead
+        ;; of sweeping a buffer whose result they will discard.
+        (flag (make-scratch-cell uint)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-last-man! #'+ contrib 0.0 out
+                             :local-scratch-vec sv
+                             :global-scratch-vec gv
+                             :atomic-counter ctr
+                             :election-flag-cell flag))))

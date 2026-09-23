@@ -831,11 +831,29 @@
 
 
 
-(defun %scratch-tensor-canonical-spec (op args)
+(defun %175-scratch-address-space (args)
+  "The :address-space requested in a make-scratch-* arg list, defaulting to :local.
+   Refuses anything but :local or :global -- a scratch buffer in :constant or a private space is
+   not a thing the hoisters can allocate, and silently downgrading is what BUG 083 was."
+  ;; Located by SEARCHING FOR THE KEY, not by parsing a plist tail.  Two traps rule the
+  ;; alternatives out: the keyword tail starts at a different position per form ((elem size
+  ;; &rest keys) for vector/matrix, (elem N size &rest keys) for the rank-N tensor), and a
+  ;; SYMBOLIC SIZE is itself a keyword -- so scanning for the first keyword picks up
+  ;; :match-num-warps-per-workgroup and reports "malformed property list".
+  (let* ((pos (position :address-space args))
+         (as  (if pos (nth (1+ pos) args) :local)))
+    (unless (member as '(:local :global))
+      (error 'crisp-compiler-error
+             :message (format nil "make-scratch-*: :address-space must be :local or :global, got ~s. A scratch buffer is either workgroup-local (SLM) or grid-global (device memory); there is nothing else the hoisting code can allocate."
+                              as)
+             :source-location nil))
+    as))
+
+(defun %scratch-tensor-canonical-spec-base (op args)
   "Resolves type arguments of a make-scratch-{vector,matrix,tensor} form
    to a canonical (tensor elem N addr align ct) spec."
   (unless args
-    (return-from %scratch-tensor-canonical-spec nil))
+    (return-from %scratch-tensor-canonical-spec-base nil))
   (let* ((op-name (symbol-name op))
          (implicit-n (cond ((string-equal op-name "MAKE-SCRATCH-VECTOR") 1)
                            ((string-equal op-name "MAKE-SCRATCH-MATRIX") 2)
@@ -884,6 +902,29 @@
                    (= (length raw-spec) 3))
               (append raw-spec '(:address-space :local :align :compact))
               raw-spec)))))))
+
+;;; Endeavour 175 — honour :address-space instead of hardcoding :local (BUG 083).
+
+(defun %scratch-tensor-canonical-spec (op args)
+  "honours :address-space instead of hardcoding :local.
+
+   Implemented as a post-pass over the original's result rather than a reimplementation -- the
+   original resolves aliases, implicit ranks and storage-handle expansion, none of which this
+   changes.  It rewrites the address-space slot of the canonical
+   (tensor elem N addr align ct) tuple only when :global was asked for."
+  (let ((spec (%scratch-tensor-canonical-spec-base op args))
+        (as   (%175-scratch-address-space args)))
+    (if (and (eq as :global)
+             (consp spec)
+             (symbolp (first spec))
+             (string-equal (symbol-name (first spec)) "TENSOR")
+             (>= (length spec) 4))
+        ;; Canonical shape is (tensor elem N addr align ct); slot 3 is the address space.
+        (let ((copy (copy-list spec)))
+          (setf (nth 3 copy) :global)
+          (log:debug "175: scratch ~a promoted to :global -> ~s" op copy)
+          copy)
+        spec)))
 
 (defun %register-scratch-tensor-implicit (op args)
   "Shared logic for scan-operator methods on make-scratch-{vector,matrix,tensor}.

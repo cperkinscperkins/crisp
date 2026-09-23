@@ -1,7 +1,7 @@
-# `grid-reduce-last-man!` 📝
+# `grid-reduce-last-man!` ✅
 
 
-`(grid-reduce-last-man! someFunction <someVar> identity &out return-vec &optional localScratchVec globalScratchVec atomicCounter &key message)`
+`(grid-reduce-last-man! someFunction <someVar> identity &out return-vec &key local-scratch-vec global-scratch-vec atomic-counter election-flag-cell message)`
 
 `grid-reduce-last-man!` is usually the fastest, most flexible single-pass grid reduction available. It works with *any* commutative binary operation without incurring the massive contention penalty of a global Compare-And-Swap loop, and without the scheduling overhead of launching a second "continuation" kernel.
 
@@ -23,10 +23,20 @@ It accomplishes this via a cooperative finish.
 * `<someVar>`: The local variable being reduced.
 * `identity`: The identity value for `someFunction`.
 * `return-vec`: A required vector of length 1 (a `single-result`) in `:global` memory.
-* `localScratchVec`: (Optional) Writeable local memory sized to the number of warps in the workgroup. Generated automatically if omitted.
-* `globalScratchVec`: (Optional) Writeable global memory. Its size must equal the number of workgroups (`global_work_size / local_work_size`). Generated automatically if omitted.
-* `atomicCounter`: (Optional) A single global memory cell (usually `:uint32`) initialized to 0, used to track completed workgroups. Generated automatically if omitted.
-* `:message`: (Optional) String attached to auto-generated scratch allocations to inform the hoisting code.
+* `:local-scratch-vec`: Writeable local memory, one element per warp in the workgroup.
+* `:global-scratch-vec`: Writeable **`:global`** memory, one element per WORKGROUP
+  (`global_work_size / local_work_size`), holding the partials.
+* `:atomic-counter`: A zero-initialised `:global` `uint` cell, used to draw tickets.
+* `:election-flag-cell`: A **workgroup-local** `uint` cell, which broadcasts the ticket result from
+  thread 0 to the rest of its workgroup.  It is what lets the LOSING workgroups retire
+  immediately instead of sweeping a buffer whose result they would discard -- the early
+  retirement that is this strategy's whole advantage over a second kernel launch.  It is always
+  `uint`, never the reduction's element type, so it does not follow `<someVar>`.
+  Required, and allocated by the CALLER -- scratch created inside the construct's own
+  expansion is invisible to the Pass-1 scanner that builds a kernel's implicit parameters, so
+  Crisp cannot generate it for you.  Auto-generation needs that scanner to learn about
+  analyzer-introduced scratch, which is a real feature and not a line of sugar.
+* `:message`: (Optional) String attached to the allocations to inform the hoisting code.
 
 **Post-Conditions & Return:**
 
@@ -90,4 +100,5 @@ It accomplishes this via a cooperative finish.
                (set! (~ ,return-vec 0) val)))))))
 
 ```
+
 

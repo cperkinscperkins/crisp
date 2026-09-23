@@ -1,0 +1,39 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 255 1 2 3
+;; SKIP-WITH[--differentiate]: "max routes the adjoint to the winning thread, which needs an
+;; argmax the forward pass does not record -- refused by design, see errors/06 and BUG 077"
+;;
+;; ENDEAVOUR 175 -- grid-reduce-atomic! with #'max, the second of its three legal operators.
+;;
+;; The operator set is exactly {+, min, max} and the restriction is PHYSICAL: phase 2 is a single
+;; native atomic instruction and the hardware provides those three.  Spec 17 covers +, this covers
+;; max, 19 covers min.  Together they are the whole surface -- errors/06 pins that a fourth
+;; operator is refused rather than silently lowered.
+;;
+;; 256 threads over 4 workgroups each contribute their GLOBAL linear id, so the grid maximum is
+;; 255.  A construct that reduced only within workgroups would leave whichever workgroup's maximum
+;; landed last -- 63, 127, 191 or 255 -- and three of those four are visibly wrong, which is the
+;; useful property: the test can fail in a way that names the phase that broke.
+;;
+;; THE INITIAL BUFFER CONTENTS PARTICIPATE, which is easy to forget with an atomic.  The harness
+;; pre-fills out with 0 1 2 3, so slot 0 starts at 0 and the reduction is really max over
+;; {0} u {0..255} = 255.  That happens to be harmless here; it is NOT harmless for min, which is
+;; why spec 19 contributes negative values.
+;;
+;; The identity is -1.0e30, below anything this kernel produces.  Every thread is active so it is
+;; never actually consumed, but writing 0.0 "because it works" would be wrong the moment someone
+;; copied this spec and made the warp partial -- 0.0 beats every negative contribution.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_atomic_max (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+    (let ((contrib (to-float (get-global-linear-id))))
+      (grid-reduce-atomic! #'max contrib -1.0e30 out :local-scratch-vec sv))))

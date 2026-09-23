@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 1 9.5 2 2
+;; SKIP-WITH[--differentiate]: "a CAS result says who won a race; its VJP refuses -- errors/10"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- atomic-cas! on FLOAT, on NVIDIA.  CUDA twin of spec 34.
+;;
+;; cmpxchg takes no float operands, so a float CAS bitcasts to i32 and back.  That is the same idiom
+;; CUDA's own float atomicCAS uses, which makes this the twin most likely to be right on this
+;; backend -- and the one whose absence would be least excusable.
+;;
+;; 9.5 rather than a whole number, deliberately: an implementation that CONVERTED where it meant to
+;; REINTERPRET would still yield 9 for a stored 9.0, and the bug would read as a pass.  A fractional
+;; part cannot survive an accidental integer conversion.
+;;
+;; The bit-pattern comparison is a real semantic, not an implementation detail: +0.0 and -0.0 do not
+;; match each other and a NaN never matches itself.  Both are true of every hardware float CAS.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel cas_float_smoke (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((old-ok (atomic-cas! (~ out 1) 1.0 9.5)))
+    (let ((old-fail (atomic-cas! (~ out 2) 99.0 7.0)))
+      (set! (~ out 0) old-ok)
+      (set! (~ out 3) old-fail))))

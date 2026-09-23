@@ -1,0 +1,47 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 80 1 2 3
+;; SKIP-WITH[--differentiate]: "atomic-op! is not differentiable -- see errors/14"
+;;
+;; ENDEAVOUR 175 -- atomic-op!, the UNARY sibling of atomic-binop!.
+;;
+;;   (atomic-op! location op-f)
+;;
+;; Applies a unary #(T => T) to the value at LOCATION and stores the result, returning the value
+;; that was there before.  A bounded CAS retry loop, exactly like atomic-binop! -- the only
+;; difference is the arity of the function and that there is no value argument at all.
+;;
+;; THE DOC MARKED THIS IMPLEMENTED AND IT WAS NOT.  atomic-excerpts.md carries a tick for both
+;; atomic-binop! and atomic-op!; neither existed before 2026-09-22.  That is worth a line here
+;; because a wrong tick is worse than a missing one: it stops anybody looking.
+;;
+;; plus-ten IS THE DOC'S OWN EXAMPLE, kept deliberately rather than reusing spec 36's multiply.
+;; Eight threads each add ten to a slot starting at 0, so the result is 80 -- and because the
+;; operation is applied once per thread, 80 is only reachable if every one of the eight CAS loops
+;; succeeded.  A single lost update reads 70, which is unmistakable rather than plausible.
+;;
+;; WHY THE ORDER DOES NOT MATTER even though eight threads race: every thread applies the SAME
+;; unary function once, so the final value is f composed with itself eight times over the initial
+;; value, and function composition does not care which thread went first.  That is what makes the
+;; expectation deterministic.  (It is also why the DERIVATIVE is not -- see errors/14: each thread's
+;; adjoint depends on which rung of that composition chain it occupied, which differs per run.)
+;;
+;; THE ACCUMULATOR IS out[0], which starts at 0 and is fine here: addition's identity is 0, so the
+;; pre-fill does not perturb the answer.  Contrast spec 36, where multiplication forced the use of
+;; out[1] because a product seeded at 0 stays 0.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+;; The design doc's own example function.
+(def-function plus-ten (a)
+  (declare #'(float => float))
+  (+ a 10.0))
+
+(def-kernel atomic_op_unary (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 8))
+  (atomic-op! (~ out 0) #'plus-ten))

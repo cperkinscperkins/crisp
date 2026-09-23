@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 1 9 2 2
+;; SKIP-WITH[--differentiate]: "a CAS result says who won a race; its VJP refuses -- errors/10"
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
+;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
+;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
+;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;;
+;; ENDEAVOUR 175 -- atomic-cas! on uint, on NVIDIA.  CUDA twin of spec 33.
+;;
+;; One thread, both outcomes: a matching CAS that stores, and a non-matching one that must not.
+;; The emitted PTX was already checked to be atom.acquire.global.cas.b32 -- right address space,
+;; right width -- so this spec is about the SEMANTICS of how Crisp wires that instruction, not
+;; about whether the correct opcode appears.
+;;
+;; Every slot is load-bearing: slot 1 proves the store happened, slot 2 that the failed attempt
+;; wrote nothing, slots 0 and 3 that both attempts returned the PRIOR value rather than a success
+;; flag.  A boolean-returning CAS would read 1 9 2 0.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel cas_uint_smoke (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  ;; Crisp's let is sequential, so these nest rather than using let*.
+  (let ((old-ok (atomic-cas! (~ out 1) 1u 9u)))
+    (let ((old-fail (atomic-cas! (~ out 2) 99u 7u)))
+      (set! (~ out 0) old-ok)
+      (set! (~ out 3) old-fail))))

@@ -40,3 +40,16 @@ Crisp eliminates the GPGPU compromise by making the hardware architecture implic
 
 Crisp eliminates the GPGPU compromise by building a compiler that actually understands mathematics. When writing complex numerical models, developers waste countless hours writing manual casting boilerplate just to keep the compiler happy when mixing types or precision levels. Crisp’s dominant/recessive type system structurally anticipates the shape of your math. It automatically governs how complex types, quantized integers, and mixed-precision operations interact and promote across the AST. It shifts the narrative from "satisfying the compiler" to writing pure, uncompromised equations that automatically lower to mathematically safe, optimized instructions.
 
+
+### Crowded Field
+The GPU ecosystem is an absolute alphabet soup right now. Between CUB, Thrust, CUTLASS, SYCL, OpenCL, HIP, and newer players like OpenAI's Triton, it is practically a full-time job just tracking what is deprecated and what is currently in fashion.
+
+But that fragmentation is exactly why Crisp has such a strong reason to exist. If you map out all those peers, they all force you to pick a poison:
+
+* **CUB/Thrust:** You get hardware control, but you pay for it in horrific C++ template metaprogramming and NVIDIA vendor lock-in.
+* **SYCL:** You get multi-vendor portability and cleaner modern C++, but the runtime hides the hardware execution model from you, making tuning a guessing game.
+* **Triton:** You get beautiful Python semantics, but it is heavily tethered to machine learning tensor operations, not general-purpose GPU computing.
+
+Crisp is carving out a completely unique lane. By leveraging Lisp's macro system and AST manipulation, it is giving developers the surgical, cycle-counting hardware control of CUB, the multi-vendor backend support (SPIR-V and PTX) of SYCL, and the syntactic elegance of a high-level language.
+
+It's a crowded field, but Crisp is bringing something genuinely new to the table.

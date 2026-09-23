@@ -2003,3 +2003,31 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                          else collect b))
           while changed)
     kept))
+
+
+;;;; ===========================================================================
+;;;; Endeavour 175 — thread-selection sugar.
+;;;; ===========================================================================
+;;;; One defmacro each, serving BOTH packages: the symbols are exported from
+;;;; :crisp.compiler and imported into :crisp-language in src/package.lisp, so there is one
+;;;; symbol and one macro-function rather than two of each.
+
+(defmacro when-thread-in-warp-is (lane &body body)
+  "Runs BODY only in lane LANE of EVERY warp -- a per-WARP election.
+   A warp collective in BODY is refused: only one lane arrives.  See spec 06, errors/04."
+  `(when (= (to-int (warp-lane)) ,lane)
+     ,@body))
+
+(defmacro when-thread-in-group-is (id &body body)
+  "Runs BODY only in thread ID of the workgroup -- a per-WORKGROUP election.
+   Per ideal_001.md this is an implicit (when (= someId (get-local-id 0)) ...).
+   sync-workgroup in BODY is refused: only one thread arrives.  See spec 07, errors/03."
+  ;; get-local-LINEAR-id, NOT (get-local-id 0), despite ideal_001.md specifying the latter.
+  ;; A comparison against (get-local-id 0) is unreliable on the SPIR-V path: the LLVM IR is
+  ;; structurally identical to the linear-id form -- same global, same extractelement 0, same
+  ;; icmp -- yet at run time the branch is never taken, and whether it misbehaves depends on
+  ;; what else in the kernel reads the builtin.  Measured on BMG; see plan/bugs.md BUG 079.
+  ;; The linear id is also the better spelling for a 1-D election: it is the flattened index and
+  ;; is unambiguous whatever the workgroup's dimensionality.
+  `(when (= (to-int (get-local-linear-id)) ,id)
+     ,@body))

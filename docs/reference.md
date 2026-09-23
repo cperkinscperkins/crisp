@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-20T18:19:58.888412Z
+Generated on 2026-09-23T06:41:48.491899Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2000,6 +2000,236 @@ Generated on 2026-09-20T18:19:58.888412Z
 
 
 ---
+### DEFPARAMETER `*GRID-ATOMIC-OPERATOR-MAP*`
+
+  > Operators grid-reduce-atomic! accepts, and the native atomic each lowers to.  The hardware  >    provides exactly these three; anything else has no single-instruction form.
+
+
+---
+### DEFUN `%REDUCE-WARP-CHECK-ACTIVE-THREADS`
+- **Args**: `(ACTIVE-THREADS)`
+
+  > Refuses a LITERAL active-threads wider than the warp it reduces.  A runtime value is left  >    alone -- same split as 173's D5 xor-mask rule, where a literal mask is checked and a runtime  >    one is the reduction idiom.  The design doc calls this case undefined behaviour; there is no  >    reason to leave it undefined when the value is right there at compile time, and a silently  >    wrong sum is the worst of the available outcomes.
+
+
+---
+### DEFUN `%ANALYZE-WARP-COLLECTIVE-CHECK`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%warp-collective-check "name") -- runs D6 and emits nothing.
+
+
+---
+### DEFUN `%175-APPLY-BINOP`
+- **Args**: `(FN A B)`
+
+  > The form applying binop FN to A and B.  A LITERAL #'op is inlined as a DIRECT call rather  >    than emitted as (funcall #'op a b) -- two reasons, the second decisive:  >   >      * a direct call is simply better code than an indirect one through a function value;  >      * FUNCALL IS NOT DIFFERENTIABLE.  The AD walk refuses it ("Function FUNCALL is not  >        differentiable"), so a reduction emitting funcall cannot be differentiated at all --  >        whereas (+ a b) is differentiated by the ordinary arithmetic rules.  >   >    A non-literal FN (a variable holding a function value) still goes through funcall and is  >    still not differentiable; that is a genuine AD gap, not something this can paper over.
+
+
+---
+### DEFUN `%175-APPLY-UNOP`
+- **Args**: `(FN A)`
+
+  > The form applying unary FN to A.  A LITERAL #'op becomes a DIRECT call, for the same two  >    reasons %175-apply-binop does it: a direct call is better code, and FUNCALL IS NOT  >    DIFFERENTIABLE -- the AD walk refuses it outright.
+
+
+---
+### DEFUN `%REDUCE-WARP-EXPAND`
+- **Args**: `(EXPR)`
+
+  > Forward lowering of (reduce-warp FN VAR IDENTITY &optional ACTIVE-THREADS).  >    A plain function rather than a macro: keeping the construct unexpanded is what lets the VJP  >    registry see it (BUG 081).
+
+
+---
+### DEFUN `%ANALYZE-REDUCE-WARP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for reduce-warp -- expands and delegates.
+
+
+---
+### DEFUN `%REDUCE-WORKGROUP-EXPAND`
+- **Args**: `(EXPR)`
+
+  > The forward lowering of (reduce-workgroup FN VAR IDENTITY &key ...).  A plain function, not a  >    macro: as a macro this expanded inside anf-transform and the backward walk never saw the  >    construct.  The analyzer below calls it; the VJP registry sees the unexpanded form.
+
+
+---
+### DEFUN `%ANALYZE-REDUCE-WORKGROUP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for reduce-workgroup -- expands and delegates.  Being an ANALYZED form rather than a  >    macro is what keeps the construct visible to the autodiff walk (see the section header).
+
+
+---
+### DEFUN `%GRID-ATOMIC-OP-NAME`
+- **Args**: `(FN)`
+
+  > The atomic operator name for a literal #'op, or NIL if OP has no hardware atomic.
+
+
+---
+### DEFUN `%GRID-REDUCE-ATOMIC-PARTS`
+- **Args**: `(EXPR)`
+
+  > Destructures (grid-reduce-atomic! FN VAR IDENTITY RETURN-VEC &key ...).  >    Returns (values fn var identity return-vec scratch).
+
+
+---
+### DEFUN `%GRID-REDUCE-ATOMIC-EXPAND`
+- **Args**: `(EXPR)`
+
+  > The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what  >    lets the VJP registry see it (see the section header).
+
+
+---
+### DEFUN `%ANALYZE-GRID-REDUCE-ATOMIC`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for grid-reduce-atomic! -- expands and delegates.
+
+
+---
+### DEFUN `%175-MINMAX-EXPAND`
+- **Args**: `(EXPR WHICH LOCATION)`
+
+  > Expands (min a b) / (max a b) into a single-evaluation comparison.  >    WHICH is :min or :max.
+
+
+---
+### DEFUN `%ANALYZE-MIN-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (min a b) -- expands to a comparison and delegates.
+
+
+---
+### DEFUN `%ANALYZE-MAX-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (max a b) -- expands to a comparison and delegates.
+
+
+---
+### DEFUN `%GRID-REDUCE-LAST-MAN-PARTS`
+- **Args**: `(EXPR)`
+
+  > Destructures (grid-reduce-last-man! FN VAR IDENTITY RETURN-VEC &key ...).  >    Returns (values fn var identity return-vec local global counter flag).
+
+
+---
+### DEFUN `%GRID-REDUCE-LAST-MAN-EXPAND`
+- **Args**: `(EXPR)`
+
+  > The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what  >    lets the VJP registry see it (BUG 073/077/081).
+
+
+---
+### DEFUN `%ANALYZE-GRID-REDUCE-LAST-MAN`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for grid-reduce-last-man! -- expands and delegates.
+
+
+---
+### DEFUN `%GRID-REDUCE-SECOND-STAGE-PARTS`
+- **Args**: `(EXPR)`
+
+  > Destructures (grid-reduce-second-stage! FN VAR IDENTITY IN-VEC RETURN-VEC &key ...).  >    Returns (values fn var identity in-vec return-vec local-scratch-vec).
+
+
+---
+### DEFUN `%GRID-REDUCE-SECOND-STAGE-EXPAND`
+- **Args**: `(EXPR)`
+
+  > The forward lowering.  A plain function, not a macro -- see the header.
+
+
+---
+### DEFUN `%ANALYZE-GRID-REDUCE-SECOND-STAGE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for grid-reduce-second-stage! -- expands and delegates.
+
+
+---
+### DEFUN `%GRID-REDUCE-CAS-PARTS`
+- **Args**: `(EXPR)`
+
+  > Destructures (grid-reduce-cas! FN VAR IDENTITY RETURN-VEC &key ...).  >    Returns (values fn var identity return-vec local-scratch-vec).
+
+
+---
+### DEFUN `%GRID-REDUCE-CAS-EXPAND`
+- **Args**: `(EXPR)`
+
+  > The forward lowering.  A plain function, not a macro: keeping the construct unexpanded is what  >    lets the VJP registry see it (BUG 073/077/081).
+
+
+---
+### DEFUN `%ANALYZE-GRID-REDUCE-CAS`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for grid-reduce-cas! -- expands and delegates.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-CAS!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-cas! target expected desired).  >    The target is analysed in :write mode so an &out parameter can be a CAS target -- the read is  >    part of the write, exactly as for the other atomics and for set!.
+
+
+---
+### DEFUN `%ANALYZE-ATOMIC-CAS-OK!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (%atomic-cas-ok! target expected desired) -- a CAS yielding the SUCCESS FLAG as an int.  >   >    COMPILER-INTERNAL, and named with a leading % to say so.  It exists because a bounded retry  >    loop cannot correctly derive success from the returned old value: that test is numeric where  >    CAS is bitwise, so a +0.0/-0.0 transition reads as success and loses the update.  Exposing the  >    flag LLVM already computed is cheaper and exactly right.
+
+
+---
+### DEFUN `%ATOMIC-BINOP-PARTS`
+- **Args**: `(EXPR)`
+
+  > Destructures (atomic-binop! LOCATION BINOP-F ARG).  Returns (values location fn arg).
+
+
+---
+### DEFUN `%ATOMIC-BINOP-EXPAND`
+- **Args**: `(EXPR)`
+
+  > The forward lowering: a bounded CAS retry loop that returns the prior value.
+
+
+---
+### DEFUN `%ANALYZE-ATOMIC-BINOP!`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for atomic-binop! -- expands to the bounded CAS loop and delegates.
+
+
+---
+### DEFUN `%ATOMIC-OP-PARTS`
+- **Args**: `(EXPR)`
+
+  > Destructures (atomic-op! LOCATION OP-F).  Returns (values location fn).
+
+
+---
+### DEFUN `%ATOMIC-OP-EXPAND`
+- **Args**: `(EXPR)`
+
+  > The forward lowering: a bounded CAS retry loop returning the prior value.  >    Mirrors %atomic-binop-expand exactly, minus the value argument.
+
+
+---
+### DEFUN `%ANALYZE-ATOMIC-OP!`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for atomic-op! -- expands to the bounded CAS loop and delegates.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
 
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
@@ -2156,10 +2386,24 @@ Generated on 2026-09-20T18:19:58.888412Z
 
 
 ---
-### DEFUN `%SCRATCH-TENSOR-CANONICAL-SPEC`
+### DEFUN `%175-SCRATCH-ADDRESS-SPACE`
+- **Args**: `(ARGS)`
+
+  > The :address-space requested in a make-scratch-* arg list, defaulting to :local.  >    Refuses anything but :local or :global -- a scratch buffer in :constant or a private space is  >    not a thing the hoisters can allocate, and silently downgrading is what BUG 083 was.
+
+
+---
+### DEFUN `%SCRATCH-TENSOR-CANONICAL-SPEC-BASE`
 - **Args**: `(OP ARGS)`
 
   > Resolves type arguments of a make-scratch-{vector,matrix,tensor} form  >    to a canonical (tensor elem N addr align ct) spec.
+
+
+---
+### DEFUN `%SCRATCH-TENSOR-CANONICAL-SPEC`
+- **Args**: `(OP ARGS)`
+
+  > honours :address-space instead of hardcoding :local.  >   >    Implemented as a post-pass over the original's result rather than a reimplementation -- the  >    original resolves aliases, implicit ranks and storage-handle expansion, none of which this  >    changes.  It rewrites the address-space slot of the canonical  >    (tensor elem N addr align ct) tuple only when :global was asked for.
 
 
 ---
@@ -2670,10 +2914,17 @@ Generated on 2026-09-20T18:19:58.888412Z
 
 
 ---
-### DEFUN `%SHUFFLE-BACKWARD`
+### DEFUN `%SHUFFLE-BACKWARD-BASE`
 - **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
 
   > Emits the adjoint updates for a raw shuffle form bound to V.  See the section header.
+
+
+---
+### DEFUN `%SHUFFLE-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
+
+  > handles the :idx (broadcast) case 173 refused; everything else unchanged.
 
 
 ---
@@ -2766,10 +3017,17 @@ Generated on 2026-09-20T18:19:58.888412Z
 - **Args**: `(ARGS)`
 
 ---
-### DEFUN `%PROMOTE-SCRATCH-INIT-FOR-AD`
+### DEFUN `%PROMOTE-SCRATCH-INIT-FOR-AD-BASE`
 - **Args**: `(INIT)`
 
   > Promotes the type in a make-scratch-* form to its float adjoint equivalent.  >    E.g., (make-scratch-vector ulong 4) -> (make-scratch-vector double 4).  >   >    Endeavour 163 path (a): a 16-BIT FLOAT element promotes to FLOAT for the same reason an  >    integer one does -- an adjoint accumulates many contributions and must not do so in fp16.  >    It is also what makes the gradient scatter an fp32 atomic, which is the only kind BMG's  >    SPIR-V reader will load.
+
+
+---
+### DEFUN `%PROMOTE-SCRATCH-INIT-FOR-AD`
+- **Args**: `(INIT)`
+
+  > MAKE-SCRATCH-CELL is handled directly; every other scratch form defers to the  >    original.  A cell has no tensor spec to canonicalise (BUG 047).
 
 
 ---
@@ -3376,10 +3634,17 @@ Generated on 2026-09-20T18:19:58.888412Z
 
 
 ---
-### DEFUN `%BACKWARD-SKIP-FN-P-145P1`
+### DEFUN `%BACKWARD-SKIP-FN-P-145P1-BASE`
 - **Args**: `(FN-SYM)`
 
   > Returns T if FN-SYM should be silently skipped in the AD backward walk.  >   >    Endeavor 145 P1: INNER-DIMENSION / OUTER-DIMENSIONS join the gradient-inert shape  >    queries.  Both are pure reads of a tensor's extents — `(inner-dimension A B)` is K,  >    `(outer-dimensions A B)` is (values M N) — so they carry no value dependence and  >    contribute exactly zero gradient, like EXTENTS~ / STRIDES~ / NUM-ROWS above them.  >    Their forward values remain available to the backward via the primal replay in  >    %generate-backward-kernel-ast.
+
+
+---
+### DEFUN `%BACKWARD-SKIP-FN-P-145P1`
+- **Args**: `(FN-SYM)`
+
+  > the 173 warp builtins join the gradient-inert coordinate queries.
 
 
 ---
@@ -3822,6 +4087,104 @@ Generated on 2026-09-20T18:19:58.888412Z
 - **Args**: `(FORM)`
 
   > Remove dead scratch bindings, and the fill-tile forms that zero them, from a backward FORM.  >   >    Structural no-op when nothing is dead, which is every kernel whose backward reads everything  >    it allocates.  See the header above for why 154/03's backward allocated 262144 bytes it never  >    touched.
+
+
+---
+### DEFUN `%175-BROADCAST-VJP-FORM`
+- **Args**: `(G VALUE-ADJ IDX TAIL WIDTH-FORM ZERO)`
+
+  > The adjoint statement for a broadcast shuffle.  See the section header for the derivation.
+
+
+---
+### DEFUN `%175-RAW-INTEGER-LITERAL`
+- **Args**: `(FORM)`
+
+  > The integer value of a raw literal FORM, or NIL.  >   >    Needed because the AD walk sees RAW forms and Crisp spells a typed literal as a SUFFIXED  >    SYMBOL: `2ul` is read by the CL reader as the symbol |2UL|, and only later does  >    %try-parse-typed-literal (src/analysis/core.lisp) turn it into a ulong semantic-literal.  So  >    (integerp (third expr)) is false for exactly the form this VJP is written for.  >   >    Only the INTEGER suffixes are accepted.  A float-suffixed literal (2.0f, 3d) is not a legal  >    lane index, so returning NIL for it is correct rather than merely conservative.
+
+
+---
+### DEFUN `%175-ATOMIC-PLACE-PARTS`
+- **Args**: `(PLACE)`
+
+  > TARGET and INDICES of an atomic's place, or NIL if it is not a (~ t i...) form.  >    Matched by symbol-name: a kernel's reader may intern ~ into its own package.
+
+
+---
+### DEFUN `%175-VJP-ATOMIC-LINEAR`
+- **Args**: `(FORM CTX SIGN OP-NAME)`
+
+  > Backward rule for an atomic that is LINEAR in its value argument.  >    SIGN is +1 for add!, -1 for sub!.
+
+
+---
+### DEFUN `%175-VJP-ATOMIC-REFUSE`
+- **Args**: `(FORM CTX OP-NAME WHY)`
+
+  > Backward rule for an atomic Crisp cannot differentiate: refuse, with the reason.
+
+
+---
+### DEFUN `%175-VJP-REDUCE-WARP`
+- **Args**: `(FORM CTX)`
+
+  > VJP for reduce-warp: a warp all-reduce is self-transposing, so the backward pass is another  >    reduce-warp of the adjoint.  See the section header.
+
+
+---
+### DEFUN `%175-VJP-REDUCE-WORKGROUP`
+- **Args**: `(FORM CTX)`
+
+  > VJP for reduce-workgroup: an all-reduce is self-transposing, so the backward pass is another  >    all-reduce of the adjoint.  See the section header for the derivation and spec 09 for the  >    measured value (64, against 1.0 for the mechanical reversal).
+
+
+---
+### DEFUN `%175-VJP-GRID-REDUCE-ATOMIC`
+- **Args**: `(FORM CTX)`
+
+  > VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's  >    adjoint.  One global load per thread -- no atomics, no barriers, no scratch.
+
+
+---
+### DEFUN `%175-VJP-GRID-REDUCE-LAST-MAN`
+- **Args**: `(FORM CTX)`
+
+  > VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's  >    adjoint -- identical to grid-reduce-atomic!'s rule, because the two constructs compute the  >    same function by different schedules.  A derivative depends on WHAT is computed, not on how  >    the work was divided, which is worth stating: the elaborate last-man machinery leaves no trace  >    in the backward pass at all.
+
+
+---
+### DEFUN `%175-VJP-GRID-REDUCE-SECOND-STAGE`
+- **Args**: `(FORM CTX)`
+
+  > VJP: out[0] is the sum over in-scratch-vec, so each active lane's adjoint lands in that  >    vector at the lane it read.  The reduced var is an OUTPUT of this form -- see the header --  >    so its incoming adjoint is killed rather than propagated.
+
+
+---
+### DEFUN `%175-VJP-GRID-REDUCE-CAS`
+- **Args**: `(FORM CTX)`
+
+  > VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's  >    adjoint -- the same broadcast as grid-reduce-atomic! and grid-reduce-last-man!.  >   >    THE FOURTH STRATEGY WITH THE SAME DERIVATIVE, which is the point rather than a coincidence: all  >    four compute the same function by different schedules, and a derivative depends on WHAT is  >    computed, not on how the work was divided or which memory it passed through.  None of the CAS  >    apparatus -- the retry loop, the contention, the election -- leaves any trace in the backward  >    pass.
+
+
+---
+### DEFUN `%175-VJP-ATOMIC-CAS`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for atomic-cas!: refuse.  Its result is which thread won a race, which is not a  >    differentiable function of the inputs -- two runs of the same kernel can legitimately return  >    different values.
+
+
+---
+### DEFUN `%175-VJP-ATOMIC-BINOP`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for atomic-binop!: the + case is atomic-add!'s rule; anything else refuses.  >    Reached only because atomic-binop! is an analyzed form -- as a macro the walk would have seen  >    the CAS loop instead and produced a wrong gradient without complaining.
+
+
+---
+### DEFUN `%175-VJP-ATOMIC-OP`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for atomic-op!: refuse, and say why it is not a recording gap.  >   >    Unlike atomic-binop! -- whose + case survives because a sum's derivative does not care what  >    else landed first -- atomic-op! has NO value argument at all.  It transforms the location in  >    place, so the only derivative on offer is d new / d old = f'(old), and OLD is the value the  >    location happened to hold when this thread won the race.  Every thread applies f once, so the  >    final value (f composed n times) is deterministic, but WHICH RUNG of that composition each  >    thread occupied is not.  So each thread's adjoint differs from run to run on identical inputs,  >    and there is nothing stable to differentiate rather than something merely unrecorded.
 
 
 ---
@@ -5030,7 +5393,7 @@ Generated on 2026-09-20T18:19:58.888412Z
 ### DEFUN `%173-ENSURE-GRAD-DISPATCH-DECLS`
 - **Args**: `(SEMANTIC-FUNCTION)`
 
-  > BUG 066: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under its OWN name,  >    so %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and declined to  >    pin.  Every differentiated kernel on Intel was therefore running at a subgroup size the  >    driver chose, including MMA kernels whose warp counts are computed from :simd-width -- the  >    backward pass silently opted out of the contract the forward pass has.  >   >    The gradient kernel is launched with the SAME geometry as its forward kernel, so it  >    inherits the same declarations.  Doing it HERE rather than in 173's D7 gate means 156's own  >    pinning starts working, not merely that endeavour's check.  >   >    If another generated-kernel suffix ever joins _GRAD, this needs widening.
+  > BUG 066: a _GRAD kernel has no entry in *kernel-dispatch-declarations* under its OWN name, so  >    %emit-spirv-subgroup-size-execution-mode read a NIL local-size for it and declined to pin --  >    leaving every differentiated kernel on Intel running at a driver-chosen subgroup size while  >    its forward twin was pinned.  >   >    The gradient kernel is launched with the same GEOMETRY as its forward kernel, so it inherits  >    those keys and only those; see *GRAD-INHERITABLE-DISPATCH-KEYS* for why the rest stay behind.  >   >    If another generated-kernel suffix ever joins _GRAD, this needs widening.
 
 
 ---
@@ -5086,7 +5449,7 @@ Generated on 2026-09-20T18:19:58.888412Z
 ### DEFUN `%SHUFFLE-CHECK-PINNED`
 - **Args**: `(LOCATION)`
 
-  > Endeavour 173, D7.  On Intel the driver picks the subgroup size (8, 16 or 32) unless the  >    kernel pins it, and a reduction written for 16 lanes that runs on 32 does not crash -- it  >    returns a wrong answer.  So a shuffling kernel that cannot be pinned is refused rather than  >    compiled against an assumed 32.  NVIDIA is exempt: its warp has been 32 lanes on every  >    architecture shipped, so there is nothing to pin.  >   >    Reads *173-SUBGROUP-PINNED*, which %emit-spirv-subgroup-size-execution-mode sets at function  >    setup -- BEFORE any body node is generated -- so the flag is always current by the time a  >    shuffle asks about it.
+  > NO LONGER CHECKS ANYTHING -- kept so the emit sites need no edit.  See  >    %175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING, which asks the same question once per KERNEL over  >    the call graph instead of once per emitted shuffle inside whatever function happens to be  >    under construction.  The per-shuffle form could not see past its own function and therefore  >    refused every helper (BUG 076) while missing every kernel whose shuffle was in a helper.  >    On fold-back, delete this and its call in %shuffle-spv.
 
 
 ---
@@ -5185,6 +5548,67 @@ Generated on 2026-09-20T18:19:58.888412Z
 - **Args**: `(BUILDER MODULE PHASE)`
 
   > Emit one half of a split workgroup barrier.  >   >    PHASE is :arrive -> __spirv_ControlBarrierArriveINTEL, or :wait -> ...WaitINTEL.  Both take the  >    same three arguments as the fused __spirv_ControlBarrier and with the same values Crisp already  >    uses for (sync-workgroup): Scope=Workgroup(2), MemScope=Workgroup(2),  >    Semantics=AcquireRelease(8)|WorkgroupMemory(256) = 264.  >   >    Splitting changes WHEN the rendezvous blocks, not what it orders -- so the memory semantics are  >    deliberately identical to the fused form.  A reader comparing the two should see one difference,  >    the opcode.
+
+
+---
+### DEFPARAMETER `*GRAD-INHERITABLE-DISPATCH-KEYS*`
+
+  > The dispatch-declaration keys a _GRAD kernel inherits from its forward twin: LAUNCH GEOMETRY  >    only.  Deliberately a whitelist rather than a blacklist -- a new scheduling key added to the  >    plist later must not start leaking into derivatives merely because nobody remembered to  >    exclude it.  See 152-DSMEM-Cluster/05.
+
+
+---
+### DEFPARAMETER `*WARP-COLLECTIVE-OPERATOR-NAMES*`
+
+  > Operators whose correctness depends on the warp width the kernel actually runs at.  >    reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a  >    user writes, and listing them means the scan works whether or not they have been expanded.
+
+
+---
+### DEFUN `%175-USES-WARP-COLLECTIVE-P`
+- **Args**: `(X)`
+
+  > Syntactic: does X mention a warp collective anywhere?  Walks car and cdr separately so a  >    dotted form cannot trip it.
+
+
+---
+### DEFUN `%175-FN-USES-WARP-COLLECTIVE-P`
+- **Args**: `(NAME)`
+
+  > T if the function NAME's own body mentions a warp collective.
+
+
+---
+### DEFUN `%175-REACHES-WARP-COLLECTIVE-P`
+- **Args**: `(KNAME)`
+
+  > T if KNAME, or anything it transitively calls, mentions a warp collective.  >    Cycle-safe: a recursive call graph would otherwise not terminate.
+
+
+---
+### DEFUN `%175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING`
+- **Args**: `(SEMANTIC-FUNCTION PINNED-P)`
+
+  > BUG 076 / 173 D7, at kernel scope.  Refuses a SPIR-V kernel that reaches a warp collective  >    without a pinned subgroup size.  >   >    Keeps the original wording ("cannot be pinned"), which 173-shuffles/errors/06 matches on.
+
+
+---
+### DEFUN `%PTX-MEMBAR-GL`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @llvm.nvvm.membar.gl() -- PTX `membar.gl`, a DEVICE-scope memory fence.  >   >    membar.cta only orders memory as seen by other threads in the same CTA, which is precisely not  >    the reader in any cross-workgroup publication.  membar.gl orders it for the whole device.  >    (.sys, system scope, would also cover the host and peer devices and is more than any current  >    Crisp construct needs.)
+
+
+---
+### DEFUN `%GEN-SPIRV-MEMORY-BARRIER-WORKGROUP`
+- **Args**: `(BUILDER MODULE)`
+
+  > Emits @__spirv_MemoryBarrier(i32 2, i32 264) -- Scope=Workgroup(2),  >    Semantics=AcquireRelease(8) | WorkgroupMemory(256).  >   >    The device-scope twin passes (1, 520): Scope=Device(1) with CrossWorkgroupMemory(512).  Note  >    that %gen-spirv-memory-barrier's own docstring calls that scope "CrossWorkgroup(1)" -- a  >    misnomer, since 1 is Device in SPIR-V's Scope enum; CrossWorkgroup is a MEMORY SEMANTICS bit  >    (512), which is the other operand.  The behaviour was always right; only the name was confusing.
+
+
+---
+### DEFUN `%175-CAS-INT-WIDTH-FOR`
+- **Args**: `(ELEM-TYPE)`
+
+  > The integer width a CAS on ELEM-TYPE must use, or NIL when ELEM-TYPE is already an integer.  >    cmpxchg takes no float operands, so a float is reinterpreted at the same bit width.
 
 
 ---
@@ -5419,6 +5843,13 @@ Generated on 2026-09-20T18:19:58.888412Z
 - **Args**: `(LL-PATH)`
 
   > Re-attach CacheControlLoadINTEL !spirv.Decorations to the pointer operands of every  >    __spirv_CooperativeMatrixLoadKHR call in the post-opt LLVM IR at LL-PATH, in place.  >   >    No-op when CRISP_CACHE_CONTROL is unset.  Returns the number of pointer definitions  >    decorated, so the caller can log it and a zero can be NOTICED rather than assumed away.
+
+
+---
+### DEFUN `%175-LL-USES-FLOAT-ATOMIC-MINMAX-P`
+- **Args**: `(LL-PATH)`
+
+  > T when the emitted .ll text at LL-PATH contains a floating-point `atomicrmw fmin`/`fmax`,  >    which is what requires SPV_EXT_shader_atomic_float_min_max.  >   >    Deliberately narrow, in the same shape as %ll-uses-fp16-atomic-fadd-p: both `atomicrmw` and  >    the fp opcode must appear on the SAME line, which is how LLVM prints the instruction.  An  >    INTEGER atomic min/max (atomicrmw min / umax / ...) needs no extension and must not raise the  >    flag, which is why only the f-prefixed opcodes are tested.
 
 
 ---
@@ -6107,11 +6538,52 @@ Generated on 2026-09-20T18:19:58.888412Z
 
 
 ---
-### DEFUN `EMIT-MAIN`
+### DEFVAR `*CUDA-WG-SIZE*`
+
+  > Endeavour 175: the DECLARED workgroup size (total threads) for the kernel currently being  >    emitted, or NIL when no (local-size :set-to ...) was declared.  Bound per kernel by EMIT-MAIN.
+
+
+---
+### DEFUN `%CUDA-SCRATCH-WARP-SIZE`
+
+  > Lanes per warp for scratch sizing on NVIDIA: always 32.  >   >    DELIBERATELY NOT the active profile's :simd-width, and this is a correctness point rather than a  >    simplification.  The compiler's %173-warp-size -- the value the KERNEL computes its warp count  >    from -- short-circuits to 32 whenever the target is :ptx, on the grounds that NVIDIA's warp has  >    been 32 lanes on every part ever shipped; :simd-width describes the SPIR-V subgroup width a  >    driver would otherwise choose.  >   >    So reading :simd-width here would desync the host from the kernel in exactly the case 173 calls  >    out: --hardware-profile=bmg with --ir-target=ptx, which a dual-backend spec produces.  The  >    kernel would compute ceil(wg/32) warps while the host sized the buffer for ceil(wg/16) -- twice  >    as many slots, and a reduction reading the tail would find garbage.  Mirroring the PTX branch  >    keeps the two in step by construction.  >   >    If a future NVIDIA part ever ships a warp that is not 32, this and %173-warp-size's PTX branch  >    must change TOGETHER.
+
+
+---
+### DEFUN `%CUDA-SCRATCH-SYMBOLIC-SIZE-P`
+- **Args**: `(SIZE-EXPR)`
+
+  > T when SIZE-EXPR is a symbolic (keyword) scratch size rather than a concrete extent.
+
+
+---
+### DEFUN `%CUDA-RESOLVE-SYMBOLIC-SIZE`
+- **Args**: `(SIZE-EXPR PARAM-NAME)`
+
+  > The integer element count for a symbolic rank-1 scratch size, from the DECLARED geometry.  >    Errors with an explanation rather than guessing when the geometry is not declared.
+
+
+---
+### DEFUN `%CUDA-DECLARED-WG-SIZE`
+- **Args**: `(DISPATCH-INFO)`
+
+  > Total declared threads per workgroup from DISPATCH-INFO, or NIL when no compile-time local-size  >    was declared.  Reads (local-size :set-to ...) exactly as %emit-launch-base does, so the scratch  >    size and the block size cannot disagree about what the workgroup is.
+
+
+---
+### DEFUN `%EMIT-MAIN-BASE`
 - **Args**: `(STREAM KERNEL-NAME PTX-PATH DECLARED-SIG ALIASES RECORDS
               &OPTIONAL DISPATCH-INFO COMPUTE-UNITS)`
 
   > Generate C++ main function for CUDA Driver API launcher.  > COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units and  > overrides the runtime SM-count query in the grid-size heuristic.
+
+
+---
+### DEFUN `EMIT-MAIN`
+- **Args**: `(STREAM KERNEL-NAME PTX-PATH DECLARED-SIG ALIASES RECORDS
+              &OPTIONAL DISPATCH-INFO COMPUTE-UNITS)`
+
+  > Binds the declared workgroup size for the symbolic scratch resolvers, then emits via  >    %EMIT-MAIN-BASE.  >   >    Bound HERE because both resolution points run inside that call -- emit-kernel-args for the  >    extents, compute-total-shared-bytes for the dynamic-shared blob total -- so one binding covers  >    both and they cannot disagree about what the workgroup is.  >   >    Split base-plus-wrapper rather than wrapping the 40-line body in a LET, which is the same shape  >    EMIT-LAUNCH / %EMIT-LAUNCH-BASE already use a few hundred lines down.
 
 
 ---
@@ -6174,7 +6646,7 @@ Generated on 2026-09-20T18:19:58.888412Z
 ### DEFUN `%CUDA-SCRATCH-DIMS`
 - **Args**: `(SIZE-EXPR RANK PARAM-NAME)`
 
-  > Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE  >    tensor: all RANK dims equal it — e.g. make-scratch-matrix float 4 -> 4x4) or a LIST  >    of RANK integers (a non-square tensor — e.g. make-scratch-matrix float (16 8)).
+  > Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE  >    tensor: all RANK dims equal it — e.g. make-scratch-matrix float 4 -> 4x4), a LIST  >    of RANK integers (a non-square tensor — e.g. make-scratch-matrix float (16 8)), or —  >    at rank 1 only — a SYMBOLIC keyword size resolved from the declared geometry.  >   >    175: rank > 1 is refused for a symbolic size.  It names ONE length, and the scalar rule below  >    would make a SQUARE tensor of that size in every dimension — for a workgroup-derived size that  >    is wg^rank elements of shared memory (64^3 = 262144 for a 64-thread group), which is never what  >    anyone meant.  The existing rank-3 uses in 074/01 and 074/03 never reached a hoist run to find  >    this out.
 
 
 ---
@@ -6338,6 +6810,12 @@ Generated on 2026-09-20T18:19:58.888412Z
 ### DEFVAR `*L0-COMPUTE-UNITS*`
 
   > Endeavor 144 Phase 6: the active profile's :compute-units (Xe-cores on Intel), or NIL.  >    Latched by %l0-latch-hardware-profile; consumed by %l0-emit-occupancy-and-strategy to  >    replace the queried numSlices*numSubslicesPerSlice product.
+
+
+---
+### DEFVAR `*L0-SIMD-WIDTH*`
+
+  > Endeavour 175: the active hardware profile's :simd-width (lanes per warp), or NIL.  >    Latched by %l0-latch-hardware-profile; consumed by the symbolic scratch-size resolver.
 
 
 ---
@@ -6712,10 +7190,36 @@ Generated on 2026-09-20T18:19:58.888412Z
 
 
 ---
+### DEFPARAMETER `*L0-SCRATCH-WARP-SIZE-FALLBACK*`
+
+  > Lanes per warp assumed when no hardware profile is active.  Matches the compiler's own  >    fallback in %173-warp-size, and MUST stay equal to it: the kernel computes its warp count  >    from one and the host sizes the buffer from the other, so a disagreement is a wrong answer  >    rather than a failure.
+
+
+---
+### DEFUN `%L0-SCRATCH-WARP-SIZE`
+
+  > Lanes per warp for scratch sizing: the active profile's :simd-width, else the fallback.
+
+
+---
+### DEFUN `%L0-SCRATCH-SYMBOLIC-SIZE-P`
+- **Args**: `(SIZE-EXPR)`
+
+  > T when SIZE-EXPR is a symbolic (keyword) scratch size rather than a concrete extent.
+
+
+---
+### DEFUN `%L0-SCRATCH-SYMBOLIC-EXPR`
+- **Args**: `(SIZE-EXPR PARAM-NAME)`
+
+  > The C++ expression (a string) giving the ELEMENT COUNT for a symbolic rank-1 scratch size,  >    in terms of the geometry constants %l0-emit-geometry-constants emits.  >   >    Returns a second value: a short human phrase for the generated comment.
+
+
+---
 ### DEFUN `%L0-SCRATCH-DIMS`
 - **Args**: `(SIZE-EXPR RANK PARAM-NAME)`
 
-  > Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE  >    tensor: all RANK dims equal it) or a LIST of RANK integers (a non-square tensor,  >    e.g. make-scratch-matrix float (8 16)).
+  > Per-dimension extents for a scratch tensor.  :size-expr may be a scalar (a SQUARE  >    tensor: all RANK dims equal it), a LIST of RANK integers (a non-square tensor,  >    e.g. make-scratch-matrix float (8 16)), or -- at rank 1 only -- a SYMBOLIC keyword size.  >   >    175: SCOPED TO RANK 1 for the symbolic case deliberately.  A symbolic size names ONE length,  >    and the scalar rule below makes a SQUARE tensor of that size in every dimension -- which for a  >    rank-3 scratch at :match-workgroup-size would be wg^3 elements of SLM (64^3 = 262144 for a  >    64-thread group).  That is not a meaning anyone wants, so rank > 1 keeps the old behaviour (an  >    error) with a message that now says why.
 
 
 ---
@@ -6723,7 +7227,21 @@ Generated on 2026-09-20T18:19:58.888412Z
 - **Args**: `(ELEM-STR)`
 
 ---
+### DEFUN `%L0-EMIT-SYMBOLIC-LOCAL-SCRATCH-ARG`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX SIZE-EXPR)`
+
+  > Emit the 6 kernel arguments (3*rank+3 at rank 1) for a workgroup-local scratch VECTOR whose  >    length is a symbolic size, phrasing every one as a C++ expression over the geometry constants.  >    Mirrors %l0-emit-concrete-local-scratch-tensor-arg's argument ORDER exactly:  >    ptr, byte-size, offset[0], stride[0], extent[0], length.
+
+
+---
 ### DEFUN `%L0-EMIT-LOCAL-SCRATCH-TENSOR-ARG`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+  > A rank-1 SYMBOLIC size takes the expression emitter; every other scratch tensor goes to the  >    concrete 3N+3 walk below.  Split this way rather than branching inside that walk so it stays  >    the single source of truth for the concrete case.
+
+
+---
+### DEFUN `%L0-EMIT-CONCRETE-LOCAL-SCRATCH-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
 
 ---
@@ -6764,6 +7282,20 @@ Generated on 2026-09-20T18:19:58.888412Z
 ---
 ### DEFUN `%L0-EMIT-SCALAR-ARG`
 - **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
+### DEFUN `%L0-DISPATCH-LOCAL-DIMS`
+- **Args**: `(DISPATCH-INFO)`
+
+  > The declared workgroup dims (X Y) from DISPATCH-INFO, defaulting to (1 1) exactly as  >    %l0-emit-dispatch does.  Kept in step with that function on purpose -- the scratch size and  >    the group size must agree about what the workgroup is.
+
+
+---
+### DEFUN `%L0-EMIT-GEOMETRY-CONSTANTS`
+- **Args**: `(STREAM DISPATCH-INFO)`
+
+  > Emit the named launch-geometry constants the scratch sizes and the group size are both  >    phrased against.  One place to edit when re-tuning a launch.
+
 
 ---
 ### DEFUN `GENERATE-KERNEL-ARGUMENTS-WITH-USM`
@@ -7582,6 +8114,20 @@ Generated on 2026-09-20T18:19:58.888412Z
 - **Args**: `(FLAT-ANF ANF-BODY)`
 
   > The forward primal bindings replayed at the head of a backward kernel.  >   >    Endeavor 145 P1.  This was an inline LOOP inside %generate-backward-kernel-ast that  >    collected only TWO-element ANF forms `(sym expr)`.  A Crisp MULTI-VALUE binding  >    flattens to a THREE-or-more element form — `(M N (outer-dimensions A B))` — so it  >    was silently dropped and every var it bound was unbound in the backward body  >    ("Unknown variable M").  Both shapes are valid Crisp LET bindings (Crisp's LET  >    supports multiple-value binding directly), so both belong in the replay LET.  >   >    The two-element rule is preserved VERBATIM from the original so existing kernels  >    replay byte-identically; multi-value bindings are added by EQ against  >    %collect-multi-value-anf-bindings (never by shape — see its docstring).  >   >    Filtering FLAT-ANF rather than appending the multi-value bindings keeps them in  >    SOURCE ORDER, so a later binding may still reference an earlier one.
+
+
+---
+### DEFMACRO `WHEN-THREAD-IN-WARP-IS`
+- **Args**: `(LANE &BODY BODY)`
+
+  > Runs BODY only in lane LANE of EVERY warp -- a per-WARP election.  >    A warp collective in BODY is refused: only one lane arrives.  See spec 06, errors/04.
+
+
+---
+### DEFMACRO `WHEN-THREAD-IN-GROUP-IS`
+- **Args**: `(ID &BODY BODY)`
+
+  > Runs BODY only in thread ID of the workgroup -- a per-WORKGROUP election.  >    Per ideal_001.md this is an implicit (when (= someId (get-local-id 0)) ...).  >    sync-workgroup in BODY is refused: only one thread arrives.  See spec 07, errors/03.
 
 
 ---
@@ -9871,6 +10417,12 @@ Generated on 2026-09-20T18:19:58.888412Z
 ### DEFSTRUCT `SEMANTIC-WHILE`
 
   > Represents (while condition body...).  >    Returns void.
+
+
+---
+### DEFSTRUCT `SEMANTIC-ATOMIC-CAS`
+
+  > Represents (atomic-cas! location expected desired).  > Returns the value at the location BEFORE the attempt (see the header for why not a boolean).
 
 
 ---
