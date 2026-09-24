@@ -6383,30 +6383,6 @@ The example below will output "warp total: 640" repeatedly, once for each warp, 
 
 ```
 
-**Possible Implementation:**
-
-```lisp
-;; -- reduce-warp --
-(defmacro reduce-warp (someFunction someVar identity &optional (active-threads (get-warp-size)))
-  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-  `(in-warp (lane-id)
-    (declare (warp-convergent)) ;; <-- tells compiler cannot be called in divergent branch.
-    
-    ;; Active threads use their value. Inactive threads use the identity.
-    (let ((val (if (< lane-id ,active-threads)
-                    ,someVar
-                    ,identity)))
-
-      ;; Perform the full, unconditional reduction on 'val'.
-      ;; The loop bounds are always based on the full warp size.
-      (dec-times-by-half+ (s (/ (get-warp-size) 2))
-        (set! val (funcall ,someFunction (shuffle-xor val s) val)))
-
-      ;; Write the final result (from lane 0) back into someVar for all threads.
-      (set! ,someVar (shuffle val 0)))))
-
-```
 
 ### `reduce-workgroup` ✅
 
@@ -6451,58 +6427,7 @@ This example demonstrates a workgroup calculating a local sum and automatically 
 
 ```
 
-**Possible Implementation:**
 
-```lisp
-;; -- reduce-workgroup --
-(defmacro reduce-workgroup (someFunction someVar identity &key message 
-                                                             (local-scratch-vec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
-                                                             return-vec)
-  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-  (c-t-assert (if return-vec (is-type-of (element-type return-vec) (type-of someVar)) T) "type mismatch of return-vec and someVar")
-
-  `(progn
-    ; After this local-scratch-vec contains partial sum from each warp in the wg
-    (declare (workgroup-level))
-    (reduce-warp ,someFunction ,someVar ,identity)
-    (when-thread-in-warp-is 0
-      (set! (~ ,local-scratch-vec (get-warp-id)) ,someVar))
-    (sync-workgroup)
-
-    ; inter warp reduction
-    (let ((num-warps (ceil (get-local-work-size) (get-warp-size)))
-          (local-id (get-local-id)))
-        ; Only a subset of threads needed for this phase.
-        (when (< local-id num-warps)
-          ; The loop iterates s => num_warps/2, num_warps/4, ... , 1
-          (dec-times-by-half (s (floor num-warps 2))
-            ; The first 's' threads are active in this pass.
-            (when (< local-id s)
-              (let ((partner-idx (+ local-id s)))
-                ; Each active thread combines its value with its partner's.
-                (set! (~ ,local-scratch-vec local-id)
-                      (funcall ,someFunction
-                              (~ ,local-scratch-vec local-id)
-                              (~ ,local-scratch-vec partner-idx))))))
-          ; barrier needed between each pass 
-          (sync-workgroup)))
-
-      ; The final result is in local-scratch-vec[0]. Load it to thread 0
-      (when-thread-in-group-is 0
-        (set! ,someVar (~ ,local-scratch-vec 0))
-        (when ,return-vec (set! (~ ,return-vec (get-group-id)) ,someVar)))
-      
-      ; broadcast to entire workgroup
-      (when-thread-in-group-is 0
-        (set! (~ ,local-scratch-vec 0) ,someVar))
-      (sync-workgroup)
-      
-      (set! ,someVar (~ ,local-scratch-vec 0))))
-
-```
-
----
 
 ## **Phase 2: The Macro Strategies (Inter-Workgroup)**
 
@@ -6560,30 +6485,7 @@ Attempting to use this macro with any other operation will result in a compilati
 * **Scratch State:** The state of `localScratchVec` is indeterminant.
 * **Returns:** `nil`.
 
-**Possible Implementation:**
 
-```lisp
-;; -- grid-reduce-atomic! --
-(defmacro grid-reduce-atomic! (someFunction someVar identity return-vec
-                               &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
-                               &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-  (c-t-assert (is-type-of someVar (element-type return-vec)) "type mismatch between someVar and return-vec")
-  (c-t-assert (or (= someFunction #'+) (= someFunction #'min) (= someFunction #'max)) "only #'+, #'min or #'max are accepted operations for grid-reduce-atomic!")
-
-  `(let ((atomic-op (get-atomic-equivalent ,someFunction)))
-     (declare (grid-level))
-    
-    ;; Phase 1: Micro Strategy (Intra-Workgroup)
-    (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
-
-    ;; Phase 2: Macro Strategy (Inter-Workgroup)
-    ;; Global atomic combination using native hardware atomics
-    (when-thread-in-group-is 0
-      (funcall atomic-op (~ ,return-vec 0) ,someVar)))) 
-
-```
 
 ### `grid-reduce-cas!` ✅
 
@@ -6606,29 +6508,6 @@ This macro is the ultimate "low memory escape hatch." Unlike `grid-reduce-last-m
 **Result:**
 After the operation, the value of `<someVar>` in any thread is indeterminant. `return-vec[0]` will hold the final global reduction.
 
-**Possible Implementation:**
-
-```lisp
-;; -- grid-reduce-cas! --
-(defmacro grid-reduce-cas! (someFunction someVar identity return-vec
-                            &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
-                            &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-  (c-t-assert (is-type-of someVar (element-type return-vec)) "type mismatch between someVar and return-vec")
-  
-  `(progn
-    (declare (grid-level))
-    
-    ;; Phase 1: Micro Strategy (Intra-Workgroup)
-    (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
-
-    ;; Phase 2: Macro Strategy (Inter-Workgroup)
-    ;; Global atomic combination via Compare-And-Swap loop
-    (when-thread-in-group-is 0
-      (atomic-binop! (~ ,return-vec 0) ,someFunction ,someVar))))
-
-```
 
 ### `grid-reduce-last-man!` ✅
 
@@ -6676,61 +6555,6 @@ It accomplishes this via a cooperative finish.
 * **Scratch State:** The state of all three scratch buffers is indeterminant.
 * **Returns:** `nil`.
 
-**Possible Implementation:**
-
-```lisp
-;; -- grid-reduce-last-man! --
-(defmacro grid-reduce-last-man! (someFunction someVar identity return-vec
-                                 &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
-                                           (globalScratchVec (make-scratch-vector (type-of someVar) :match-num-workgroups :address-space :global :msg message))
-                                           (atomicCounter (make-scratch-cell :uint32 :address-space :global :msg message))
-                                 &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-  (c-t-assert (is-type-of someVar (element-type return-vec)) "type mismatch between someVar and return-vec")
-
-  `(progn
-     (declare (grid-level))
-     (r-t-assert-0 (<= (get-num-groups) (get-local-work-size)) "number of groups cannot be larger than local_work_size for grid-reduce-last-man!")
-     
-     ;; Phase 1: Micro Strategy (Intra-Workgroup)
-     (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
-
-     ;; Phase 2: Macro Strategy (Inter-Workgroup)
-     (let ((group-id (get-group-id))
-           (num-groups (get-num-groups)))
-       
-       (when-thread-in-group-is 0
-         ;; 1. Store this WG's partial result
-         (set! (~ ,globalScratchVec group-id) ,someVar)
-         
-         ;; 2. Ensure memory is globally visible before incrementing counter
-         (memory-barrier :global)
-         
-         ;; 3. Increment counter to signal this WG is done
-         ;; atomic-add! returns the value *before* addition
-         (let ((ticket (atomic-add! (~ ,atomicCounter 0) 1)))
-           ;; Flag the scratchpad if we are the final workgroup
-           (set! (~ ,localScratchVec 0) (if (= ticket (- num-groups 1)) 1 0))))
-           
-       (sync-workgroup)
-       
-       ;; The Last Man Standing Sweep
-       (when (= (~ ,localScratchVec 0) 1)
-         (let ((local-id (get-local-id))
-               ;; Fetch partials. Inactive threads get the identity.
-               (val (if (< local-id num-groups) 
-                        (~ ,globalScratchVec local-id) 
-                        ,identity)))
-             
-             ;; Phase 3: Final reduction by the last workgroup
-             (reduce-workgroup ,someFunction val ,identity :local-scratch-vec ,localScratchVec)
-             
-             ;; Thread 0 of the last workgroup writes the ultimate answer
-             (when-thread-in-group-is 0
-               (set! (~ ,return-vec 0) val)))))))
-
-```
 
 
 ### `grid-reduce-second-stage!` ✅
@@ -6761,37 +6585,6 @@ This macro executes an assertion ensuring it is launched with exactly one workgr
 * **Memory State:** `return-vec[0]` will hold the final global reduction.
 * **Returns:** `nil`.
 
-**Possible Implementation:**
-
-```lisp
-;; -- grid-reduce-second-stage! -- 
-(defmacro grid-reduce-second-stage! (someFunction someVar identity in-scratch-vec return-vec 
-                                     &optional (localScratchVec (make-scratch-vector (type-of someVar) :match-num-warps-per-workgroup :msg message))
-                                     &key message)
-  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-  `(progn
-    (declare (grid-level) (num-groups :max 1))
-    
-    (r-t-assert-0 (== (get-num-groups) 1) "grid-reduce-second-stage! must be launched with exactly one workgroup")
-    (r-t-assert-0 (<= (length~ ,in-scratch-vec) (get-local-work-size)) "local_work_size must be >= the length of in-scratch-vec")
-
-    (let ((num-items (length~ ,in-scratch-vec))
-          (local-id (get-local-id)))
-      
-      ;; Load partials into the local variable. Inactive threads get the identity.
-      (set! ,someVar (if (< local-id num-items)
-                         (~ ,in-scratch-vec local-id)
-                         ,identity))
-                         
-      ;; Perform a standard workgroup reduction
-      (reduce-workgroup ,someFunction ,someVar ,identity :local-scratch-vec ,localScratchVec)
-      
-      ;; Thread 0 writes the ultimate answer
-      (when-thread-in-group-is 0
-        (set! (~ ,return-vec 0) ,someVar)))))
-
-```
 
 
 ### `Strategy D: Cooperative Grid Sync (Hardware Dependent)`
@@ -6804,7 +6597,7 @@ In a cooperative sync, workgroups perform Phase 1, write to the global scratchpa
 * **Cons:** Hardware dependent. More critically, it carries a strict **Deadlock Risk**: the total grid size must fit entirely within the GPU's concurrent hardware capacity. If the grid requires preemption or swapping, the active workgroups will wait forever for pending workgroups that cannot launch.
 * **Implementation:** *TBD (`grid-reduce-cooperative!`). Currently requires custom inline assembly or runtime-specific launch parameters to guarantee residency.*
 
----
+
 
 ## **Matchy Matchy: Putting it Together**
 
@@ -6816,11 +6609,158 @@ If your problem fits in a single warp per workgroup, doing a warp shuffle into a
 **The Easy Button Combo:** `Shared Mem Sweep` + `Atomic Add`
 If you are just summing up a massive grid of floats, you do a standard `reduce-workgroup`, and have thread 0 do a `grid-reduce-atomic!`. No global scratchpads to allocate, no counters to manage.
 
-### **The Vector API**
+## Full Reductions Made Easy: strategy
+
+In most of the reduction interfaces we've seen so far there are requirements for local or global scratch memory, maybe an election cell. But Crisp has its implicit "side channel" scratch memory support. Those arguments are always optional and if elided Crisp will just ensure the kernel implicit parameter slots for them and pass them down to the call chain wherever they are needed.  This makes using the routines above a lot simpler.
+
+Another thing Crisp can do to make things simpler is to simply elect a Phase 2 strategy by name.  We see this in `grid-reduce` , but also the multiple value reductions and vector reductions below.
+
+```
+(def-enum reduction-strategy :atomic :last-man-standing :cas )
+```
+
+### `grid-reduce!` 📝
+```
+(grid-reduce! someFunction <someVar> identity &out return-cell &key strategy message)
+```
+
+`grid-reduce!` performs a `reduce-workgroup` on `<someVar>` as Phase 1, and then uses the `strategy` (which muust be from `reduction-strategy`) for the Phase 2 reduction, storing the final value in `return-cell` which should be a `cell` of the same type as `<someVar>`. 
+
+```
+(grid-reduce! #'+ sumF 0.0f float-c :strategy :cas :message "gridwise reduction of sumF")
+```
+
+
+
+
+
+## Multiple Value Reductions
+
+Often you need more than one reduced value, e.g. the min *and* the max, or the maximum
+*and where it is*.  Scheduling one reduction after another wastes barriers and shuffles.
+`reduce-warp`, `reduce-workgroup` and `grid-reduce!` all reduce several values in a single
+pass.  Each accepts three forms:
+
+| Form | Function slot | Variable slot | Identity slot |
+| --- | --- | --- | --- |
+| single | one binop `#(T T => T)` | one variable | one identity |
+| independent | a list of k binops, one per variable | k variables | k identities |
+| dependent | one function `#(T1..Tk T1..Tk => T1..Tk)` | k variables | k identities |
+
+**Independent** values are reduced side by side and never interact:
+
+    ;; lo and total are bound variables
+    (reduce-warp (#'min #'+) (lo total) ((type-max int) 0.0f))
+
+**Dependent** values form one state that a single function combines.  It takes state A
+(k values) followed by state B (k values) and returns the combined state (k values).
+Argument i, argument k+i and return value i all have the type of variable i.
+
+    (def-function argmax-combine (val-a idx-a val-b idx-b)
+      (declare #'(float ulong float ulong => float ulong))
+      (if (or (> val-a val-b)
+              (and (= val-a val-b) (< idx-a idx-b)))   ; tie-break: lowest index wins
+          (return val-a idx-a)
+          (return val-b idx-b)))
+
+    (let ((my-val (do-some-math (get-global-id)))
+          (my-idx (get-global-id)))
+      (reduce-warp #'argmax-combine (my-val my-idx) ((type-min float) (type-max ulong))))
+
+### Disposition of the variables
+
+* `reduce-warp`: every lane of the warp, including lanes beyond `active-threads`, holds
+  the reduced value(s) in all k variables.
+* `reduce-workgroup`: every thread of the workgroup holds the reduced value(s); they are
+  uniform across the workgroup.
+* `grid-reduce!`: the result is written to the k return cells; the variables are
+  indeterminate afterwards.
+
+Every thread of the warp/workgroup must reach the call; it cannot appear in divergent
+control flow.
+
+### Choosing the identity and the function
+
+* **The identity must lose to every state, ties included.**  Threads that have no data
+  (e.g. lanes beyond `active-threads`) contribute the identity.  For `max` use
+  `(type-min T)`, for `min` use `(type-max T)`, and for an argmax index use `(type-max ulong)`
+  so the identity also loses every tie.
+* **The function must be commutative: `(f a b)` must equal `(f b a)` exactly.**  GPU
+  reductions guarantee no combining order.  Where exact commutativity needs a tie-break
+  (argmax above), write one.
+
+
+
+
+<!-- LOSE THIS NEXT SECTION AFTER SLEEPING ON IT -->
+
+## Independent Value Reductions
+
+
+ These multiple value reductions break into the same "phases" like the single values. Phase 1 for warps or workgroups, and a full grid-wise Phase 2 where you elect a strategy. 
+
+### `reduce-warp-multi` 📝
+
+```
+(reduce-warp-multi (<warp-instructions>...) &optional (active-threads (get-warp-size)))
+;; where a warp-instruction is
+(<Function> <variable> <identity>)   
+```
+
+Example: 
+```
+(reduce-warp-multi
+  ((#'+   <sumVar> 0.0)
+   (#'max <maxVar> -99.0)))
+```
+
+`reduce-warp-multi` will reduce multiple values simultaneously in the same reduction.
+
+### `reduce-workgroup-multi` 📝
+
+```
+(reduce-workgroup-multi (<wg-instructions>...) &key message)
+;; where a wg-instruction is
+(<Function> <variable> <identity> &optional local-vec)
+```
+
+Example: 
+```
+(reduce-workgroup-multi
+  ((#'+   <sumVar> 0.0)
+   (#'max <maxVar> -99.0)))
+```
+
+
+ `local-vec`: (Optional) Writeable local memory used to bridge the warps. Its size must equal the number of warps in a single workgroup (`local_work_size / get-warp-size`). If omitted, Crisp will automatically generate this scratchpad for you.
+
+
+
+
+ ### `reduce-grid-multi`
+
+ ```
+ (reduce-grid-multi  (<instructions> ...)  &key strategy message)
+ ;; where an instruction is
+(<Function> <variable> <identity> <result-cell> &optional local-vec)
+ ```
+
+ `result-cell` should be a cell of the same type as `<variable>`
+
+```
+ (reduce-grid-multi 
+  ((#'+   sumVar 0.0  sumCell)
+   (#'max maxVar -99.0 maxCell))
+   :strategy :last-man-standing)
+```
+
+## **The Vector API**
+
+### `reduce-vec` 📝
 
 Because reducing a 1D vector or tensor is so common, Crisp provides a high-level wrapper that automatically handles the grid-stride loops and applies the combinations for you:
 
-`(reduce-vec someFunction vec identity &key out strategy)`
+`(reduce-vec someFunction vec identity &out out-cell &key strategy)`
 
 Instead of manually writing the strided loops and managing the scratchpads, you simply tell `reduce-vec` which Macro Strategy to employ:
 
@@ -6834,10 +6774,10 @@ The "second stage" isn't available because it requires a second kernel enqueue.
 
 ```lisp
 ;; Example: The "Easy Button" atomic strategy
-(reduce-vec #'+ my-large-vector 0.0 :out result-cell :strategy :atomic)
+(reduce-vec #'+ my-large-vector 0.0 result-cell :strategy :atomic)
 
 ;; Example: The flexible "Last Man Standing" strategy for custom operations
-(reduce-vec #'my-custom-hash-combine my-large-vector 0 :out result-cell :strategy :last-man-standing)
+(reduce-vec #'my-custom-hash-combine my-large-vector 0 result-cell :strategy :last-man-standing )
 
 ```
 

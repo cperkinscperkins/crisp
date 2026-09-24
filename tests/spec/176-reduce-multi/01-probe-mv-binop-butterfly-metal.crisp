@@ -1,0 +1,60 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outv: 15 15 15 15
+;; HOIST-EXPECT: BUFFER outi: 3 3 3 3
+;; SKIP-WITH[--differentiate]: "probe of forward composition only; no reduction VJP covers a multi-value binop yet"
+;;
+;; ENDEAVOUR 176 -- PROBE.  Does a multi-value binop compose inside a hand-written warp butterfly?
+;;
+;; The proposed API lets a reduction's binop take two k-component states and return one:
+;; #(A1..Ak B1..Bk => T1..Tk).  Before designing around that, this checks the building blocks
+;; already compose, WITHOUT any new construct: per-component shuffle-xor, an inlined def-function
+;; returning two values, bound by a multi-value let, inside the dec-times-by-half+ loop that
+;; %reduce-warp-expand emits.
+;;
+;; ARGMAX over one BMG warp (16 lanes).  Lane l contributes (5*l) mod 16 -- a permutation of
+;; 0..15 whose 15 sits at lane 3 -- except lane 11, overridden to 15 as well.  So the maximum is
+;; TIED between lanes 3 and 11, and the tie-break (smaller index wins) must pick 3.  Without the
+;; tie-break the combine is not commutative and different lanes could disagree.
+;;
+;; WHAT WOULD BREAK AND HOW IT WOULD READ.
+;;   outi = 11 11 11 11   the tie-break is wrong (or the index shuffled from the wrong lane)
+;;   outi varies by lane  the combine is not commutative, or v and i are shuffled inconsistently
+;;   outv = 15, outi = 0  only the value was reduced; the index never moved (second value dropped)
+;;   compile failure      multi-value binding of an inlined call is not supported in this position
+;;
+;; NB Crisp spells a multiple-value return (return a b), NOT CL's (values a b) -- the latter is
+;; "Unsupported form 'VALUES'".
+
+(def-type fvec-t (vector float :address-space :global :align :compact))
+(def-type uvec-t (vector uint  :address-space :global :align :compact))
+
+(def-function argmax-combine (va ia vb ib)
+  (declare #'(float uint float uint => float uint))
+  ;; Written around two defects this probe found (to be filed in plan/bugs.md):
+  ;;   * (and X Y) with X false leaves the result slot unstored; O3 then drops X entirely.
+  ;;   * an IF whose branches each (return a b) is typed as its FIRST value -> invalid IR.
+  ;; So: nested IFs with every else written out, and ONE return of two IF expressions.
+  (let ((take-a (if (> va vb) 1 (if (= va vb) (if (< ia ib) 1 0) 0))))
+    (return (if (= take-a 1) va vb)
+            (if (= take-a 1) ia ib))))
+
+(def-kernel mv_butterfly_argmax (&out outv outi)
+  (declare #'(&out fvec-t uvec-t => nil)
+           (global-size :set-to 16)
+           (local-size  :set-to 16))
+  (let ((lane (to-uint (warp-lane)))
+        (v (if (= lane 11u) 15.0 (to-float (rem (* lane 5u) 16u))))
+        (i lane))
+    (dec-times-by-half+ (s 8)
+      (let ((ov (shuffle-xor v s))
+            (oi (shuffle-xor i s))
+            (nv ni (argmax-combine v i ov oi)))
+        (set! v nv)
+        (set! i ni)))
+    (when (< lane 4u)
+      (set! (~ outv (to-int lane)) v)
+      (set! (~ outi (to-int lane)) i))))

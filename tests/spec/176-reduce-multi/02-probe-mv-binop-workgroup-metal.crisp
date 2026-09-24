@@ -1,0 +1,78 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outv: 63 63 63 63
+;; HOIST-EXPECT: BUFFER outi: 19 19 19 19
+;; SKIP-WITH[--differentiate]: "probe of forward composition only; no reduction VJP covers a multi-value binop yet"
+;;
+;; ENDEAVOUR 176 -- PROBE 2.  A multi-value binop across a whole WORKGROUP, hand-written.
+;;
+;; Probe 01 showed the warp level composes.  This is the next level up, written out the way
+;; %reduce-workgroup-expand lowers reduce-workgroup, but with a k=2 state (float value, uint
+;; index).  The new thing being exercised is the scratch: TWO local scratch vectors of DIFFERENT
+;; element types, both :match-num-warps-per-workgroup, sharing ONE set of barriers.  That is the
+;; shape a k-component reduce-workgroup would register through the implicit side channel.
+;;
+;; ARGMAX over 64 threads = 4 BMG warps of 16.  Thread l contributes (37*l) mod 64 -- a
+;; permutation of 0..63 (37 is odd) whose 63 sits at l = 19 -- except l = 50, overridden to 63.
+;; So the maximum is TIED between warp 1 (l=19) and warp 3 (l=50):
+;;   * the warp phase leaves (63,19) in slot 1 and (63,50) in slot 3;
+;;   * sweep s=2: slot 1 meets slot 3 -- the cross-warp tie-break must keep 19;
+;;   * sweep s=1: slot 0 (warp 0's max, < 63) meets slot 1 -- the winner must MOVE into slot 0.
+;; One thread per warp (lane 0) writes out[warp-id], so all four warps' final views are checked.
+;;
+;; WHAT WOULD BREAK AND HOW IT READ.
+;;   outi = 50 ...        cross-warp tie-break wrong, or si[] not kept in step with sv[]
+;;   outv = 63, outi = 0  the index scratch was never written/read (second component dropped)
+;;   warps disagree       a barrier is missing between sweep passes or before the final read
+;;   compile failure      two scratch vectors of different types do not both reach the kernel
+
+(def-type fvec-t (vector float :address-space :global :align :compact))
+(def-type uvec-t (vector uint  :address-space :global :align :compact))
+
+(def-function argmax-combine (va ia vb ib)
+  (declare #'(float uint float uint => float uint))
+  ;; Nested IFs with every else written out, and ONE return -- see probe 01 for the two defects
+  ;; this avoids.
+  (let ((take-a (if (> va vb) 1 (if (= va vb) (if (< ia ib) 1 0) 0))))
+    (return (if (= take-a 1) va vb)
+            (if (= take-a 1) ia ib))))
+
+(def-kernel mv_workgroup_argmax (&out outv outi)
+  (declare #'(&out fvec-t uvec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (si (make-scratch-vector uint  :match-num-warps-per-workgroup)))
+    (let ((lid (to-uint (get-local-linear-id)))
+          (v (if (= lid 50u) 63.0 (to-float (rem (* lid 37u) 64u))))
+          (i lid))
+      ;; Phase 1 -- each warp reduces itself (probe 01's butterfly).
+      (dec-times-by-half+ (s 8)
+        (let ((ov (shuffle-xor v s))
+              (oi (shuffle-xor i s))
+              (nv ni (argmax-combine v i ov oi)))
+          (set! v nv)
+          (set! i ni)))
+      (when-thread-in-warp-is 0
+        (set! (~ sv (to-int (warp-id))) v)
+        (set! (~ si (to-int (warp-id))) i))
+      (sync-workgroup)
+      ;; Phase 2 -- halving sweep over the per-warp partials, both components in step, barrier
+      ;; inside the loop and outside the guard (as %reduce-workgroup-expand does).
+      (let ((nw (/ (get-local-linear-size) (to-ulong (warp-size))))
+            (l (to-int lid)))
+        (dec-times-by-half+ (s (/ nw 2ul))
+          (when (< l (to-int s))
+            (let ((p (+ l (to-int s)))
+                  (nv ni (argmax-combine (~ sv l) (~ si l) (~ sv p) (~ si p))))
+              (set! (~ sv l) nv)
+              (set! (~ si l) ni)))
+          (sync-workgroup))
+        (set! v (~ sv 0))
+        (set! i (~ si 0)))
+      (when-thread-in-warp-is 0
+        (set! (~ outv (to-int (warp-id))) v)
+        (set! (~ outi (to-int (warp-id))) i)))))
