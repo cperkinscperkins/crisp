@@ -512,8 +512,15 @@ cannot be placed inside divergent control paths.
 
   Use `(type-min T)` for `max`, `(type-max T)` for `min`, and `(type-max ulong)` for an
   argmax/argmin index, so that when values tie, the real index wins against the padding one.
-  For floating-point types, `(type-min T)` and `(type-max T)` are negative and positive
-  infinity, so even an infinite input is not lost to the identity.
+
+  For floating-point types, `(type-min T)` and `(type-max T)` are the most negative and most
+  positive *finite* values, in every precision context. (`(type-min float)` is about -3.4e38.
+  It is not C's `FLT_MIN`, which is the smallest positive normal.) A finite identity is
+  correct whenever the inputs are finite, and under `:fast` precision they must be: `:fast`
+  lets the compiler assume that no value is ever infinite, so an infinite identity there is
+  undefined. Under `:ieee`, if infinite inputs must win, use `(- (type-infinity T))` and
+  `(type-infinity T)` instead. With a finite identity, an input that is all `-inf` reduces to
+  `(type-min float)`, and argmax reports the padding index.
 
   The second law is the one that bites dependent combiners. A streaming-variance combiner
   divides by `n-a + n-b`; when two identity states `(0 0 0)` meet, that is `0/0`, and the NaN
@@ -527,6 +534,12 @@ cannot be placed inside divergent control paths.
 
   Floating-point addition is only approximately associative, so a float sum can differ in its
   last bits from run to run. That is normal on GPUs, not a bug.
+
+* **NaN is not a state.** Under `:ieee`, every comparison involving a NaN is false, so a
+  comparison-based combiner such as `argmax-combine` returns whichever state it was handed
+  second. The combiner is then no longer commutative, and the result depends on scheduling. If
+  the inputs can contain NaN, filter them out before the reduction, or handle them explicitly
+  in the combiner.
 
 
 
