@@ -6622,6 +6622,7 @@ Another thing Crisp can do to make things simpler is to simply elect a Phase 2 s
 ### `grid-reduce!` 📝
 ```
 (grid-reduce! someFunction <someVar> identity &out return-cell &key strategy message)
+;; :strategy is required to be known at compile time.  Defaults to :last-man-standing if not supplied.
 ```
 
 `grid-reduce!` performs a `reduce-workgroup` on `<someVar>` as Phase 1, and then uses the `strategy` (which muust be from `reduction-strategy`) for the Phase 2 reduction, storing the final value in `return-cell` which should be a `cell` of the same type as `<someVar>`. 
@@ -6634,125 +6635,232 @@ Another thing Crisp can do to make things simpler is to simply elect a Phase 2 s
 
 
 
-## Multiple Value Reductions
 
-Often you need more than one reduced value, e.g. the min *and* the max, or the maximum
-*and where it is*.  Scheduling one reduction after another wastes barriers and shuffles.
-`reduce-warp`, `reduce-workgroup` and `grid-reduce!` all reduce several values in a single
-pass.  Each accepts three forms:
+## **Reducing Several Variables at Once 📝**
 
-| Form | Function slot | Variable slot | Identity slot |
-| --- | --- | --- | --- |
-| single | one binop `#(T T => T)` | one variable | one identity |
-| independent | a list of k binops, one per variable | k variables | k identities |
-| dependent | one function `#(T1..Tk T1..Tk => T1..Tk)` | k variables | k identities |
+Algorithms often need more than one reduction over the same data: a minimum *and* a sum, or a
+maximum *and* the index where it occurred. Running separate reductions one after another pays
+for every shuffle, barrier, and grid election again. The three reduction constructs,
+`reduce-warp`, `reduce-workgroup`, and `grid-reduce!`, each accept several variables in a single
+call, in one of two forms:
 
-**Independent** values are reduced side by side and never interact:
+* **Independent:** each variable has its own function and identity. The variables share the
+  traversal but never influence one another (e.g. a `min` and a `+`).
+* **Dependent:** one *combiner* reduces all the variables together, because they are
+  entangled (e.g. a value and its index, or a count, mean, and M2 for streaming variance).
 
-    ;; lo and total are bound variables
-    (reduce-warp (#'min #'+) (lo total) ((type-max int) 0.0f))
+### Clauses
 
-**Dependent** values form one state that a single function combines.  It takes state A
-(k values) followed by state B (k values) and returns the combined state (k values).
-Argument i, argument k+i and return value i all have the type of variable i.
+Both forms describe each variable with a **clause**, a list that keeps everything belonging to
+that one variable (its function, identity, destination, and scratch memory) together in one
+place:
 
-    (def-function argmax-combine (val-a idx-a val-b idx-b)
-      (declare #'(float ulong float ulong => float ulong))
-      (if (or (> val-a val-b)
-              (and (= val-a val-b) (< idx-a idx-b)))   ; tie-break: lowest index wins
-          (return val-a idx-a)
-          (return val-b idx-b)))
+| Form        | Clause |
+| ---         | --- |
+| Independent | `(someFunction <someVar> identity [return-cell] &key ...)` |
+| Dependent   | `(<someVar> identity [return-cell] &key ...)` |
 
-    (let ((my-val (do-some-math (get-global-id)))
-          (my-idx (get-global-id)))
-      (reduce-warp #'argmax-combine (my-val my-idx) ((type-min float) (type-max ulong))))
+The independent clause is exactly the argument list of the single-variable form. The dependent
+clause is the same, minus the function, because the combiner is shared and written once, before
+the clauses.
 
-### Disposition of the variables
+`return-cell` appears only at the grid level (`grid-reduce!`), where every reduced variable
+needs a destination. `reduce-warp` and `reduce-workgroup` leave their results in the variables
+themselves.
 
-* `reduce-warp`: every lane of the warp, including lanes beyond `active-threads`, holds
-  the reduced value(s) in all k variables.
-* `reduce-workgroup`: every thread of the workgroup holds the reduced value(s); they are
-  uniform across the workgroup.
-* `grid-reduce!`: the result is written to the k return cells; the variables are
-  indeterminate afterwards.
+The compiler tells the three shapes apart by their structure alone:
 
-Every thread of the warp/workgroup must reach the call; it cannot appear in divergent
-control flow.
-
-### Choosing the identity and the function
-
-* **The identity must lose to every state, ties included.**  Threads that have no data
-  (e.g. lanes beyond `active-threads`) contribute the identity.  For `max` use
-  `(type-min T)`, for `min` use `(type-max T)`, and for an argmax index use `(type-max ulong)`
-  so the identity also loses every tie.
-* **The function must be commutative: `(f a b)` must equal `(f b a)` exactly.**  GPU
-  reductions guarantee no combining order.  Where exact commutativity needs a tie-break
-  (argmax above), write one.
-
-
-
-
-<!-- LOSE THIS NEXT SECTION AFTER SLEEPING ON IT -->
-
-## Independent Value Reductions
-
-
- These multiple value reductions break into the same "phases" like the single values. Phase 1 for warps or workgroups, and a full grid-wise Phase 2 where you elect a strategy. 
-
-### `reduce-warp-multi` 📝
-
-```
-(reduce-warp-multi (<warp-instructions>...) &optional (active-threads (get-warp-size)))
-;; where a warp-instruction is
-(<Function> <variable> <identity>)   
+```lisp
+(reduce-warp #'+ total 0.0f)                        ; single:      function, variable, identity
+(reduce-warp ((#'+ total 0.0f) (#'min lo ...)))     ; independent: a list of clauses
+(reduce-warp #'combine ((val ...) (idx ...)))       ; dependent:   a function, then a list of clauses
 ```
 
-Example: 
+### Per-Variable vs. Per-Reduction Arguments
+
+Every resource a reduction uses belongs either to one variable or to the reduction as a whole.
+Resources that carry the variable's type go in that variable's clause. Everything else is a
+trailing key on the call.
+
+| Argument | Where it goes | Why |
+| --- | --- | --- |
+| `return-cell` | clause | One destination per variable, of that variable's type. |
+| `:return-vec` (`reduce-workgroup`) | clause key | One per-workgroup result vector per variable. |
+| `:local-scratch-vec` | clause key | Typed like the variable. |
+| `:global-scratch-vec` | clause key | Typed like the variable. |
+| `active-threads` (`reduce-warp`) | trailing `&optional` | One shuffle sweep covers every variable. |
+| `:strategy` | trailing key | One Phase 2 strategy for the whole call. |
+| `:atomic-counter` | trailing key | One ticket covers every variable (see below). |
+| `:election-flag-cell` | trailing key | Always `uint`, never follows a variable's type. |
+| `:message` | trailing key | Describes the call's allocations. |
+
+Like their single-variable counterparts, all scratch arguments are optional. If you leave one
+out, Crisp generates it for you.
+
+A variable may appear in only one clause of a call. Naming the same variable twice is a
+compilation error.
+
+### Signatures
+
+```lisp
+;; independent
+(reduce-warp      (clause ...) &optional active-threads)
+(reduce-workgroup (clause ...) &key message)
+(grid-reduce!     (clause ...) &key strategy atomic-counter election-flag-cell message)
+
+;; dependent
+(reduce-warp      combiner (clause ...) &optional active-threads)
+(reduce-workgroup combiner (clause ...) &key message)
+(grid-reduce!     combiner (clause ...) &key strategy atomic-counter election-flag-cell message)
 ```
-(reduce-warp-multi
-  ((#'+   <sumVar> 0.0)
-   (#'max <maxVar> -99.0)))
+
+### 1. Independent Reductions
+
+Use this form when reducing separate metrics that share a traversal without influencing one
+another.
+
+```lisp
+;; 'lo' and 'total' are existing mutable bindings
+(reduce-warp
+  ((#'min lo    (type-max int))
+   (#'+   total 0.0f)))
 ```
 
-`reduce-warp-multi` will reduce multiple values simultaneously in the same reduction.
+Each clause's function must be a `binop-type` `#'(T T => T)`, where `T` is the type of that
+clause's variable, and its identity must also be of type `T`. The clauses may have different
+types.
 
-### `reduce-workgroup-multi` 📝
+Under the hood, the compiler interleaves the work for every variable. At the warp level a
+single shuffle sweep carries all the variables, and at the workgroup level a single barrier
+serves them all.
 
-```
-(reduce-workgroup-multi (<wg-instructions>...) &key message)
-;; where a wg-instruction is
-(<Function> <variable> <identity> &optional local-vec)
-```
+### 2. Dependent Reductions
 
-Example: 
-```
-(reduce-workgroup-multi
-  ((#'+   <sumVar> 0.0)
-   (#'max <maxVar> -99.0)))
-```
+Use this form when the values are entangled, such as keeping an index aligned with an extreme
+value, or tracking a streaming variance.
 
-
- `local-vec`: (Optional) Writeable local memory used to bridge the warps. Its size must equal the number of warps in a single workgroup (`local_work_size / get-warp-size`). If omitted, Crisp will automatically generate this scratchpad for you.
-
-
-
-
- ### `reduce-grid-multi`
-
- ```
- (reduce-grid-multi  (<instructions> ...)  &key strategy message)
- ;; where an instruction is
-(<Function> <variable> <identity> <result-cell> &optional local-vec)
- ```
-
- `result-cell` should be a cell of the same type as `<variable>`
+The combiner takes two *states*, A and B, of `k` values each, and returns the combined state of
+`k` values. Its signature is:
 
 ```
- (reduce-grid-multi 
-  ((#'+   sumVar 0.0  sumCell)
-   (#'max maxVar -99.0 maxCell))
-   :strategy :last-man-standing)
+#'(T1 ... Tk  T1 ... Tk  =>  T1 ... Tk)
 ```
+
+where `Ti` is the type of the variable in clause `i`. Argument `i`, argument `k+i`, and return
+value `i` all share that type. Clause order is argument order: the first clause names the first
+value of each state, and so on. The combiner returns its state as multiple values
+(`(return v1 ... vk)`).
+
+```lisp
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b))) ; tie-break: lower index wins
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(let ((my-val (do-some-math (get-global-id)))
+      (my-idx (get-global-id)))
+  (reduce-warp #'argmax-combine
+               ((my-val (type-min float))
+                (my-idx (type-max ulong)))))
+```
+
+### 3. The Workgroup Level
+
+`reduce-workgroup` takes the same clauses. Each clause may name its own `:return-vec` and
+`:local-scratch-vec`:
+
+```lisp
+(reduce-workgroup #'argmax-combine
+                  ((my-val (type-min float) :return-vec wg-vals)
+                   (my-idx (type-max ulong) :return-vec wg-idxs))
+                  :message "argmax partials")
+```
+
+### 4. The Grid Level (`grid-reduce!`)
+
+At the grid level, each clause names the `:global` cell that receives that variable's final
+value.
+
+**Independent:**
+
+```lisp
+(grid-reduce!
+  ((#'min lo    (type-max int) out-min-cell)
+   (#'+   total 0.0f           out-sum-cell))
+  :strategy :last-man-standing)
+```
+
+**Dependent:**
+
+```lisp
+(grid-reduce! #'argmax-combine
+              ((my-val (type-min float) out-val-cell)
+               (my-idx (type-max ulong) out-idx-cell))
+              :strategy :last-man-standing)
+```
+
+#### Grid Strategy Compatibility
+
+* **Independent form:** All strategies (`:atomic`, `:cas`, `:last-man-standing`) are supported.
+  `:atomic` still requires every clause's function to have a hardware atomic (`#'+`, `#'min`,
+  `#'max`). A clause that does not is a compilation error.
+* **Dependent form:** Only `:last-man-standing` is supported. `:atomic` and `:cas` commit one
+  word at a time, so they cannot keep the `k` values of a state together. Asking for either is a
+  compilation error. (Packing a small state into one 64-bit CAS word is possible in principle,
+  but Crisp does not do it.)
+
+Under `:last-man-standing`, one election serves the whole call. Each workgroup writes a partial
+for every variable into that variable's `:global-scratch-vec`, then draws a single ticket from
+the shared `:atomic-counter`. The last workgroup sweeps all the variables. A call with `k`
+clauses costs one atomic ticket per workgroup, not `k`.
+
+`:last-man-standing` is the default strategy, and it carries its usual limit: the number of
+workgroups must not exceed `local_work_size`.
+
+### Disposition of the Variables
+
+* **`reduce-warp`**: Every lane of the warp receives the final reduced value(s) in its bound
+  variables.
+* **`reduce-workgroup`**: Every thread of the workgroup receives the final reduced value(s).
+  Every reduced variable is `uniform` afterward.
+* **`grid-reduce!`**: Results are written to the clauses' return cells. The local variables
+  holding the partial states are indeterminate afterward.
+
+*Execution constraint:* Every thread of the warp or workgroup must reach the call. Reductions
+cannot be placed inside divergent control paths.
+
+### Choosing the Identity and Function
+
+* **The identity must change nothing.** Threads that contribute no data (e.g. lanes past
+  `active-threads`) supply the identity, and the reduction then combines it with real values,
+  and with other identities. Two laws must hold for every valid state `x`:
+  * `f(x, identity) = x`: combining a real state with the identity returns the real state,
+    including in the case of a tie.
+  * `f(identity, identity) = identity`: two padding threads combined are still padding.
+
+  Use `(type-min T)` for `max`, `(type-max T)` for `min`, and `(type-max ulong)` for an
+  argmax/argmin index, so that when values tie, the real index wins against the padding one.
+  For floating-point types, `(type-min T)` and `(type-max T)` are negative and positive
+  infinity, so even an infinite input is not lost to the identity.
+
+  The second law is the one that bites dependent combiners. A streaming-variance combiner
+  divides by `n-a + n-b`; when two identity states `(0 0 0)` meet, that is `0/0`, and the NaN
+  spreads through the whole reduction. Such a combiner must check for an empty state
+  (`n = 0`) and return the other state unchanged.
+
+* **Functions must be commutative *and* associative.** GPU reductions guarantee neither the
+  order nor the grouping in which values are combined. If an operation is sensitive to ties,
+  resolve them explicitly inside the function, as the lower-index tie-break in
+  `argmax-combine` does.
+
+  Floating-point addition is only approximately associative, so a float sum can differ in its
+  last bits from run to run. That is normal on GPUs, not a bug.
+
+
+
+
 
 ## **The Vector API**
 
