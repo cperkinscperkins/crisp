@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;;
+;; ENDEAVOUR 176 -- IMPLICIT SCRATCH typed from a SUFFIXED literal.  TDD.
+;;
+;; The variable is ULONG, so the identity must be ULONG too: `0ul`, not `0` (a bare 0 is an INT,
+;; and errors/16 pins that mismatch as a refusal).  Both implicit vectors -- the local sweep and the
+;; global partials -- must come out ulong; a scratch typed from a misread identity would either
+;; refuse to compile or truncate the 32640 total.
+
+(def-type uvec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel implicit_ulong_identity (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (get-global-linear-id)))
+    (grid-reduce-last-man! #'+ contrib 0ul out)))

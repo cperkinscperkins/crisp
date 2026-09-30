@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;;
+;; ENDEAVOUR 176 -- IMPLICIT SCRATCH one call DOWN from the kernel.  TDD.
+;;
+;; The reduction lives in a def-grid-function (reductions need a dispatch context, so a plain
+;; def-function cannot hold one).  Its implicit scratch is registered for GRID-SUM and must be
+;; carried up the call chain into the kernel's signature, the way a let-bound scratch inside a
+;; grid function already is (verified in the 176 Phase 0 probe g-p1c).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-grid-function grid-sum (contrib &out out)
+  (declare #'(float &out vec-t => nil))
+  (grid-reduce-atomic! #'+ contrib 0.0 out))
+
+(def-kernel implicit_in_grid_function (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-sum contrib out)))

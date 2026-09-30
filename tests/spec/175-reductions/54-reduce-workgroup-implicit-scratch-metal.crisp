@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 2016 2016 2016 2016
+;;
+;; ENDEAVOUR 176 -- IMPLICIT SCRATCH.  Spec 08 with its :local-scratch-vec left out.  TDD.
+;;
+;; When a reduction's scratch arguments are omitted, Crisp allocates them itself as implicit
+;; kernel parameters, exactly as if the user had let-bound (make-scratch-vector ...) around the
+;; call.  The element type comes from the IDENTITY, which must be visibly typed -- here the float
+;; literal 0.0 -- because the scratch is registered by the Pass-1 scanner, before analysis knows
+;; any variable's type.
+;;
+;; Same kernel, same answer as 08: one workgroup of 64 threads summing their local ids,
+;; 0 + 1 + ... + 63 = 2016, read back from the last lane of each of the four BMG warps.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel reduce_workgroup_implicit (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-local-linear-id))))
+    (reduce-workgroup #'+ contrib 0.0)
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ out (to-int (warp-id))) contrib))))

@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 36 1 2 3
+;;
+;; ENDEAVOUR 176 -- IMPLICIT SCRATCH.  Spec 29 with its :local-scratch-vec left out.  TDD.
+;;
+;; This is the positive twin of errors/08-second-stage-no-scratch, which pinned the omission as a
+;; REFUSAL while the Pass-1 scanner could not see analyzer-introduced scratch.  Once implicit
+;; scratch lands, errors/08 is obsolete and should be retired.
+;;
+;; The partials vector gv stays explicit: it is an INPUT here (written by "kernel 1"), not scratch.
+;; Eight partials 1..8 sum to 36.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel second_stage_implicit (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((gv (make-scratch-vector float 8 :address-space :global)))
+    (let ((tid (to-int (get-local-linear-id))))
+      ;; Standing in for kernel 1 of the dual pass.
+      (when (< tid 8)
+        (set! (~ gv tid) (+ (to-float tid) 1.0)))
+      (mem-fence)
+      (sync-workgroup)
+      (let ((acc 0.0))
+        (grid-reduce-second-stage! #'+ acc 0.0 gv out)))))
