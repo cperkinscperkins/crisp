@@ -3388,11 +3388,16 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         After -O3 the whole `and` is just `(< a 10.0)` -- the (> a b) test is gone.
 
-        MECHANISM (measured).  Crisp uses CL's `and`, which SBCL expands to `(IF A (AND B) NIL)`.
-        `analyze-if-expression-impl` (src/analysis/control.lisp:1301) takes the else as
-        `(if (fourth expr) (analyze ...) nil)` -- an explicit NIL else is indistinguishable from NO
-        else, so the IF gets no else branch.  `or` expands to `(LET ((g A)) (IF g g B))`, which has
-        a real else, so a bare `or` is fine.
+        MECHANISM (measured -- CORRECTED 2026-09-29).  Crisp uses CL's `and`.  In the running
+        compiler it macroexpands to a TWO-armed `(IF X Y)` -- no else at all (the debug log's
+        "ANALYZE-EXPR MACRO: (AND (> A B) (< A 10.0)) -> (IF (> A B) (< A 10.0))").  An earlier
+        draft of this entry said `(IF A (AND B) NIL)`; that came from a truncated REPL print and was
+        wrong.  `analyze-if-expression-impl` (src/analysis/control.lisp:1301) gives an IF with no
+        else no else branch, so a VALUE IF's false path never stores its result -- whereas in CL
+        `(if x y)` means `(if x y nil)`: the false path has a value, and it is false.  (An explicit
+        NIL else hit the same hole: `nil` analyzes to void, and ensure-branch-compatibility
+        documents the void path as "left undef by codegen".)  `or` expands to
+        `(LET ((g A)) (IF g g B))`, which has a real else, so a bare `or` is fine.
 
         SCOPE -- SHIPPED FEATURES, CONFIRMED ON METAL.  `%tlc-all-in-bounds-form` (control.lisp:598)
         builds the per-dimension bounds check as `(and (< src[k] extent[k]) ...)` for every rank >= 2,
@@ -3412,11 +3417,14 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         matrix-multiply-tile-stride ragged edges individually; CUDA (same front end, presumably
         affected).
 
-        FIX DIRECTION (agreed 2026-09-29, not yet written).  Change the IF analyzer, not `and`:
-        treat `(length expr) > 3` as an explicit else and analyze the NIL as false.  This also covers
-        any other macro that expands to `(if x y nil)` -- check whether the `crisp.compiler::cond`
-        quirk (a clause with only a test drops its value) is the same root.  It is a shared-path
-        change, so it needs the full suite, not an IR spot check.
+        FIX (drafted 2026-09-29 in overlays/crisp-compiler-overlay.lisp, pending review + suite).
+        Change the IF analyzer, not `and`: a MISSING or NIL else of a value IF is false -- an int 0
+        literal, promoted to THEN's type by ensure-branch-compatibility -- when THEN is a scalar that
+        promotes with int.  Statement IFs (void THEN) and non-scalar THENs are unchanged.  (The
+        first draft keyed on a WRITTEN nil, `(length expr) > 3`, and did nothing, because the
+        expansion writes none.)  All 006/07-10, the unit test and 111/21-25 pass on BMG with it.
+        Still to check: whether the `crisp.compiler::cond` quirk (a clause with only a test drops
+        its value) is the same root.  Shared-path change: needs the full suite.
 
         FOUND BY.  Endeavour 176 multi-value probe (the argmax combiner uses `(or ... (and ...))`),
         then Phase 0.  Probes: put_temp_files_here/176/p2b-and.crisp, and-probe.O3.ll,
