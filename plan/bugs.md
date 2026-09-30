@@ -3424,7 +3424,10 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         first draft keyed on a WRITTEN nil, `(length expr) > 3`, and did nothing, because the
         expansion writes none.)  All 006/07-10, the unit test and 111/21-25 pass on BMG with it.
         Still to check: whether the `crisp.compiler::cond` quirk (a clause with only a test drops
-        its value) is the same root.  Shared-path change: needs the full suite.
+        its value) is the same root.
+        FULL SUITE with the overlay fix (2026-09-29, BMG): unit 341/341, negative 282/282, E2E
+        1273/1277 -- the 4 failures are exactly the not-yet-fixed 090/091/093 lock-down specs
+        (001/05, 016/07-09).  The --differentiate / --single-pass phases are left to CI.
 
         FOUND BY.  Endeavour 176 multi-value probe (the argmax combiner uses `(or ... (and ...))`),
         then Phase 0.  Probes: put_temp_files_here/176/p2b-and.crisp, and-probe.O3.ll,
