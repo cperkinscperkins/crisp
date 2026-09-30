@@ -3452,6 +3452,29 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LOUD, at least: compilation fails (exit 1).  Workaround: one `(return (if ..) (if ..))` at
         the tail.
 
+        MECHANISM (measured 2026-09-30, put_temp_files_here/176/t093.lisp).  Analysis is right: both
+        branches are SEMANTIC-EXPLICIT-RETURN of type (FLOAT ULONG), and ensure-branch-compatibility
+        unifies the IF to (FLOAT ULONG).  CODEGEN is wrong: the semantic-if method (codegen.lisp
+        ~2447 alloca, ~2491 load) maps the node type with crisp-type-to-llvm-type, which reads the
+        multi-value LIST as a single spec and returns `float`.  get-llvm-return-type -- what the
+        multi-value `return` itself uses -- gives the correct `{ float, i64 }`.
+
+        TELLING THE CASES APART.  An IF's type may be a symbol (int), a compound spec
+        ((tensor ...), (cell ...)), or a multi-value list.  valid-type-p separates them: T for
+        int, (int), (tensor ...), (vector ...), (cell ...); NIL for (float ulong), (int int).
+        Proposed rule: a list of length > 1 that is NOT itself valid-type-p but whose elements
+        all are -> get-llvm-return-type; anything else -> crisp-type-to-llvm-type as today.
+
+        RELATED HAZARD, not this bug: (if c (return a b) 5) -- a multi-value branch against a scalar
+        one -- goes down ensure-branch-compatibility's promotion path on the FIRST value and
+        silently drops the second.  Probably wants a loud error.  Untested.
+
+        FIX (drafted 2026-09-30 in overlays/crisp-compiler-overlay.lisp, pending review + fold):
+        %if-result-llvm-type (the rule above) used for the semantic-if slot alloca and merge load.
+        001/05 on BMG: outv 1 3 1 3, outi 11 13 11 13.  Full suite with the 092 + 093 overlay:
+        unit 341/341, negative 282/282, E2E 1274/1277 -- the 3 failures are exactly the unfixed
+        090/091 specs (016/07-09).
+
         WHY IT MATTERS NOW.  Endeavour 176's dependent reductions take a multi-value combiner, and
         the natural way to write one (argmax) is exactly this shape -- as is the example in the
         design doc.

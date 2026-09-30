@@ -202,3 +202,102 @@
                           :then-node final-then
                           :else-node final-else
                           :source-location location))))))
+
+
+;; src/codegen.lisp  (new -- place just before the semantic-if generate-node-ir method)
+(defun %if-result-llvm-type (type-spec module)
+  "BUG 093.  The LLVM type of an IF's result slot.  An IF whose branches each return MULTIPLE values
+   carries a multi-value type LIST, e.g. (float ulong); crisp-type-to-llvm-type reads that as a
+   single spec and returns only the first type (`float`), so the slot, the merge load and the
+   function's `ret` disagreed with the { float, i64 } the branches built, and llvm-as rejected the
+   module.  A multi-value list gets the aggregate the multi-value `return` itself uses
+   (get-llvm-return-type); every other spec -- a symbol, (int), (tensor ...), (cell ...) -- goes
+   through crisp-type-to-llvm-type exactly as before.
+
+   How a multi-value list is told apart from a compound spec (measured): valid-type-p is T for int,
+   (int), (tensor ...), (vector ...), (cell ...) and NIL for (float ulong), (int int).  So: a list
+   of length > 1 that is NOT itself a valid type, but whose elements all are."
+  (if (and (consp type-spec)
+           (> (length type-spec) 1)
+           (not (valid-type-p type-spec))
+           (every #'valid-type-p type-spec))
+      (progn
+        (log:debug "BUG 093: multi-value IF result ~s -> aggregate" type-spec)
+        (get-llvm-return-type module type-spec))
+      (crisp-type-to-llvm-type type-spec module)))
+
+;; src/codegen.lisp  (only change: the two crisp-type-to-llvm-type calls -> %if-result-llvm-type)
+(defmethod generate-node-ir ((node semantic-if) builder module var-env di-builder di-scope location-map)
+  "Generates IR for an if expression."
+  ;; 1. Evaluate the condition
+  (multiple-value-bind (cond-val cond-loc)
+      (generate-node-ir (semantic-if-condition-node node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore cond-loc))
+    ;; Condition must be i1 (boolean) for cond_br.
+    ;; Our language uses i32, so we truncate.
+    ;; Note: In strict LLVM, 0 is false, non-zero is usually true. Truncating blindly might lose info
+    ;; if the value is like 2 (binary 10), trunc to i1 is 0 (false)!
+    ;; Correct logic: icmp ne %val, 0
+    (let ((cond-bool (llvm-build-icmp builder +llvm-int-ne+ cond-val (llvm-const-int (llvm-int32-type) 0 nil) "ifcond")))
+
+      (let ((then-block (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "then"))
+            (else-block (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "else"))
+            (merge-block (llvm-append-basic-block (llvm-get-basic-block-parent (llvm-get-insert-block builder)) "ifcont"))
+
+            ;; Determine result type and allocate scratch space if needed (alloca trick)
+            (result-type-spec (semantic-node-type node)))
+
+        ;; Note: The result type might be 'void (nil).
+        (let ((result-alloca
+               (unless (or (null result-type-spec)
+                           (eq result-type-spec :void)
+                           (eq result-type-spec 'void)
+                           (equal result-type-spec '(nil)))
+                 (let ((type (%if-result-llvm-type result-type-spec module)))
+                   (llvm-build-alloca builder type "if_result")))))
+
+          ;; --- Create Conditional Branch ---
+          (llvm-build-cond-br builder cond-bool then-block else-block)
+
+          ;; --- Then Block ---
+          (llvm-position-builder-at-end builder then-block)
+          (if (semantic-if-then-node node)
+              (multiple-value-bind (then-val then-loc)
+                  (generate-node-ir (semantic-if-then-node node) builder module var-env di-builder di-scope location-map)
+                (declare (ignore then-loc))
+                ;; A branch may legitimately produce no value (a `nil` literal, as in
+                ;; the then-arm of (unless+ cond body) => (if+ cond nil body)). Then
+                ;; then-val is NIL; skip the store so this path leaves the result
+                ;; alloca undef (the branch is untaken under the uniform condition,
+                ;; so the value is never observed) — same as a missing then-clause.
+                (when (and result-alloca then-val)
+                      (llvm-build-store builder then-val result-alloca)))
+              ;; No then clause (e.g. unless). Treat as void/nil.
+              nil)
+
+          (unless (terminator-p (llvm-get-insert-block builder))
+            (llvm-build-br builder merge-block))
+
+          ;; --- Else Block ---
+          (llvm-position-builder-at-end builder else-block)
+          (if (semantic-if-else-node node)
+              (multiple-value-bind (else-val else-loc)
+                  (generate-node-ir (semantic-if-else-node node) builder module var-env di-builder di-scope location-map)
+                (declare (ignore else-loc))
+                ;; As with the then-arm: a `nil` else-value (e.g. (when+ cond body) or
+                ;; a plain (if cond x nil)) yields NIL — skip the store, leaving undef
+                ;; on the untaken path rather than crashing on a NIL store operand.
+                (when (and result-alloca else-val)
+                      (llvm-build-store builder else-val result-alloca)))
+              ;; No else clause. If result expected, this is undefined behavior or nil.
+              nil)
+          (unless (terminator-p (llvm-get-insert-block builder))
+            (llvm-build-br builder merge-block))
+
+          ;; --- Merge Block ---
+          (llvm-position-builder-at-end builder merge-block)
+          (if result-alloca
+              (let* ((type (%if-result-llvm-type result-type-spec module))
+                     (result-val (llvm-build-load2 builder type result-alloca "if_res")))
+                (values result-val nil))
+              (values nil nil)))))))
