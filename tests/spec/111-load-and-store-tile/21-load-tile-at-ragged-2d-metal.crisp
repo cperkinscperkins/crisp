@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 15 99 99 99
+;;
+;; BUG 092 -- a rank-2 load-tile-at over a RAGGED edge, with a non-zero identity.
+;;
+;; V is the harness's 4x4 matrix, pre-filled 0..15 row-major.  A 2x2 tile at ABSOLUTE (3 3)
+;; covers rows 3..4 and columns 3..4, so only tile(0,0) = V[3][3] = 15 is in bounds:
+;;
+;;     tile(0,0)  row 3 in,  col 3 in   -> 15
+;;     tile(0,1)  row 3 in,  col 4 OUT  -> identity 99
+;;     tile(1,0)  row 4 OUT, col 3 in   -> identity 99   <-- the broken cases
+;;     tile(1,1)  row 4 OUT, col 4 OUT  -> identity 99   <--
+;;
+;; The per-dimension bounds check is built as (and (< row R) (< col C)).  Before the fix, the
+;; `and` left its result unstored when the ROW test failed; -O3 then reduced that path to an
+;; llvm.assume with no identity store, so out-of-bounds-row slots kept whatever was in local
+;; memory.  BMG gave `15 99 0 0`.  The non-zero identity is what makes that visible -- with the
+;; default 0, a freshly zeroed tile hides it (22 covers the realistic case).
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel load_tile_at_ragged_2d (V &out OUT)
+  (declare #'(mat-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-matrix ulong (2 2))))
+    (load-tile-at V tile (3 3) :identity (to-ulong 99))
+    (set! (~ OUT (to-ulong 0)) (~ tile 0 0))
+    (set! (~ OUT (to-ulong 1)) (~ tile 0 1))
+    (set! (~ OUT (to-ulong 2)) (~ tile 1 0))
+    (set! (~ OUT (to-ulong 3)) (~ tile 1 1))))

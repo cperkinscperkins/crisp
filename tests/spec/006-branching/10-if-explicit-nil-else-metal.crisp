@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 5 0 5 0
+;;
+;; BUG 092 -- the root of it: an IF written with an EXPLICIT `nil` else.  `(if c 5 nil)` has an
+;; else branch, and NIL there means false, 0.  Before the fix it was treated as having NO else,
+;; so the false path left the result unstored.  Inputs pre-filled 0 1 2 3 (a b c d).
+;;
+;;   out[0] = (if (< a b) 5 nil)  -> 5
+;;   out[1] = (if (> a b) 5 nil)  -> 0   <-- the broken case
+;;   out[2] = (if (< c d) 5 nil)  -> 5
+;;   out[3] = (if (> c d) 5 nil)  -> 0   <-- the broken case
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel if_explicit_nil_else (xs &out out)
+  (declare #'(ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((a (~ xs 0)) (b (~ xs 1)) (c (~ xs 2)) (d (~ xs 3)))
+    (set! (~ out 0) (if (< a b) 5 nil))
+    (set! (~ out 1) (if (> a b) 5 nil))
+    (set! (~ out 2) (if (< c d) 5 nil))
+    (set! (~ out 3) (if (> c d) 5 nil))))

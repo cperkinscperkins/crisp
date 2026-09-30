@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 0 0 2 1
+;;
+;; BUG 092 -- `and` in the shapes real code uses.  Inputs pre-filled 0 1 2 3 (a b c d).
+;;
+;;   out[0]  3-argument `and` with a false FIRST test, (and (> a b) (< b c) (< c d)) -> 0
+;;           Expands to nested IFs, each with a NIL else.
+;;   out[1]  the argmax tie-break shape, (or (> a b) (and (= a b) (< c d))) -> 0
+;;           Both `or` arms false; the inner `and` has a false first test.
+;;   out[2]  `and` as a WHEN test, (when (and (> a b) (< c d)) (set! out[2] 7))
+;;           Must NOT fire, so out[2] keeps its pre-fill value, 2.
+;;   out[3]  control: all tests true, (and (< a b) (< b c) (< c d)) -> 1
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel and_nested (xs &out out)
+  (declare #'(ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((a (~ xs 0)) (b (~ xs 1)) (c (~ xs 2)) (d (~ xs 3)))
+    (set! (~ out 0) (if (and (> a b) (< b c) (< c d)) 1 0))
+    (set! (~ out 1) (if (or (> a b) (and (= a b) (< c d))) 1 0))
+    (when (and (> a b) (< c d))
+      (set! (~ out 2) 7))
+    (set! (~ out 3) (if (and (< a b) (< b c) (< c d)) 1 0))))

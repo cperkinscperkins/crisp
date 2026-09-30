@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 10 6 12 103
+;;
+;; BUG 090 -- an &optional function actually CALLED, and actually RUN.
+;;
+;; Crisp generates &optional / &key variants lazily, one per call shape.  Before the fix the
+;; variant was analyzed but never code-generated: the kernel called a bare `declare`, the SPIR-V
+;; carried an unresolved Import, and the compiler exited 0.  01-04 and 06 never noticed because
+;; "compiles" was their whole assertion; running on metal is what proves the variant has a body.
+;;
+;; Two call shapes, so two variants.  Inputs pre-filled 0 1 2 3 (a b c d):
+;;
+;;     (add-k a)      default k = 10  -> 10
+;;     (add-k b 5)                    -> 6
+;;     (add-k c)      default k = 10  -> 12
+;;     (add-k d 100)                  -> 103
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-function add-k (x &optional (k 10))
+  (declare #'(int &optional int => int))
+  (+ x k))
+
+(def-kernel optional_call (xs &out out)
+  (declare #'(ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((a (~ xs 0)) (b (~ xs 1)) (c (~ xs 2)) (d (~ xs 3)))
+    (set! (~ out 0) (add-k a))
+    (set! (~ out 1) (add-k b 5))
+    (set! (~ out 2) (add-k c))
+    (set! (~ out 3) (add-k d 100))))

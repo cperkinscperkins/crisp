@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 1 0 0 0
+;;
+;; BUG 092 -- `(and X Y)` as the test of an IF, all four truth combinations.
+;;
+;; Crisp's `and` is CL's, which expands to (IF X (AND Y) NIL).  The IF analyzer could not tell
+;; an explicit NIL else from no else, so on the X-FALSE path the result slot was never stored
+;; and -O3 deleted the X test outright: (and X Y) became just Y.
+;;
+;; The inputs come from the buffer (pre-filled 0 1 2 3), so nothing constant-folds:
+;;
+;;     out[0] = (and (< 0 1) (< 2 3))  X=T Y=T  -> 1
+;;     out[1] = (and (< 0 1) (> 2 3))  X=T Y=F  -> 0
+;;     out[2] = (and (> 0 1) (< 2 3))  X=F Y=T  -> 0   <-- the broken case: gave 1
+;;     out[3] = (and (> 0 1) (> 2 3))  X=F Y=F  -> 0
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel and_as_if_test (xs &out out)
+  (declare #'(ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((a (~ xs 0)) (b (~ xs 1)) (c (~ xs 2)) (d (~ xs 3)))
+    (set! (~ out 0) (if (and (< a b) (< c d)) 1 0))
+    (set! (~ out 1) (if (and (< a b) (> c d)) 1 0))
+    (set! (~ out 2) (if (and (> a b) (< c d)) 1 0))
+    (set! (~ out 3) (if (and (> a b) (> c d)) 1 0))))

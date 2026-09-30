@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 1 0 0 0
+;;
+;; BUG 092 -- `(and X Y)` used directly as a VALUE (no surrounding IF).  Same four combinations
+;; and inputs as 07.  A false `and` is 0: the NIL in (IF X (AND Y) NIL) is analyzed as false.
+;;
+;;     out[2] = (and (> 0 1) (< 2 3))  X=F Y=T  -> 0   <-- the broken case
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel and_as_value (xs &out out)
+  (declare #'(ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((a (~ xs 0)) (b (~ xs 1)) (c (~ xs 2)) (d (~ xs 3)))
+    (set! (~ out 0) (and (< a b) (< c d)))
+    (set! (~ out 1) (and (< a b) (> c d)))
+    (set! (~ out 2) (and (> a b) (< c d)))
+    (set! (~ out 3) (and (> a b) (> c d)))))

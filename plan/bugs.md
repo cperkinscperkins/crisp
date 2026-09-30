@@ -3304,3 +3304,146 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Reading the emitted PTX on the pod -- four ssh round-trips and one compile, no
         suite run.
+
+[ ] 090 LAZY &optional / &key FUNCTION VARIANTS ARE ANALYZED BUT NEVER CODE-GENERATED -- the call
+        is emitted against a bare `declare`, the SPIR-V carries an unresolved Import, and the
+        compiler exits 0.
+
+        SYMPTOM.  `(def-function add-k (x &optional (k 3.0)) (declare #'(float &optional float => float)) (+ x k))`
+        called from a kernel as `(add-k 1.0)`:
+
+            define void @add_k_noout(...)
+            declare float @add_k_float_float(float)          ; <-- never defined
+
+        and in the final SPIR-V:
+
+            Decorate 4 LinkageAttributes "add_k_float_float" Import
+
+        Level Zero cannot link that.  No error, no warning, exit 0.
+
+        SCOPE.  Every &optional / &key function that is actually CALLED.  Not specific to &out,
+        scratch, or GPU built-ins (the probe above has none of them).  All four 016-advanced-signatures
+        specs with call sites (01, 03, 04, 06) show the same `declare` in their IR.  They pass because
+        they carry no validator and no hoist -- "compiles" is the whole assertion.  016/02 has no
+        kernel, so nothing is instantiated at all.
+
+        NOT THE EXE.  The in-process path run-specs uses (compile-module) produces the same IR.
+
+        MECHANISM (measured with :info logging).  The variant IS instantiated, in PASS 2, while the
+        kernel is analyzed: "Found generic function ADD-K" -> "Lazy Instantiating ADD-K_float" ->
+        "Registering Lazy Signature".  `instantiate-generic-function` (src/environment.lisp:184)
+        calls `internal-compile-function`, which returns the analyzed blueprint AST -- and the AST is
+        dropped.  IR is only generated for top-level forms.
+
+        NOT A REGRESSION.  The original commit 96393669 (2025-12-27, "&optional, &key, and default
+        args for optional") has the same shape: instantiate never generated IR.  The feature has
+        never worked end to end.
+
+        LIKELY FIX (hypothesis, untested).  Templates face the identical mid-analysis instantiation
+        and get it right: type-checker.lisp hands `*template-instantiator-fn*` a
+        `compile-toplevel-form` callback.  Do the same here -- synthesize a plain def-function form
+        for the variant (explicit params plus the `let*` of defaults instantiate already builds) and
+        push it through compile-toplevel-form.  Watch the NAME: the signature is registered as
+        `ADD-K_float`, and the call site mangles it again with the argument types
+        (`add_k_float_float`); the generated function must carry the name the call emits.
+
+        FOUND BY.  Endeavour 176 Phase 0, trying `(make-scratch-vector ...)` as an &optional /
+        &key default.  Probes: put_temp_files_here/176/p1a, p1b, p1e, p1g, t090.lisp.
+
+
+[ ] 091 PARAMETERS AFTER `&out ... &optional` ARE TREATED AS &out, contradicting the design doc.
+
+        SYMPTOM.
+
+            (def-function my-grid-sum (contrib &out out &optional (sv (make-scratch-vector ...)))
+              ... (grid-reduce-atomic! #'+ contrib 0.0 out :local-scratch-vec sv))
+
+        called WITH an explicit `sv`:
+
+            Illegal access: Cannot read from Output Parameter 'SV'. Output parameters are write-only.
+
+        docs/chapters/05_return_storage_handle_pattern_out/00_intro.md:64 says the opposite:
+        "Following `&out` there can be `&optional` and then `&key` paramters, these are NOT
+        considered to be `&out` parameters."
+
+        SCOPE (measured 2026-09-29): only STORAGE-HANDLE optionals.  An `int` optional after &out,
+        passed explicitly, is read without complaint; a `vector` optional is refused (probe
+        put_temp_files_here/176/p091.crisp).  &key after &out is untested -- probably the same.
+        016/06-mixing uses &out plus keys; its variants are never generated (090), so fixing 090
+        may surface this there.  Lock-down: 016/09-out-then-optional-metal.crisp.
+
+        FOUND BY.  Endeavour 176 Phase 0, probe put_temp_files_here/176/p1f.
+
+
+[ ] 092 `(and X Y)` LEAVES ITS RESULT UNSTORED WHEN X IS FALSE -- -O3 then deletes X outright.
+        Silent wrong answers, including in the tile bounds checks.
+
+        SYMPTOM.  `(if (and (> a b) (< a 10.0)) 1 0)`.  Unoptimized IR:
+
+            %if_result = alloca i32
+            br i1 %ifcond, label %then, label %else
+            then:  ... store i32 %bool_ext5, ptr %if_result
+            else:  br label %ifcont                          ; nothing stored
+            ifcont: %if_res = load i32, ptr %if_result        ; undef when X is false
+
+        After -O3 the whole `and` is just `(< a 10.0)` -- the (> a b) test is gone.
+
+        MECHANISM (measured).  Crisp uses CL's `and`, which SBCL expands to `(IF A (AND B) NIL)`.
+        `analyze-if-expression-impl` (src/analysis/control.lisp:1301) takes the else as
+        `(if (fourth expr) (analyze ...) nil)` -- an explicit NIL else is indistinguishable from NO
+        else, so the IF gets no else branch.  `or` expands to `(LET ((g A)) (IF g g B))`, which has
+        a real else, so a bare `or` is fine.
+
+        SCOPE -- SHIPPED FEATURES, CONFIRMED ON METAL.  `%tlc-all-in-bounds-form` (control.lisp:598)
+        builds the per-dimension bounds check as `(and (< src[k] extent[k]) ...)` for every rank >= 2,
+        at five call sites: load-tile-at, store-tile-at, load-tile-coords.  Probe: 4x4 V (0..15),
+        2x2 `load-tile-at` at absolute (3 3), `:identity 99`.  Correct is `15 99 99 99`.  BMG:
+
+            BUFFER out: 15 99 0 0
+
+        At -O3 the row check survives, but its false path is reduced to `llvm.assume(col >= extent)`
+        with NO identity store -- O3 treats the path as undefined because it reads the uninitialised
+        slot.  Out-of-bounds-ROW elements keep whatever was in local memory.  (The predicted
+        out-of-bounds READ did not happen; the missing FILL did.)
+
+        WHY NOTHING CAUGHT IT.  With the default identity 0 and a freshly zeroed scratch buffer, the
+        stale value IS 0.  It bites with a non-zero identity, or when a tile buffer is reused (a K
+        loop) and a ragged tile inherits the previous tile's data.  Not yet checked: tile-stride /
+        matrix-multiply-tile-stride ragged edges individually; CUDA (same front end, presumably
+        affected).
+
+        FIX DIRECTION (agreed 2026-09-29, not yet written).  Change the IF analyzer, not `and`:
+        treat `(length expr) > 3` as an explicit else and analyze the NIL as false.  This also covers
+        any other macro that expands to `(if x y nil)` -- check whether the `crisp.compiler::cond`
+        quirk (a clause with only a test drops its value) is the same root.  It is a shared-path
+        change, so it needs the full suite, not an IR spot check.
+
+        FOUND BY.  Endeavour 176 multi-value probe (the argmax combiner uses `(or ... (and ...))`),
+        then Phase 0.  Probes: put_temp_files_here/176/p2b-and.crisp, and-probe.O3.ll,
+        p3-ragged-2d.crisp (+ .O3.ll, p3.run.out).
+
+
+[ ] 093 AN IF WHOSE BRANCHES EACH RETURN MULTIPLE VALUES IS TYPED AS ITS FIRST VALUE ONLY --
+        llvm-as rejects the module.
+
+        SYMPTOM.
+
+            (def-function pick (va ia vb ib)
+              (declare #'(float ulong float ulong => float ulong))
+              (if (> va vb) (return va ia) (return vb ib)))
+
+            llvm-as: ...:450:7: error: value doesn't match function result type '{ float, i64 }'
+              ret float %if_res
+
+        Both branches build the correct `{ float, i64 }` (%mvr_val_0 / %mvr_val_1), but the IF's
+        result slot is `%if_result = alloca float` -- sized from the first value only.
+
+        LOUD, at least: compilation fails (exit 1).  Workaround: one `(return (if ..) (if ..))` at
+        the tail.
+
+        WHY IT MATTERS NOW.  Endeavour 176's dependent reductions take a multi-value combiner, and
+        the natural way to write one (argmax) is exactly this shape -- as is the example in the
+        design doc.
+
+        FOUND BY.  Endeavour 176 probe (tests/spec/176-reduce-multi/01-probe-mv-binop-butterfly-metal.crisp,
+        lines 38-40), reproduced in Phase 0: put_temp_files_here/176/p2a-if-mv-return.crisp.

@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 63 99 99 99
+;;
+;; BUG 092 -- a rank-3 load-tile-at over a ragged corner: the bounds check is a THREE-way
+;; (and (< d0 E0) (< d1 E1) (< d2 E2)), which expands to nested IFs with a NIL else at each level.
+;;
+;; V is the harness's 4x4x4 tensor, pre-filled 0..63 row-major.  A 2x2x2 tile at ABSOLUTE (3 3 3)
+;; has only tile(0,0,0) = V[3][3][3] = 63 in bounds.  One slot per out-of-bounds dimension:
+;;
+;;     tile(0,0,0)  all in         -> 63
+;;     tile(1,0,0)  dim 0 OUT      -> identity 99
+;;     tile(0,1,0)  dim 1 OUT      -> identity 99
+;;     tile(0,0,1)  dim 2 OUT      -> identity 99
+
+(def-type vol-t (tensor ulong 3 :address-space :global :align :compact))
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel load_tile_at_ragged_3d (V &out OUT)
+  (declare #'(vol-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-tensor ulong 3 (2 2 2))))
+    (load-tile-at V tile (3 3 3) :identity (to-ulong 99))
+    (set! (~ OUT (to-ulong 0)) (~ tile 0 0 0))
+    (set! (~ OUT (to-ulong 1)) (~ tile 1 0 0))
+    (set! (~ OUT (to-ulong 2)) (~ tile 0 1 0))
+    (set! (~ OUT (to-ulong 3)) (~ tile 0 0 1))))

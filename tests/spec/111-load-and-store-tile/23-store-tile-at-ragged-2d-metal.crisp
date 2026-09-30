@@ -1,0 +1,30 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 100
+;;
+;; BUG 092 -- a rank-2 store-tile-at over a RAGGED edge.
+;;
+;; The tile [[100 101] [102 103]] is stored at ABSOLUTE (3 3) into the harness's 4x4 OUT, which is
+;; pre-filled 0..15.  Only tile(0,0) lands in bounds, at OUT[3][3]; the other three slots fall
+;; outside and must be DROPPED, leaving the pre-fill untouched everywhere else.
+;;
+;; The bounds check is the same (and (< row R) (< col C)) that 21/22 exercise.  LIMITATION: a
+;; write at row 4 lands past the end of this 16-element buffer, so this spec pins the in-bounds
+;; result and the column-overflow case (which would wrap into the next row of a flat buffer), but
+;; it cannot SEE a row-overflow write.  21/22 are the sharper tests of the bounds logic itself.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel store_tile_at_ragged_2d (&out OUT)
+  (declare #'(&out mat-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-matrix ulong (2 2))))
+    (when (= (get-local-id 0) (to-ulong 0))
+      (set! (~ tile 0 0) (to-ulong 100))
+      (set! (~ tile 0 1) (to-ulong 101))
+      (set! (~ tile 1 0) (to-ulong 102))
+      (set! (~ tile 1 1) (to-ulong 103)))
+    (sync-workgroup)
+    (store-tile-at tile OUT (3 3))))
