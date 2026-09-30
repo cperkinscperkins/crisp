@@ -3350,6 +3350,37 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 176 Phase 0, trying `(make-scratch-vector ...)` as an &optional /
         &key default.  Probes: put_temp_files_here/176/p1a, p1b, p1e, p1g, t090.lisp.
 
+        EXPERIMENT 2026-09-30 (put_temp_files_here/176/t090b.lisp, a wrapper, not a patch): handing the
+        analyzed variant AST to generate-llvm-ir (builder insertion point saved/restored) DOES produce
+        a defined function with the name the call site emits (`define float @add_k_float_float`).
+        It also exposed two more defects that the missing codegen had been hiding:
+
+        (a) NO MEMOIZATION.  The variant's signature is registered under its MANGLED name
+            (ADD-K_int), but calls look up the BASE name (ADD-K), find nothing, and re-instantiate --
+            every call site re-analyzes the variant.  Harmless while nothing was generated; with
+            codegen the second copy collides (`declare i32 @add_k_int_int.1`).
+
+        (b) KEYWORD CALL SHAPES COLLIDE.  mangle-function-variant-name (src/mangling.lisp:148) joins
+            only the parameter TYPES.  bind-keyword-args builds (X _K0:keyword BY:int) for `:by 3` and
+            (X _K0:keyword PLUS:int) for `:plus 5` -- both mangle to SCALE_int_keyword_int.  So simply
+            memoizing on that name would silently run the :by variant for a :plus call.  The name must
+            encode WHICH keys were supplied (in call order).
+
+        FIX (drafted 2026-09-30 in overlays/crisp-compiler-overlay.lisp, pending review + fold):
+        %generate-lazy-variant-ir (codegen the analyzed AST, builder saved/restored, no-op without a
+        module); %lazy-variant-already-generated + %lazy-variant-llvm-name (reuse only if THIS module
+        already holds a DEFINED function for the variant); %lazy-variant-name (keyword placeholders
+        mangle to key-<name>, e.g. SCALE_int_key-by_int); modified instantiate-generic-function.
+        016/07 `10 6 12 103`, 016/08 `0 3 9 31` on BMG; 016/01-06 now DEFINE every variant.
+        Full suite (092+093+090+091 overlay): unit 341/341, E2E 1277/1277, negative 282/282.
+
+        FOLLOW-ON, not this bug: a SCRATCH default in a lazily generated variant, e.g.
+        `&optional (sv (make-scratch-vector ...))`, now fails LOUDLY (it used to miscompile silently):
+        "Missing implicit argument SV_FROM_GRID_SUM_OPT_1".  The variant's implicit scratch param
+        never reaches the kernel signature, because the Pass-1 scanner that builds kernel signatures
+        runs before the variant exists.  Same scan-timing problem as endeavour 176's grid-reduce!
+        scratch defaults.  Probe: put_temp_files_here/176/g-p1a-optional-default.crisp.
+
 
 [ ] 091 PARAMETERS AFTER `&out ... &optional` ARE TREATED AS &out, contradicting the design doc.
 
@@ -3371,6 +3402,15 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         put_temp_files_here/176/p091.crisp).  &key after &out is untested -- probably the same.
         016/06-mixing uses &out plus keys; its variants are never generated (090), so fixing 090
         may surface this there.  Lock-down: 016/09-out-then-optional-metal.crisp.
+
+        CAUSE (read 2026-09-30).  The lambda-list parser in src/environment.lisp (~line 715) gives every
+        normal parameter `:kind (cond (out-start :out) (t :in))` -- once &out has been seen, EVERY
+        later positional parameter is :out, including those after &optional.  &key parameters are
+        built by a separate branch with `:kind :in` hard-coded, which is why keys are unaffected.
+        Only a storage-handle read trips the write-only check, which is why an `int` optional passes.
+        Likely fix: `:out` only when out-start is set AND neither optional-start nor key-start is.
+        FIX (drafted 2026-09-30 in the overlay, pending review + fold): exactly that, in a copy of
+        analyze-environment-from-spec.  016/09 `100 11 42 3` on BMG.  Full suite as for 090.
 
         FOUND BY.  Endeavour 176 Phase 0, probe put_temp_files_here/176/p1f.
 

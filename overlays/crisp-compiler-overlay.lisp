@@ -301,3 +301,250 @@
                      (result-val (llvm-build-load2 builder type result-alloca "if_res")))
                 (values result-val nil))
               (values nil nil)))))))
+
+
+;; src/mangling.lisp  (new -- BUG 090 (b))
+(defun %lazy-variant-name (base-name active-env)
+  "BUG 090 (b).  The mangled name of a lazily instantiated &optional / &key variant.
+   mangle-function-variant-name joins only the parameter TYPES, and bind-keyword-args represents
+   each supplied keyword as a placeholder parameter of type KEYWORD followed by its value -- so
+   (scale b :by 3) and (scale c :plus 5) both became SCALE_int_keyword_int, and the second call
+   would run the first call's variant.  Here each KEYWORD placeholder is replaced by the NAME of the
+   key it introduces (the parameter that follows it): SCALE_int_key-by_int vs SCALE_int_key-plus_int.
+   Keys are named in CALL order, so (:by 1 :plus 2) and (:plus 2 :by 1) are separate, both correct,
+   variants.  Non-keyword parameters mangle exactly as before."
+  (let ((parts (loop for (p next) on active-env
+                     collect (if (and (eq (parameter-def-type p) 'keyword) next)
+                                 (format nil "key-~a" (string-downcase (symbol-name (parameter-def-name next))))
+                                 (mangle-param-type-name (parameter-def-type p))))))
+    (intern (format nil "~a_~{~a~^_~}" base-name parts) (symbol-package base-name))))
+
+;; src/environment.lisp  (new -- BUG 090 (a))
+(defun %lazy-variant-llvm-name (variant-name param-types)
+  "The LLVM function name generate-function-prototype (codegen.lisp) gives a non-entry function
+   named VARIANT-NAME with PARAM-TYPES: lower-cased, types appended with mangle-type-spec, and
+   - and ~ replaced by _.  Kept in step with that function by hand -- if the two ever disagree, the
+   memo below simply misses and the variant is generated again, which then collides loudly."
+  (substitute #\_ #\~ (substitute #\_ #\- (string-downcase
+                                            (format nil "~a~{_~a~}" variant-name
+                                                    (mapcar #'mangle-type-spec param-types))))))
+
+;; src/environment.lisp  (new -- BUG 090 (a))
+(defun %lazy-variant-already-generated (variant-name param-types)
+  "BUG 090 (a).  The registered signature of VARIANT-NAME with PARAM-TYPES if, and only if, the
+   CURRENT module already holds a DEFINED function for it; otherwise NIL.  Keyed on the module
+   itself rather than on compiler state, because the spec runner creates and disposes a module
+   per compile and a fresh compiler session per top-level form: a registration left over from
+   another module (or from Pass 1) must not suppress generating the variant into this one."
+  (let ((module (and *compiler-session* (compiler-session-module *compiler-session*))))
+    (when module
+      (let ((fn (llvm-get-named-function module (%lazy-variant-llvm-name variant-name param-types))))
+        (when (and fn (not (cffi:null-pointer-p fn))
+                   (plusp (llvm-count-basic-blocks fn)))
+          (find-if (lambda (sig)
+                     (equal (mapcar #'parameter-def-type (function-signature-parameters sig))
+                            param-types))
+                   (gethash variant-name *function-table*)))))))
+
+;; src/environment.lisp  (new -- BUG 090)
+(defun %generate-lazy-variant-ir (ast-node variant-name)
+  "BUG 090.  Emit the IR for a lazily instantiated variant whose AST instantiate-generic-function
+   just analyzed.  Instantiation happens mid-analysis of the CALLER, so the builder's insertion
+   point is saved and restored around generation.  Does nothing without a module (Pass 1 /
+   signature-only analysis): the variant is then generated when Pass 2 instantiates it."
+  (let ((session *compiler-session*))
+    (if (not (and ast-node session (compiler-session-module session)))
+        (log:debug "BUG 090: no module -- not generating lazy variant ~s now" variant-name)
+        (let* ((builder (compiler-session-builder session))
+               (saved (llvm-get-insert-block builder)))
+          (log:info "BUG 090: generating IR for lazy variant ~s" variant-name)
+          (unwind-protect
+               (generate-llvm-ir ast-node (compiler-session-module session) builder
+                                 (compiler-session-di-builder session)
+                                 (compiler-session-di-compile-unit session)
+                                 (compiler-session-location-map session))
+            (unless (cffi:null-pointer-p saved)
+              (llvm-position-builder-at-end builder saved)))))))
+
+;; src/environment.lisp  (changes: %lazy-variant-name, the per-module reuse check, %generate-lazy-variant-ir)
+(defun instantiate-generic-function (generic-def explicit-arg-types context location)
+  "Instantiates a lazy generic function variant for the given argument types."
+  (multiple-value-bind (active-env injected-bindings error-message)
+      (resolve-argument-bindings generic-def explicit-arg-types)
+
+    (when error-message
+          (log:warn "~a" error-message)
+          (return-from instantiate-generic-function nil))
+
+    (let* ((name (generic-function-def-name generic-def))
+           (declarations (generic-function-def-declarations generic-def))
+           ;; Robustly filter declarations from body
+           (body (loop for f in (generic-function-def-body generic-def)
+                         unless (and (listp f) (eq (car f) 'declare))
+                       collect f)))
+
+      ;; Apply injected bindings (Defaults)
+      (when injected-bindings
+            (setf body (list `(let* ,injected-bindings ,@body))))
+
+      (let* ((active-param-names (mapcar #'parameter-def-name active-env))
+             (active-param-types (mapcar #'parameter-def-type active-env))
+             (mangled-name (%lazy-variant-name name active-env)))
+
+        ;; BUG 090 (a): one variant per call shape PER MODULE.  The signature is registered under the
+        ;; MANGLED name, but calls look up the BASE name, so without this every call site re-analyzed
+        ;; -- and, now that variants are generated, would re-define -- the same variant.
+        (let ((reused (%lazy-variant-already-generated mangled-name active-param-types)))
+          (when reused
+            (log:debug "BUG 090: reusing lazy variant ~s, already generated in this module" mangled-name)
+            (return-from instantiate-generic-function reused)))
+
+        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name (length explicit-arg-types) active-param-types)
+
+        ;; Compile the specific variant
+        (let ((ast-node (internal-compile-function mangled-name
+                                                   active-env
+                                                   (generic-function-def-return-types generic-def)
+                                                   active-param-names
+                                                   body
+                                                   declarations
+                                                   (or (generic-function-def-source-location generic-def) location)
+                                                   context)))
+
+          ;; BUG 090: GENERATE the variant.  It used to be analyzed and then dropped, so the call site
+          ;; emitted a bare `declare` and the module carried an unresolved import.
+          (%generate-lazy-variant-ir ast-node mangled-name)
+
+          ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
+          ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
+          (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
+                                      (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
+                                                                                (sig (make-function-signature
+                                                                                      :name mangled-name
+                                                                                      :parameters active-env
+                                                                                      :return-types final-ret-types
+                                                                                      :source-location (or (generic-function-def-source-location generic-def) location))))
+
+            (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
+            ;; Append to existing signatures (thread safety? single threaded)
+            (setf (gethash mangled-name *function-table*)
+              (append (gethash mangled-name *function-table*) (list sig)))
+
+            sig))))))
+
+;; src/environment.lisp  (BUG 091 -- only change: a positional parameter is :out only while NEITHER
+;;  &optional NOR &key has been seen.  It used to be :out for everything after &out, so an &optional
+;;  storage handle after &out was refused as a read of a write-only parameter.  Chapter 05: "Following
+;;  &out there can be &optional and then &key parameters, these are NOT considered to be &out".)
+(defun analyze-environment-from-spec (params fn-spec)
+  "Builds the environment from the signature. Returns (values env optional-start-index defaults-alist)."
+  (let ((arrow-pos (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) fn-spec)))
+    (let ((param-type-specs (subseq fn-spec 0 (or arrow-pos (length fn-spec))))
+          (env '())
+          (defaults '())
+          (optional-start nil)
+          (key-start nil)
+          (out-start nil)
+          (idx 0))
+      (log:debug "Analyzing spec params: ~s, specs: ~s" params param-type-specs)
+
+      (loop while (and params param-type-specs)
+            do (let ((p (first params))
+                     (ts (first param-type-specs)))
+
+                 ;; (format *error-output* "DEBUG ANALYZE-ENV: Param ~s TS ~s~%" p ts)
+                 (finish-output *error-output*)
+
+                 (cond
+                  ;; Handle &optional in params
+                  ((and (symbolp p) (string-equal (symbol-name p) "&OPTIONAL"))
+                    ;; If type spec also has &optional, skip it.
+                    (when (and (symbolp ts) (string-equal (symbol-name ts) "&OPTIONAL"))
+                          (pop param-type-specs))
+                    (when optional-start (error "Multiple &optional keywords found."))
+                    (when key-start (error "&optional cannot appear after &key."))
+                    (setf optional-start idx)
+                    (pop params))
+
+                  ;; Handle &key in params
+                  ((and (symbolp p) (string-equal (symbol-name p) "&KEY"))
+                    (unless (and (symbolp ts) (string-equal (symbol-name ts) "&KEY"))
+                      (error "Signature Mismatch: &key present in parameter list but found ~s in type declaration." ts))
+                    (when key-start (error "Multiple &key keywords found."))
+                    (setf key-start idx)
+                    (setf params (cdr params))
+                    (setf param-type-specs (cdr param-type-specs)))
+
+                  ;; Handle &out in params
+                  ((and (symbolp p) (string-equal (symbol-name p) "&OUT"))
+                    (unless (and (symbolp ts) (string-equal (symbol-name ts) "&OUT"))
+                      (error "Signature Mismatch: &out present in parameter list but found ~s in type declaration." ts))
+                    (when out-start (error "Multiple &out keywords found."))
+                    (when optional-start (error "&out cannot appear after &optional."))
+                    (when key-start (error "&out cannot appear after &key."))
+                    (setf out-start idx)
+                    (pop params)
+                    (pop param-type-specs))
+
+                  ;; Handle markers in types (Error)
+                  ((and (symbolp ts)
+                        (or (string-equal (symbol-name ts) "&OPTIONAL")
+                            (string-equal (symbol-name ts) "&KEY")
+                            (string-equal (symbol-name ts) "&OUT")))
+                    (error "Signature Mismatch: ~s present in type declaration but missing in parameter list." ts))
+
+                  ;; Handle &key specialized syntax (:key type)
+                  ((and key-start (keywordp ts))
+                    (let ((name p) (def-val nil)
+                                   (val-type (second param-type-specs)))
+                      ;; Extract (name default) from params
+                      (when (listp p)
+                            (setf name (first p))
+                            (setf def-val (second p))
+                            (push (cons name def-val) defaults))
+
+                      ;; Validate param-type-specs has enough elements
+                      (unless val-type
+                        (error "Signature Mismatch: &key keyword ~s missing type." ts))
+
+                      ;; Validate name match (optional strictness, but good for sanity)
+                      (unless (string-equal (symbol-name name) (symbol-name ts))
+                        (log:warn "Signature key name mismatch: Param ~s vs Keyword spec ~s" name ts))
+
+                      (push (make-parameter-def :name name
+                                                :type (parse-type-specifier val-type)
+                                                :kind :in
+                                                :is-key t
+                                                :default-value def-val) env)
+                      (incf idx)
+                      (pop params)
+                      (pop param-type-specs) ;; Pop keyword
+                      (pop param-type-specs))) ;; Pop value type
+
+                  ;; Normal parameter (symbol or (name default))
+                  (t
+                    (let ((name p) (def-val nil))
+                      ;; Extract (name default)
+                      (when (listp p)
+                            (setf name (first p))
+                            (setf def-val (second p))
+                            ;; Store default
+                            (push (cons name def-val) defaults))
+
+                      (push (make-parameter-def
+                             :name name
+                             :type (parse-type-specifier ts)
+                             :kind (cond ((and out-start (not optional-start) (not key-start)) :out) ; BUG 091
+                                         (t :in))
+                             :is-optional (not (null optional-start))
+                             :is-key (not (null key-start))
+                             :default-value def-val)
+                            env)
+                      (incf idx)
+                      (pop params)
+                      (pop param-type-specs))))))
+
+      (when (or params param-type-specs)
+            (error 'crisp-signature-arity-error :expected (length fn-spec) :inferred (length env) :source-location nil))
+
+      (values (nreverse env) optional-start (nreverse defaults) key-start))))
