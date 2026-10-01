@@ -31,8 +31,14 @@ Each cell: forward / autodiff / on-metal.
 - [x] float `type-min`/`type-max` are the FINITE extremes in every precision context; infinities are
       `(type-infinity T)`, `:ieee` only
 - [x] dependent form is `:last-man-standing` only (a Crisp limitation, not a hardware one)
-- [ ] is `grid-reduce!` sugar, or does it need the Pass-1 scanner to learn about analyzer-introduced
-      scratch? Answered by the Phase 0 elided-`&key` tests.
+- [x] implicit scratch (2026-09-30): the element type comes from the IDENTITY, read at scan time
+      (literals incl. suffixed ones, `(type-min/max/infinity T)`, `(- X)`, `(to-T x)`). A shared
+      expansion wraps the reduction in a `let` of `make-scratch-*`, scanned in Pass 1 by a
+      `scan-operator` method and analyzed in Pass 2 -- so the existing implicit-param plumbing does
+      the rest. The identity must be typed ON ITS FACE when scratch is left out; an untyped identity,
+      or one whose type differs from the variable's, is a loud error. (Softening via the variable's
+      own `let` binding: deferred until real code keeps hitting it.)
+- [x] scratch defaults in &optional / &key variants (g-p1a) are part of 176 ("in for a penny").
 - [ ] where do `type-min`/`type-max`/`type-infinity` live in the design doc?
 - [ ] last-man's `num_workgroups <= local_work_size` limit: keep and document it, or make the final
       sweep a strided loop? It matters because last-man is the `grid-reduce!` default.
@@ -45,13 +51,30 @@ Each cell: forward / autodiff / on-metal.
 
 Every later phase uses at least one of these.
 
-- [ ] TDD tests for elided `&key` arguments to the existing Phase 1 and Phase 2 reductions.
-  In theory, something like this should work already today:
-  `... &key (someKey (make-scratch-vector :num-workgroups))`
-- - [ ] make sure the defaults are working right
+- [ ] implicit scratch for the reductions (design above)
+- - [x] TDD tests: every existing reduction with its scratch keys left out -- reduce-workgroup,
+        grid-reduce-atomic!, -cas!, -last-man!, -second-stage! -- on metal
+        (175/54-62: 54-58 metal, 59 CUDA twin, 60 `0ul` identity, 61 inside a def-grid-function,
+        62 two reductions of two types in one kernel; explicit-scratch controls for 60-62 pass on BMG)
+- - [x] RETIRED 175/errors/08-second-stage-no-scratch (deleted 2026-09-30)
+- - [x] negative tests: untyped identity; identity type != variable type (175/errors/15, 16)
+- - [x] identity-type reader (scan time; mirror the analyzer's literal typing)
+- - [x] shared expansion: one `let` of scratch per variable; for last-man also the global scratch,
+        and ONE counter + ONE election flag per call (single-variable done; multi-variable is Phase 2/3)
+- - [x] `scan-operator` methods for each reduction; analyzer check that var type = identity type
+- - [x] last-man's global partials: sized :match-workgroup-size (safe under last-man's
+        num_workgroups <= local_work_size limit); needed symbolic GLOBAL scratch in the L0 hoister
+        (BUG 094, overlays/hoist-l0). CUDA already handled it.
+- - [x] all in the overlays 2026-09-30: unit 341/341, E2E 1287/1288 (only 016/10), negative 283/283
 - - [ ] audit the `.metacrisp`: the implicit scratch params appear, with their sizes still symbolic
 - - [ ] audit the hoisted code (L0 and CUDA): the buffers are allocated and sized, and `:message` reaches it
-- - [ ] update documentation (the "required, allocated by the CALLER" paragraphs)
+- - [ ] update documentation (the "required, allocated by the CALLER" paragraphs; the identity rule)
+- [ ] scratch defaults in &optional / &key variants (g-p1a: "Missing implicit argument")
+- - [x] TDD test: a def-grid-function wrapper with `&optional (sv (make-scratch-vector ...))`, on metal
+        (016/10)
+- - [ ] Pass 1 scans the DEFAULT forms of a generic function's &optional / &key params and registers
+        their scratch for the base function; each instantiated variant gets the entries it uses
+- - [ ] the design-doc template example (`21_template_types.md:44`) is exactly this shape
 - [ ] `type-min` and `type-max`
 - - [ ] TDD tests, under both math-precision `ieee` and `fast`
 - - [ ] implementation
@@ -63,12 +86,14 @@ Every later phase uses at least one of these.
         source -- an error would make a file's validity depend on a command-line flag.)
 - - [ ] implementation
 - - [ ] documentation
-- [ ] multi-value combiners: reproduce the two defects the 176 probe found
-      (`01-probe-mv-binop-butterfly-metal.crisp`, lines 38-40), then file or fix them
-- - [ ] an `if` whose branches each `(return a b)` is typed as its FIRST value -> invalid IR
-- - [ ] `(and X Y)` with X false leaves the result slot unstored; -O3 then drops X
-- [ ] `reduce-warp`: check `%reduce-warp-expand` -- do lanes at or past `active-threads` really end
-      up with the reduced value, as the docs promise?
+- [x] Phase 0 bugs, found 2026-09-28, lock-down specs written, fixed in the overlay 2026-09-30
+      (full suite 1277/1277). See plan/bugs.md and put_temp_files_here/176/FINDINGS.md.
+- - [x] 090 &optional / &key variants never code-generated (+ keyword variants collided)
+- - [x] 091 params after `&out ... &optional` treated as &out
+- - [x] 092 `(and X Y)` / a value IF with no else left its false path unstored (tile bounds too)
+- - [x] 093 an IF whose branches each `(return a b)` was typed as its FIRST value
+- - [ ] Chris: fold the overlay into src/ (list in the 2026-09-30 session), empty it, rerun suites
+- [x] `reduce-warp`: lanes past `active-threads` DO get the result (175/04 verifies it on BMG)
 
 
 ## Phase 1: single-variable `grid-reduce!`

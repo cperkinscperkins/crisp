@@ -548,3 +548,259 @@
             (error 'crisp-signature-arity-error :expected (length fn-spec) :inferred (length env) :source-location nil))
 
       (values (nreverse env) optional-start (nreverse defaults) key-start))))
+
+;;;; ===========================================================================
+;;;; Endeavour 176 -- IMPLICIT SCRATCH for the reductions (stage B: workgroup-local scratch plus
+;;;; last-man's counter and flag).  Design: tests/spec/176-reduce-multi/reduce-multi.md.
+;;;;
+;;;; When a reduction's scratch keys are omitted, the reduction is rewritten -- in BOTH passes, by the
+;;;; same function -- into (let ((<var>-LOCAL-SCRATCH (make-scratch-vector T ...)) ...) (<reduction>
+;;;; ... :local-scratch-vec <var>-LOCAL-SCRATCH ...)).  Pass 1 scans that let (so the existing
+;;;; implicit-parameter plumbing registers the scratch and carries it to the kernel), and Pass 2
+;;;; analyzes the same let (so codegen rebuilds the same <binding>_FROM_<fn>_<n> name).  The element
+;;;; type T is read from the IDENTITY at scan time -- the one type the API guarantees and that is
+;;;; visible before analysis.
+;;;;
+;;;; NOT YET: last-man's :global-scratch-vec.  It is sized by the number of workgroups, and both
+;;;; hoisters reject any symbolic size for GLOBAL scratch (and :match-num-workgroups is unimplemented
+;;;; everywhere).  Until that hoister work lands, last-man still needs an explicit :global-scratch-vec.
+;;;; ===========================================================================
+
+;; src/analysis/ops.lisp  (new)
+(defparameter *176-implicit-scratch-specs*
+  '(("REDUCE-WORKGROUP"          4 (:local-scratch-vec))
+    ("GRID-REDUCE-ATOMIC!"       5 (:local-scratch-vec))
+    ("GRID-REDUCE-CAS!"          5 (:local-scratch-vec))
+    ;; :global-scratch-vec deliberately absent -- see the section header.
+    ("GRID-REDUCE-LAST-MAN!"     5 (:local-scratch-vec :atomic-counter :election-flag-cell))
+    ("GRID-REDUCE-SECOND-STAGE!" 6 (:local-scratch-vec)))
+  "Endeavour 176.  For each reduction Crisp can supply scratch for: the operator's name, how many
+   leading elements of the form (operator included) are positional, and the scratch keys Crisp
+   allocates when the caller leaves them out.")
+
+;; src/analysis/ops.lisp  (new)
+(defun %implicit-scratch-spec (op)
+  "The *176-implicit-scratch-specs* entry for operator symbol OP, or NIL.  Matched by name, since the
+   reductions are interned in both :crisp.compiler and :crisp-language."
+  (and (symbolp op)
+       (assoc (symbol-name op) *176-implicit-scratch-specs* :test #'string-equal)))
+
+;; src/analysis/ops.lisp  (new)
+(defun %implicit-scratch-missing-keys (expr)
+  "The scratch keys of reduction form EXPR that Crisp can supply and the caller left out, in table
+   order; NIL when EXPR is not such a reduction or supplies them all.  Walks the keyword tail as
+   pairs rather than with GETF, so a malformed tail is left for the expander to report."
+  (let ((spec (%implicit-scratch-spec (car expr))))
+    (when spec
+      (let ((tail (nthcdr (second spec) expr)))
+        (remove-if (lambda (key)
+                     (loop for (k nil) on tail by #'cddr thereis (eq k key)))
+                   (third spec))))))
+
+;; src/analysis/ops.lisp  (new)
+(defun %scan-type-by-name (name)
+  "The Crisp type symbol whose name is NAME (a string), or NIL.  Looked up in *crisp-types* so the
+   answer is the symbol the rest of the compiler uses."
+  (loop for k being the hash-keys of *crisp-types*
+        when (and (symbolp k) (string-equal (symbol-name k) name))
+          return k))
+
+;; src/analysis/ops.lisp  (new)
+(defun %identity-scan-type (form)
+  "Endeavour 176.  The Crisp type of identity FORM, read from the form ALONE -- no environment, since
+   this runs in the Pass-1 scan, before any variable has a type.  NIL when the type is not visible.
+
+   Recognised, mirroring the analyzer's own literal typing (analyze-expression Case 1/1.1/2):
+     integer literal                      -> int
+     float literal                        -> float   (all float literals are float)
+     suffixed literal (0ul, 1.5f, 255uc)  -> its suffix type (%try-parse-typed-literal)
+     (type-min T) (type-max T) (type-infinity T) -> T
+     (- X)                                -> the type of X
+     (to-T x)                             -> T, when T names a Crisp type"
+  (cond
+    ((integerp form) 'int)
+    ((floatp form) 'float)
+    ((and (symbolp form) form (not (keywordp form)))
+     (let ((lit (ignore-errors (%try-parse-typed-literal form nil))))
+       (and lit (semantic-node-type lit))))
+    ((and (consp form) (symbolp (car form)))
+     (let ((head (symbol-name (car form))))
+       (cond
+         ((and (member head '("TYPE-MIN" "TYPE-MAX" "TYPE-INFINITY") :test #'string-equal)
+               (symbolp (second form)))
+          (%scan-type-by-name (symbol-name (second form))))
+         ((and (string= head "-") (= (length form) 2))
+          (%identity-scan-type (second form)))
+         ((and (> (length head) 3) (string-equal "TO-" head :end2 3))
+          (%scan-type-by-name (subseq head 3)))
+         (t nil))))
+    (t nil)))
+
+;; src/analysis/ops.lisp  (new)
+(defun %implicit-scratch-binding-name (var key)
+  "The DETERMINISTIC let-binding name for the scratch Crisp allocates for KEY of a reduction over VAR,
+   e.g. CONTRIB-LOCAL-SCRATCH.  Deterministic because Pass 2 finds the implicit parameter by
+   rebuilding <binding>_FROM_<fn>_<n>, so Pass 1 and Pass 2 must see the same name (a gensym would
+   differ).  It also names the buffer readably in the generated host code."
+  (intern (format nil "~a-~a" (symbol-name var)
+                  (ecase key
+                    (:local-scratch-vec  "LOCAL-SCRATCH")
+                    (:atomic-counter     "COUNTER")
+                    (:election-flag-cell "ELECTION-FLAG")))
+          (or (symbol-package var) (find-package :crisp-language))))
+
+;; src/analysis/ops.lisp  (new)
+(defun %implicit-scratch-alloc-form (key elem-type)
+  "The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25)."
+  (ecase key
+    (:local-scratch-vec  `(make-scratch-vector ,elem-type :match-num-warps-per-workgroup))
+    (:atomic-counter     '(make-scratch-cell uint :address-space :global))
+    (:election-flag-cell '(make-scratch-cell uint))))
+
+;; src/analysis/ops.lisp  (new)
+(defun %implicit-scratch-form (expr elem-type)
+  "Endeavour 176.  Reduction form EXPR with its missing scratch supplied: a LET binding each missing
+   buffer, around EXPR with the corresponding keys appended.  Used by BOTH the Pass-1 scan-operator
+   methods and the analyzers, so the two passes see the same form (and the same scratch order)."
+  (let* ((spec (%implicit-scratch-spec (car expr)))
+         (var (third expr))
+         (missing (%implicit-scratch-missing-keys expr))
+         (names (mapcar (lambda (k) (%implicit-scratch-binding-name var k)) missing)))
+    `(let ,(mapcar (lambda (name key) (list name (%implicit-scratch-alloc-form key elem-type))) names missing)
+       (,@(subseq expr 0 (second spec))
+        ,@(nthcdr (second spec) expr)
+        ,@(loop for key in missing for name in names append (list key name))))))
+
+;; src/analysis/ops.lisp  (new)
+(defun %scan-reduction-maybe-implicit (op args next)
+  "Pass 1.  Scan the implicit-scratch form of reduction (OP . ARGS) when Crisp will supply its scratch;
+   otherwise call NEXT (the default scan).  An identity whose type is not visible is scanned as-is and
+   refused by the analyzer, which can say why."
+  (let* ((expr (cons op args))
+         (missing (%implicit-scratch-missing-keys expr))
+         (elem-type (and missing (symbolp (third expr)) (%identity-scan-type (fourth expr)))))
+    (if elem-type
+        (progn
+          (log:debug "176: Pass 1 implicit scratch ~s for ~s (element type ~s)" missing op elem-type)
+          (scan-form (%implicit-scratch-form expr elem-type)))
+        (funcall next))))
+
+;; src/analysis/ops.lisp  (new) -- REDUCE-WORKGROUP is a DIFFERENT symbol in the two packages, so both
+;; methods are needed; for the others the two interns name one symbol and the second defmethod simply
+;; replaces the first.
+(macrolet ((def-implicit-scratch-scanners (&rest names)
+             `(progn
+                ,@(loop for name in names
+                        append (loop for pkg in '(:crisp.compiler :crisp-language)
+                                     collect `(defmethod scan-operator ((op (eql (intern ,name (find-package ,pkg)))) args)
+                                                (%scan-reduction-maybe-implicit op args (lambda () (call-next-method)))))))))
+  (def-implicit-scratch-scanners "REDUCE-WORKGROUP" "GRID-REDUCE-ATOMIC!" "GRID-REDUCE-CAS!"
+                                 "GRID-REDUCE-LAST-MAN!" "GRID-REDUCE-SECOND-STAGE!"))
+
+;; src/analysis/ops.lisp  (new)
+(defun %check-identity-matches-variable (op-name var identity elem-type env context location)
+  "Endeavour 176.  With implicit scratch the scratch is typed from the IDENTITY, so a variable of a
+   different type would be reduced through mistyped scratch.  Refuse it, naming the fix."
+  (let* ((var-type (semantic-node-type (analyze-expression var env context location)))
+         (a (resolve-type-alias var-type))
+         (b (resolve-type-alias elem-type)))
+    (unless (if (and (symbolp a) (symbolp b))
+                (string-equal (symbol-name a) (symbol-name b))
+                (equal a b))
+      (error 'crisp-compiler-error
+             :message (format nil "~a: the identity ~s is ~(~a~) but ~a is ~(~a~).  The identity must have the variable's type when Crisp allocates the scratch for you, because the scratch is typed from it -- write the identity as a ~(~a~), e.g. (to-~(~a~) ~s)."
+                              op-name identity b var a a a identity)
+             :source-location location))))
+
+;; src/analysis/ops.lisp  (new)
+(defun %analyze-reduction-maybe-implicit (expr env context location expander)
+  "Endeavour 176.  Analyze reduction EXPR, supplying its scratch when the caller left it out; else
+   analyze (EXPANDER EXPR) exactly as before."
+  (let ((missing (%implicit-scratch-missing-keys expr))
+        (var (third expr)))
+    (if (or (null missing) (not (symbolp var)))
+        (analyze-expression (funcall expander expr) env context location)
+        (let* ((op-name (string-downcase (symbol-name (car expr))))
+               (identity (fourth expr))
+               (elem-type (%identity-scan-type identity)))
+          (unless elem-type
+            (error 'crisp-compiler-error
+                   :message (format nil "~a: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass ~{~s~^ ~} yourself."
+                                    op-name identity missing)
+                   :source-location location))
+          (%check-identity-matches-variable op-name var identity elem-type env context location)
+          (log:debug "176: implicit scratch ~s for ~a over ~s (element type ~s)" missing op-name var elem-type)
+          (analyze-expression (%implicit-scratch-form expr elem-type) env context location)))))
+
+;; src/analysis/ops.lisp  (the five analyzers: previously (analyze-expression (%X-expand expr) ...))
+(defun %analyze-reduce-workgroup (expr env context location)
+  "Analyzer for reduce-workgroup -- expands and delegates, supplying implicit scratch (176).  Being an
+   ANALYZED form rather than a macro is what keeps the construct visible to the autodiff walk."
+  (%analyze-reduction-maybe-implicit expr env context location #'%reduce-workgroup-expand))
+
+(defun %analyze-grid-reduce-atomic (expr env context location)
+  "Analyzer for grid-reduce-atomic! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-atomic-expand))
+
+(defun %analyze-grid-reduce-last-man (expr env context location)
+  "Analyzer for grid-reduce-last-man! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-last-man-expand))
+
+(defun %analyze-grid-reduce-second-stage (expr env context location)
+  "Analyzer for grid-reduce-second-stage! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-second-stage-expand))
+
+(defun %analyze-grid-reduce-cas (expr env context location)
+  "Analyzer for grid-reduce-cas! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-cas-expand))
+
+;;;; ===========================================================================
+;;;; Endeavour 176 -- IMPLICIT SCRATCH stage A: last-man's :global-scratch-vec.
+;;;; SUPERSEDES the three definitions of the same names in stage B above (only the LAST copy is live).
+;;;;
+;;;; The partials buffer needs one slot per workgroup.  :match-num-workgroups is the exact size but is
+;;;; unimplemented in both hoisters (BUG 094).  :match-workgroup-size is used instead, and is always
+;;;; enough: last-man already REQUIRES num_workgroups <= local_work_size (its final sweep runs in one
+;;;; workgroup), so a buffer of local_work_size slots can never be too small.  It over-allocates (64
+;;;; slots for 4 workgroups in 175/57) -- a few hundred bytes of global memory.  If that limit is ever
+;;;; lifted (a strided final sweep), this must move to :match-num-workgroups.
+;;;;
+;;;; Needs the L0 hoister's symbolic GLOBAL scratch support (overlays/hoist-l0, BUG 094).  The CUDA
+;;;; hoister already resolves symbolic global sizes from the declared local size.
+;;;; ===========================================================================
+
+;; src/analysis/ops.lisp  (supersedes the stage-B copy: :global-scratch-vec added for last-man)
+(defparameter *176-implicit-scratch-specs*
+  '(("REDUCE-WORKGROUP"          4 (:local-scratch-vec))
+    ("GRID-REDUCE-ATOMIC!"       5 (:local-scratch-vec))
+    ("GRID-REDUCE-CAS!"          5 (:local-scratch-vec))
+    ("GRID-REDUCE-LAST-MAN!"     5 (:local-scratch-vec :global-scratch-vec :atomic-counter :election-flag-cell))
+    ("GRID-REDUCE-SECOND-STAGE!" 6 (:local-scratch-vec)))
+  "Endeavour 176.  For each reduction Crisp can supply scratch for: the operator's name, how many
+   leading elements of the form (operator included) are positional, and the scratch keys Crisp
+   allocates when the caller leaves them out, in the order they are bound.")
+
+;; src/analysis/ops.lisp  (supersedes the stage-B copy: :global-scratch-vec added)
+(defun %implicit-scratch-binding-name (var key)
+  "The DETERMINISTIC let-binding name for the scratch Crisp allocates for KEY of a reduction over VAR,
+   e.g. CONTRIB-LOCAL-SCRATCH.  Deterministic because Pass 2 finds the implicit parameter by
+   rebuilding <binding>_FROM_<fn>_<n>, so Pass 1 and Pass 2 must see the same name (a gensym would
+   differ).  It also names the buffer readably in the generated host code."
+  (intern (format nil "~a-~a" (symbol-name var)
+                  (ecase key
+                    (:local-scratch-vec  "LOCAL-SCRATCH")
+                    (:global-scratch-vec "GLOBAL-SCRATCH")
+                    (:atomic-counter     "COUNTER")
+                    (:election-flag-cell "ELECTION-FLAG")))
+          (or (symbol-package var) (find-package :crisp-language))))
+
+;; src/analysis/ops.lisp  (supersedes the stage-B copy: :global-scratch-vec added)
+(defun %implicit-scratch-alloc-form (key elem-type)
+  "The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25).  The
+   global partials are sized :match-workgroup-size -- see the stage-A section header for why that is
+   always enough."
+  (ecase key
+    (:local-scratch-vec  `(make-scratch-vector ,elem-type :match-num-warps-per-workgroup))
+    (:global-scratch-vec `(make-scratch-vector ,elem-type :match-workgroup-size :address-space :global))
+    (:atomic-counter     '(make-scratch-cell uint :address-space :global))
+    (:election-flag-cell '(make-scratch-cell uint))))

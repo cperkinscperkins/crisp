@@ -3521,3 +3521,45 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Endeavour 176 probe (tests/spec/176-reduce-multi/01-probe-mv-binop-butterfly-metal.crisp,
         lines 38-40), reproduced in Phase 0: put_temp_files_here/176/p2a-if-mv-return.crisp.
+
+[ ] 094 MOST SYMBOLIC SCRATCH SIZES IN THE DESIGN ARE NOT IMPLEMENTED, AND GLOBAL SCRATCH ACCEPTS NONE.
+
+        THE DESIGN (tests/spec/074-scratch-tensor/scratch-tensor.md, lines ~50-62) names these
+        :size-expr keywords: :match-workgroup-size, :match-num-workgroups, :match-total-threads,
+        :match-warp-size, :match-warp-tile, :match-num-warps-per-workgroup, :match-total-warps, and
+        :match-grid-size.
+
+        THE L0 HOISTER (src/hoist-l0/main.lisp, %l0-scratch-symbolic-expr ~1555) resolves TWO, for
+        LOCAL scratch only: :match-workgroup-size and :match-num-warps-per-workgroup.
+        :match-num-workgroups is an explicit "not implemented yet" error (under :strided geometry
+        the group count is computed at RUNTIME from zeDeviceGetProperties, so the group-count
+        variable would have to be plumbed through the dispatch emitter); the rest fall through to
+        "unknown symbolic :size-expr".  The CUDA hoister (src/hoist-cuda/main.lisp ~630) has the
+        same :match-num-workgroups error.
+
+        GLOBAL SCRATCH ACCEPTS NO SYMBOLIC SIZE AT ALL.  %l0-emit-global-scratch-tensor-arg
+        (~1740) computes extents, length and byte size as Lisp numbers and emits literals, so
+
+            (make-scratch-vector float :match-workgroup-size :address-space :global)
+
+        fails with "Global scratch tensor gv_from_c57g_2 has non-integer :size-expr
+        MATCH-WORKGROUP-SIZE" (probe put_temp_files_here/176/c57g.crisp).
+
+        WHY IT MATTERS NOW.  Endeavour 176's implicit scratch cannot allocate grid-reduce-last-man!'s
+        :global-scratch-vec, which needs one slot per workgroup: :match-num-workgroups is the right
+        size, and even the bound last-man already guarantees (num_workgroups <= local_work_size, so
+        :match-workgroup-size would do) is refused for global scratch.  175/57, 59, 60, 62 wait on it.
+
+        LIKELY FIX (hypothesis): make the global-scratch argument emitter produce C++ EXPRESSIONS for
+        rank-1 symbolic sizes, as the local path already does -- extents, length, byte size, the
+        allocation and the zero-initialising staging copy -- in both hoisters.  :match-workgroup-size
+        first; :match-num-workgroups once the group count is available to the emitter.
+
+        FOUND BY.  Endeavour 176 implicit-scratch implementation, 2026-09-30.
+
+        PARTIAL FIX (drafted 2026-09-30, overlays/hoist-l0/crisp-hoist-l0-overlay.lisp): rank-1
+        SYMBOLIC sizes for GLOBAL scratch in the L0 hoister (%l0-emit-symbolic-global-scratch-arg),
+        phrased as C++ expressions over the geometry constants like the local path.  The CUDA
+        hoister already resolved symbolic global sizes from the declared local size.  175/57, 60,
+        62 pass on BMG.  STILL OPEN: :match-num-workgroups (both hoisters) and the other design-doc
+        sizes (:match-total-threads, :match-warp-size, :match-total-warps, :match-grid-size).
