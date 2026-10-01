@@ -72,8 +72,13 @@ Every later phase uses at least one of these.
 - [ ] scratch defaults in &optional / &key variants (g-p1a: "Missing implicit argument")
 - - [x] TDD test: a def-grid-function wrapper with `&optional (sv (make-scratch-vector ...))`, on metal
         (016/10)
-- - [ ] Pass 1 scans the DEFAULT forms of a generic function's &optional / &key params and registers
-        their scratch for the base function; each instantiated variant gets the entries it uses
+- - [x] Pass 1 scans the DEFAULT forms of a generic function's &optional / &key params and registers
+        their scratch for the base function (<PARAM>-DEFAULT_FROM_<fn>_1, private counter); a variant
+        inherits the base implicits and binds a scratch default to the implicit param (no allocation
+        in the variant). Overlay 2026-09-30; full suite 1288/1288, unit 341, negative 283.
+- - [ ] probe: scratch in the BODY of a generic function (codegen names it after the CALLER mid-
+        instantiation -- likely broken the same way)
+- - [ ] watch CI's --single-pass phase for 016/10 (scan-for-carriers path is untouched)
 - - [ ] the design-doc template example (`21_template_types.md:44`) is exactly this shape
 - [ ] `type-min` and `type-max`
 - - [ ] TDD tests, under both math-precision `ieee` and `fast`

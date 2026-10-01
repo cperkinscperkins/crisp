@@ -804,3 +804,227 @@
     (:global-scratch-vec `(make-scratch-vector ,elem-type :match-workgroup-size :address-space :global))
     (:atomic-counter     '(make-scratch-cell uint :address-space :global))
     (:election-flag-cell '(make-scratch-cell uint))))
+
+;;;; ===========================================================================
+;;;; Endeavour 176 -- SCRATCH AS AN &optional / &key DEFAULT (spec 016/10).
+;;;;
+;;;; (def-grid-function grid-sum (x &out o &optional (sv (make-scratch-vector ...))) ...)
+;;;;
+;;;; Pass 1 scanned only the BODY, so a scratch default was never registered and the kernel never got
+;;;; the parameter.  Now:
+;;;;   * Pass 1 also scans a generic function's make-scratch-* DEFAULTS, registering each under the
+;;;;     BASE name as <PARAM>-DEFAULT_FROM_<fn>_1 (a private counter, so the module-wide scratch
+;;;;     replay is undisturbed), and marks the function an originator; Pass 1.5 lifts it to callers.
+;;;;   * Call sites are unchanged -- they look up the base name and already pass its implicit args.
+;;;;   * A variant inherits the base name's implicit entries (so its definition accepts what the call
+;;;;     passes), and a defaulted scratch parameter is bound to that implicit PARAMETER rather than
+;;;;     allocated -- so no scratch is created inside the variant and no counter is replayed.
+;;;; ===========================================================================
+
+;; src/analysis/core.lisp  (new)
+(defun %scratch-allocation-form-p (form)
+  "T when FORM is a (make-scratch-vector|matrix|tensor|cell ...) allocation, by symbol name."
+  (and (consp form) (symbolp (car form))
+       (member (symbol-name (car form))
+               '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL")
+               :test #'string-equal)))
+
+;; src/analysis/core.lisp  (new)
+(defun %default-scratch-implicit-name (fn-name param-name)
+  "The implicit-parameter name a scratch DEFAULT of PARAM-NAME in generic function FN-NAME is
+   registered under: <PARAM>-DEFAULT_FROM_<FN>_1.  Built by the same rule the scratch scanners use
+   (<binding>_FROM_<fn>_<n>, interned in the binding's package), with the binding <PARAM>-DEFAULT
+   and a private counter of 1 -- so Pass 1 (which registers it) and instantiation (which binds the
+   parameter to it) compute the same symbol without consulting any table."
+  (let ((binding (intern (format nil "~a-DEFAULT" (symbol-name param-name))
+                         (or (symbol-package param-name) (find-package :crisp-language)))))
+    (intern (format nil "~a_FROM_~a_~d" binding fn-name 1) (symbol-package binding))))
+
+;; src/analysis/core.lisp  (new)
+(defun %scan-generic-default-scratch (fn-name)
+  "Pass 1, endeavour 176.  When FN-NAME is a generic (&optional / &key) function, register every
+   make-scratch-* DEFAULT of its parameters as an implicit argument of FN-NAME.  Returns T when any
+   was registered (the caller then marks FN-NAME an originator).
+
+   The scan runs with *scratch-cell-counter* rebound to 0: the scanners name scratch by counter, and
+   Pass 2 replays the module-wide counter to find ordinary scratch again.  A default's scratch is
+   never replayed (instantiation binds the parameter to the implicit argument directly), so it must
+   not advance the module-wide count."
+  (let ((generic-def (gethash fn-name *generic-functions*))
+        (found nil))
+    (when generic-def
+      (loop for (param-name . default-form) in (generic-function-def-defaults generic-def)
+            when (%scratch-allocation-form-p default-form)
+              do (let ((*scratch-cell-counter* 0)
+                       (prev (compiler-context-current-binding-name *compiler-context*)))
+                   (setf (compiler-context-current-binding-name *compiler-context*)
+                         (intern (format nil "~a-DEFAULT" (symbol-name param-name))
+                                 (or (symbol-package param-name) (find-package :crisp-language))))
+                   (unwind-protect (scan-form default-form)
+                     (setf (compiler-context-current-binding-name *compiler-context*) prev))
+                   (log:info "176: Pass 1 registered scratch default ~a of ~a as ~a"
+                             param-name fn-name (%default-scratch-implicit-name fn-name param-name))
+                   (setf found t))))
+    found))
+
+;; src/environment.lisp  (new)
+(defun %bind-defaults-to-default-scratch (fn-name injected-bindings)
+  "Endeavour 176.  INJECTED-BINDINGS ((param default-form) ...) with each make-scratch-* default that
+   Pass 1 registered for FN-NAME replaced by the implicit parameter itself, so the variant binds
+   the parameter to the scratch the caller passes instead of allocating its own."
+  (let ((implicits (gethash fn-name *implicit-arg-map*)))
+    (loop for (param form) in injected-bindings
+          collect (let ((uname (and (%scratch-allocation-form-p form)
+                                    (%default-scratch-implicit-name fn-name param))))
+                    (if (and uname (find uname implicits :key #'car))
+                        (progn
+                          (log:debug "176: default ~a of ~a bound to implicit ~a" param fn-name uname)
+                          (list param uname))
+                        (list param form))))))
+
+;; src/environment.lisp  (supersedes the BUG 090 copy above: optional LLVM-PARAM-TYPES)
+(defun %lazy-variant-already-generated (variant-name param-types &optional (llvm-param-types param-types))
+  "BUG 090 (a).  The registered signature of VARIANT-NAME with (explicit) PARAM-TYPES if, and only if,
+   the CURRENT module already holds a DEFINED function for it; otherwise NIL.  Keyed on the module
+   itself rather than on compiler state, because the spec runner creates and disposes a module per
+   compile and a fresh compiler session per top-level form.
+
+   LLVM-PARAM-TYPES (176) are the types the LLVM name is mangled from: a variant that inherits implicit
+   scratch parameters is named with those types FIRST, exactly as any carrier function is."
+  (let ((module (and *compiler-session* (compiler-session-module *compiler-session*))))
+    (when module
+      (let ((fn (llvm-get-named-function module (%lazy-variant-llvm-name variant-name llvm-param-types))))
+        (when (and fn (not (cffi:null-pointer-p fn))
+                   (plusp (llvm-count-basic-blocks fn)))
+          (find-if (lambda (sig)
+                     (equal (mapcar #'parameter-def-type (function-signature-parameters sig))
+                            param-types))
+                   (gethash variant-name *function-table*)))))))
+
+;; src/analysis/core.lisp  (176: only change -- scan a generic function's scratch DEFAULTS)
+(defun analyze-signatures-pass (forms)
+  "Pass 1: Pre-register differentiable functions, then iterate through forms
+to find and register all function signatures and build the call graph.
+Pre-registration ensures *differentiable-functions* is populated before
+def-kernel macros expand and call generate-backward-walk (feature 052).
+Also scans *template-registry* for HOF templates after walk-code-forms.
+
+Endeavor 120: also captures each function's macro-expanded params/body and
+runs infer-param-uniformity once the call graph is complete."
+  ;; Endeavor 120: reset per-module uniformity/inert state.
+  (clrhash *inert-functions*)
+  (clrhash *fn-normalized-info*)
+  (clrhash *inferred-param-uniformity*)
+  ;; Step 1: Pre-populate from top-level def-function forms.
+  (%pre-register-differentiable-fns forms)
+  ;; Step 2: Walk all forms (registers templates, signatures, etc.)
+  (walk-code-forms forms
+                   (lambda (form location)
+                     (let* ((name (second form))
+                               (body (cdddr form))
+                               (body-forms (loop for f in body
+                                                 unless (and (listp f) (eq (car f) 'declare))
+                                                 collect f))
+                               (decls (loop for f in body
+                                            when (and (listp f) (eq (car f) 'declare))
+                                            append (rest f)))
+                               (entry-point-p (loop for d in decls
+                                                    thereis (and (listp d) (symbolp (first d))
+                                                                 (string-equal (symbol-name (first d)) "ENTRY-POINT")))))
+                       ;; Endeavor 120: capture normalized info for inference.
+                       (setf (gethash name *fn-normalized-info*)
+                             (list :params (third form) :body body-forms :entry-point-p entry-point-p))
+                       (register-function-signature form location)
+                       (let ((*compiler-context* (make-compiler-context)))
+                         (setf (compiler-context-scanning-function-name *compiler-context*) name)
+                         (multiple-value-bind (is-originator callees)
+                             (shallow-analyze-body body)
+                           (when is-originator
+                             (setf (gethash name *originator-functions*) t))
+                           ;; 176: a generic function's make-scratch-* DEFAULTS are scratch too.
+                           (when (%scan-generic-default-scratch name)
+                             (setf (gethash name *originator-functions*) t))
+                           (setf (gethash name *call-graph*) callees))))))
+  ;; Step 3: After walk-code-forms, scan template registry for HOF templates.
+  (%pre-register-hof-templates)
+  ;; Endeavor 120: interprocedural uniformity inference (call graph is ready).
+  (infer-param-uniformity))
+
+;; src/environment.lisp  (176, supersedes the BUG 090 copy above: scratch defaults bound to their
+;;  implicit parameter; base implicits inherited; memo mangles with implicit types)
+(defun instantiate-generic-function (generic-def explicit-arg-types context location)
+  "Instantiates a lazy generic function variant for the given argument types."
+  (multiple-value-bind (active-env injected-bindings error-message)
+      (resolve-argument-bindings generic-def explicit-arg-types)
+
+    (when error-message
+          (log:warn "~a" error-message)
+          (return-from instantiate-generic-function nil))
+
+    (let* ((name (generic-function-def-name generic-def))
+           (declarations (generic-function-def-declarations generic-def))
+           ;; Robustly filter declarations from body
+           (body (loop for f in (generic-function-def-body generic-def)
+                         unless (and (listp f) (eq (car f) 'declare))
+                       collect f)))
+
+      ;; 176: a scratch DEFAULT is bound to the implicit parameter Pass 1 registered for it.
+      (setf injected-bindings (%bind-defaults-to-default-scratch name injected-bindings))
+
+      ;; Apply injected bindings (Defaults)
+      (when injected-bindings
+            (setf body (list `(let* ,injected-bindings ,@body))))
+
+      (let* ((active-param-names (mapcar #'parameter-def-name active-env))
+             (active-param-types (mapcar #'parameter-def-type active-env))
+             (mangled-name (%lazy-variant-name name active-env)))
+
+        ;; BUG 090 (a): one variant per call shape PER MODULE.  The signature is registered under the
+        ;; MANGLED name, but calls look up the BASE name, so without this every call site re-analyzed
+        ;; -- and, now that variants are generated, would re-define -- the same variant.
+        ;; 176: the variant inherits the BASE name's implicit arguments (scratch defaults, and anything
+        ;; propagated to the base), so its definition accepts what the call site passes -- calls look up
+        ;; the base name.  Its LLVM name is then mangled with those types first, like any carrier.
+        (let ((base-implicits (gethash name *implicit-arg-map*)))
+          (when base-implicits
+            (setf (gethash mangled-name *implicit-arg-map*) base-implicits)))
+
+        (let ((reused (%lazy-variant-already-generated
+                       mangled-name active-param-types
+                       (append (mapcar #'cdr (gethash mangled-name *implicit-arg-map*)) active-param-types))))
+          (when reused
+            (log:debug "BUG 090: reusing lazy variant ~s, already generated in this module" mangled-name)
+            (return-from instantiate-generic-function reused)))
+
+        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name (length explicit-arg-types) active-param-types)
+
+        ;; Compile the specific variant
+        (let ((ast-node (internal-compile-function mangled-name
+                                                   active-env
+                                                   (generic-function-def-return-types generic-def)
+                                                   active-param-names
+                                                   body
+                                                   declarations
+                                                   (or (generic-function-def-source-location generic-def) location)
+                                                   context)))
+
+          ;; BUG 090: GENERATE the variant.  It used to be analyzed and then dropped, so the call site
+          ;; emitted a bare `declare` and the module carried an unresolved import.
+          (%generate-lazy-variant-ir ast-node mangled-name)
+
+          ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
+          ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
+          (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
+                                      (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
+                                                                                (sig (make-function-signature
+                                                                                      :name mangled-name
+                                                                                      :parameters active-env
+                                                                                      :return-types final-ret-types
+                                                                                      :source-location (or (generic-function-def-source-location generic-def) location))))
+
+            (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
+            ;; Append to existing signatures (thread safety? single threaded)
+            (setf (gethash mangled-name *function-table*)
+              (append (gethash mangled-name *function-table*) (list sig)))
+
+            sig))))))
