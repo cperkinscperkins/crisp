@@ -76,20 +76,23 @@ Every later phase uses at least one of these.
         their scratch for the base function (<PARAM>-DEFAULT_FROM_<fn>_1, private counter); a variant
         inherits the base implicits and binds a scratch default to the implicit param (no allocation
         in the variant). Overlay 2026-09-30; full suite 1288/1288, unit 341, negative 283.
-- - [ ] probe: scratch in the BODY of a generic function (codegen names it after the CALLER mid-
-        instantiation -- likely broken the same way)
-- - [ ] watch CI's --single-pass phase for 016/10 (scan-for-carriers path is untouched)
+- - [x] scratch in the BODY of a generic function (016/11, two variants): fixed -- Pass 1 records each
+        generic body's scratch-counter range; the skip point advances the counter; variants are generated
+        with the BASE name + replayed counter. BMG: outa 32640, outb 32896.
+- - [x] --single-pass: 016/10 FAILED there; fixed -- the generic skip point scans body + scratch defaults
+        in single-pass mode. Local --single-pass: 016 19/19, 175 77/77. Full default suite 1289/1289.
 - - [ ] the design-doc template example (`21_template_types.md:44`) is exactly this shape
-- [ ] `type-min` and `type-max`
-- - [ ] TDD tests, under both math-precision `ieee` and `fast`
-- - [ ] implementation
+- [x] `type-min` and `type-max`
+- - [x] TDD tests, under both math-precision `ieee` and `fast` (046/03, 04, 06; errors/02)
+- - [x] implementation (overlay 2026-09-30: analyzers -> typed literals; E2E 1295/1295, negative 285/285)
 - - [x] documentation (in the excerpt)
 - [ ] `type-infinity`
-- - [ ] TDD tests, both math-precisions
+- - [x] TDD tests (046/04, 05 -- incl. the finite-vs-infinite identity pitfall; errors/01); the :fast
+        behaviour waits on the decision below
 - - [ ] decide what `:fast` does with it: error, or warning? (Note that the region can be set
         by flag, `declaim`, or `with-precision`, and `--force-math-precision` can override the
         source -- an error would make a file's validity depend on a command-line flag.)
-- - [ ] implementation
+- - [x] implementation (overlay; needed unary minus, BUG 095, for its negation)
 - - [ ] documentation
 - [x] Phase 0 bugs, found 2026-09-28, lock-down specs written, fixed in the overlay 2026-09-30
       (full suite 1277/1277). See plan/bugs.md and put_temp_files_here/176/FINDINGS.md.

@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 1 1 2 3
+;;
+;; ENDEAVOUR 176 -- (type-min float) and (type-max float) under :fast precision.  TDD.
+;;
+;; :fast lets the compiler assume no value is ever infinite (LLVM's ninf flag), which is why
+;; type-min and type-max are the FINITE extremes in every precision context: they stay valid
+;; constants here, where an infinity would be undefined.  Same checks as 04's first two slots.
+
+(declaim (precision fast))
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel type_min_max_fast (&out out)
+  (declare #'(&out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 0))
+    (set! (~ out 0) (if (= (type-max float) 3.4028235e38) 1 0))
+    (set! (~ out 1) (if (= (type-min float) -3.4028235e38) 1 0))))

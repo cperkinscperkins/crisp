@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outa: 32640 1 2 3
+;; HOIST-EXPECT: BUFFER outb: 32896 1 2 3
+;;
+;; ENDEAVOUR 176 -- scratch in the BODY of a generic (&optional) function, TWO call shapes.  TDD.
+;;
+;; 10 covers a scratch DEFAULT.  Here the scratch is an ordinary let in the body, and the optional
+;; parameter K is a plain float.  Scratch is normally matched across passes by name --
+;; <binding>_FROM_<fn>_<n> -- with Pass 1 registering it while scanning GRID-SUM's body, and Pass 2
+;; rebuilding the name when it generates the code.  But a variant is generated in the middle of the
+;; CALLER's analysis, under its own mangled name, and here TWO variants are generated from the one
+;; body -- so the name Pass 2 rebuilds has to come out the same for both, and match what Pass 1
+;; registered.
+;;
+;; Grid 256 over 64, each thread contributing its global linear id:
+;;
+;;     (grid-sum c outa)       K defaults to 0.0   outa[0] = 0 + ... + 255         = 32640
+;;     (grid-sum c outb 1.0)   K = 1.0             outb[0] = 32640 + 256 * 1.0     = 32896
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-grid-function grid-sum (contrib &out out &optional (k 0.0))
+  (declare #'(float &out vec-t &optional float => nil))
+  (let ((sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (c (+ contrib k)))
+    (grid-reduce-atomic! #'+ c 0.0 out :local-scratch-vec sv)))
+
+(def-kernel optional_with_body_scratch (&out outa outb)
+  (declare #'(&out vec-t vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-sum contrib outa)
+    (grid-sum contrib outb 1.0)))

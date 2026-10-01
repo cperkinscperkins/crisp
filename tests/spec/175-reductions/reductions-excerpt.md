@@ -528,8 +528,9 @@ cannot be placed inside divergent control paths.
   correct whenever the inputs are finite, and under `:fast` precision they must be: `:fast`
   lets the compiler assume that no value is ever infinite, so an infinite identity there is
   undefined. Under `:ieee`, if infinite inputs must win, use `(- (type-infinity T))` and
-  `(type-infinity T)` instead. With a finite identity, an input that is all `-inf` reduces to
-  `(type-min float)`, and argmax reports the padding index.
+  `(type-infinity T)` instead. With a finite identity, any PADDING lane (one past `active-threads`,
+  say) contributes `(type-min float)`, which beats an input that is all `-inf` -- so the reduction
+  returns `(type-min float)`, and argmax reports the padding index.
 
   The second law is the one that bites dependent combiners. A streaming-variance combiner
   divides by `n-a + n-b`; when two identity states `(0 0 0)` meet, that is `0/0`, and the NaN

@@ -1,0 +1,38 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 1 1 1 3
+;;
+;; ENDEAVOUR 176 -- WHY the reductions doc distinguishes a finite identity from an infinite one.  TDD.
+;;
+;; The identity only enters a reduction through PADDING lanes -- lanes that contribute no data, such
+;; as those at or past active-threads.  So: a warp reduction with active-threads 8, where lanes 0..7
+;; contribute negative infinity and lanes 8..15 (BMG warps are 16 wide) contribute the identity.  The
+;; right answer is negative infinity, and the identity decides whether that comes out:
+;;
+;;     out[0]  identity (- (type-infinity float))  -> max is -inf             -> 1
+;;     out[1]  identity (type-min float)           -> max is (type-min float) -> 1
+;;             -- the finite identity BEATS the infinite inputs, exactly the pitfall the doc warns
+;;             about ("an input that is all -inf reduces to (type-min float)").
+;;     out[2]  a workgroup max of the local ids 0..63 with identity (- (type-infinity float)) and
+;;             its scratch left out, so the scratch is typed from that identity: the scan-time type
+;;             reader on (- (type-infinity T))                                  -> 63 -> 1
+;;
+;; Slot 3 keeps the harness pre-fill.
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel infinity_vs_finite_identity (&out out)
+  (declare #'(&out ivec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((a (- (type-infinity float)))
+        (b (- (type-infinity float)))
+        (c (to-float (get-local-linear-id))))
+    (reduce-warp #'max a (- (type-infinity float)) 8)
+    (reduce-warp #'max b (type-min float) 8)
+    (reduce-workgroup #'max c (- (type-infinity float)))
+    (when (= (get-local-id 0) (to-ulong 0))
+      (set! (~ out 0) (if (= a (- (type-infinity float))) 1 0))
+      (set! (~ out 1) (if (= b (type-min float)) 1 0))
+      (set! (~ out 2) (if (= c 63.0) 1 0)))))

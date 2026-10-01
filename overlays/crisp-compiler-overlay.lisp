@@ -1028,3 +1028,526 @@ runs infer-param-uniformity once the call graph is complete."
               (append (gethash mangled-name *function-table*) (list sig)))
 
             sig))))))
+
+;;;; ===========================================================================
+;;;; Endeavour 176 -- SCRATCH IN THE BODY OF A GENERIC FUNCTION (016/11), and SINGLE-PASS (016/10).
+;;;;
+;;;; Scratch is matched across passes by name, <binding>_FROM_<fn>_<n>: Pass 1 registers it while
+;;;; scanning a function's body, and codegen rebuilds the name from the CURRENT function and a
+;;;; module-wide counter replayed in the same order.  A generic function breaks both halves:
+;;;;   * its variants are generated in the middle of the CALLER's analysis, so the "current function"
+;;;;     is the caller, and the counter is wherever the caller happens to be;
+;;;;   * Pass 2 never compiles the generic body in place, so the counter Pass 1 advanced while
+;;;;     scanning it is never advanced again -- every later scratch in the module would be off by that
+;;;;     many (masked so far only because no spec had scratch after a generic function).
+;;;; So: Pass 1 records, per generic function, the counter before its body scan and how far the scan
+;;;; advanced it; Pass 2 advances the counter by that amount where it skips the definition; and each
+;;;; variant is generated with the current function bound to the BASE name and the counter replayed
+;;;; from the recorded start -- every variant then rebuilds the names Pass 1 registered.
+;;;;
+;;;; Single-pass mode has no Pass 1: a function is pre-scanned (scan-for-carriers) when it is compiled,
+;;;; and a generic function never is.  Its skip point now does that scan (body and scratch defaults)
+;;;; and records the counter there.  The single-pass scan only PEEKS at the counter, so nothing is
+;;;; advanced in that mode.
+;;;; ===========================================================================
+
+;; src/specials.lisp  (new)
+(defvar *176-generic-scratch-range* (make-hash-table :test 'eq)
+  "Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter
+   before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1
+   (multi-pass) or at the function's skip point (single-pass); read when its variants are generated.")
+
+;; src/analysis/core.lisp  (new)
+(defun %176-generic-skip-scratch (name body)
+  "Endeavour 176.  At the point where Pass 2 (or single-pass compilation) SKIPS generic function NAME,
+   keep the scratch counter in step.  Multi-pass: advance it by the COUNT Pass 1 recorded, since Pass 1
+   advanced it that far while scanning the body.  Single-pass: there was no Pass 1, so scan the body
+   (scan-for-carriers) and the scratch defaults now, and record the counter as the START."
+  (if (single-pass-mode-p)
+      (progn
+        (setf (gethash name *176-generic-scratch-range*) (cons *scratch-cell-counter* 0))
+        (scan-for-carriers name body)
+        (let ((*compiler-context* (make-compiler-context)))
+          (setf (compiler-context-scanning-function-name *compiler-context*) name)
+          (%scan-generic-default-scratch name))
+        (log:info "176: single-pass pre-scan of generic ~a; implicit ~s"
+                  name (mapcar #'car (gethash name *implicit-arg-map*))))
+      (let ((range (gethash name *176-generic-scratch-range*)))
+        (when (and range (plusp (cdr range)))
+          (log:debug "176: skipping generic ~a -- advancing scratch counter by ~d" name (cdr range))
+          (incf *scratch-cell-counter* (cdr range))))))
+
+;; src/environment.lisp  (supersedes the BUG 090 copy above: optional BASE-NAME)
+(defun %generate-lazy-variant-ir (ast-node variant-name &optional base-name)
+  "BUG 090.  Emit the IR for a lazily instantiated variant whose AST instantiate-generic-function
+   just analyzed.  Instantiation happens mid-analysis of the CALLER, so the builder's insertion
+   point is saved and restored around generation.  Does nothing without a module (Pass 1 /
+   signature-only analysis): the variant is then generated when Pass 2 instantiates it.
+
+   176: with BASE-NAME (the generic function's own name), the current function is bound to it and the
+   scratch counter replayed from the start Pass 1 recorded for it, so scratch in the variant's body
+   rebuilds the names Pass 1 registered (<binding>_FROM_<base>_<n>) -- for every variant alike."
+  (let ((session *compiler-session*))
+    (if (not (and ast-node session (compiler-session-module session)))
+        (log:debug "BUG 090: no module -- not generating lazy variant ~s now" variant-name)
+        (let* ((builder (compiler-session-builder session))
+               (saved (llvm-get-insert-block builder))
+               (range (and base-name (gethash base-name *176-generic-scratch-range*)))
+               (context *compiler-context*)
+               (prev-fn (and context (compiler-context-current-compiling-function context)))
+               (*scratch-cell-counter* (if range (car range) *scratch-cell-counter*)))
+          (log:info "BUG 090: generating IR for lazy variant ~s (base ~s, scratch from ~s)"
+                    variant-name base-name (and range (car range)))
+          (unwind-protect
+               (progn
+                 (when (and context base-name)
+                   (setf (compiler-context-current-compiling-function context) base-name))
+                 (generate-llvm-ir ast-node (compiler-session-module session) builder
+                                   (compiler-session-di-builder session)
+                                   (compiler-session-di-compile-unit session)
+                                   (compiler-session-location-map session)))
+            (when (and context base-name)
+              (setf (compiler-context-current-compiling-function context) prev-fn))
+            (unless (cffi:null-pointer-p saved)
+              (llvm-position-builder-at-end builder saved)))))))
+
+;; src/analysis/core.lisp  (176, supersedes the copy above: also records each generic body's scratch range)
+(defun analyze-signatures-pass (forms)
+  "Pass 1: Pre-register differentiable functions, then iterate through forms
+to find and register all function signatures and build the call graph.
+Pre-registration ensures *differentiable-functions* is populated before
+def-kernel macros expand and call generate-backward-walk (feature 052).
+Also scans *template-registry* for HOF templates after walk-code-forms.
+
+Endeavor 120: also captures each function's macro-expanded params/body and
+runs infer-param-uniformity once the call graph is complete."
+  ;; Endeavor 120: reset per-module uniformity/inert state.
+  (clrhash *176-generic-scratch-range*)   ; 176: per-module, like the tables below
+  (clrhash *inert-functions*)
+  (clrhash *fn-normalized-info*)
+  (clrhash *inferred-param-uniformity*)
+  ;; Step 1: Pre-populate from top-level def-function forms.
+  (%pre-register-differentiable-fns forms)
+  ;; Step 2: Walk all forms (registers templates, signatures, etc.)
+  (walk-code-forms forms
+                   (lambda (form location)
+                     (let* ((name (second form))
+                               (body (cdddr form))
+                               (body-forms (loop for f in body
+                                                 unless (and (listp f) (eq (car f) 'declare))
+                                                 collect f))
+                               (decls (loop for f in body
+                                            when (and (listp f) (eq (car f) 'declare))
+                                            append (rest f)))
+                               (entry-point-p (loop for d in decls
+                                                    thereis (and (listp d) (symbolp (first d))
+                                                                 (string-equal (symbol-name (first d)) "ENTRY-POINT")))))
+                       ;; Endeavor 120: capture normalized info for inference.
+                       (setf (gethash name *fn-normalized-info*)
+                             (list :params (third form) :body body-forms :entry-point-p entry-point-p))
+                       (register-function-signature form location)
+                       (let ((*compiler-context* (make-compiler-context)))
+                         (setf (compiler-context-scanning-function-name *compiler-context*) name)
+                         (multiple-value-bind (is-originator callees scratch-before)
+                             ;; 176: also capture the scratch counter BEFORE the body scan.
+                             (let ((before *scratch-cell-counter*))
+                               (multiple-value-call (lambda (&optional o c &rest ignore)
+                                                      (declare (ignore ignore))
+                                                      (values o c before))
+                                 (shallow-analyze-body body)))
+                           (when is-originator
+                             (setf (gethash name *originator-functions*) t))
+                           ;; 176: a generic function's make-scratch-* DEFAULTS are scratch too.
+                           (when (%scan-generic-default-scratch name)
+                             (setf (gethash name *originator-functions*) t))
+                           (setf (gethash name *call-graph*) callees)
+                           ;; 176: a generic body's scratch range, for its skip point and variants.
+                           (when (gethash name *generic-functions*)
+                             (setf (gethash name *176-generic-scratch-range*)
+                                   (cons scratch-before (- *scratch-cell-counter* scratch-before)))))))))
+  ;; Step 3: After walk-code-forms, scan template registry for HOF templates.
+  (%pre-register-hof-templates)
+  ;; Endeavor 120: interprocedural uniformity inference (call graph is ready).
+  (infer-param-uniformity))
+
+;; src/analysis/core.lisp  (176: only change -- the generic skip point keeps the scratch counter in step)
+(defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
+  "Compiles a single def-function form. Handles optional parameters by generating
+overloaded variants. When *differentiate-p* is T, also generates and compiles
+the _GRAD backward companion after the forward function."
+  ;; In single-pass mode, the signature won't be registered yet.
+  (unless (gethash (second form) *function-table*)
+    (register-function-signature form location))
+
+  (let* ((name (second form))
+            (params (third form))
+            (body-and-loc (cdddr form))
+            ;; Extract declarations manually to check for optional args and system flag.
+            (declare-forms (loop for f in body-and-loc
+                                    while (and (listp f) (eq (car f) 'declare))
+                                    collect f))
+            (declarations (loop for f in declare-forms append (rest f)))
+            (is-system (member '(crisp-system-generated) declarations :test #'equal)))
+
+    (multiple-value-bind (explicit-env return-types optional-idx defaults key-idx)
+        (parse-function-declarations params declarations)
+      (declare (ignore explicit-env return-types defaults))
+
+      (cond
+       ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
+       ((or optional-idx key-idx)
+         (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name)
+         ;; 176: keep the scratch counter in step (and, single-pass, scan the generic's scratch now).
+         (%176-generic-skip-scratch name body-and-loc))
+
+       ;; --- STANDARD Compilation (No Optionals) ---
+       (t
+         (%compile-standard-function form location module builder di-builder di-compile-unit location-map)
+         ;; Feature 052: After compiling the forward function, generate and compile
+         ;; the _GRAD backward companion when differentiating.
+         (when (and *differentiate-p*
+                    (not (%fn-name-is-grad-p name))
+                    (not is-system))
+           (let* ((body-forms (nthcdr (length declare-forms) body-and-loc))
+                     (bkwd-form (%generate-backward-function-ast name params declarations body-forms)))
+             (when bkwd-form
+               (log:info "AUTODIFF: Compiling backward companion for ~a" name)
+               (handler-case
+                 (compile-def-function bkwd-form location module builder
+                                       di-builder di-compile-unit location-map)
+                 (error (e)
+                   (log:info "AUTODIFF: ~a _GRAD compilation failed: ~a. Unregistering; will error if called from a differentiable kernel." name e)
+                   (remhash name *differentiable-functions*)))))))))))
+
+;; src/environment.lisp  (176, supersedes the copy above: variants generated with the BASE name)
+(defun instantiate-generic-function (generic-def explicit-arg-types context location)
+  "Instantiates a lazy generic function variant for the given argument types."
+  (multiple-value-bind (active-env injected-bindings error-message)
+      (resolve-argument-bindings generic-def explicit-arg-types)
+
+    (when error-message
+          (log:warn "~a" error-message)
+          (return-from instantiate-generic-function nil))
+
+    (let* ((name (generic-function-def-name generic-def))
+           (declarations (generic-function-def-declarations generic-def))
+           ;; Robustly filter declarations from body
+           (body (loop for f in (generic-function-def-body generic-def)
+                         unless (and (listp f) (eq (car f) 'declare))
+                       collect f)))
+
+      ;; 176: a scratch DEFAULT is bound to the implicit parameter Pass 1 registered for it.
+      (setf injected-bindings (%bind-defaults-to-default-scratch name injected-bindings))
+
+      ;; Apply injected bindings (Defaults)
+      (when injected-bindings
+            (setf body (list `(let* ,injected-bindings ,@body))))
+
+      (let* ((active-param-names (mapcar #'parameter-def-name active-env))
+             (active-param-types (mapcar #'parameter-def-type active-env))
+             (mangled-name (%lazy-variant-name name active-env)))
+
+        ;; BUG 090 (a): one variant per call shape PER MODULE.  The signature is registered under the
+        ;; MANGLED name, but calls look up the BASE name, so without this every call site re-analyzed
+        ;; -- and, now that variants are generated, would re-define -- the same variant.
+        ;; 176: the variant inherits the BASE name's implicit arguments (scratch defaults, and anything
+        ;; propagated to the base), so its definition accepts what the call site passes -- calls look up
+        ;; the base name.  Its LLVM name is then mangled with those types first, like any carrier.
+        (let ((base-implicits (gethash name *implicit-arg-map*)))
+          (when base-implicits
+            (setf (gethash mangled-name *implicit-arg-map*) base-implicits)))
+
+        (let ((reused (%lazy-variant-already-generated
+                       mangled-name active-param-types
+                       (append (mapcar #'cdr (gethash mangled-name *implicit-arg-map*)) active-param-types))))
+          (when reused
+            (log:debug "BUG 090: reusing lazy variant ~s, already generated in this module" mangled-name)
+            (return-from instantiate-generic-function reused)))
+
+        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name (length explicit-arg-types) active-param-types)
+
+        ;; Compile the specific variant
+        (let ((ast-node (internal-compile-function mangled-name
+                                                   active-env
+                                                   (generic-function-def-return-types generic-def)
+                                                   active-param-names
+                                                   body
+                                                   declarations
+                                                   (or (generic-function-def-source-location generic-def) location)
+                                                   context)))
+
+          ;; BUG 090: GENERATE the variant.  It used to be analyzed and then dropped, so the call site
+          ;; emitted a bare `declare` and the module carried an unresolved import.
+          (%generate-lazy-variant-ir ast-node mangled-name name)
+
+          ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
+          ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
+          (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
+                                      (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
+                                                                                (sig (make-function-signature
+                                                                                      :name mangled-name
+                                                                                      :parameters active-env
+                                                                                      :return-types final-ret-types
+                                                                                      :source-location (or (generic-function-def-source-location generic-def) location))))
+
+            (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
+            ;; Append to existing signatures (thread safety? single threaded)
+            (setf (gethash mangled-name *function-table*)
+              (append (gethash mangled-name *function-table*) (list sig)))
+
+            sig))))))
+
+;;;; ===========================================================================
+;;;; Endeavour 176 -- (type-min T), (type-max T), (type-infinity T).
+;;;;
+;;;; Typed constants: each analyzes to a semantic-literal of type T, so they cost nothing at run time,
+;;;; fold in comparisons like any literal, and AD sees a constant.  For floating-point T, type-min and
+;;;; type-max are the most negative / positive FINITE values in EVERY precision context (:fast lets the
+;;;; compiler assume no value is infinite, so an infinite extreme would be undefined there) -- not C's
+;;;; FLT_MIN, which is the smallest positive normal.  (type-infinity T) is positive infinity, for
+;;;; floating-point T only; negate it for negative infinity.
+;;;; ===========================================================================
+
+;; src/analysis/ops.lisp  (new)
+(defun %type-extreme-scalar-info (expr location)
+  "Validate (type-min|type-max|type-infinity T) and return (values T category bits) for T's scalar
+   type, where category is :signed-int, :unsigned-int or :float and bits its width.  Refuses, naming
+   what the argument must be, when T is missing or not a numeric scalar type."
+  (let* ((op-name (string-downcase (symbol-name (car expr))))
+         (type-arg (second expr))
+         (resolved (and (= (length expr) 2) (symbolp type-arg) (resolve-type-alias type-arg)))
+         (ct (and (symbolp resolved) (gethash resolved *crisp-types*)))
+         (category (and ct (crisp-type-category ct))))
+    (unless (member category '(:signed-int :unsigned-int :float))
+      (error 'crisp-compiler-error
+             :message (format nil "~a: ~s is not a numeric scalar type.  (~a T) takes one integer or floating-point type -- int, uint, long, ulong, float, double and the like -- and gives a constant of that type."
+                              op-name (if (= (length expr) 2) type-arg (rest expr)) op-name)
+             :source-location location))
+    (values resolved category (crisp-type-size ct))))
+
+;; src/analysis/ops.lisp  (new)
+(defun %float-type-extreme (type-sym bits)
+  "The largest FINITE value of floating-point type TYPE-SYM (BITS wide), as a Lisp float."
+  (cond
+    ((= bits 64) most-positive-double-float)
+    ((= bits 32) most-positive-single-float)
+    ;; 16-bit: the two formats differ, so tell them apart by name.
+    ((string-equal (symbol-name type-sym) "BFLOAT16") 3.3895314e38) ; 0x7F7F
+    (t 65504.0)))                                                    ; half, 0x7BFF
+
+;; src/analysis/ops.lisp  (new)
+(defun %analyze-type-min (expr env context location)
+  "Analyzer for (type-min T): the most negative value of numeric scalar type T, as a constant of type
+   T.  For a floating-point T that is the most negative FINITE value (see the section header)."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (make-semantic-literal :value-type type-sym
+                           :value (ecase category
+                                    (:signed-int   (- (expt 2 (1- bits))))
+                                    (:unsigned-int 0)
+                                    (:float        (- (%float-type-extreme type-sym bits))))
+                           :source-location location)))
+
+;; src/analysis/ops.lisp  (new)
+(defun %analyze-type-max (expr env context location)
+  "Analyzer for (type-max T): the most positive value of numeric scalar type T, as a constant of type
+   T.  For a floating-point T that is the most positive FINITE value (see the section header)."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (make-semantic-literal :value-type type-sym
+                           :value (ecase category
+                                    (:signed-int   (1- (expt 2 (1- bits))))
+                                    (:unsigned-int (1- (expt 2 bits)))
+                                    (:float        (%float-type-extreme type-sym bits)))
+                           :source-location location)))
+
+;; src/analysis/ops.lisp  (new)
+(defun %analyze-type-infinity (expr env context location)
+  "Analyzer for (type-infinity T): positive infinity, as a constant of floating-point type T.  Negate it
+   for negative infinity.  Meaningful under :ieee precision; an integer T has no infinity and is
+   refused."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (unless (eq category :float)
+      (error 'crisp-compiler-error
+             :message (format nil "type-infinity: ~(~a~) has no infinity -- only floating-point types do.  The largest ~(~a~) is (type-max ~(~a~))."
+                              type-sym type-sym type-sym)
+             :source-location location))
+    (make-semantic-literal :value-type type-sym
+                           :value (if (= bits 64)
+                                      sb-ext:double-float-positive-infinity
+                                      sb-ext:single-float-positive-infinity)
+                           :source-location location)))
+
+;; src/analysis/ops.lisp  (176: only change -- TYPE-MIN, TYPE-MAX, TYPE-INFINITY registered)
+(defun register-ops-analyzers ()
+  "Registers all expression analyzer functions.
+Redefined for 082-atomics to add atomic RMW op analyzers.
+Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
+  (def-expression-analyzer + analyze-add-expression)
+  (def-expression-analyzer - analyze-sub-expression)
+  (def-expression-analyzer * analyze-mul-expression)
+  (def-expression-analyzer / analyze-div-expression)
+  (def-expression-analyzer sin analyze-sin-expression)
+  (def-expression-analyzer cos analyze-cos-expression)
+  ;; Endeavor 128: transcendentals
+  (def-expression-analyzer exp   analyze-exp-expression)
+  (def-expression-analyzer log   analyze-log-expression)
+  (def-expression-analyzer log2  analyze-log2-expression)
+  (def-expression-analyzer tan   analyze-tan-expression)
+  (def-expression-analyzer asin  analyze-asin-expression)
+  (def-expression-analyzer acos  analyze-acos-expression)
+  (def-expression-analyzer atan  analyze-atan-expression)
+  (def-expression-analyzer pow   analyze-pow-expression)
+  (def-expression-analyzer atan2 analyze-atan2-expression)
+  ;; Endeavour 170: the hardware math ops (and the internal AD helper ops) all share one analyzer.
+  (dolist (sym (append *hw-op-symbols* *hw-internal-op-symbols*))
+    (setf (gethash sym *expression-analyzers*) 'analyze-hw-op-expression))
+  ;; Endeavour 173: the four warp shuffles, under both :crisp-language and :crisp.compiler.
+  ;; Not def-expression-analyzer, which quotes one literal operator symbol -- these must be
+  ;; interned into both packages at run time (user source reads in :crisp-language, where an
+  ;; unregistered spelling is silently minted as a fresh symbol rather than reported).
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry *shuffle-op-names*)
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) '%analyze-shuffle)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) '%analyze-shuffle)))))
+  (def-expression-analyzer < analyze-lt-expression)
+  (def-expression-analyzer > analyze-gt-expression)
+  (def-expression-analyzer <= analyze-le-expression)
+  (def-expression-analyzer >= analyze-ge-expression)
+  (def-expression-analyzer = analyze-eq-expression)
+  (def-expression-analyzer != analyze-neq-expression)
+
+  ;; 082-atomics: register under crisp.compiler package symbols
+  (def-expression-analyzer atomic-add!  analyze-atomic-add!-expression)
+  (def-expression-analyzer atomic-sub!  analyze-atomic-sub!-expression)
+  (def-expression-analyzer atomic-inc!  analyze-atomic-inc!-expression)
+  (def-expression-analyzer atomic-dec!  analyze-atomic-dec!-expression)
+  (def-expression-analyzer atomic-min!  analyze-atomic-min!-expression)
+  (def-expression-analyzer atomic-max!  analyze-atomic-max!-expression)
+  (def-expression-analyzer atomic-xchg! analyze-atomic-xchg!-expression)
+  (def-expression-analyzer atomic-set!  analyze-atomic-set!-expression)
+
+  ;; 082-atomics: also register under crisp-language package symbols.
+  (let ((lang (find-package :crisp-language)))
+    (when lang
+      (dolist (pair '(("ATOMIC-ADD!"  analyze-atomic-add!-expression)
+                      ("ATOMIC-SUB!"  analyze-atomic-sub!-expression)
+                      ("ATOMIC-INC!"  analyze-atomic-inc!-expression)
+                      ("ATOMIC-DEC!"  analyze-atomic-dec!-expression)
+                      ("ATOMIC-MIN!"  analyze-atomic-min!-expression)
+                      ("ATOMIC-MAX!"  analyze-atomic-max!-expression)
+                      ("ATOMIC-XCHG!" analyze-atomic-xchg!-expression)
+                      ("ATOMIC-SET!"  analyze-atomic-set!-expression)))
+        (setf (gethash (intern (first pair) lang) *expression-analyzers*)
+              (second pair)))))
+
+  ;; 109: mod / rem.  Register under both packages.  In :crisp-language
+  ;; these names are fresh symbols (the package :uses nothing).  In
+  ;; :crisp.compiler they shadow cl:mod / cl:rem.
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry '(("MOD" . analyze-mod-expression)
+                     ("REM" . analyze-rem-expression)))
+      (let* ((name (car entry))
+             (fn-name (cdr entry))
+             (sym-cl (intern name cl-pkg))
+             (sym-cc (intern name cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) fn-name)
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) fn-name)))))
+
+  (def-expression-analyzer to  analyze-value-cast-expression)
+  (def-expression-analyzer as  analyze-generic-as-expression)
+  (def-expression-analyzer as-bits analyze-bitcast-expression)
+  (def-expression-analyzer inc! analyze-inc!-expression)
+  (def-expression-analyzer dec! analyze-dec!-expression)
+
+  ;; Register cast operators dynamically
+  (log:info "Registering cast operators. *crisp-types* count: ~a" (hash-table-count *crisp-types*))
+  (dolist (type-name (alexandria:hash-table-keys *crisp-types*))
+    (when (symbolp type-name)
+          (let* ((type-str (symbol-name type-name))
+                 (pkg (symbol-package type-name))
+                 (to-name (intern (concatenate 'string "TO-" type-str) pkg))
+                 (as-name (intern (concatenate 'string "AS-" type-str) pkg)))
+            (log:debug "Registering cast/bitcast: ~s / ~s" to-name as-name)
+            (setf (gethash to-name *expression-analyzers*) #'analyze-cast-expression)
+            (setf (gethash as-name *expression-analyzers*) #'analyze-cast-expression))))
+
+  ;; Float-to-int
+  (setf (gethash 'truncate *expression-analyzers*) #'analyze-truncate-expression)
+  (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
+  (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression)
+
+  ;; ---- Endeavour 175: reductions, atomics, and the warp-collective check ----
+  ;; Registered under BOTH packages by name, which is why none of these needed a
+  ;; package.lisp change -- an analyzer is found by symbol name, not by an exported
+  ;; symbol.  (The two WHEN-THREAD-IN-* macros DID need one: MACRO-FUNCTION is per
+  ;; symbol, so those are exported from :crisp.compiler and imported into
+  ;; :crisp-language rather than registered here.)
+  ;;
+  ;; MIN and MAX are in this list because Crisp had no scalar min/max at all; they are
+  ;; not reductions, but they arrived with them.
+  (let ((cc (find-package :crisp.compiler))
+        (cl (find-package :crisp-language)))
+    (dolist (pkg (list cc cl))
+      (when pkg
+        (dolist (pair '(
+                        ("%WARP-COLLECTIVE-CHECK"    %analyze-warp-collective-check)
+                        ("REDUCE-WARP"               %analyze-reduce-warp)
+                        ("REDUCE-WORKGROUP"          %analyze-reduce-workgroup)
+                        ("GRID-REDUCE-ATOMIC!"       %analyze-grid-reduce-atomic)
+                        ("GRID-REDUCE-LAST-MAN!"     %analyze-grid-reduce-last-man)
+                        ("GRID-REDUCE-SECOND-STAGE!" %analyze-grid-reduce-second-stage)
+                        ("GRID-REDUCE-CAS!"          %analyze-grid-reduce-cas)
+                        ("ATOMIC-CAS!"               analyze-atomic-cas!-expression)
+                        ("%ATOMIC-CAS-OK!"           %analyze-atomic-cas-ok!-expression)
+                        ("ATOMIC-BINOP!"             %analyze-atomic-binop!)
+                        ("ATOMIC-OP!"                %analyze-atomic-op!)
+                        ("MIN"                       %analyze-min-expression)
+                        ("MAX"                       %analyze-max-expression)
+                        ;; 176: typed constants for reduction identities (and anything else).
+                        ("TYPE-MIN"                  %analyze-type-min)
+                        ("TYPE-MAX"                  %analyze-type-max)
+                        ("TYPE-INFINITY"             %analyze-type-infinity)))
+          (setf (gethash (intern (first pair) pkg) *expression-analyzers*)
+                (second pair)))))))
+
+
+;;;; ===========================================================================
+;;;; Endeavour 175 — reductions and atomics: analyzers and expanders.
+;;;; ===========================================================================
+
+(defparameter *grid-atomic-operator-map*
+  '(("+" . "ATOMIC-ADD!") ("MIN" . "ATOMIC-MIN!") ("MAX" . "ATOMIC-MAX!"))
+  "Operators grid-reduce-atomic! accepts, and the native atomic each lowers to.  The hardware
+   provides exactly these three; anything else has no single-instruction form.")
+
+;;;; ===========================================================================
+;;;; Endeavour 176 / BUG 095 -- one-argument minus, (- x).
+;;;;
+;;;; The design doc uses it ((set! (~x~ p) (- newVal)) in chapters/07_crisp_types/17_def_setter.md), the
+;;;; reductions doc negates (type-infinity T) with it, but the analyzer was binary-only: (- x) died with
+;;;; "Type mismatch for operator '-'. Cannot operate on FLOAT and NIL."  (- x) is now (* x -1): exact IEEE
+;;;; negation -- -0.0, infinities and all, which (- 0 x) would get wrong for 0.0 -- that LLVM lowers to
+;;;; fneg, and whose derivative AD already knows.
+;;;; ===========================================================================
+
+;; src/analysis/ops.lisp  (new: the binary analyzer under its own name, built by the same macro)
+(def-binary-op-analyzer %analyze-sub-binary make-semantic-sub "-")
+
+;; src/analysis/ops.lisp  (replaces the (def-binary-op-analyzer analyze-sub-expression ...) expansion)
+(defun analyze-sub-expression (expr env context location)
+  "Analyzes a `(- ...)` expression.  With two arguments, subtraction.  With ONE, negation -- analyzed as
+   (* x -1), exact IEEE negation including -0.0 and infinities (BUG 095)."
+  (if (= (length expr) 2)
+      (progn
+        (log:debug "BUG 095: unary minus ~s analyzed as (* x -1)" expr)
+        (analyze-expression (list '* (second expr) -1) env context location))
+      (%analyze-sub-binary expr env context location)))
