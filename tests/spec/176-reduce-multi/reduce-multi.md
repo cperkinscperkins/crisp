@@ -86,10 +86,11 @@ Every later phase uses at least one of these.
 - - [x] TDD tests, under both math-precision `ieee` and `fast` (046/03, 04, 06; errors/02)
 - - [x] implementation (overlay 2026-09-30: analyzers -> typed literals; E2E 1295/1295, negative 285/285)
 - - [x] documentation (in the excerpt)
-- [ ] `type-infinity`
+- [x] `type-infinity`
 - - [x] TDD tests (046/04, 05 -- incl. the finite-vs-infinite identity pitfall; errors/01); the :fast
         behaviour waits on the decision below
-- - [ ] decide what `:fast` does with it: error, or warning? (Note that the region can be set
+- - [x] DECIDED 2026-09-30: a WARNING, checked at codegen (046/07 flag, 046/08 with-precision region).
+        (Note that the region can be set
         by flag, `declaim`, or `with-precision`, and `--force-math-precision` can override the
         source -- an error would make a file's validity depend on a command-line flag.)
 - - [x] implementation (overlay; needed unary minus, BUG 095, for its negation)
@@ -109,7 +110,9 @@ Every later phase uses at least one of these.
 
 Sugar over the existing grid-level constructs, and the first real use of Phase 0's defaults.
 
-- [ ] TDD tests: `:atomic`, `:cas`, `:last-man-standing`, and the default
+- [x] TDD tests: `:atomic`, `:cas`, `:last-man-standing`, and the default (176/03-08 incl. CUDA twin
+      and VERIFY-AUTODIFF; errors/01-03 bogus strategy, non-literal strategy, :atomic + custom op)
+- [ ] decide: return-cell only, or cell OR length-1 vector (proposed: both, so 175's vector specs stay)
 - [ ] `grid-reduce!` must expand into the existing ANALYZED forms, not into their lowering,
       or the VJP registry never sees them
 - [ ] autodiff: should come for free from the existing VJPs; confirm with `VERIFY-AUTODIFF`

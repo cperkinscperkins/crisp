@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640
+;;
+;; ENDEAVOUR 176 Phase 1 -- grid-reduce! with :strategy :atomic.  TDD.
+;;
+;; Phase 2 through a native hardware atomic (only #'+, #'min and #'max have one).  The atomic
+;; accumulates INTO the cell, which the harness pre-fills with 0, so the answer is the plain sum,
+;; 32640.  Same grid as 03.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel grid_reduce_atomic_strategy (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce! #'+ contrib 0.0 out :strategy :atomic)))
