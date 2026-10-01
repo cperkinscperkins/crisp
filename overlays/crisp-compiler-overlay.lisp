@@ -46,71 +46,6 @@
               (get-promoted-type t-single 'int)
               t))))
 
-;; src/analysis/control.lisp
-(defun analyze-if-expression-impl (expr env context location &key enforce-constant)
-  (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
-         (cond-node (try-constant-fold raw-cond-node)))
-
-    ;; DCE Optimization: If condition is a constant int/bool literal, analyze ONLY the live branch.
-    ;; No runtime divergence — analyze the live branch without setting the divergent flag.
-    (when (typep cond-node 'semantic-literal)
-          (let ((val (semantic-literal-value cond-node)))
-            ;; Treat 0 and NIL as false, everything else as true.
-            (if (or (null val) (and (integerp val) (= val 0)))
-                ;; Constant False -> Analyze Else only, skip Then.
-                (if (fourth expr)
-                    (return-from analyze-if-expression-impl (analyze-expression (fourth expr) env context (append location '(3))))
-                    (return-from analyze-if-expression-impl (make-semantic-literal :value-type 'int :value 0 :source-location location))) ; Empty else -> Constant False
-                ;; Constant True -> Analyze Then only, skip Else.
-                (return-from analyze-if-expression-impl (analyze-expression (third expr) env context (append location '(2)))))))
-
-    ;; If we are here, the condition is NOT a constant.
-    (when enforce-constant
-          (error "IF+ condition failed to evaluate at compile time: ~a" expr))
-
-    ;; Calculate uniformity state of the condition
-    (let ((cond-uniformity (calculate-uniformity-state cond-node env)))
-
-      ;; Phase 1d: both branches will be analyzed → runtime divergence.  Bind
-      ;; *in-divergent-conditional* to T for the branch analyses so that any
-      ;; load-tile-at / store-tile-at inside either branch is rejected.
-      ;;
-      ;; Endeavor 138: ...but ONLY when the condition can actually diverge.  A
-      ;; workgroup-UNIFORM condition takes every thread down the same branch, so an internal
-      ;; sync-workgroup cannot deadlock and the tile op is safe.  We already compute
-      ;; COND-UNIFORMITY and already trust it for *divergent-scope-depth* (right below); using
-      ;; it here too is what makes this check's own advice ("use a non-divergent condition")
-      ;; actually achievable — previously a uniform guard was rejected identically, which made
-      ;; the guarded prefetch of a pipelined ring loop (`(when (< next-k n-k-steps) ...)`,
-      ;; uniform in the K-loop counter) impossible to express.
-      (let* ((*in-divergent-conditional* (if (eq cond-uniformity :uniform)
-                                             *in-divergent-conditional*
-                                             t))
-             (*divergent-scope-depth* (if (not (eq cond-uniformity :uniform))
-                                          (1+ *divergent-scope-depth*)
-                                          *divergent-scope-depth*))
-             (then-node (analyze-expression (third expr) env context (append location '(2))))
-             (else-node
-               (cond
-                 ((fourth expr)
-                  (analyze-expression (fourth expr) env context (append location '(3))))
-                 ;; BUG 092: an else that is WRITTEN but is NIL -- (if x y nil), which is exactly
-                 ;; what CL's AND expands to -- is a false VALUE when THEN produces one.  It used to
-                 ;; be indistinguishable from a missing else, leaving the false path unstored.
-                 ((%if-explicit-nil-else-is-false-p expr then-node)
-                  (log:debug "BUG 092: explicit NIL else of a value IF analyzed as false (int 0): ~s" expr)
-                  (make-semantic-literal :value-type 'int :value 0
-                                         :source-location (append location '(3))))
-                 (t nil))))
-
-      (multiple-value-bind (unified-type final-then final-else)
-          (ensure-branch-compatibility then-node else-node location)
-
-        (make-semantic-if :type unified-type
-                          :condition-node cond-node
-                          :then-node final-then
-                          :else-node final-else
-                          :source-location location))))))
 
 
 ;; src/analysis/control.lisp  (new -- place just before analyze-if-expression-impl.
@@ -329,108 +264,10 @@
                                             (format nil "~a~{_~a~}" variant-name
                                                     (mapcar #'mangle-type-spec param-types))))))
 
-;; src/environment.lisp  (new -- BUG 090 (a))
-(defun %lazy-variant-already-generated (variant-name param-types)
-  "BUG 090 (a).  The registered signature of VARIANT-NAME with PARAM-TYPES if, and only if, the
-   CURRENT module already holds a DEFINED function for it; otherwise NIL.  Keyed on the module
-   itself rather than on compiler state, because the spec runner creates and disposes a module
-   per compile and a fresh compiler session per top-level form: a registration left over from
-   another module (or from Pass 1) must not suppress generating the variant into this one."
-  (let ((module (and *compiler-session* (compiler-session-module *compiler-session*))))
-    (when module
-      (let ((fn (llvm-get-named-function module (%lazy-variant-llvm-name variant-name param-types))))
-        (when (and fn (not (cffi:null-pointer-p fn))
-                   (plusp (llvm-count-basic-blocks fn)))
-          (find-if (lambda (sig)
-                     (equal (mapcar #'parameter-def-type (function-signature-parameters sig))
-                            param-types))
-                   (gethash variant-name *function-table*)))))))
 
-;; src/environment.lisp  (new -- BUG 090)
-(defun %generate-lazy-variant-ir (ast-node variant-name)
-  "BUG 090.  Emit the IR for a lazily instantiated variant whose AST instantiate-generic-function
-   just analyzed.  Instantiation happens mid-analysis of the CALLER, so the builder's insertion
-   point is saved and restored around generation.  Does nothing without a module (Pass 1 /
-   signature-only analysis): the variant is then generated when Pass 2 instantiates it."
-  (let ((session *compiler-session*))
-    (if (not (and ast-node session (compiler-session-module session)))
-        (log:debug "BUG 090: no module -- not generating lazy variant ~s now" variant-name)
-        (let* ((builder (compiler-session-builder session))
-               (saved (llvm-get-insert-block builder)))
-          (log:info "BUG 090: generating IR for lazy variant ~s" variant-name)
-          (unwind-protect
-               (generate-llvm-ir ast-node (compiler-session-module session) builder
-                                 (compiler-session-di-builder session)
-                                 (compiler-session-di-compile-unit session)
-                                 (compiler-session-location-map session))
-            (unless (cffi:null-pointer-p saved)
-              (llvm-position-builder-at-end builder saved)))))))
 
-;; src/environment.lisp  (changes: %lazy-variant-name, the per-module reuse check, %generate-lazy-variant-ir)
-(defun instantiate-generic-function (generic-def explicit-arg-types context location)
-  "Instantiates a lazy generic function variant for the given argument types."
-  (multiple-value-bind (active-env injected-bindings error-message)
-      (resolve-argument-bindings generic-def explicit-arg-types)
 
-    (when error-message
-          (log:warn "~a" error-message)
-          (return-from instantiate-generic-function nil))
 
-    (let* ((name (generic-function-def-name generic-def))
-           (declarations (generic-function-def-declarations generic-def))
-           ;; Robustly filter declarations from body
-           (body (loop for f in (generic-function-def-body generic-def)
-                         unless (and (listp f) (eq (car f) 'declare))
-                       collect f)))
-
-      ;; Apply injected bindings (Defaults)
-      (when injected-bindings
-            (setf body (list `(let* ,injected-bindings ,@body))))
-
-      (let* ((active-param-names (mapcar #'parameter-def-name active-env))
-             (active-param-types (mapcar #'parameter-def-type active-env))
-             (mangled-name (%lazy-variant-name name active-env)))
-
-        ;; BUG 090 (a): one variant per call shape PER MODULE.  The signature is registered under the
-        ;; MANGLED name, but calls look up the BASE name, so without this every call site re-analyzed
-        ;; -- and, now that variants are generated, would re-define -- the same variant.
-        (let ((reused (%lazy-variant-already-generated mangled-name active-param-types)))
-          (when reused
-            (log:debug "BUG 090: reusing lazy variant ~s, already generated in this module" mangled-name)
-            (return-from instantiate-generic-function reused)))
-
-        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name (length explicit-arg-types) active-param-types)
-
-        ;; Compile the specific variant
-        (let ((ast-node (internal-compile-function mangled-name
-                                                   active-env
-                                                   (generic-function-def-return-types generic-def)
-                                                   active-param-names
-                                                   body
-                                                   declarations
-                                                   (or (generic-function-def-source-location generic-def) location)
-                                                   context)))
-
-          ;; BUG 090: GENERATE the variant.  It used to be analyzed and then dropped, so the call site
-          ;; emitted a bare `declare` and the module carried an unresolved import.
-          (%generate-lazy-variant-ir ast-node mangled-name)
-
-          ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
-          ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
-          (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
-                                      (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
-                                                                                (sig (make-function-signature
-                                                                                      :name mangled-name
-                                                                                      :parameters active-env
-                                                                                      :return-types final-ret-types
-                                                                                      :source-location (or (generic-function-def-source-location generic-def) location))))
-
-            (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
-            ;; Append to existing signatures (thread safety? single threaded)
-            (setf (gethash mangled-name *function-table*)
-              (append (gethash mangled-name *function-table*) (list sig)))
-
-            sig))))))
 
 ;; src/environment.lisp  (BUG 091 -- only change: a positional parameter is :out only while NEITHER
 ;;  &optional NOR &key has been seen.  It used to be :out for everything after &out, so an &optional
@@ -566,17 +403,6 @@
 ;;;; everywhere).  Until that hoister work lands, last-man still needs an explicit :global-scratch-vec.
 ;;;; ===========================================================================
 
-;; src/analysis/ops.lisp  (new)
-(defparameter *176-implicit-scratch-specs*
-  '(("REDUCE-WORKGROUP"          4 (:local-scratch-vec))
-    ("GRID-REDUCE-ATOMIC!"       5 (:local-scratch-vec))
-    ("GRID-REDUCE-CAS!"          5 (:local-scratch-vec))
-    ;; :global-scratch-vec deliberately absent -- see the section header.
-    ("GRID-REDUCE-LAST-MAN!"     5 (:local-scratch-vec :atomic-counter :election-flag-cell))
-    ("GRID-REDUCE-SECOND-STAGE!" 6 (:local-scratch-vec)))
-  "Endeavour 176.  For each reduction Crisp can supply scratch for: the operator's name, how many
-   leading elements of the form (operator included) are positional, and the scratch keys Crisp
-   allocates when the caller leaves them out.")
 
 ;; src/analysis/ops.lisp  (new)
 (defun %implicit-scratch-spec (op)
@@ -636,26 +462,9 @@
          (t nil))))
     (t nil)))
 
-;; src/analysis/ops.lisp  (new)
-(defun %implicit-scratch-binding-name (var key)
-  "The DETERMINISTIC let-binding name for the scratch Crisp allocates for KEY of a reduction over VAR,
-   e.g. CONTRIB-LOCAL-SCRATCH.  Deterministic because Pass 2 finds the implicit parameter by
-   rebuilding <binding>_FROM_<fn>_<n>, so Pass 1 and Pass 2 must see the same name (a gensym would
-   differ).  It also names the buffer readably in the generated host code."
-  (intern (format nil "~a-~a" (symbol-name var)
-                  (ecase key
-                    (:local-scratch-vec  "LOCAL-SCRATCH")
-                    (:atomic-counter     "COUNTER")
-                    (:election-flag-cell "ELECTION-FLAG")))
-          (or (symbol-package var) (find-package :crisp-language))))
 
-;; src/analysis/ops.lisp  (new)
-(defun %implicit-scratch-alloc-form (key elem-type)
-  "The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25)."
-  (ecase key
-    (:local-scratch-vec  `(make-scratch-vector ,elem-type :match-num-warps-per-workgroup))
-    (:atomic-counter     '(make-scratch-cell uint :address-space :global))
-    (:election-flag-cell '(make-scratch-cell uint))))
+
+
 
 ;; src/analysis/ops.lisp  (new)
 (defun %implicit-scratch-form (expr elem-type)
@@ -901,133 +710,7 @@
                             param-types))
                    (gethash variant-name *function-table*)))))))
 
-;; src/analysis/core.lisp  (176: only change -- scan a generic function's scratch DEFAULTS)
-(defun analyze-signatures-pass (forms)
-  "Pass 1: Pre-register differentiable functions, then iterate through forms
-to find and register all function signatures and build the call graph.
-Pre-registration ensures *differentiable-functions* is populated before
-def-kernel macros expand and call generate-backward-walk (feature 052).
-Also scans *template-registry* for HOF templates after walk-code-forms.
 
-Endeavor 120: also captures each function's macro-expanded params/body and
-runs infer-param-uniformity once the call graph is complete."
-  ;; Endeavor 120: reset per-module uniformity/inert state.
-  (clrhash *inert-functions*)
-  (clrhash *fn-normalized-info*)
-  (clrhash *inferred-param-uniformity*)
-  ;; Step 1: Pre-populate from top-level def-function forms.
-  (%pre-register-differentiable-fns forms)
-  ;; Step 2: Walk all forms (registers templates, signatures, etc.)
-  (walk-code-forms forms
-                   (lambda (form location)
-                     (let* ((name (second form))
-                               (body (cdddr form))
-                               (body-forms (loop for f in body
-                                                 unless (and (listp f) (eq (car f) 'declare))
-                                                 collect f))
-                               (decls (loop for f in body
-                                            when (and (listp f) (eq (car f) 'declare))
-                                            append (rest f)))
-                               (entry-point-p (loop for d in decls
-                                                    thereis (and (listp d) (symbolp (first d))
-                                                                 (string-equal (symbol-name (first d)) "ENTRY-POINT")))))
-                       ;; Endeavor 120: capture normalized info for inference.
-                       (setf (gethash name *fn-normalized-info*)
-                             (list :params (third form) :body body-forms :entry-point-p entry-point-p))
-                       (register-function-signature form location)
-                       (let ((*compiler-context* (make-compiler-context)))
-                         (setf (compiler-context-scanning-function-name *compiler-context*) name)
-                         (multiple-value-bind (is-originator callees)
-                             (shallow-analyze-body body)
-                           (when is-originator
-                             (setf (gethash name *originator-functions*) t))
-                           ;; 176: a generic function's make-scratch-* DEFAULTS are scratch too.
-                           (when (%scan-generic-default-scratch name)
-                             (setf (gethash name *originator-functions*) t))
-                           (setf (gethash name *call-graph*) callees))))))
-  ;; Step 3: After walk-code-forms, scan template registry for HOF templates.
-  (%pre-register-hof-templates)
-  ;; Endeavor 120: interprocedural uniformity inference (call graph is ready).
-  (infer-param-uniformity))
-
-;; src/environment.lisp  (176, supersedes the BUG 090 copy above: scratch defaults bound to their
-;;  implicit parameter; base implicits inherited; memo mangles with implicit types)
-(defun instantiate-generic-function (generic-def explicit-arg-types context location)
-  "Instantiates a lazy generic function variant for the given argument types."
-  (multiple-value-bind (active-env injected-bindings error-message)
-      (resolve-argument-bindings generic-def explicit-arg-types)
-
-    (when error-message
-          (log:warn "~a" error-message)
-          (return-from instantiate-generic-function nil))
-
-    (let* ((name (generic-function-def-name generic-def))
-           (declarations (generic-function-def-declarations generic-def))
-           ;; Robustly filter declarations from body
-           (body (loop for f in (generic-function-def-body generic-def)
-                         unless (and (listp f) (eq (car f) 'declare))
-                       collect f)))
-
-      ;; 176: a scratch DEFAULT is bound to the implicit parameter Pass 1 registered for it.
-      (setf injected-bindings (%bind-defaults-to-default-scratch name injected-bindings))
-
-      ;; Apply injected bindings (Defaults)
-      (when injected-bindings
-            (setf body (list `(let* ,injected-bindings ,@body))))
-
-      (let* ((active-param-names (mapcar #'parameter-def-name active-env))
-             (active-param-types (mapcar #'parameter-def-type active-env))
-             (mangled-name (%lazy-variant-name name active-env)))
-
-        ;; BUG 090 (a): one variant per call shape PER MODULE.  The signature is registered under the
-        ;; MANGLED name, but calls look up the BASE name, so without this every call site re-analyzed
-        ;; -- and, now that variants are generated, would re-define -- the same variant.
-        ;; 176: the variant inherits the BASE name's implicit arguments (scratch defaults, and anything
-        ;; propagated to the base), so its definition accepts what the call site passes -- calls look up
-        ;; the base name.  Its LLVM name is then mangled with those types first, like any carrier.
-        (let ((base-implicits (gethash name *implicit-arg-map*)))
-          (when base-implicits
-            (setf (gethash mangled-name *implicit-arg-map*) base-implicits)))
-
-        (let ((reused (%lazy-variant-already-generated
-                       mangled-name active-param-types
-                       (append (mapcar #'cdr (gethash mangled-name *implicit-arg-map*)) active-param-types))))
-          (when reused
-            (log:debug "BUG 090: reusing lazy variant ~s, already generated in this module" mangled-name)
-            (return-from instantiate-generic-function reused)))
-
-        (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name (length explicit-arg-types) active-param-types)
-
-        ;; Compile the specific variant
-        (let ((ast-node (internal-compile-function mangled-name
-                                                   active-env
-                                                   (generic-function-def-return-types generic-def)
-                                                   active-param-names
-                                                   body
-                                                   declarations
-                                                   (or (generic-function-def-source-location generic-def) location)
-                                                   context)))
-
-          ;; BUG 090: GENERATE the variant.  It used to be analyzed and then dropped, so the call site
-          ;; emitted a bare `declare` and the module carried an unresolved import.
-          (%generate-lazy-variant-ir ast-node mangled-name)
-
-          ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
-          ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
-          (let* ((final-ret-types (or (generic-function-def-return-types generic-def)
-                                      (semantic-function-return-type ast-node))) ;; If list mismatch, might need validation.
-                                                                                (sig (make-function-signature
-                                                                                      :name mangled-name
-                                                                                      :parameters active-env
-                                                                                      :return-types final-ret-types
-                                                                                      :source-location (or (generic-function-def-source-location generic-def) location))))
-
-            (log:info "Registering Lazy Signature: ~s -> ~s" mangled-name final-ret-types)
-            ;; Append to existing signatures (thread safety? single threaded)
-            (setf (gethash mangled-name *function-table*)
-              (append (gethash mangled-name *function-table*) (list sig)))
-
-            sig))))))
 
 ;;;; ===========================================================================
 ;;;; Endeavour 176 -- SCRATCH IN THE BODY OF A GENERIC FUNCTION (016/11), and SINGLE-PASS (016/10).
