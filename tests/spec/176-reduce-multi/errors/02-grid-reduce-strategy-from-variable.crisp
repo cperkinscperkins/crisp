@@ -1,0 +1,20 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "known at compile time"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 1 -- grid-reduce!'s :strategy must be a LITERAL.  TDD.
+;;
+;; The strategy picks which construct the call becomes, so it has to be known when the call is
+;; compiled.  A value computed at run time -- here a variable -- is refused, saying so.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel gr_strat_var (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id)))
+        (s :cas))
+    (grid-reduce! #'+ contrib 0.0 out :strategy s)))

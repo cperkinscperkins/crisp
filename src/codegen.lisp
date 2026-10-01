@@ -1107,7 +1107,14 @@
 
    ;; Float types
    ((eq (crisp-type-category crisp-type) :float)
-     (llvm-const-real llvm-type (coerce value 'double-float)))
+     (progn
+       ;; 176: an INFINITE float constant under :fast precision is undefined (LLVM's ninf) -- warn rather
+       ;; than refuse, because precision can be forced from the command line.  Checked HERE, at codegen,
+       ;; because a (with-precision (fast) ...) region scopes *math-precision* over codegen only.
+       (when (and (floatp value) (sb-ext:float-infinity-p value) (eq *math-precision* :fast))
+         (log:warn "176: infinite float constant under :fast precision")
+         (format *error-output* "WARNING: (type-infinity ...) yields an infinity under :fast precision, where the compiler may assume no value is infinite -- the result is undefined.  Use (type-max T) / (type-min T), or an :ieee region.~%"))
+       (llvm-const-real llvm-type (coerce value 'double-float))))
 
    ;; Void
    ((eq (crisp-type-category crisp-type) :void)
@@ -2418,6 +2425,27 @@
   "Checks if a basic block already has a terminator instruction."
   (not (cffi:null-pointer-p (llvm-get-basic-block-terminator block))))
 
+(defun %if-result-llvm-type (type-spec module)
+  "BUG 093.  The LLVM type of an IF's result slot.  An IF whose branches each return MULTIPLE values
+   carries a multi-value type LIST, e.g. (float ulong); crisp-type-to-llvm-type reads that as a
+   single spec and returns only the first type (`float`), so the slot, the merge load and the
+   function's `ret` disagreed with the { float, i64 } the branches built, and llvm-as rejected the
+   module.  A multi-value list gets the aggregate the multi-value `return` itself uses
+   (get-llvm-return-type); every other spec -- a symbol, (int), (tensor ...), (cell ...) -- goes
+   through crisp-type-to-llvm-type exactly as before.
+
+   How a multi-value list is told apart from a compound spec (measured): valid-type-p is T for int,
+   (int), (tensor ...), (vector ...), (cell ...) and NIL for (float ulong), (int int).  So: a list
+   of length > 1 that is NOT itself a valid type, but whose elements all are."
+  (if (and (consp type-spec)
+           (> (length type-spec) 1)
+           (not (valid-type-p type-spec))
+           (every #'valid-type-p type-spec))
+      (progn
+        (log:debug "BUG 093: multi-value IF result ~s -> aggregate" type-spec)
+        (get-llvm-return-type module type-spec))
+      (crisp-type-to-llvm-type type-spec module)))
+
 (defmethod generate-node-ir ((node semantic-if) builder module var-env di-builder di-scope location-map)
   "Generates IR for an if expression."
   ;; 1. Evaluate the condition
@@ -2444,7 +2472,7 @@
                            (eq result-type-spec :void)
                            (eq result-type-spec 'void)
                            (equal result-type-spec '(nil)))
-                 (let ((type (crisp-type-to-llvm-type result-type-spec module)))
+                 (let ((type (%if-result-llvm-type result-type-spec module)))
                    (llvm-build-alloca builder type "if_result")))))
 
           ;; --- Create Conditional Branch ---
@@ -2488,7 +2516,7 @@
           ;; --- Merge Block ---
           (llvm-position-builder-at-end builder merge-block)
           (if result-alloca
-              (let* ((type (crisp-type-to-llvm-type result-type-spec module))
+              (let* ((type (%if-result-llvm-type result-type-spec module))
                      (result-val (llvm-build-load2 builder type result-alloca "if_res")))
                 (values result-val nil))
               (values nil nil)))))))

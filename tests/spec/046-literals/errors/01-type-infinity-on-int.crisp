@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "has no infinity"
+;; CHECK-FAIL-FLAGS: --ir-target=spv
+;;
+;; ENDEAVOUR 176 -- (type-infinity T) exists only for floating-point T.  TDD.
+;;
+;; An integer type has no infinity; asking for one is a compile error that says so, and points at
+;; (type-max T) as the largest value the type does have.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel ti_on_int (&out out)
+  (declare #'(&out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (set! (~ out 0) (type-infinity int)))

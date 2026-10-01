@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640
+;;
+;; ENDEAVOUR 176 Phase 1 -- grid-reduce! with :strategy :cas.  TDD.
+;;
+;; Phase 2 through a compare-and-swap loop: any commutative operator, no global scratch, high
+;; contention.  Like :atomic it accumulates into the pre-filled (0) cell.  Same grid and answer as 03.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel grid_reduce_cas_strategy (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce! #'+ contrib 0.0 out :strategy :cas)))

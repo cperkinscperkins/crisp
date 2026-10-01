@@ -1,0 +1,31 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 0 3 9 31
+;; SKIP-WITH[--differentiate]: "BUG 097 -- &optional / &key functions have no _GRAD companion yet"
+;;
+;; BUG 090 -- a &key function actually CALLED, and actually RUN.  See 07 for the mechanism.
+;;
+;; Four call shapes -- no keys, one key, the other key, both keys -- so four variants, each of
+;; which must come out with a body.  Inputs pre-filled 0 1 2 3 (a b c d); result = x*by + plus:
+;;
+;;     (scale a)                 by 2,  plus 0  -> 0
+;;     (scale b :by 3)           by 3,  plus 0  -> 3
+;;     (scale c :plus 5)         by 2,  plus 5  -> 9
+;;     (scale d :by 10 :plus 1)  by 10, plus 1  -> 31
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-function scale (x &key (by 2) (plus 0))
+  (declare #'(int &key :by int :plus int => int))
+  (+ (* x by) plus))
+
+(def-kernel key_call (xs &out out)
+  (declare #'(ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((a (~ xs 0)) (b (~ xs 1)) (c (~ xs 2)) (d (~ xs 3)))
+    (set! (~ out 0) (scale a))
+    (set! (~ out 1) (scale b :by 3))
+    (set! (~ out 2) (scale c :plus 5))
+    (set! (~ out 3) (scale d :by 10 :plus 1))))

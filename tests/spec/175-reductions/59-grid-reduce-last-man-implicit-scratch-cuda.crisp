@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;;
+;; ENDEAVOUR 176 -- IMPLICIT SCRATCH on CUDA.  The CUDA twin of 57 (as 42 is of 25).  TDD.
+;;
+;; The CUDA hoister allocates implicit scratch through its own code path, so the four implicit
+;; buffers -- local sweep vector, global partials, global uint counter, local uint flag -- have to
+;; be proven there separately.  Warp size is 32 under h100, so the local sweep vector has two
+;; slots rather than BMG's four; the answer is the same.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_last_man_implicit (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce-last-man! #'+ contrib 0.0 out)))

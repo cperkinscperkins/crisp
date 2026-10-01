@@ -1,0 +1,32 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "only with :last-man-standing"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 3 -- a DEPENDENT grid-reduce! refuses :atomic (and :cas).  TDD.
+;;
+;; Their Phase 2 commits one word at a time, so they cannot keep a state's values together.  The
+;; refusal says so, as a Crisp limitation (packing a small state into one 64-bit CAS is possible in
+;; principle, but Crisp does not do it).
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel grd_atomic (&out outv outi)
+  (declare #'(&out out-c uout-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((v (to-float (get-global-linear-id)))
+        (i (get-global-linear-id)))
+    (grid-reduce! #'argmax-combine
+                  ((v (type-min float) outv)
+                   (i (type-max ulong) outi))
+                  :strategy :atomic)))

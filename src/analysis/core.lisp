@@ -1088,6 +1088,107 @@
 ;;; continue. The kernel backward walk (GBW) will error if this function is
 ;;; actually called in a differentiable context.
 ;;; src/analysis/core.lisp
+;;;; Endeavour 176 -- scratch in generic (&optional / &key) functions: scratch DEFAULTS, scratch in the
+;;;; BODY, and generating the lazily instantiated variants.  %generate-lazy-variant-ir lives here rather
+;;;; than in environment.lisp because it LET-binds *scratch-cell-counter*, whose defvar is in this file:
+;;;; compiled before that defvar, the binding would be lexical and the counter replay would silently do
+;;;; nothing.
+
+(defun %scratch-allocation-form-p (form)
+  "T when FORM is a (make-scratch-vector|matrix|tensor|cell ...) allocation, by symbol name."
+  (and (consp form) (symbolp (car form))
+       (member (symbol-name (car form))
+               '("MAKE-SCRATCH-VECTOR" "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-TENSOR" "MAKE-SCRATCH-CELL")
+               :test #'string-equal)))
+
+(defun %default-scratch-implicit-name (fn-name param-name)
+  "The implicit-parameter name a scratch DEFAULT of PARAM-NAME in generic function FN-NAME is
+   registered under: <PARAM>-DEFAULT_FROM_<FN>_1.  Built by the same rule the scratch scanners use
+   (<binding>_FROM_<fn>_<n>, interned in the binding's package), with the binding <PARAM>-DEFAULT
+   and a private counter of 1 -- so Pass 1 (which registers it) and instantiation (which binds the
+   parameter to it) compute the same symbol without consulting any table."
+  (let ((binding (intern (format nil "~a-DEFAULT" (symbol-name param-name))
+                         (or (symbol-package param-name) (find-package :crisp-language)))))
+    (intern (format nil "~a_FROM_~a_~d" binding fn-name 1) (symbol-package binding))))
+
+(defun %scan-generic-default-scratch (fn-name)
+  "Pass 1, endeavour 176.  When FN-NAME is a generic (&optional / &key) function, register every
+   make-scratch-* DEFAULT of its parameters as an implicit argument of FN-NAME.  Returns T when any
+   was registered (the caller then marks FN-NAME an originator).
+
+   The scan runs with *scratch-cell-counter* rebound to 0: the scanners name scratch by counter, and
+   Pass 2 replays the module-wide counter to find ordinary scratch again.  A default's scratch is
+   never replayed (instantiation binds the parameter to the implicit argument directly), so it must
+   not advance the module-wide count."
+  (let ((generic-def (gethash fn-name *generic-functions*))
+        (found nil))
+    (when generic-def
+      (loop for (param-name . default-form) in (generic-function-def-defaults generic-def)
+            when (%scratch-allocation-form-p default-form)
+              do (let ((*scratch-cell-counter* 0)
+                       (prev (compiler-context-current-binding-name *compiler-context*)))
+                   (setf (compiler-context-current-binding-name *compiler-context*)
+                         (intern (format nil "~a-DEFAULT" (symbol-name param-name))
+                                 (or (symbol-package param-name) (find-package :crisp-language))))
+                   (unwind-protect (scan-form default-form)
+                     (setf (compiler-context-current-binding-name *compiler-context*) prev))
+                   (log:info "176: Pass 1 registered scratch default ~a of ~a as ~a"
+                             param-name fn-name (%default-scratch-implicit-name fn-name param-name))
+                   (setf found t))))
+    found))
+
+(defun %176-generic-skip-scratch (name body)
+  "Endeavour 176.  At the point where Pass 2 (or single-pass compilation) SKIPS generic function NAME,
+   keep the scratch counter in step.  Multi-pass: advance it by the COUNT Pass 1 recorded, since Pass 1
+   advanced it that far while scanning the body.  Single-pass: there was no Pass 1, so scan the body
+   (scan-for-carriers) and the scratch defaults now, and record the counter as the START."
+  (if (single-pass-mode-p)
+      (progn
+        (setf (gethash name *176-generic-scratch-range*) (cons *scratch-cell-counter* 0))
+        (scan-for-carriers name body)
+        (let ((*compiler-context* (make-compiler-context)))
+          (setf (compiler-context-scanning-function-name *compiler-context*) name)
+          (%scan-generic-default-scratch name))
+        (log:info "176: single-pass pre-scan of generic ~a; implicit ~s"
+                  name (mapcar #'car (gethash name *implicit-arg-map*))))
+      (let ((range (gethash name *176-generic-scratch-range*)))
+        (when (and range (plusp (cdr range)))
+          (log:debug "176: skipping generic ~a -- advancing scratch counter by ~d" name (cdr range))
+          (incf *scratch-cell-counter* (cdr range))))))
+
+(defun %generate-lazy-variant-ir (ast-node variant-name &optional base-name)
+  "BUG 090.  Emit the IR for a lazily instantiated variant whose AST instantiate-generic-function
+   just analyzed.  Instantiation happens mid-analysis of the CALLER, so the builder's insertion
+   point is saved and restored around generation.  Does nothing without a module (Pass 1 /
+   signature-only analysis): the variant is then generated when Pass 2 instantiates it.
+
+   176: with BASE-NAME (the generic function's own name), the current function is bound to it and the
+   scratch counter replayed from the start Pass 1 recorded for it, so scratch in the variant's body
+   rebuilds the names Pass 1 registered (<binding>_FROM_<base>_<n>) -- for every variant alike."
+  (let ((session *compiler-session*))
+    (if (not (and ast-node session (compiler-session-module session)))
+        (log:debug "BUG 090: no module -- not generating lazy variant ~s now" variant-name)
+        (let* ((builder (compiler-session-builder session))
+               (saved (llvm-get-insert-block builder))
+               (range (and base-name (gethash base-name *176-generic-scratch-range*)))
+               (context *compiler-context*)
+               (prev-fn (and context (compiler-context-current-compiling-function context)))
+               (*scratch-cell-counter* (if range (car range) *scratch-cell-counter*)))
+          (log:info "BUG 090: generating IR for lazy variant ~s (base ~s, scratch from ~s)"
+                    variant-name base-name (and range (car range)))
+          (unwind-protect
+               (progn
+                 (when (and context base-name)
+                   (setf (compiler-context-current-compiling-function context) base-name))
+                 (generate-llvm-ir ast-node (compiler-session-module session) builder
+                                   (compiler-session-di-builder session)
+                                   (compiler-session-di-compile-unit session)
+                                   (compiler-session-location-map session)))
+            (when (and context base-name)
+              (setf (compiler-context-current-compiling-function context) prev-fn))
+            (unless (cffi:null-pointer-p saved)
+              (llvm-position-builder-at-end builder saved)))))))
+
 (defun compile-def-function (form location module builder di-builder di-compile-unit location-map)
   "Compiles a single def-function form. Handles optional parameters by generating
 overloaded variants. When *differentiate-p* is T, also generates and compiles
@@ -1113,7 +1214,9 @@ the _GRAD backward companion after the forward function."
       (cond
        ;; --- OPTIONAL/KEY PARAMETERS: Lazy Instantiation (Generic Template) ---
        ((or optional-idx key-idx)
-         (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name))
+         (log:info "Skipping eager compilation for GENERIC function template: ~a. Variants will be compiled on demand." name)
+         ;; 176: keep the scratch counter in step (and, single-pass, scan the generic's scratch now).
+         (%176-generic-skip-scratch name body-and-loc))
 
        ;; --- STANDARD Compilation (No Optionals) ---
        (t
@@ -1154,6 +1257,7 @@ Also scans *template-registry* for HOF templates after walk-code-forms.
 Endeavor 120: also captures each function's macro-expanded params/body and
 runs infer-param-uniformity once the call graph is complete."
   ;; Endeavor 120: reset per-module uniformity/inert state.
+  (clrhash *176-generic-scratch-range*)   ; 176: per-module, like the tables below
   (clrhash *inert-functions*)
   (clrhash *fn-normalized-info*)
   (clrhash *inferred-param-uniformity*)
@@ -1179,11 +1283,23 @@ runs infer-param-uniformity once the call graph is complete."
                        (register-function-signature form location)
                        (let ((*compiler-context* (make-compiler-context)))
                          (setf (compiler-context-scanning-function-name *compiler-context*) name)
-                         (multiple-value-bind (is-originator callees)
-                             (shallow-analyze-body body)
+                         (multiple-value-bind (is-originator callees scratch-before)
+                             ;; 176: also capture the scratch counter BEFORE the body scan.
+                             (let ((before *scratch-cell-counter*))
+                               (multiple-value-call (lambda (&optional o c &rest ignore)
+                                                      (declare (ignore ignore))
+                                                      (values o c before))
+                                 (shallow-analyze-body body)))
                            (when is-originator
                              (setf (gethash name *originator-functions*) t))
-                           (setf (gethash name *call-graph*) callees))))))
+                           ;; 176: a generic function's make-scratch-* DEFAULTS are scratch too.
+                           (when (%scan-generic-default-scratch name)
+                             (setf (gethash name *originator-functions*) t))
+                           (setf (gethash name *call-graph*) callees)
+                           ;; 176: a generic body's scratch range, for its skip point and variants.
+                           (when (gethash name *generic-functions*)
+                             (setf (gethash name *176-generic-scratch-range*)
+                                   (cons scratch-before (- *scratch-cell-counter* scratch-before)))))))))
   ;; Step 3: After walk-code-forms, scan template registry for HOF templates.
   (%pre-register-hof-templates)
   ;; Endeavor 120: interprocedural uniformity inference (call graph is ready).
@@ -2639,6 +2755,12 @@ in single-pass mode."
                 :n-float-params n-float-params
                 :n-return n-return))))
 
+(defun %lambda-list-generic-p (params)
+  "T when lambda list PARAMS has &optional or &key -- a generic function whose variants are instantiated
+   lazily.  Matched by name, so the reading package does not matter."
+  (some (lambda (p) (and (symbolp p) (member (symbol-name p) '("&OPTIONAL" "&KEY") :test #'string-equal)))
+        params))
+
 (defun %pre-register-differentiable-fns (forms &optional record-info)
   "When *differentiate-p* is T, walk FORMS for def-function forms and
 pre-register them in *differentiable-functions* (and *differentiable-hof-store*
@@ -2665,7 +2787,14 @@ RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by
                  (%extract-fn-body-and-declarations body-and-loc)
                (declare (ignore declare-forms))
                (let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
-                 (unless (or is-system (%fn-name-is-grad-p name))
+                 ;; BUG 097 (stopgap): an &optional / &key function is NOT differentiable yet -- its variants
+                 ;; are instantiated lazily and no _GRAD companion is generated for them, so registering it
+                 ;; made the backward pass call <name>_GRAD, which does not exist.  Unregistered, a call in an
+                 ;; inactive context is a constant, and one that needs a gradient fails loudly as "not
+                 ;; differentiable".  The real fix -- a lazily instantiated _GRAD per variant -- is BUG 097.
+                 (when (%lambda-list-generic-p params)
+                   (log:info "BUG 097: ~a has &optional/&key parameters -- not registered as differentiable" name))
+                 (unless (or is-system (%fn-name-is-grad-p name) (%lambda-list-generic-p params))
                    (handler-case
                        (multiple-value-bind (env return-types)
                            (parse-function-declarations params declarations)

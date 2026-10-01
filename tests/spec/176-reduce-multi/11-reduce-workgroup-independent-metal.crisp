@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER rs: 2016 1 2 3
+;; HOIST-EXPECT: BUFFER rm: 63 1 2 3
+;;
+;; ENDEAVOUR 176 Phase 2 -- reduce-workgroup, INDEPENDENT form, with a per-clause :return-vec.  TDD.
+;;
+;; Each clause may carry its own keys; :return-vec receives that variable's workgroup result at index
+;; (get-workgroup-id).  Scratch is left out, so each clause gets implicit scratch typed from ITS
+;; identity -- one float and one int buffer.  One workgroup of 64:
+;;
+;;     s = local id (float)   #'+   identity 0.0             -> 0 + ... + 63 = 2016
+;;     m = local id (int)     #'max identity (type-min int)  -> 63
+;;
+;; Slots 1..3 of each return vector keep the harness pre-fill.
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type ivec-t (vector int   :address-space :global :align :compact))
+
+(def-kernel reduce_workgroup_independent (&out rs rm)
+  (declare #'(&out vec-t ivec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((s (to-float (get-local-linear-id)))
+        (m (to-int (get-local-linear-id))))
+    (reduce-workgroup ((#'+   s 0.0            :return-vec rs)
+                       (#'max m (type-min int) :return-vec rm)))))

@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 15 0 0 0
+;;
+;; BUG 092 -- the REALISTIC failure: the default identity 0, but a tile buffer that is REUSED.
+;;
+;; This is what a K loop does: the same scratch tile is loaded again and again, and the last
+;; load may be ragged.  Here the tile is first loaded fully in bounds at (0 0), which leaves it
+;; holding [[0 1] [4 5]].  It is then reloaded at (3 3), where only tile(0,0) = V[3][3] = 15 is in
+;; bounds, and every other slot must become the identity, 0:
+;;
+;;     correct:     15 0 0 0
+;;     BUG 092:     15 0 4 5    -- the out-of-bounds-ROW slots keep the PREVIOUS tile's values
+;;
+;; With a fresh tile, the stale value happens to be 0 and the bug is invisible; that is why no
+;; existing spec caught it.
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel load_tile_at_ragged_2d_reused (V &out OUT)
+  (declare #'(mat-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-matrix ulong (2 2))))
+    (load-tile-at V tile (0 0))       ; in bounds: tile = [[0 1] [4 5]]
+    (load-tile-at V tile (3 3))       ; ragged:    tile = [[15 0] [0 0]]
+    (set! (~ OUT (to-ulong 0)) (~ tile 0 0))
+    (set! (~ OUT (to-ulong 1)) (~ tile 0 1))
+    (set! (~ OUT (to-ulong 2)) (~ tile 1 0))
+    (set! (~ OUT (to-ulong 3)) (~ tile 1 1))))

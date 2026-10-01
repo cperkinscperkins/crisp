@@ -1,0 +1,43 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 100 11 42 3
+;;
+;; BUG 091 -- a parameter AFTER `&out ... &optional` is an ordinary input, not an &out.
+;;
+;; The design doc (chapter 05, "Following &out there can be &optional and then &key parameters,
+;; these are NOT considered to be &out parameters") says both optionals below are readable.
+;; Before the fix, a STORAGE-HANDLE optional (a vector) passed explicitly was refused:
+;;
+;;     Illegal access: Cannot read from Output Parameter 'SRC'. Output parameters are write-only.
+;;
+;; A scalar optional (K) was not refused -- it is here as the control.  (It also needs BUG 090
+;; fixed to RUN: every call below goes through a lazily generated variant.)
+;;
+;; Inputs pre-filled 0 1 2 3 (xs); OUT pre-filled 0 1 2 3:
+;;
+;;     (put-sum 0 a out 100)   scalar optional passed        out[0] = 0 + 100      -> 100
+;;     (copy-in 1 out xs)      vector optional passed        out[1] = xs[1] + 10   -> 11
+;;     (copy-in 2 out)         vector optional omitted       out[2] = 42           -> 42
+;;     out[3] untouched                                                            -> 3
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-function put-sum (i x &out o &optional (k 1))
+  (declare #'(int int &out ivec-t &optional int => nil))
+  (set! (~ o i) (+ x k)))
+
+(def-function copy-in (i &out o &optional src)
+  (declare #'(int &out ivec-t &optional ivec-t => nil))
+  (if+ (is-set? src)
+       (set! (~ o i) (+ (~ src i) 10))
+       (set! (~ o i) 42)))
+
+(def-kernel out_then_optional (xs &out out)
+  (declare #'(ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((a (~ xs 0)))
+    (put-sum 0 a out 100)
+    (copy-in 1 out xs)
+    (copy-in 2 out)))

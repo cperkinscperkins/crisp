@@ -207,6 +207,16 @@
 
    ((consp expr)
      (let ((op (car expr)))
+       ;; 176 Phase 2b: an INDEPENDENT reduce-warp / reduce-workgroup / grid-reduce! is SPLIT per clause
+       ;; here, BEFORE macroexpansion -- the forward lowers it fused, but the backward walk must meet only
+       ;; single forms, whose VJPs it already has.  Independent clauses do not interact, so the split
+       ;; computes the same values.  (Before the macro block, or grid-reduce!'s macro would hand ANF the
+       ;; fused lowering.)
+       (when (%independent-reduction-form-p expr)
+         (return-from anf-normalize (anf-normalize (%independent-reduction-split-for-ad expr) is-nested?)))
+       ;; 176 Phase 3 / BUG 098: a DEPENDENT reduction has no backward rule yet -- refuse loudly.
+       (when (%dependent-reduction-form-p expr)
+         (%refuse-dependent-autodiff expr))
        (when (and (symbolp op)
                   (macro-function op)
                   (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let
@@ -255,7 +265,12 @@
           (%anf-normalize-if+ op expr is-nested?))
         ((eq op 'cond)
           (%anf-normalize-cond expr is-nested?))
-        ((eq op 'let)
+        ;; BUG 096: match LET BY NAME.  CL macros expand into CL:LET -- (or X Y) becomes
+        ;; (CL:LET ((#:g X)) (IF #:g #:g Y)) -- and an EQ test against Crisp's own LET missed it, so the
+        ;; binding list fell through to the call path and was lifted into a temp as if it were an
+        ;; argument.  CL:LET is treated like Crisp's sequential let; CL macro expansions do not rely on
+        ;; parallel binding.
+        ((and (symbolp op) (string-equal (symbol-name op) "LET"))
           (%anf-normalize-let expr is-nested?))
         ((eq op 'declare)
           (if is-nested?
@@ -429,7 +444,7 @@ Accepts bindings of length >= 2 (fix: was = 2, dropping multi-value bindings)."
   (let ((flat nil))
     (labels ((walk (expr)
                (cond
-                ((and (consp expr) (eq (car expr) 'let))
+                ((and (consp expr) (symbolp (car expr)) (string-equal (symbol-name (car expr)) "LET")) ; BUG 096: by name
                   (let ((bindings (cadr expr))
                         (body (cddr expr)))
                     (dolist (b bindings)

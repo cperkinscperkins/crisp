@@ -1,0 +1,33 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;;
+;; ENDEAVOUR 176 -- a SCRATCH buffer as an &optional DEFAULT.  TDD.
+;;
+;; GRID-SUM lets its caller supply the reduction's scratch, or omit it and get a default:
+;; (make-scratch-vector ...).  The kernel omits it, so the lazily generated variant binds SV from
+;; the default.  That scratch must become an implicit kernel parameter like any other -- but the
+;; Pass-1 scan that builds kernel signatures runs before the variant exists, so today it never
+;; does, and compilation stops with "Missing implicit argument SV_FROM_...".  (Before BUG 090 was
+;; fixed the variant was not generated at all, and this silently miscompiled.)
+;;
+;; Pass 1 must scan the DEFAULT forms of a generic function's &optional / &key parameters.  The
+;; design doc's template example (chapters/07_crisp_types/21_template_types.md, reduce-something
+;; with an &optional local scratch vector) is exactly this shape.
+;;
+;; Same grid and answer as 175/17: 0 + ... + 255 = 32640.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+(def-type lsv-t (vector float :address-space :local  :align :compact))
+
+(def-grid-function grid-sum (contrib &out out &optional (sv (make-scratch-vector float :match-num-warps-per-workgroup)))
+  (declare #'(float &out vec-t &optional lsv-t => nil))
+  (grid-reduce-atomic! #'+ contrib 0.0 out :local-scratch-vec sv))
+
+(def-kernel optional_scratch_default (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-sum contrib out)))

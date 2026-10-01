@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "unknown clause key"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 2 -- a clause's keys are the per-variable resources (for reduce-workgroup,
+;; :return-vec and :local-scratch-vec); anything else is refused, listing what is allowed.  TDD.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel rwg_ckey (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((s (to-float (get-local-linear-id))))
+    (reduce-workgroup ((#'+ s 0.0 :return-vec out :bogus 1)))))

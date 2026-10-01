@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER rv: 9 1 2 3
+;; HOIST-EXPECT: BUFFER ri: 9 1 2 3
+;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
+;;
+;; ENDEAVOUR 176 Phase 3 -- reduce-workgroup, DEPENDENT form, with a per-clause :return-vec.  TDD.
+;;
+;; One workgroup of 64 (four BMG warps), so the argmax crosses warps through the scratch sweep, where
+;; the combiner meets states from DIFFERENT warps.  Scratch is implicit, one buffer per clause, typed
+;; from each identity (float and ulong).
+;;
+;;     value = (rem local-id 10)   -> max 9, at local ids 9, 19, 29, 39, 49, 59
+;;     index = local id            -> the lowest of those: 9
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type uvec-t (vector ulong :address-space :global :align :compact))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel reduce_workgroup_argmax (&out rv ri)
+  (declare #'(&out vec-t uvec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((v (to-float (rem (to-int (get-local-linear-id)) 10)))
+        (i (get-local-linear-id)))
+    (reduce-workgroup #'argmax-combine
+                      ((v (type-min float) :return-vec rv)
+                       (i (type-max ulong) :return-vec ri)))))

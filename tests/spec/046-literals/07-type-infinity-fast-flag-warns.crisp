@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; EXPECT-STDERR[--math-precision=fast]: "infinity under :fast precision"
+;;
+;; ENDEAVOUR 176 -- (type-infinity T) under :fast precision WARNS.  TDD.
+;;
+;; :fast lets the compiler assume no value is ever infinite (LLVM's ninf), so an infinity there is
+;; undefined.  It is a WARNING rather than an error because precision can be forced from the command
+;; line (--force-math-precision): an error would make the same file compile or fail depending on a
+;; flag.  This spec sets :fast by flag; 08 sets it with a with-precision region.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel inf_under_fast_flag (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (set! (~ out 0) (type-infinity float)))

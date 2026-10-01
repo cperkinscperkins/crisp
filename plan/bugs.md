@@ -3304,3 +3304,343 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Reading the emitted PTX on the pod -- four ssh round-trips and one compile, no
         suite run.
+
+[ ] 090 LAZY &optional / &key FUNCTION VARIANTS ARE ANALYZED BUT NEVER CODE-GENERATED -- the call
+        is emitted against a bare `declare`, the SPIR-V carries an unresolved Import, and the
+        compiler exits 0.
+
+        SYMPTOM.  `(def-function add-k (x &optional (k 3.0)) (declare #'(float &optional float => float)) (+ x k))`
+        called from a kernel as `(add-k 1.0)`:
+
+            define void @add_k_noout(...)
+            declare float @add_k_float_float(float)          ; <-- never defined
+
+        and in the final SPIR-V:
+
+            Decorate 4 LinkageAttributes "add_k_float_float" Import
+
+        Level Zero cannot link that.  No error, no warning, exit 0.
+
+        SCOPE.  Every &optional / &key function that is actually CALLED.  Not specific to &out,
+        scratch, or GPU built-ins (the probe above has none of them).  All four 016-advanced-signatures
+        specs with call sites (01, 03, 04, 06) show the same `declare` in their IR.  They pass because
+        they carry no validator and no hoist -- "compiles" is the whole assertion.  016/02 has no
+        kernel, so nothing is instantiated at all.
+
+        NOT THE EXE.  The in-process path run-specs uses (compile-module) produces the same IR.
+
+        MECHANISM (measured with :info logging).  The variant IS instantiated, in PASS 2, while the
+        kernel is analyzed: "Found generic function ADD-K" -> "Lazy Instantiating ADD-K_float" ->
+        "Registering Lazy Signature".  `instantiate-generic-function` (src/environment.lisp:184)
+        calls `internal-compile-function`, which returns the analyzed blueprint AST -- and the AST is
+        dropped.  IR is only generated for top-level forms.
+
+        NOT A REGRESSION.  The original commit 96393669 (2025-12-27, "&optional, &key, and default
+        args for optional") has the same shape: instantiate never generated IR.  The feature has
+        never worked end to end.
+
+        LIKELY FIX (hypothesis, untested).  Templates face the identical mid-analysis instantiation
+        and get it right: type-checker.lisp hands `*template-instantiator-fn*` a
+        `compile-toplevel-form` callback.  Do the same here -- synthesize a plain def-function form
+        for the variant (explicit params plus the `let*` of defaults instantiate already builds) and
+        push it through compile-toplevel-form.  Watch the NAME: the signature is registered as
+        `ADD-K_float`, and the call site mangles it again with the argument types
+        (`add_k_float_float`); the generated function must carry the name the call emits.
+
+        FOUND BY.  Endeavour 176 Phase 0, trying `(make-scratch-vector ...)` as an &optional /
+        &key default.  Probes: put_temp_files_here/176/p1a, p1b, p1e, p1g, t090.lisp.
+
+        EXPERIMENT 2026-09-30 (put_temp_files_here/176/t090b.lisp, a wrapper, not a patch): handing the
+        analyzed variant AST to generate-llvm-ir (builder insertion point saved/restored) DOES produce
+        a defined function with the name the call site emits (`define float @add_k_float_float`).
+        It also exposed two more defects that the missing codegen had been hiding:
+
+        (a) NO MEMOIZATION.  The variant's signature is registered under its MANGLED name
+            (ADD-K_int), but calls look up the BASE name (ADD-K), find nothing, and re-instantiate --
+            every call site re-analyzes the variant.  Harmless while nothing was generated; with
+            codegen the second copy collides (`declare i32 @add_k_int_int.1`).
+
+        (b) KEYWORD CALL SHAPES COLLIDE.  mangle-function-variant-name (src/mangling.lisp:148) joins
+            only the parameter TYPES.  bind-keyword-args builds (X _K0:keyword BY:int) for `:by 3` and
+            (X _K0:keyword PLUS:int) for `:plus 5` -- both mangle to SCALE_int_keyword_int.  So simply
+            memoizing on that name would silently run the :by variant for a :plus call.  The name must
+            encode WHICH keys were supplied (in call order).
+
+        FIX (drafted 2026-09-30 in overlays/crisp-compiler-overlay.lisp, pending review + fold):
+        %generate-lazy-variant-ir (codegen the analyzed AST, builder saved/restored, no-op without a
+        module); %lazy-variant-already-generated + %lazy-variant-llvm-name (reuse only if THIS module
+        already holds a DEFINED function for the variant); %lazy-variant-name (keyword placeholders
+        mangle to key-<name>, e.g. SCALE_int_key-by_int); modified instantiate-generic-function.
+        016/07 `10 6 12 103`, 016/08 `0 3 9 31` on BMG; 016/01-06 now DEFINE every variant.
+        Full suite (092+093+090+091 overlay): unit 341/341, E2E 1277/1277, negative 282/282.
+
+        FOLLOW-ON, not this bug: a SCRATCH default in a lazily generated variant, e.g.
+        `&optional (sv (make-scratch-vector ...))`, now fails LOUDLY (it used to miscompile silently):
+        "Missing implicit argument SV_FROM_GRID_SUM_OPT_1".  The variant's implicit scratch param
+        never reaches the kernel signature, because the Pass-1 scanner that builds kernel signatures
+        runs before the variant exists.  Same scan-timing problem as endeavour 176's grid-reduce!
+        scratch defaults.  Probe: put_temp_files_here/176/g-p1a-optional-default.crisp.
+
+
+[ ] 091 PARAMETERS AFTER `&out ... &optional` ARE TREATED AS &out, contradicting the design doc.
+
+        SYMPTOM.
+
+            (def-function my-grid-sum (contrib &out out &optional (sv (make-scratch-vector ...)))
+              ... (grid-reduce-atomic! #'+ contrib 0.0 out :local-scratch-vec sv))
+
+        called WITH an explicit `sv`:
+
+            Illegal access: Cannot read from Output Parameter 'SV'. Output parameters are write-only.
+
+        docs/chapters/05_return_storage_handle_pattern_out/00_intro.md:64 says the opposite:
+        "Following `&out` there can be `&optional` and then `&key` paramters, these are NOT
+        considered to be `&out` parameters."
+
+        SCOPE (measured 2026-09-29): only STORAGE-HANDLE optionals.  An `int` optional after &out,
+        passed explicitly, is read without complaint; a `vector` optional is refused (probe
+        put_temp_files_here/176/p091.crisp).  &key after &out is untested -- probably the same.
+        016/06-mixing uses &out plus keys; its variants are never generated (090), so fixing 090
+        may surface this there.  Lock-down: 016/09-out-then-optional-metal.crisp.
+
+        CAUSE (read 2026-09-30).  The lambda-list parser in src/environment.lisp (~line 715) gives every
+        normal parameter `:kind (cond (out-start :out) (t :in))` -- once &out has been seen, EVERY
+        later positional parameter is :out, including those after &optional.  &key parameters are
+        built by a separate branch with `:kind :in` hard-coded, which is why keys are unaffected.
+        Only a storage-handle read trips the write-only check, which is why an `int` optional passes.
+        Likely fix: `:out` only when out-start is set AND neither optional-start nor key-start is.
+        FIX (drafted 2026-09-30 in the overlay, pending review + fold): exactly that, in a copy of
+        analyze-environment-from-spec.  016/09 `100 11 42 3` on BMG.  Full suite as for 090.
+
+        FOUND BY.  Endeavour 176 Phase 0, probe put_temp_files_here/176/p1f.
+
+
+[ ] 092 `(and X Y)` LEAVES ITS RESULT UNSTORED WHEN X IS FALSE -- -O3 then deletes X outright.
+        Silent wrong answers, including in the tile bounds checks.
+
+        SYMPTOM.  `(if (and (> a b) (< a 10.0)) 1 0)`.  Unoptimized IR:
+
+            %if_result = alloca i32
+            br i1 %ifcond, label %then, label %else
+            then:  ... store i32 %bool_ext5, ptr %if_result
+            else:  br label %ifcont                          ; nothing stored
+            ifcont: %if_res = load i32, ptr %if_result        ; undef when X is false
+
+        After -O3 the whole `and` is just `(< a 10.0)` -- the (> a b) test is gone.
+
+        MECHANISM (measured -- CORRECTED 2026-09-29).  Crisp uses CL's `and`.  In the running
+        compiler it macroexpands to a TWO-armed `(IF X Y)` -- no else at all (the debug log's
+        "ANALYZE-EXPR MACRO: (AND (> A B) (< A 10.0)) -> (IF (> A B) (< A 10.0))").  An earlier
+        draft of this entry said `(IF A (AND B) NIL)`; that came from a truncated REPL print and was
+        wrong.  `analyze-if-expression-impl` (src/analysis/control.lisp:1301) gives an IF with no
+        else no else branch, so a VALUE IF's false path never stores its result -- whereas in CL
+        `(if x y)` means `(if x y nil)`: the false path has a value, and it is false.  (An explicit
+        NIL else hit the same hole: `nil` analyzes to void, and ensure-branch-compatibility
+        documents the void path as "left undef by codegen".)  `or` expands to
+        `(LET ((g A)) (IF g g B))`, which has a real else, so a bare `or` is fine.
+
+        SCOPE -- SHIPPED FEATURES, CONFIRMED ON METAL.  `%tlc-all-in-bounds-form` (control.lisp:598)
+        builds the per-dimension bounds check as `(and (< src[k] extent[k]) ...)` for every rank >= 2,
+        at five call sites: load-tile-at, store-tile-at, load-tile-coords.  Probe: 4x4 V (0..15),
+        2x2 `load-tile-at` at absolute (3 3), `:identity 99`.  Correct is `15 99 99 99`.  BMG:
+
+            BUFFER out: 15 99 0 0
+
+        At -O3 the row check survives, but its false path is reduced to `llvm.assume(col >= extent)`
+        with NO identity store -- O3 treats the path as undefined because it reads the uninitialised
+        slot.  Out-of-bounds-ROW elements keep whatever was in local memory.  (The predicted
+        out-of-bounds READ did not happen; the missing FILL did.)
+
+        WHY NOTHING CAUGHT IT.  With the default identity 0 and a freshly zeroed scratch buffer, the
+        stale value IS 0.  It bites with a non-zero identity, or when a tile buffer is reused (a K
+        loop) and a ragged tile inherits the previous tile's data.  Not yet checked: tile-stride /
+        matrix-multiply-tile-stride ragged edges individually; CUDA (same front end, presumably
+        affected).
+
+        FIX (drafted 2026-09-29 in overlays/crisp-compiler-overlay.lisp, pending review + suite).
+        Change the IF analyzer, not `and`: a MISSING or NIL else of a value IF is false -- an int 0
+        literal, promoted to THEN's type by ensure-branch-compatibility -- when THEN is a scalar that
+        promotes with int.  Statement IFs (void THEN) and non-scalar THENs are unchanged.  (The
+        first draft keyed on a WRITTEN nil, `(length expr) > 3`, and did nothing, because the
+        expansion writes none.)  All 006/07-10, the unit test and 111/21-25 pass on BMG with it.
+        Still to check: whether the `crisp.compiler::cond` quirk (a clause with only a test drops
+        its value) is the same root.
+        FULL SUITE with the overlay fix (2026-09-29, BMG): unit 341/341, negative 282/282, E2E
+        1273/1277 -- the 4 failures are exactly the not-yet-fixed 090/091/093 lock-down specs
+        (001/05, 016/07-09).  The --differentiate / --single-pass phases are left to CI.
+
+        FOUND BY.  Endeavour 176 multi-value probe (the argmax combiner uses `(or ... (and ...))`),
+        then Phase 0.  Probes: put_temp_files_here/176/p2b-and.crisp, and-probe.O3.ll,
+        p3-ragged-2d.crisp (+ .O3.ll, p3.run.out).
+
+
+[ ] 093 AN IF WHOSE BRANCHES EACH RETURN MULTIPLE VALUES IS TYPED AS ITS FIRST VALUE ONLY --
+        llvm-as rejects the module.
+
+        SYMPTOM.
+
+            (def-function pick (va ia vb ib)
+              (declare #'(float ulong float ulong => float ulong))
+              (if (> va vb) (return va ia) (return vb ib)))
+
+            llvm-as: ...:450:7: error: value doesn't match function result type '{ float, i64 }'
+              ret float %if_res
+
+        Both branches build the correct `{ float, i64 }` (%mvr_val_0 / %mvr_val_1), but the IF's
+        result slot is `%if_result = alloca float` -- sized from the first value only.
+
+        LOUD, at least: compilation fails (exit 1).  Workaround: one `(return (if ..) (if ..))` at
+        the tail.
+
+        MECHANISM (measured 2026-09-30, put_temp_files_here/176/t093.lisp).  Analysis is right: both
+        branches are SEMANTIC-EXPLICIT-RETURN of type (FLOAT ULONG), and ensure-branch-compatibility
+        unifies the IF to (FLOAT ULONG).  CODEGEN is wrong: the semantic-if method (codegen.lisp
+        ~2447 alloca, ~2491 load) maps the node type with crisp-type-to-llvm-type, which reads the
+        multi-value LIST as a single spec and returns `float`.  get-llvm-return-type -- what the
+        multi-value `return` itself uses -- gives the correct `{ float, i64 }`.
+
+        TELLING THE CASES APART.  An IF's type may be a symbol (int), a compound spec
+        ((tensor ...), (cell ...)), or a multi-value list.  valid-type-p separates them: T for
+        int, (int), (tensor ...), (vector ...), (cell ...); NIL for (float ulong), (int int).
+        Proposed rule: a list of length > 1 that is NOT itself valid-type-p but whose elements
+        all are -> get-llvm-return-type; anything else -> crisp-type-to-llvm-type as today.
+
+        RELATED HAZARD, not this bug: (if c (return a b) 5) -- a multi-value branch against a scalar
+        one -- goes down ensure-branch-compatibility's promotion path on the FIRST value and
+        silently drops the second.  Probably wants a loud error.  Untested.
+
+        FIX (drafted 2026-09-30 in overlays/crisp-compiler-overlay.lisp, pending review + fold):
+        %if-result-llvm-type (the rule above) used for the semantic-if slot alloca and merge load.
+        001/05 on BMG: outv 1 3 1 3, outi 11 13 11 13.  Full suite with the 092 + 093 overlay:
+        unit 341/341, negative 282/282, E2E 1274/1277 -- the 3 failures are exactly the unfixed
+        090/091 specs (016/07-09).
+
+        WHY IT MATTERS NOW.  Endeavour 176's dependent reductions take a multi-value combiner, and
+        the natural way to write one (argmax) is exactly this shape -- as is the example in the
+        design doc.
+
+        FOUND BY.  Endeavour 176 probe (tests/spec/176-reduce-multi/01-probe-mv-binop-butterfly-metal.crisp,
+        lines 38-40), reproduced in Phase 0: put_temp_files_here/176/p2a-if-mv-return.crisp.
+
+[ ] 094 MOST SYMBOLIC SCRATCH SIZES IN THE DESIGN ARE NOT IMPLEMENTED, AND GLOBAL SCRATCH ACCEPTS NONE.
+
+        THE DESIGN (tests/spec/074-scratch-tensor/scratch-tensor.md, lines ~50-62) names these
+        :size-expr keywords: :match-workgroup-size, :match-num-workgroups, :match-total-threads,
+        :match-warp-size, :match-warp-tile, :match-num-warps-per-workgroup, :match-total-warps, and
+        :match-grid-size.
+
+        THE L0 HOISTER (src/hoist-l0/main.lisp, %l0-scratch-symbolic-expr ~1555) resolves TWO, for
+        LOCAL scratch only: :match-workgroup-size and :match-num-warps-per-workgroup.
+        :match-num-workgroups is an explicit "not implemented yet" error (under :strided geometry
+        the group count is computed at RUNTIME from zeDeviceGetProperties, so the group-count
+        variable would have to be plumbed through the dispatch emitter); the rest fall through to
+        "unknown symbolic :size-expr".  The CUDA hoister (src/hoist-cuda/main.lisp ~630) has the
+        same :match-num-workgroups error.
+
+        GLOBAL SCRATCH ACCEPTS NO SYMBOLIC SIZE AT ALL.  %l0-emit-global-scratch-tensor-arg
+        (~1740) computes extents, length and byte size as Lisp numbers and emits literals, so
+
+            (make-scratch-vector float :match-workgroup-size :address-space :global)
+
+        fails with "Global scratch tensor gv_from_c57g_2 has non-integer :size-expr
+        MATCH-WORKGROUP-SIZE" (probe put_temp_files_here/176/c57g.crisp).
+
+        WHY IT MATTERS NOW.  Endeavour 176's implicit scratch cannot allocate grid-reduce-last-man!'s
+        :global-scratch-vec, which needs one slot per workgroup: :match-num-workgroups is the right
+        size, and even the bound last-man already guarantees (num_workgroups <= local_work_size, so
+        :match-workgroup-size would do) is refused for global scratch.  175/57, 59, 60, 62 wait on it.
+
+        LIKELY FIX (hypothesis): make the global-scratch argument emitter produce C++ EXPRESSIONS for
+        rank-1 symbolic sizes, as the local path already does -- extents, length, byte size, the
+        allocation and the zero-initialising staging copy -- in both hoisters.  :match-workgroup-size
+        first; :match-num-workgroups once the group count is available to the emitter.
+
+        FOUND BY.  Endeavour 176 implicit-scratch implementation, 2026-09-30.
+
+        PARTIAL FIX (drafted 2026-09-30, overlays/hoist-l0/crisp-hoist-l0-overlay.lisp): rank-1
+        SYMBOLIC sizes for GLOBAL scratch in the L0 hoister (%l0-emit-symbolic-global-scratch-arg),
+        phrased as C++ expressions over the geometry constants like the local path.  The CUDA
+        hoister already resolved symbolic global sizes from the declared local size.  175/57, 60,
+        62 pass on BMG.  STILL OPEN: :match-num-workgroups (both hoisters) and the other design-doc
+        sizes (:match-total-threads, :match-warp-size, :match-total-warps, :match-grid-size).
+
+[ ] 095 ONE-ARGUMENT MINUS, (- x), IS NOT IMPLEMENTED -- though the design doc uses it.
+
+        SYMPTOM.  (- (type-infinity float)) -- or any (- x):
+
+            Type mismatch for operator '-'. Cannot operate on FLOAT and NIL.
+
+        The analyzer is generated by def-binary-op-analyzer (src/analysis/ops.lisp:31) and always reads
+        a SECOND argument.  The design doc writes negation this way --
+        chapters/07_crisp_types/17_def_setter.md: (set! (~x~ p) (- newVal)) -- and the 176 reductions
+        doc negates (type-infinity T) with it.
+
+        FIX (drafted 2026-09-30 in overlays/crisp-compiler-overlay.lisp, pending review + fold): the
+        binary analyzer is kept under its own name (%analyze-sub-binary, same macro), and
+        analyze-sub-expression sends the one-argument form to (* x -1).  Multiplying by -1 is exact
+        IEEE negation -- -0.0 and infinities included, which (- 0 x) gets wrong for 0.0 -- LLVM lowers
+        it to fneg, and AD already differentiates it.  046/05 (which needs it) passes on BMG.
+
+        NOT DONE: a dedicated negation node (codegen fneg directly).  Not needed for correctness.
+
+        FOUND BY.  Endeavour 176, spec 046/05, 2026-09-30.
+
+[ ] 096 THE ANF TRANSFORM MISSED CL:LET, SO (or X Y) CRASHED UNDER --differentiate.
+
+        SYMPTOM.  Any (or X Y) in a differentiated kernel (CI, 006/09):
+
+            The value CRISP-LANGUAGE::%ANF-T-5 is not of type SEQUENCE
+
+        CAUSE (backtrace, 2026-09-30).  CL's OR expands to (CL:LET ((#:g X)) (IF #:g #:g Y)).  anf-normalize
+        (src/anf-transform.lisp:258) dispatched on (eq op 'let) -- Crisp's own LET, a different symbol -- so
+        the CL:LET fell through to the function-call path and its binding list was lifted into a temp as if it
+        were an argument.  %handle-value-let-backward then received (CL:LET %ANF-T-1 %ANF-T-2) and died in
+        REMOVE-IF-NOT.  The scanner 100 lines later already matched LET by name; flatten-anf-body had the same
+        EQ test.  Pre-existing, not from this week's IF changes: 006/09 was simply the first spec to
+        differentiate an OR.  (AND was fine: it expands to IF.)
+
+        FIX (drafted 2026-09-30 in the overlay): anf-normalize and flatten-anf-body match LET by name.  CL:LET
+        is treated like Crisp's sequential let -- the same for one binding, and CL macro expansions do not rely
+        on parallel binding.  006/09 passes under --differentiate.
+
+
+[ ] 097 &optional / &key FUNCTIONS HAVE NO _GRAD COMPANION, so they cannot be differentiated through.
+
+        SYMPTOM (CI --differentiate, 016/07-09): "Unsupported form 'ADD-K_GRAD' found in function body."
+
+        CAUSE.  %pre-register-differentiable-fns registered every def-function as differentiable, generic ones
+        included, so the kernel's backward walk emitted a call to <name>_GRAD.  But compile-def-function skips
+        a generic function entirely -- forward AND its _GRAD companion -- and variants are instantiated lazily
+        with no _GRAD.  Not a regression: before BUG 090 these specs could not even run forward.
+
+        STOPGAP (drafted 2026-09-30 in the overlay): generic functions are not registered as differentiable
+        (%lambda-list-generic-p).  A call that needs a gradient now fails LOUDLY -- "Function ADD-K is not
+        differentiable" -- instead of naming a function that never existed.  Integer data is differentiated
+        too (since endeavour 085), so 016/07 and 016/08 are active and carry
+        SKIP-WITH[--differentiate] naming this bug; 016/09 passes.
+
+        REAL FIX (not started): a lazily instantiated _GRAD per variant, mirroring the forward instantiation
+        (BUG 090's machinery on the backward side), with the backward walk calling the companion of the call
+        shape it differentiates.
+
+[ ] 098 DEPENDENT REDUCTIONS ARE NOT DIFFERENTIABLE (a declared gap, refused loudly).
+
+        WHAT.  (reduce-warp | reduce-workgroup | grid-reduce! #'combiner ((var identity ...) ...)) --
+        endeavour 176 Phase 3.  Under --differentiate the AD path refuses it:
+
+            reduce-warp: dependent reductions are not differentiable yet (BUG 098) -- the variables
+            interact inside the combiner #'ARGMAX-COMBINE, so the backward pass has no rule for them.
+
+        WHY NOT EASY.  The independent form differentiates by splitting into per-clause reductions, each
+        with its own VJP -- exact because the clauses do not interact.  A dependent combiner couples its
+        variables inside a user function, and a scratch-based cross-thread reduction differentiated
+        mechanically is SILENTLY wrong (see the cross-thread-dataflow note), so a loud refusal beats any
+        partial answer.
+
+        OPTIONS (decided 2026-10-01 to defer; regroup after Phase 3):
+          * a user-registered VJP for the combiner (Chris: not opposed), in the spirit of endeavour 123's
+            FFI VJPs -- general, but users write the transpose;
+          * special-casing selection combiners (argmax / argmin): the gradient goes to the winning value,
+            none to the index -- covers the motivating case only.
+
+        SPECS.  176/15-18 carry SKIP-WITH[--differentiate] naming this bug; 176/errors/11 pins the refusal.

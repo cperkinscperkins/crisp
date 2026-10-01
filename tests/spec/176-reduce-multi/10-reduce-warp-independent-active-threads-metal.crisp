@@ -1,0 +1,30 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outs: 28 28 28 28
+;; HOIST-EXPECT: BUFFER outm: 7 7 7 7
+;;
+;; ENDEAVOUR 176 Phase 2 -- independent reduce-warp with ACTIVE-THREADS, the trailing optional
+;; argument after the clause list.  It applies to every clause.  TDD.
+;;
+;; Lanes 0..7 contribute; lanes 8..15 contribute each clause's identity.  The LAST lane (15, inactive)
+;; writes, so it must hold the result too:
+;;
+;;     s = lane (float)   #'+   identity 0.0             -> 0 + ... + 7  = 28
+;;     m = lane (int)     #'max identity (type-min int)  -> 7
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type ivec-t (vector int   :address-space :global :align :compact))
+
+(def-kernel reduce_warp_independent_active (&out outs outm)
+  (declare #'(&out vec-t ivec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((s (to-float (warp-lane)))
+        (m (to-int (warp-lane))))
+    (reduce-warp ((#'+   s 0.0)
+                  (#'max m (type-min int)))
+                 8)
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ outs (to-int (warp-id))) s)
+      (set! (~ outm (to-int (warp-id))) m))))

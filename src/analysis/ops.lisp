@@ -28,7 +28,17 @@
              :source-location location)))))
 
 (def-binary-op-analyzer analyze-add-expression make-semantic-add "+")
-(def-binary-op-analyzer analyze-sub-expression make-semantic-sub "-")
+(def-binary-op-analyzer %analyze-sub-binary make-semantic-sub "-")
+
+;; BUG 095: one-argument minus.
+(defun analyze-sub-expression (expr env context location)
+  "Analyzes a `(- ...)` expression.  With two arguments, subtraction.  With ONE, negation -- analyzed as
+   (* x -1), exact IEEE negation including -0.0 and infinities (BUG 095)."
+  (if (= (length expr) 2)
+      (progn
+        (log:debug "BUG 095: unary minus ~s analyzed as (* x -1)" expr)
+        (analyze-expression (list '* (second expr) -1) env context location))
+      (%analyze-sub-binary expr env context location)))
 (def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
 (def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
@@ -752,6 +762,75 @@ set!  analyzer's behavior in analysis/structs.lisp."
 
 ;; src/analysis/ops.lisp -- whole-function replacement of register-ops-analyzers
 ;; adding mod and rem registrations.
+;;;; Endeavour 176 -- (type-min T), (type-max T), (type-infinity T): typed constants.  For floating-point
+;;;; T, type-min / type-max are the FINITE extremes in every precision context (not C's FLT_MIN).
+
+(defun %type-extreme-scalar-info (expr location)
+  "Validate (type-min|type-max|type-infinity T) and return (values T category bits) for T's scalar
+   type, where category is :signed-int, :unsigned-int or :float and bits its width.  Refuses, naming
+   what the argument must be, when T is missing or not a numeric scalar type."
+  (let* ((op-name (string-downcase (symbol-name (car expr))))
+         (type-arg (second expr))
+         (resolved (and (= (length expr) 2) (symbolp type-arg) (resolve-type-alias type-arg)))
+         (ct (and (symbolp resolved) (gethash resolved *crisp-types*)))
+         (category (and ct (crisp-type-category ct))))
+    (unless (member category '(:signed-int :unsigned-int :float))
+      (error 'crisp-compiler-error
+             :message (format nil "~a: ~s is not a numeric scalar type.  (~a T) takes one integer or floating-point type -- int, uint, long, ulong, float, double and the like -- and gives a constant of that type."
+                              op-name (if (= (length expr) 2) type-arg (rest expr)) op-name)
+             :source-location location))
+    (values resolved category (crisp-type-size ct))))
+
+(defun %float-type-extreme (type-sym bits)
+  "The largest FINITE value of floating-point type TYPE-SYM (BITS wide), as a Lisp float."
+  (cond
+    ((= bits 64) most-positive-double-float)
+    ((= bits 32) most-positive-single-float)
+    ;; 16-bit: the two formats differ, so tell them apart by name.
+    ((string-equal (symbol-name type-sym) "BFLOAT16") 3.3895314e38) ; 0x7F7F
+    (t 65504.0)))                                                    ; half, 0x7BFF
+
+(defun %analyze-type-min (expr env context location)
+  "Analyzer for (type-min T): the most negative value of numeric scalar type T, as a constant of type
+   T.  For a floating-point T that is the most negative FINITE value (see the section header)."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (make-semantic-literal :value-type type-sym
+                           :value (ecase category
+                                    (:signed-int   (- (expt 2 (1- bits))))
+                                    (:unsigned-int 0)
+                                    (:float        (- (%float-type-extreme type-sym bits))))
+                           :source-location location)))
+
+(defun %analyze-type-max (expr env context location)
+  "Analyzer for (type-max T): the most positive value of numeric scalar type T, as a constant of type
+   T.  For a floating-point T that is the most positive FINITE value (see the section header)."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (make-semantic-literal :value-type type-sym
+                           :value (ecase category
+                                    (:signed-int   (1- (expt 2 (1- bits))))
+                                    (:unsigned-int (1- (expt 2 bits)))
+                                    (:float        (%float-type-extreme type-sym bits)))
+                           :source-location location)))
+
+(defun %analyze-type-infinity (expr env context location)
+  "Analyzer for (type-infinity T): positive infinity, as a constant of floating-point type T.  Negate it
+   for negative infinity.  Meaningful under :ieee precision; an integer T has no infinity and is
+   refused."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (unless (eq category :float)
+      (error 'crisp-compiler-error
+             :message (format nil "type-infinity: ~(~a~) has no infinity -- only floating-point types do.  The largest ~(~a~) is (type-max ~(~a~))."
+                              type-sym type-sym type-sym)
+             :source-location location))
+    (make-semantic-literal :value-type type-sym
+                           :value (if (= bits 64)
+                                      sb-ext:double-float-positive-infinity
+                                      sb-ext:single-float-positive-infinity)
+                           :source-location location)))
+
 (defun register-ops-analyzers ()
   "Registers all expression analyzer functions.
 Redefined for 082-atomics to add atomic RMW op analyzers.
@@ -883,7 +962,13 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                         ("ATOMIC-BINOP!"             %analyze-atomic-binop!)
                         ("ATOMIC-OP!"                %analyze-atomic-op!)
                         ("MIN"                       %analyze-min-expression)
-                        ("MAX"                       %analyze-max-expression)))
+                        ("MAX"                       %analyze-max-expression)
+                        ;; 176: typed constants for reduction identities (and anything else).
+                        ("TYPE-MIN"                  %analyze-type-min)
+                        ("TYPE-MAX"                  %analyze-type-max)
+                        ("TYPE-INFINITY"             %analyze-type-infinity)
+                        ;; 176 Phase 2b: the identity check a fused grid-reduce! expansion carries.
+                        ("%CHECK-REDUCTION-IDENTITY" %analyze-check-reduction-identity)))
           (setf (gethash (intern (first pair) pkg) *expression-analyzers*)
                 (second pair)))))))
 
@@ -960,9 +1045,641 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (set! ,var ,(%175-apply-binop fn `(shuffle-xor ,var ,s) var)))
        (compiler-no-op))))
 
+;;;; Endeavour 176 Phases 1-3 -- grid-reduce! and the MULTI-VARIABLE reductions.
+;;;;   grid-reduce! (a macro) rewrites into grid-reduce-atomic! / -cas! / -last-man! by :strategy.
+;;;;   Shape decides the form: a clause list first is INDEPENDENT; #'f then a clause list is DEPENDENT.
+;;;;   The FORWARD (analyzers + Pass-1 scanner, which see the same form) lowers both FUSED -- one sweep,
+;;;;   one barrier sequence, one last-man election.  The AD path (ANF) SPLITS an independent call per
+;;;;   clause so the existing VJPs apply; a dependent call is refused there (BUG 098).
+;;;;   Design: tests/spec/176-reduce-multi/reduce-multi.md and the reductions excerpt.
+
+(defparameter *176-grid-reduce-strategies*
+  '((:atomic            "GRID-REDUCE-ATOMIC!"   (:local-scratch-vec :message))
+    (:cas               "GRID-REDUCE-CAS!"      (:local-scratch-vec :message))
+    (:last-man-standing "GRID-REDUCE-LAST-MAN!" (:local-scratch-vec :global-scratch-vec :atomic-counter
+                                                 :election-flag-cell :message)))
+  "Endeavour 176.  grid-reduce!'s strategies: the :strategy keyword, the construct it becomes, and the
+   keys that construct accepts (:strategy itself is consumed by grid-reduce!).")
+
+(defmacro grid-reduce! (&whole form &rest args)
+  "(grid-reduce! fn var identity return-cell &key strategy message ...): a grid-wide reduction of VAR with
+   binop FN and IDENTITY into RETURN-CELL.  Phase 1 is reduce-workgroup; Phase 2 is :strategy -- :atomic,
+   :cas or :last-man-standing (the default).  Scratch is implicit unless passed.  See %grid-reduce!-expand."
+  (declare (ignore args))
+  (%grid-reduce!-expand form))
+
+(defun %function-form-p (x)
+  "T when X is #'f, i.e. (function f)."
+  (and (consp x) (symbolp (car x)) (string-equal (symbol-name (car x)) "FUNCTION")))
+
+(defun %reduction-call-shape (form)
+  "Endeavour 176.  :independent when FORM's first argument is a list of clauses; :dependent when it is
+   #'f followed by a list of clauses; :single otherwise.  Decided by shape alone, so it works in every
+   pass, before anything is analyzed."
+  (let ((a1 (second form)) (a2 (third form)))
+    (cond ((and (consp a1) (consp (car a1))) :independent)
+          ((and (%function-form-p a1) (consp a2) (consp (car a2))) :dependent)
+          (t :single))))
+
+(defun %independent-reduction-form-p (form)
+  "T when FORM is an independent reduce-warp / reduce-workgroup / grid-reduce! call."
+  (and (consp form) (symbolp (car form))
+       (assoc (symbol-name (car form)) *176-independent-forms* :test #'string-equal)
+       (eq (%reduction-call-shape form) :independent)))
+
+(defun %independent-reduction-expand (form)
+  "Endeavour 176 Phase 2a.  An independent reduction FORM as a PROGN of single-variable calls of the same
+   operator (same symbol, so same package), one per clause.  Validates first: each clause's shape and
+   keys, the call's keys, and that no variable appears in two clauses.  The per-reduction arguments --
+   reduce-warp's ACTIVE-THREADS, the call's :strategy / :message -- go to every single call."
+  (let* ((op (car form))
+         (name (symbol-name op))
+         (spec (assoc name *176-independent-forms* :test #'string-equal))
+         (min-len (second spec))
+         (clause-keys (third spec))
+         (call-keys (fourth spec))
+         (op-name (string-downcase name))
+         (clauses (second form))
+         (rest (cddr form))
+         (seen '()))
+    (flet ((fail (fmt &rest args)
+             (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil)))
+      ;; the call's own arguments after the clause list
+      (if (string-equal name "REDUCE-WARP")
+          (when (> (length rest) 1)
+            (fail "~a: an independent call is (reduce-warp (clause ...) &optional active-threads); got extra arguments ~s." op-name (rest rest)))
+          (progn
+            (unless (evenp (length rest))
+              (fail "~a: the call's keyword arguments ~s are not key/value pairs." op-name rest))
+            (loop for (k nil) on rest by #'cddr
+                  unless (member k call-keys)
+                    do (fail "~a: ~s is not a key of an independent call, which takes ~{~s~^, ~}.~@[  (A shared :atomic-counter / :election-flag-cell comes with the fused lowering.)~]"
+                             op-name k call-keys (member k '(:atomic-counter :election-flag-cell))))))
+      (let ((singles
+              (loop for clause in clauses
+                    collect
+                    (progn
+                      (unless (and (consp clause) (>= (length clause) min-len)
+                                   (evenp (- (length clause) min-len))
+                                   (%function-form-p (first clause))
+                                   (symbolp (second clause)) (second clause))
+                        (fail "~a: malformed clause ~s.  An independent clause is (fn var identity~a~@[ &key ~{~(~s~)~^ ~}~])."
+                              op-name clause (if (= min-len 4) " return-cell" "") clause-keys))
+                      (let ((var (second clause)))
+                        (when (member var seen)
+                          (fail "~a: the variable ~a appears in more than one clause.  Each clause overwrites its variable with its own result, so a variable may be reduced by only one clause." op-name var))
+                        (push var seen))
+                      (loop for (k nil) on (nthcdr min-len clause) by #'cddr
+                            unless (member k clause-keys)
+                              do (fail "~a: unknown clause key ~s in ~s.  A clause takes ~:[no keys~;~:*~{~s~^, ~}~]." op-name k clause clause-keys))
+                      `(,op ,@clause ,@rest)))))
+        (log:debug "176: independent ~a -> ~d single calls" op-name (length singles))
+        `(progn ,@singles)))))
+
+(defparameter *176-independent-forms*
+  '(("REDUCE-WARP"      3 ()                                       ())
+    ("REDUCE-WORKGROUP" 3 (:return-vec :local-scratch-vec)          (:message))
+    ("GRID-REDUCE!"     4 (:local-scratch-vec :global-scratch-vec)
+                          (:strategy :message :atomic-counter :election-flag-cell)))
+  "Endeavour 176.  For each construct with an independent form: the clause's positional length, the keys a
+   clause may carry (per-variable resources), and the keys the call may carry (per-reduction).")
+
+(defun %clause-key (clause min-len key)
+  "The value of KEY among CLAUSE's keywords (after its MIN-LEN positional elements), or NIL."
+  (loop for (k v) on (nthcdr min-len clause) by #'cddr when (eq k key) return v))
+
+(defun %fused-reduce-warp-form (expr)
+  "Endeavour 176 Phase 2b.  An independent reduce-warp as ONE butterfly: per iteration, every clause's
+   variable is combined with its shuffle partner.  Same steps as %reduce-warp-expand, k variables at once;
+   ACTIVE-THREADS applies to every clause (its lanes past the count take that clause's identity)."
+  (%independent-reduction-expand expr)            ; validation only
+  (let* ((clauses (second expr))
+         (active-threads (third expr))
+         (s (gensym "RW-S")))
+    (%reduce-warp-check-active-threads active-threads)
+    `(progn
+       (%warp-collective-check :reduce-warp)
+       ,@(when active-threads
+           (loop for (nil var identity) in clauses
+                 collect `(set! ,var (if (< (to-int (warp-lane)) ,active-threads) ,var ,identity))))
+       (dec-times-by-half+ (,s ,(floor (%173-warp-size) 2))
+         ,@(loop for (fn var) in clauses
+                 collect `(set! ,var ,(%175-apply-binop fn `(shuffle-xor ,var ,s) var))))
+       (compiler-no-op))))
+
+(defun %fused-reduce-workgroup-form (expr &optional env context location)
+  "Endeavour 176 Phase 2b.  An independent reduce-workgroup as ONE sweep: a fused warp reduction of every
+   clause, one barrier, one halving loop that combines every clause's per-warp partials, one read-back,
+   and one leader block for every :return-vec -- %reduce-workgroup-expand's steps, k variables at once.
+   A clause without :local-scratch-vec gets implicit scratch typed from ITS identity (a LET around the
+   whole form, deterministic names, so the Pass-1 scan and the analyzer see the same buffers).  With ENV
+   (the analyzer) each implicitly-scratched clause's identity is also checked against its variable."
+  (%independent-reduction-expand expr)            ; validation only
+  (let* ((op (car expr))
+         (clauses (second expr))
+         (implicit '())
+         (scratch
+           (loop for clause in clauses
+                 collect (destructuring-bind (fn var identity &rest keys) clause
+                           (declare (ignore fn keys))
+                           (or (%clause-key clause 3 :local-scratch-vec)
+                               (let ((elem-type (%identity-scan-type identity)))
+                                 (unless elem-type
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "reduce-workgroup: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass :local-scratch-vec in that clause yourself." identity)
+                                          :source-location location))
+                                 (when env
+                                   (%check-identity-matches-variable "reduce-workgroup" var identity elem-type
+                                                                     env context location))
+                                 (let ((name (%implicit-scratch-binding-name var :local-scratch-vec)))
+                                   (push (list name (%implicit-scratch-alloc-form :local-scratch-vec elem-type))
+                                         implicit)
+                                   name))))))
+         (return-vecs (loop for clause in clauses collect (%clause-key clause 3 :return-vec)))
+         (s (gensym "RWG-S")) (nw (gensym "RWG-NW")) (lid (gensym "RWG-LID"))
+         (warp-op (intern "REDUCE-WARP" (or (symbol-package op) (find-package :crisp-language))))
+         (body
+           `(progn
+              (,warp-op ,(loop for (fn var identity) in clauses collect (list fn var identity)))
+              (when-thread-in-warp-is 0
+                ,@(loop for (nil var) in clauses for sc in scratch
+                        collect `(set! (~ ,sc (to-int (warp-id))) ,var)))
+              (sync-workgroup)
+              (let ((,nw (/ (get-local-linear-size) (to-ulong (warp-size))))
+                    (,lid (to-int (get-local-linear-id))))
+                (dec-times-by-half+ (,s (/ ,nw 2ul))
+                  (when (< ,lid (to-int ,s))
+                    ,@(loop for (fn) in clauses for sc in scratch
+                            collect `(set! (~ ,sc ,lid)
+                                           ,(%175-apply-binop fn `(~ ,sc ,lid) `(~ ,sc (+ ,lid (to-int ,s)))))))
+                  (sync-workgroup))
+                ,@(loop for (nil var) in clauses for sc in scratch
+                        collect `(set! ,var (~ ,sc 0))))
+              ,@(when (some #'identity return-vecs)
+                  `((when-thread-in-group-is 0
+                      ,@(loop for (nil var) in clauses for rv in return-vecs
+                              when rv collect `(set! (~ ,rv (to-int (get-workgroup-id 0))) ,var)))))
+              (compiler-no-op))))
+    (if implicit `(let ,(nreverse implicit) ,body) body)))
+
+(defun %analyze-check-reduction-identity (expr env context location)
+  "Analyzer for (%check-reduction-identity OP-NAME VAR IDENTITY TYPE): the identity-vs-variable type check
+   for a fused grid-reduce!, whose macro expansion has no environment to do it in.  Emits nothing."
+  (destructuring-bind (op-name var identity type) (rest expr)
+    (%check-identity-matches-variable op-name var identity type env context location))
+  (make-semantic-literal :value-type 'int :value 0 :source-location location))
+
+(defun %fused-grid-reduce-form (form)
+  "Endeavour 176 Phase 2b.  An independent grid-reduce!, lowered with its work done once for all clauses.
+   Phase 1 is ONE independent reduce-workgroup (itself fused).  Phase 2 by :strategy --
+     :atomic / :cas          one leader block applying each clause's atomic / CAS to its return cell;
+     :last-man-standing      every partial written, ONE ticket from ONE counter, ONE election flag, and
+                             the last workgroup's ONE fused sweep writing every return cell.
+   Scratch a clause or the call leaves out is implicit (typed from each identity; the shared counter and
+   flag are uint and named after the first clause's variable).  Refuses an unknown strategy, a key the
+   strategy does not use, and (for :atomic) an operator with no hardware atomic -- each with the message
+   the single-variable form gives."
+  (%independent-reduction-expand form)            ; clause shape, clause keys, duplicates, call keys
+  (let* ((op (car form))
+         (pkg (or (symbol-package op) (find-package :crisp-language)))
+         (clauses (second form))
+         (rest (cddr form))
+         (strategy-given (loop for (k v) on rest by #'cddr thereis (and (eq k :strategy) (list v))))
+         (strategy (if strategy-given (first strategy-given) :last-man-standing))
+         (rwg (intern "REDUCE-WORKGROUP" pkg)))
+    (flet ((fail (fmt &rest args)
+             (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil)))
+      (unless (keywordp strategy)
+        (fail "grid-reduce!: :strategy ~s must be known at compile time -- write one of :atomic, :cas or :last-man-standing.  The strategy decides which construct the call becomes, so a value computed at run time cannot choose it." strategy))
+      (unless (member strategy '(:atomic :cas :last-man-standing))
+        (fail "grid-reduce!: unknown :strategy ~s.  The strategy must be one of :atomic, :cas or :last-man-standing (the default).  For a two-kernel reduction use grid-reduce-second-stage! in the second kernel." strategy))
+      ;; keys the strategy does not use -- call level, then clause level
+      (let ((call-ok (if (eq strategy :last-man-standing)
+                         '(:strategy :message :atomic-counter :election-flag-cell)
+                         '(:strategy :message)))
+            (clause-ok (if (eq strategy :last-man-standing)
+                           '(:local-scratch-vec :global-scratch-vec)
+                           '(:local-scratch-vec))))
+        (loop for (k nil) on rest by #'cddr
+              unless (member k call-ok)
+                do (fail "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~}." k strategy call-ok))
+        (dolist (clause clauses)
+          (loop for (k nil) on (nthcdr 4 clause) by #'cddr
+                unless (member k clause-ok)
+                  do (fail "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~} per clause." k strategy clause-ok))))
+      (ecase strategy
+        ((:atomic :cas)
+         (when (eq strategy :atomic)
+           (dolist (clause clauses)
+             (unless (%grid-atomic-op-name (first clause))
+               (fail "grid-reduce-atomic!: ~s has no native hardware atomic, so there is no instruction for phase 2 to emit.  Only +, min and max qualify -- the hardware provides exactly those.  For an arbitrary commutative operator use grid-reduce-cas! (a CAS loop; no extra memory, high contention) or grid-reduce-last-man! (a global scratch buffer; no contention)." (first clause)))))
+         `(progn
+            (,rwg ,(loop for clause in clauses
+                         collect (destructuring-bind (fn var identity out &rest keys) clause
+                                   (declare (ignore out))
+                                   `(,fn ,var ,identity ,@keys))))
+            (when-thread-in-group-is 0
+              ,@(loop for (fn var nil out) in clauses
+                      collect (if (eq strategy :atomic)
+                                  `(,(intern (%grid-atomic-op-name fn) (find-package :crisp.compiler)) (~ ,out 0) ,var)
+                                  `(atomic-binop! (~ ,out 0) ,fn ,var))))
+            (compiler-no-op)))
+        (:last-man-standing
+         (let ((lets '()) (checks '())
+               (v1 (second (first clauses))))
+           (labels ((supply (given var identity key)
+                      ;; GIVEN scratch, or an implicit LET binding with a deterministic name, typed from
+                      ;; IDENTITY (the counter and flag are always uint)
+                      (or given
+                          (let ((elem-type (if (member key '(:atomic-counter :election-flag-cell))
+                                               'uint
+                                               (%identity-scan-type identity))))
+                            (unless elem-type
+                              (fail "grid-reduce!: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass that clause's scratch yourself." identity))
+                            (let ((name (%implicit-scratch-binding-name var key)))
+                              (push (list name (%implicit-scratch-alloc-form key elem-type)) lets)
+                              (unless (member key '(:atomic-counter :election-flag-cell))
+                                (pushnew `(%check-reduction-identity "grid-reduce!" ,var ,identity ,elem-type)
+                                         checks :test #'equal))
+                              name)))))
+             (let* ((svs (loop for c in clauses
+                               collect (supply (%clause-key c 4 :local-scratch-vec) (second c) (third c) :local-scratch-vec)))
+                    (gvs (loop for c in clauses
+                               collect (supply (%clause-key c 4 :global-scratch-vec) (second c) (third c) :global-scratch-vec)))
+                    (ctr (supply (getf rest :atomic-counter) v1 nil :atomic-counter))
+                    (flag (supply (getf rest :election-flag-cell) v1 nil :election-flag-cell))
+                    (lid (gensym "LM-LID"))
+                    (ng (gensym "LM-NG"))
+                    (vals (loop repeat (length clauses) collect (gensym "LM-VAL")))
+                    (body
+                      `(progn
+                         ,@(reverse checks)
+                         (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
+                                       "grid-reduce!: the number of workgroups exceeds local_work_size, so the last-man final sweep cannot cover every partial in one pass.")
+                         ;; Phase 1 -- ONE fused workgroup reduction of every clause
+                         (,rwg ,(loop for c in clauses for sv in svs
+                                      collect `(,(first c) ,(second c) ,(third c) :local-scratch-vec ,sv)))
+                         ;; every partial written, then ONE ticket, ONE election
+                         (when-thread-in-group-is 0
+                           ,@(loop for c in clauses for gv in gvs
+                                   collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(second c))))
+                         (mem-fence)
+                         (when-thread-in-group-is 0
+                           (set! (~ ,flag)
+                                 (if (= (atomic-add! (~ ,ctr) 1u)
+                                        (- (to-uint (get-num-groups 0)) 1u))
+                                     1u 0u)))
+                         (sync-workgroup)
+                         ;; the LAST workgroup sweeps every clause's partials in ONE fused reduction
+                         (when+ (= (~ ,flag) 1u)
+                           (let ((,lid (to-int (get-local-linear-id)))
+                                 (,ng  (to-int (get-num-groups 0))))
+                             (let ,(loop for c in clauses for gv in gvs for val in vals
+                                         collect `(,val (if (< ,lid ,ng) (~ ,gv ,lid) ,(third c))))
+                               (,rwg ,(loop for c in clauses for sv in svs for val in vals
+                                            collect `(,(first c) ,val ,(third c) :local-scratch-vec ,sv)))
+                               (when-thread-in-group-is 0
+                                 ,@(loop for c in clauses for val in vals
+                                         collect `(set! (~ ,(fourth c) 0) ,val))))))
+                         (compiler-no-op))))
+               (if lets `(let ,(nreverse lets) ,body) body)))))))))
+
+(defun %independent-reduction-split-for-ad (form)
+  "Endeavour 176 Phase 2b.  The AD path's view of an independent call: the Phase-2a per-clause SPLIT, so the
+   backward walk meets only single forms with their own VJPs.  A shared :atomic-counter /
+   :election-flag-cell is DROPPED here -- the split runs one election per clause, and elections must not
+   share a counter; each single then gets its own implicit one."
+  (let ((rest (loop for (k v) on (cddr form) by #'cddr
+                    unless (member k '(:atomic-counter :election-flag-cell)) append (list k v))))
+    (%independent-reduction-expand (list* (car form) (second form)
+                                          (if (string-equal (symbol-name (car form)) "REDUCE-WARP")
+                                              (cddr form)
+                                              rest)))))
+
+(defparameter *176-dependent-forms*
+  ;; name           min-clause-length  clause keys                               call keys
+  '(("REDUCE-WARP"      2 ()                                       ())
+    ("REDUCE-WORKGROUP" 2 (:return-vec :local-scratch-vec)          (:message))
+    ("GRID-REDUCE!"     3 (:local-scratch-vec :global-scratch-vec)
+                          (:strategy :message :atomic-counter :election-flag-cell)))
+  "Endeavour 176.  For each construct with a dependent form: the clause's positional length (var identity,
+   plus return-cell at grid level), the keys a clause may carry, and the keys the call may carry.")
+
+(defun %dependent-reduction-form-p (form)
+  "T when FORM is a dependent reduce-warp / reduce-workgroup / grid-reduce! call."
+  (and (consp form) (symbolp (car form))
+       (assoc (symbol-name (car form)) *176-dependent-forms* :test #'string-equal)
+       (eq (%reduction-call-shape form) :dependent)))
+
+(defun %dependent-reduction-validate (form)
+  "Endeavour 176 Phase 3.  Validate a dependent call FORM: the call's own arguments, each clause's shape and
+   keys, and that no variable appears in two clauses.  Returns the clause list."
+  (let* ((op (car form))
+         (name (symbol-name op))
+         (spec (assoc name *176-dependent-forms* :test #'string-equal))
+         (min-len (second spec))
+         (clause-keys (third spec))
+         (call-keys (fourth spec))
+         (op-name (string-downcase name))
+         (clauses (third form))
+         (rest (cdddr form))
+         (seen '()))
+    (flet ((fail (fmt &rest args)
+             (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil)))
+      (if (string-equal name "REDUCE-WARP")
+          (when (> (length rest) 1)
+            (fail "~a: a dependent call is (reduce-warp combiner (clause ...) &optional active-threads); got extra arguments ~s." op-name (rest rest)))
+          (progn
+            (unless (evenp (length rest))
+              (fail "~a: the call's keyword arguments ~s are not key/value pairs." op-name rest))
+            (loop for (k nil) on rest by #'cddr
+                  unless (member k call-keys)
+                    do (fail "~a: ~s is not a key of a dependent call, which takes ~{~s~^, ~}." op-name k call-keys))))
+      (dolist (clause clauses)
+        (unless (and (consp clause) (>= (length clause) min-len)
+                     (evenp (- (length clause) min-len))
+                     (symbolp (first clause)) (first clause))
+          (fail "~a: malformed clause ~s.  A dependent clause is (var identity~a~@[ &key ~{~(~s~)~^ ~}~])."
+                op-name clause (if (= min-len 3) " return-cell" "") clause-keys))
+        (let ((var (first clause)))
+          (when (member var seen)
+            (fail "~a: the variable ~a appears in more than one clause.  Each clause names one value of the state, so a variable may appear only once." op-name var))
+          (push var seen))
+        (loop for (k nil) on (nthcdr min-len clause) by #'cddr
+              unless (member k clause-keys)
+                do (fail "~a: unknown clause key ~s in ~s.  A clause takes ~:[no keys~;~:*~{~s~^, ~}~]." op-name k clause clause-keys)))
+      clauses)))
+
+(defun %combiner-call (combiner args)
+  "The form calling COMBINER on ARGS: a direct call for a literal #'f (better code, and FUNCALL is not
+   differentiable), else FUNCALL -- as %175-apply-binop does for the two-argument case."
+  (if (%function-form-p combiner)
+      (cons (second combiner) args)
+      (list* 'funcall combiner args)))
+
+(defun %check-dependent-combiner (op-name combiner clauses env context location)
+  "Endeavour 176 Phase 3.  A literal #'COMBINER must have a signature #'(T1..Tk T1..Tk => T1..Tk) where Ti is
+   the type of clause i's variable -- state A then state B, each in clause order.  Refused otherwise,
+   showing the signature the clauses need and the one(s) the combiner has.  An unknown function is left
+   for the ordinary call analysis to report."
+  (when (%function-form-p combiner)
+    (let* ((fname (second combiner))
+           (sigs (gethash fname *function-table*))
+           (norm (lambda (ty) (let ((r (resolve-type-alias ty))) (if (symbolp r) (symbol-name r) r))))
+           (var-types (mapcar (lambda (c)
+                                (resolve-type-alias
+                                 (semantic-node-type (analyze-expression (first c) env context location))))
+                              clauses))
+           (want-params (append var-types var-types)))
+      (when sigs
+        (unless (find-if (lambda (sig)
+                           (let ((ps (mapcar #'parameter-def-type (function-signature-parameters sig)))
+                                 (rs (remove nil (function-signature-return-types sig))))
+                             (and (= (length ps) (length want-params))
+                                  (= (length rs) (length var-types))
+                                  (every (lambda (a b) (equal (funcall norm a) (funcall norm b))) ps want-params)
+                                  (every (lambda (a b) (equal (funcall norm a) (funcall norm b))) rs var-types))))
+                         sigs)
+          (error 'crisp-compiler-error
+                 :message (format nil "~a: the combiner must be #'(~{~(~a~)~^ ~} ~{~(~a~)~^ ~} => ~{~(~a~)~^ ~}) to reduce these clauses -- two states, A then B, each in clause order -- but ~(~a~) is ~{#'(~{~(~a~)~^ ~} => ~{~(~a~)~^ ~})~^ or ~}."
+                                  op-name var-types var-types var-types fname
+                                  (mapcar (lambda (sig)
+                                            (list (mapcar #'parameter-def-type (function-signature-parameters sig))
+                                                  (remove nil (function-signature-return-types sig))))
+                                          sigs))
+                 :source-location location))))))
+
+(defun %fused-reduce-warp-dependent-form (expr)
+  "Endeavour 176 Phase 3.  A dependent reduce-warp as one butterfly: per iteration, every variable is
+   shuffled, then the combiner is called ONCE with (partner's state, own state) and its k results replace
+   the state.  ACTIVE-THREADS gives lanes past the count the IDENTITY STATE."
+  (let* ((combiner (second expr))
+         (clauses (%dependent-reduction-validate expr))
+         (active-threads (fourth expr))
+         (s (gensym "RWD-S"))
+         (others (loop repeat (length clauses) collect (gensym "RWD-OTHER")))
+         (news (loop repeat (length clauses) collect (gensym "RWD-NEW"))))
+    (%reduce-warp-check-active-threads active-threads)
+    `(progn
+       (%warp-collective-check :reduce-warp)
+       ,@(when active-threads
+           (loop for (var identity) in clauses
+                 collect `(set! ,var (if (< (to-int (warp-lane)) ,active-threads) ,var ,identity))))
+       (dec-times-by-half+ (,s ,(floor (%173-warp-size) 2))
+         (let ,(loop for (var) in clauses for o in others collect `(,o (shuffle-xor ,var ,s)))
+           (let ((,@news ,(%combiner-call combiner (append others (mapcar #'first clauses)))))
+             ,@(loop for (var) in clauses for n in news collect `(set! ,var ,n)))))
+       (compiler-no-op))))
+
+(defun %fused-reduce-workgroup-dependent-form (expr &optional env context location)
+  "Endeavour 176 Phase 3.  A dependent reduce-workgroup: a dependent reduce-warp, every variable's per-warp
+   partial written to its own scratch, one barrier, one halving loop whose step calls the combiner ONCE on
+   (own partials, partner partials), one read-back, one leader block for every :return-vec.  Implicit
+   scratch per clause is typed from its identity (with ENV, also checked against the variable)."
+  (let* ((op (car expr))
+         (combiner (second expr))
+         (clauses (%dependent-reduction-validate expr))
+         (implicit '())
+         (scratch
+           (loop for clause in clauses
+                 collect (destructuring-bind (var identity &rest keys) clause
+                           (declare (ignore keys))
+                           (or (%clause-key clause 2 :local-scratch-vec)
+                               (let ((elem-type (%identity-scan-type identity)))
+                                 (unless elem-type
+                                   (error 'crisp-compiler-error
+                                          :message (format nil "reduce-workgroup: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass :local-scratch-vec in that clause yourself." identity)
+                                          :source-location location))
+                                 (when env
+                                   (%check-identity-matches-variable "reduce-workgroup" var identity elem-type
+                                                                     env context location))
+                                 (let ((name (%implicit-scratch-binding-name var :local-scratch-vec)))
+                                   (push (list name (%implicit-scratch-alloc-form :local-scratch-vec elem-type))
+                                         implicit)
+                                   name))))))
+         (return-vecs (loop for clause in clauses collect (%clause-key clause 2 :return-vec)))
+         (s (gensym "RWGD-S")) (nw (gensym "RWGD-NW")) (lid (gensym "RWGD-LID"))
+         (news (loop repeat (length clauses) collect (gensym "RWGD-NEW")))
+         (warp-op (intern "REDUCE-WARP" (or (symbol-package op) (find-package :crisp-language))))
+         (body
+           `(progn
+              (,warp-op ,combiner ,(loop for (var identity) in clauses collect (list var identity)))
+              (when-thread-in-warp-is 0
+                ,@(loop for (var) in clauses for sc in scratch
+                        collect `(set! (~ ,sc (to-int (warp-id))) ,var)))
+              (sync-workgroup)
+              (let ((,nw (/ (get-local-linear-size) (to-ulong (warp-size))))
+                    (,lid (to-int (get-local-linear-id))))
+                (dec-times-by-half+ (,s (/ ,nw 2ul))
+                  (when (< ,lid (to-int ,s))
+                    (let ((,@news ,(%combiner-call combiner
+                                                   (append (loop for sc in scratch collect `(~ ,sc ,lid))
+                                                           (loop for sc in scratch
+                                                                 collect `(~ ,sc (+ ,lid (to-int ,s))))))))
+                      ,@(loop for sc in scratch for n in news collect `(set! (~ ,sc ,lid) ,n))))
+                  (sync-workgroup))
+                ,@(loop for (var) in clauses for sc in scratch
+                        collect `(set! ,var (~ ,sc 0))))
+              ,@(when (some #'identity return-vecs)
+                  `((when-thread-in-group-is 0
+                      ,@(loop for (var) in clauses for rv in return-vecs
+                              when rv collect `(set! (~ ,rv (to-int (get-workgroup-id 0))) ,var)))))
+              (compiler-no-op))))
+    (if implicit `(let ,(nreverse implicit) ,body) body)))
+
+(defun %fused-grid-reduce-dependent-form (form)
+  "Endeavour 176 Phase 3.  A dependent grid-reduce!: :last-man-standing only (:atomic and :cas commit one
+   word at a time, so they cannot keep a state together -- a Crisp limitation; packing a small state into
+   one 64-bit CAS is possible in principle).  Phase 1 is a dependent reduce-workgroup; every variable's
+   partial is written, ONE ticket from ONE counter decides the last workgroup, which runs a dependent
+   reduce-workgroup over the partials and writes every return cell.  Scratch left out is implicit."
+  (let* ((op (car form))
+         (pkg (or (symbol-package op) (find-package :crisp-language)))
+         (combiner (second form))
+         (clauses (%dependent-reduction-validate form))
+         (rest (cdddr form))
+         (strategy-given (loop for (k v) on rest by #'cddr thereis (and (eq k :strategy) (list v))))
+         (strategy (if strategy-given (first strategy-given) :last-man-standing))
+         (rwg (intern "REDUCE-WORKGROUP" pkg))
+         (lets '()) (checks '())
+         (v1 (first (first clauses))))
+    (flet ((fail (fmt &rest args)
+             (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil)))
+      (unless (keywordp strategy)
+        (fail "grid-reduce!: :strategy ~s must be known at compile time -- write :last-man-standing (the only strategy a dependent reduction allows)." strategy))
+      (unless (eq strategy :last-man-standing)
+        (fail "grid-reduce!: a dependent reduction works only with :last-man-standing, not ~s.  :atomic and :cas commit one word at a time, so they cannot keep a state's values together (a Crisp limitation: packing a small state into one 64-bit CAS is possible in principle, but Crisp does not do it)." strategy))
+      (labels ((supply (given var identity key)
+                 (or given
+                     (let ((elem-type (if (member key '(:atomic-counter :election-flag-cell))
+                                          'uint
+                                          (%identity-scan-type identity))))
+                       (unless elem-type
+                         (fail "grid-reduce!: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass that clause's scratch yourself." identity))
+                       (let ((name (%implicit-scratch-binding-name var key)))
+                         (push (list name (%implicit-scratch-alloc-form key elem-type)) lets)
+                         (unless (member key '(:atomic-counter :election-flag-cell))
+                           (pushnew `(%check-reduction-identity "grid-reduce!" ,var ,identity ,elem-type)
+                                    checks :test #'equal))
+                         name)))))
+        (let* ((svs (loop for c in clauses
+                          collect (supply (%clause-key c 3 :local-scratch-vec) (first c) (second c) :local-scratch-vec)))
+               (gvs (loop for c in clauses
+                          collect (supply (%clause-key c 3 :global-scratch-vec) (first c) (second c) :global-scratch-vec)))
+               (ctr (supply (getf rest :atomic-counter) v1 nil :atomic-counter))
+               (flag (supply (getf rest :election-flag-cell) v1 nil :election-flag-cell))
+               (lid (gensym "LMD-LID"))
+               (ng (gensym "LMD-NG"))
+               (vals (loop repeat (length clauses) collect (gensym "LMD-VAL")))
+               (body
+                 `(progn
+                    ,@(reverse checks)
+                    (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
+                                  "grid-reduce!: the number of workgroups exceeds local_work_size, so the last-man final sweep cannot cover every partial in one pass.")
+                    (,rwg ,combiner ,(loop for c in clauses for sv in svs
+                                           collect `(,(first c) ,(second c) :local-scratch-vec ,sv)))
+                    (when-thread-in-group-is 0
+                      ,@(loop for c in clauses for gv in gvs
+                              collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(first c))))
+                    (mem-fence)
+                    (when-thread-in-group-is 0
+                      (set! (~ ,flag)
+                            (if (= (atomic-add! (~ ,ctr) 1u)
+                                   (- (to-uint (get-num-groups 0)) 1u))
+                                1u 0u)))
+                    (sync-workgroup)
+                    (when+ (= (~ ,flag) 1u)
+                      (let ((,lid (to-int (get-local-linear-id)))
+                            (,ng  (to-int (get-num-groups 0))))
+                        (let ,(loop for c in clauses for gv in gvs for val in vals
+                                    collect `(,val (if (< ,lid ,ng) (~ ,gv ,lid) ,(second c))))
+                          (,rwg ,combiner ,(loop for c in clauses for sv in svs for val in vals
+                                                 collect `(,val ,(second c) :local-scratch-vec ,sv)))
+                          (when-thread-in-group-is 0
+                            ,@(loop for c in clauses for val in vals
+                                    collect `(set! (~ ,(third c) 0) ,val))))))
+                    (compiler-no-op))))
+          (if lets `(let ,(nreverse lets) ,body) body))))))
+
+(defun %refuse-dependent-autodiff (form)
+  "BUG 098.  The AD path meets a dependent reduction: refuse LOUDLY.  Its variables interact inside a user
+   combiner, so the per-clause split the independent form uses does not apply, and a scratch-based
+   cross-thread reduction differentiated mechanically is silently wrong."
+  (error 'crisp-compiler-error
+         :message (format nil "~(~a~): dependent reductions are not differentiable yet (BUG 098) -- the variables interact inside the combiner ~s, so the backward pass has no rule for them.  Keep this kernel out of differentiation."
+                          (car form) (second form))
+         :source-location nil))
+
+(macrolet ((def-warp-scanners ()
+             `(progn
+                ,@(loop for pkg in '(:crisp.compiler :crisp-language)
+                        collect `(defmethod scan-operator ((op (eql (intern "REDUCE-WARP" (find-package ,pkg)))) args)
+                                   (let ((expr (cons op args)))
+                                     (cond
+                                       ((%independent-reduction-form-p expr)
+                                        (scan-form (ignore-errors (%fused-reduce-warp-form expr))))
+                                       ((%dependent-reduction-form-p expr)
+                                        (scan-form (ignore-errors (%fused-reduce-warp-dependent-form expr))))
+                                       (t (call-next-method)))))))))
+  (def-warp-scanners))
+
+(defun %grid-reduce!-expand (form)
+  "Endeavour 176.  The expansion of grid-reduce!.  An INDEPENDENT call (a clause list) becomes a PROGN of
+   single grid-reduce! calls (%independent-reduction-expand); the dependent form is refused until Phase 3.
+   A single call (grid-reduce! FN VAR IDENTITY RETURN-CELL &key STRATEGY ...) becomes the construct STRATEGY
+   names, minus :strategy -- refusing a missing argument, a non-literal or unknown strategy, and a key the
+   chosen construct does not take.  The target is interned in the CALL's package, because the reductions
+   are distinct symbols in :crisp-language and :crisp.compiler (each registered in both)."
+  (case (%reduction-call-shape form)
+    (:independent (return-from %grid-reduce!-expand (%fused-grid-reduce-form form)))      ; 176 Phase 2b
+    (:dependent   (return-from %grid-reduce!-expand (%fused-grid-reduce-dependent-form form))))   ; 176 Phase 3
+  (let ((op (first form)))
+    (unless (>= (length form) 5)
+      (error 'crisp-compiler-error
+             :message (format nil "grid-reduce!: expected (grid-reduce! fn var identity return-cell &key strategy message), got ~s." form)
+             :source-location nil))
+    (destructuring-bind (fn var identity out &rest keys) (rest form)
+      (unless (evenp (length keys))
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce!: the keyword arguments ~s are not key/value pairs." keys)
+               :source-location nil))
+      (let* ((strategy-given (loop for (k v) on keys by #'cddr thereis (and (eq k :strategy) (list v))))
+             (strategy (if strategy-given (first strategy-given) :last-man-standing))
+             (entry nil))
+        (unless (keywordp strategy)
+          (error 'crisp-compiler-error
+                 :message (format nil "grid-reduce!: :strategy ~s must be known at compile time -- write one of :atomic, :cas or :last-man-standing.  The strategy decides which construct the call becomes, so a value computed at run time cannot choose it." strategy)
+                 :source-location nil))
+        (setf entry (assoc strategy *176-grid-reduce-strategies*))
+        (unless entry
+          (error 'crisp-compiler-error
+                 :message (format nil "grid-reduce!: unknown :strategy ~s.  The strategy must be one of :atomic, :cas or :last-man-standing (the default).  For a two-kernel reduction use grid-reduce-second-stage! in the second kernel." strategy)
+                 :source-location nil))
+        (let ((pass-through '()))
+          (loop for (k v) on keys by #'cddr
+                unless (eq k :strategy)
+                  do (unless (member k (third entry))
+                       (error 'crisp-compiler-error
+                              :message (format nil "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~}." k strategy (third entry))
+                              :source-location nil))
+                     (push v pass-through) (push k pass-through))
+          (let ((target (intern (second entry) (or (and (symbolp op) (symbol-package op))
+                                                   (find-package :crisp-language)))))
+            (log:debug "176: ~s -> ~s" form (list* target fn var identity out pass-through))
+            `(,target ,fn ,var ,identity ,out ,@pass-through)))))))
+
 (defun %analyze-reduce-warp (expr env context location)
-  "Analyzer for reduce-warp -- expands and delegates."
-  (analyze-expression (%reduce-warp-expand expr) env context location))
+  "Analyzer for reduce-warp -- expands and delegates.  176: an independent call is lowered fused
+   (%fused-reduce-warp-form); a dependent call has its combiner checked against the clauses and is lowered
+   fused (%fused-reduce-warp-dependent-form).  Every dependent form reaches this analyzer, so the
+   combiner check covers reduce-workgroup and grid-reduce! too."
+  (case (%reduction-call-shape expr)
+    (:independent (analyze-expression (%fused-reduce-warp-form expr) env context location))
+    (:dependent
+     (%check-dependent-combiner "reduce-warp" (second expr) (%dependent-reduction-validate expr)
+                                env context location)
+     (analyze-expression (%fused-reduce-warp-dependent-form expr) env context location))
+    (t (analyze-expression (%reduce-warp-expand expr) env context location))))
 
 (defun %reduce-workgroup-expand (expr)
   "The forward lowering of (reduce-workgroup FN VAR IDENTITY &key ...).  A plain function, not a
@@ -1010,10 +1727,190 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                     (set! (~ ,return-vec (to-int (get-workgroup-id 0))) ,var))))
        (compiler-no-op))))
 
+;;;; Endeavour 176 -- IMPLICIT SCRATCH.  When a reduction's scratch keys are omitted, the reduction is
+;;;; rewritten -- in BOTH passes, by %implicit-scratch-form -- into a LET of make-scratch-* around the
+;;;; reduction with the keys supplied.  Pass 1 scans that let (scan-operator methods below), so the
+;;;; existing implicit-parameter plumbing carries the scratch to the kernel; Pass 2 analyzes the same
+;;;; let.  The element type comes from the IDENTITY, read at scan time.  Last-man's global partials are
+;;;; sized :match-workgroup-size, which its num_workgroups <= local_work_size limit makes sufficient.
+;;;; Design: tests/spec/176-reduce-multi/reduce-multi.md.
+
+(defparameter *176-implicit-scratch-specs*
+  '(("REDUCE-WORKGROUP"          4 (:local-scratch-vec))
+    ("GRID-REDUCE-ATOMIC!"       5 (:local-scratch-vec))
+    ("GRID-REDUCE-CAS!"          5 (:local-scratch-vec))
+    ("GRID-REDUCE-LAST-MAN!"     5 (:local-scratch-vec :global-scratch-vec :atomic-counter :election-flag-cell))
+    ("GRID-REDUCE-SECOND-STAGE!" 6 (:local-scratch-vec)))
+  "Endeavour 176.  For each reduction Crisp can supply scratch for: the operator's name, how many
+   leading elements of the form (operator included) are positional, and the scratch keys Crisp
+   allocates when the caller leaves them out, in the order they are bound.")
+
+(defun %implicit-scratch-spec (op)
+  "The *176-implicit-scratch-specs* entry for operator symbol OP, or NIL.  Matched by name, since the
+   reductions are interned in both :crisp.compiler and :crisp-language."
+  (and (symbolp op)
+       (assoc (symbol-name op) *176-implicit-scratch-specs* :test #'string-equal)))
+
+(defun %implicit-scratch-missing-keys (expr)
+  "The scratch keys of reduction form EXPR that Crisp can supply and the caller left out (or passed as
+   NIL), in table order; NIL when EXPR is not such a reduction or supplies them all.  Walks the keyword
+   tail as pairs rather than with GETF, so a malformed tail is left for the expander to report."
+  (let ((spec (%implicit-scratch-spec (car expr))))
+    (when spec
+      (let ((tail (nthcdr (second spec) expr)))
+        (remove-if (lambda (key)
+                     (loop for (k v) on tail by #'cddr thereis (and (eq k key) v)))
+                   (third spec))))))
+
+(defun %scan-type-by-name (name)
+  "The Crisp type symbol whose name is NAME (a string), or NIL.  Looked up in *crisp-types* so the
+   answer is the symbol the rest of the compiler uses."
+  (loop for k being the hash-keys of *crisp-types*
+        when (and (symbolp k) (string-equal (symbol-name k) name))
+          return k))
+
+(defun %identity-scan-type (form)
+  "Endeavour 176.  The Crisp type of identity FORM, read from the form ALONE -- no environment, since
+   this runs in the Pass-1 scan, before any variable has a type.  NIL when the type is not visible.
+
+   Recognised, mirroring the analyzer's own literal typing (analyze-expression Case 1/1.1/2):
+     integer literal                      -> int
+     float literal                        -> float   (all float literals are float)
+     suffixed literal (0ul, 1.5f, 255uc)  -> its suffix type (%try-parse-typed-literal)
+     (type-min T) (type-max T) (type-infinity T) -> T
+     (- X)                                -> the type of X
+     (to-T x)                             -> T, when T names a Crisp type"
+  (cond
+    ((integerp form) 'int)
+    ((floatp form) 'float)
+    ((and (symbolp form) form (not (keywordp form)))
+     (let ((lit (ignore-errors (%try-parse-typed-literal form nil))))
+       (and lit (semantic-node-type lit))))
+    ((and (consp form) (symbolp (car form)))
+     (let ((head (symbol-name (car form))))
+       (cond
+         ((and (member head '("TYPE-MIN" "TYPE-MAX" "TYPE-INFINITY") :test #'string-equal)
+               (symbolp (second form)))
+          (%scan-type-by-name (symbol-name (second form))))
+         ((and (string= head "-") (= (length form) 2))
+          (%identity-scan-type (second form)))
+         ((and (> (length head) 3) (string-equal "TO-" head :end2 3))
+          (%scan-type-by-name (subseq head 3)))
+         (t nil))))
+    (t nil)))
+
+(defun %implicit-scratch-binding-name (var key)
+  "The DETERMINISTIC let-binding name for the scratch Crisp allocates for KEY of a reduction over VAR,
+   e.g. CONTRIB-LOCAL-SCRATCH.  Deterministic because Pass 2 finds the implicit parameter by
+   rebuilding <binding>_FROM_<fn>_<n>, so Pass 1 and Pass 2 must see the same name (a gensym would
+   differ).  It also names the buffer readably in the generated host code."
+  (intern (format nil "~a-~a" (symbol-name var)
+                  (ecase key
+                    (:local-scratch-vec  "LOCAL-SCRATCH")
+                    (:global-scratch-vec "GLOBAL-SCRATCH")
+                    (:atomic-counter     "COUNTER")
+                    (:election-flag-cell "ELECTION-FLAG")))
+          (or (symbol-package var) (find-package :crisp-language))))
+
+(defun %implicit-scratch-alloc-form (key elem-type)
+  "The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25).  The
+   global partials are sized :match-workgroup-size -- see the stage-A section header for why that is
+   always enough."
+  (ecase key
+    (:local-scratch-vec  `(make-scratch-vector ,elem-type :match-num-warps-per-workgroup))
+    (:global-scratch-vec `(make-scratch-vector ,elem-type :match-workgroup-size :address-space :global))
+    (:atomic-counter     '(make-scratch-cell uint :address-space :global))
+    (:election-flag-cell '(make-scratch-cell uint))))
+
+(defun %implicit-scratch-form (expr elem-type)
+  "Endeavour 176.  Reduction form EXPR with its missing scratch supplied: a LET binding each missing
+   buffer, around EXPR with the corresponding keys appended (any NIL-valued copy of such a key removed).
+   Used by BOTH the Pass-1 scan-operator methods and the analyzers, so the two passes see the same form
+   (and the same scratch order)."
+  (let* ((spec (%implicit-scratch-spec (car expr)))
+         (var (third expr))
+         (missing (%implicit-scratch-missing-keys expr))
+         (names (mapcar (lambda (k) (%implicit-scratch-binding-name var k)) missing))
+         (tail (loop for (k v) on (nthcdr (second spec) expr) by #'cddr
+                     unless (and (member k missing) (null v)) append (list k v))))
+    `(let ,(mapcar (lambda (name key) (list name (%implicit-scratch-alloc-form key elem-type))) names missing)
+       (,@(subseq expr 0 (second spec))
+        ,@tail
+        ,@(loop for key in missing for name in names append (list key name))))))
+
+(defun %scan-reduction-maybe-implicit (op args next)
+  "Pass 1.  An independent or dependent reduce-workgroup is scanned as its fused form (the same form the
+   analyzer sees).  Otherwise scan the implicit-scratch form of reduction (OP . ARGS) when Crisp will
+   supply its scratch, or call NEXT (the default scan)."
+  (let ((expr (cons op args)))
+    (cond
+      ((%independent-reduction-form-p expr)
+       (scan-form (ignore-errors (%fused-reduce-workgroup-form expr))))
+      ((%dependent-reduction-form-p expr)
+       (scan-form (ignore-errors (%fused-reduce-workgroup-dependent-form expr))))
+      (t
+       (let* ((missing (%implicit-scratch-missing-keys expr))
+              (elem-type (and missing (symbolp (third expr)) (%identity-scan-type (fourth expr)))))
+         (if elem-type
+             (progn
+               (log:debug "176: Pass 1 implicit scratch ~s for ~s (element type ~s)" missing op elem-type)
+               (scan-form (%implicit-scratch-form expr elem-type)))
+             (funcall next)))))))
+
+(macrolet ((def-implicit-scratch-scanners (&rest names)
+             `(progn
+                ,@(loop for name in names
+                        append (loop for pkg in '(:crisp.compiler :crisp-language)
+                                     collect `(defmethod scan-operator ((op (eql (intern ,name (find-package ,pkg)))) args)
+                                                (%scan-reduction-maybe-implicit op args (lambda () (call-next-method)))))))))
+  (def-implicit-scratch-scanners "REDUCE-WORKGROUP" "GRID-REDUCE-ATOMIC!" "GRID-REDUCE-CAS!"
+                                 "GRID-REDUCE-LAST-MAN!" "GRID-REDUCE-SECOND-STAGE!"))
+
+(defun %check-identity-matches-variable (op-name var identity elem-type env context location)
+  "Endeavour 176.  With implicit scratch the scratch is typed from the IDENTITY, so a variable of a
+   different type would be reduced through mistyped scratch.  Refuse it, naming the fix."
+  (let* ((var-type (semantic-node-type (analyze-expression var env context location)))
+         (a (resolve-type-alias var-type))
+         (b (resolve-type-alias elem-type)))
+    (unless (if (and (symbolp a) (symbolp b))
+                (string-equal (symbol-name a) (symbol-name b))
+                (equal a b))
+      (error 'crisp-compiler-error
+             :message (format nil "~a: the identity ~s is ~(~a~) but ~a is ~(~a~).  The identity must have the variable's type when Crisp allocates the scratch for you, because the scratch is typed from it -- write the identity as a ~(~a~), e.g. (to-~(~a~) ~s)."
+                              op-name identity b var a a a identity)
+             :source-location location))))
+
+(defun %analyze-reduction-maybe-implicit (expr env context location expander)
+  "Endeavour 176.  Analyze reduction EXPR: an independent or dependent reduce-workgroup FUSED (with its
+   identity checks); otherwise supply its scratch when the caller left it out, else analyze
+   (EXPANDER EXPR) as before."
+  (case (%reduction-call-shape expr)
+    (:independent
+     (return-from %analyze-reduction-maybe-implicit
+       (analyze-expression (%fused-reduce-workgroup-form expr env context location) env context location)))
+    (:dependent
+     (return-from %analyze-reduction-maybe-implicit
+       (analyze-expression (%fused-reduce-workgroup-dependent-form expr env context location) env context location))))
+  (let ((missing (%implicit-scratch-missing-keys expr))
+        (var (third expr)))
+    (if (or (null missing) (not (symbolp var)))
+        (analyze-expression (funcall expander expr) env context location)
+        (let* ((op-name (string-downcase (symbol-name (car expr))))
+               (identity (fourth expr))
+               (elem-type (%identity-scan-type identity)))
+          (unless elem-type
+            (error 'crisp-compiler-error
+                   :message (format nil "~a: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass ~{~s~^ ~} yourself."
+                                    op-name identity missing)
+                   :source-location location))
+          (%check-identity-matches-variable op-name var identity elem-type env context location)
+          (log:debug "176: implicit scratch ~s for ~a over ~s (element type ~s)" missing op-name var elem-type)
+          (analyze-expression (%implicit-scratch-form expr elem-type) env context location)))))
+
 (defun %analyze-reduce-workgroup (expr env context location)
-  "Analyzer for reduce-workgroup -- expands and delegates.  Being an ANALYZED form rather than a
-   macro is what keeps the construct visible to the autodiff walk (see the section header)."
-  (analyze-expression (%reduce-workgroup-expand expr) env context location))
+  "Analyzer for reduce-workgroup -- expands and delegates, supplying implicit scratch (176).  Being an
+   ANALYZED form rather than a macro is what keeps the construct visible to the autodiff walk."
+  (%analyze-reduction-maybe-implicit expr env context location #'%reduce-workgroup-expand))
 
 (defun %grid-atomic-op-name (fn)
   "The atomic operator name for a literal #'op, or NIL if OP has no hardware atomic."
@@ -1058,8 +1955,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (compiler-no-op)))))
 
 (defun %analyze-grid-reduce-atomic (expr env context location)
-  "Analyzer for grid-reduce-atomic! -- expands and delegates."
-  (analyze-expression (%grid-reduce-atomic-expand expr) env context location))
+  "Analyzer for grid-reduce-atomic! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-atomic-expand))
 
 (defun %175-minmax-expand (expr which location)
   "Expands (min a b) / (max a b) into a single-evaluation comparison.
@@ -1149,8 +2046,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (compiler-no-op)))))
 
 (defun %analyze-grid-reduce-last-man (expr env context location)
-  "Analyzer for grid-reduce-last-man! -- expands and delegates."
-  (analyze-expression (%grid-reduce-last-man-expand expr) env context location))
+  "Analyzer for grid-reduce-last-man! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-last-man-expand))
 
 (defun %grid-reduce-second-stage-parts (expr)
   "Destructures (grid-reduce-second-stage! FN VAR IDENTITY IN-VEC RETURN-VEC &key ...).
@@ -1199,8 +2096,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (compiler-no-op)))))
 
 (defun %analyze-grid-reduce-second-stage (expr env context location)
-  "Analyzer for grid-reduce-second-stage! -- expands and delegates."
-  (analyze-expression (%grid-reduce-second-stage-expand expr) env context location))
+  "Analyzer for grid-reduce-second-stage! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-second-stage-expand))
 
 (defun %grid-reduce-cas-parts (expr)
   "Destructures (grid-reduce-cas! FN VAR IDENTITY RETURN-VEC &key ...).
@@ -1234,8 +2131,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
        (compiler-no-op))))
 
 (defun %analyze-grid-reduce-cas (expr env context location)
-  "Analyzer for grid-reduce-cas! -- expands and delegates."
-  (analyze-expression (%grid-reduce-cas-expand expr) env context location))
+  "Analyzer for grid-reduce-cas! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-cas-expand))
 
 (defun analyze-atomic-cas!-expression (expr env context location)
   "Analyzes (atomic-cas! target expected desired).

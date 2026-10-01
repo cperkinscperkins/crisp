@@ -868,11 +868,17 @@ Reductions
 - [x] revisit Phase 1 vs Phase 2.
 - [x] need to compose correctly
 - [x] shuffles
-- [ ] implement
+- [x] implement
+- [ ] (type-min float) (type-max long)   <-- 
+- [ ] multiple value reductions.
+- [ ] reduce-vec
 - [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )
 - [ ] doc update: there are still old 'reduce-vec-1-cont' calls in the code base. 
+- - [ ] plus lots of reduce-vec-warp instead of (reduce-vec :reduction-strategy :warp)
 - [ ] doc update  warp-size not get-warp-size, warp-id not get-warp-id  and get-workgroup-id (not get-group-id)
+- [ ] doc update "Sum Vector Using Local Memory" needs updating
+- [ ] ibid "Sum Vector using Shuffles"
 - [ ] when-thread-in-warp-is / when-thread-in-group-is  <-- may have compile-time divergence requirmenets inside reductions.
 
 

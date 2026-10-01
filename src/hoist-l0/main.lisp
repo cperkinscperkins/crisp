@@ -1746,6 +1746,65 @@
 
 
 
+(defun %l0-emit-symbolic-global-scratch-arg (stream param-name param-type context-var device-var arg-index size-expr)
+  "BUG 094.  Emit the 6 kernel arguments (3*rank+3 at rank 1) for a GLOBAL scratch VECTOR whose length
+   is a SYMBOLIC size, phrasing every size as a C++ expression over the geometry constants -- the
+   global counterpart of %l0-emit-symbolic-local-scratch-arg.  Argument ORDER matches
+   %l0-emit-global-scratch-tensor-arg exactly: ptr, byte-size, offset[0], stride[0], extent[0], length.
+
+   Allocation and zero-initialisation go through the same staged path as the literal-size case
+   (%l0-emit-staged-alloc + a zeroed host mirror), with the element count as an expression; the
+   staging copy is emitted later in the same function body, where <name>_elems is still in scope.
+
+   Endeavour 176 needs this for grid-reduce-last-man!'s implicit :global-scratch-vec."
+  (multiple-value-bind (count-expr phrase)
+      (%l0-scratch-symbolic-expr size-expr param-name)
+    (let* ((elem-type  (second param-type))
+           (elem-str   (crisp-type-to-cpp-type elem-type))
+           (elem-bytes (%elem-type-bytes elem-str))
+           (cpp        (substitute #\_ #\- param-name))
+           (ptr-var    (format nil "~a_ptr" cpp))
+           (host-var   (format nil "~a_host" cpp))
+           (elems-var  (format nil "~a_elems" cpp))
+           (idx        arg-index))
+      (format stream "~%    // GLOBAL scratch vector: ~a (rank=1, ~a, ~a)~%" param-name elem-str phrase)
+      (format stream "    //   :size-expr ~a -- resolved as an EXPRESSION, not a literal, so it~%" size-expr)
+      (format stream "    //   tracks the launch geometry above rather than freezing this build's value.~%")
+      (format stream "    const uint64_t ~a = (uint64_t)~a;~%" elems-var count-expr)
+      (%l0-emit-staged-alloc stream context-var device-var elem-str ptr-var host-var elems-var param-name)
+      (format stream "    memset(~a, 0, ~a * sizeof(~a));  // scratch: zero-init (staged below)~%"
+              host-var elems-var elem-str)
+      ;; Arg N: global device pointer
+      (format stream "    // Arg ~d: global scratch ptr~%" idx)
+      (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(void*), &~a);~%" idx ptr-var)
+      (incf idx)
+      ;; Arg N+1: byte-size
+      (format stream "    // Arg ~d: byte-size~%" idx)
+      (format stream "    uint64_t ~a_byte_size = ~a * ~dULL;~%" cpp elems-var elem-bytes)
+      (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_byte_size);~%" idx cpp)
+      (incf idx)
+      ;; Arg N+2: offset[0]
+      (format stream "    // Arg ~d: offset[0] = 0~%" idx)
+      (format stream "    uint64_t ~a_off0 = 0ULL;~%" cpp)
+      (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_off0);~%" idx cpp)
+      (incf idx)
+      ;; Arg N+3: stride[0] -- 1 element, compact
+      (format stream "    // Arg ~d: stride[0] = 1 (elements, compact)~%" idx)
+      (format stream "    uint64_t ~a_str0 = 1ULL;~%" cpp)
+      (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_str0);~%" idx cpp)
+      (incf idx)
+      ;; Arg N+4: extent[0]
+      (format stream "    // Arg ~d: extent[0]~%" idx)
+      (format stream "    uint64_t ~a_ext0 = ~a;~%" cpp elems-var)
+      (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_ext0);~%" idx cpp)
+      (incf idx)
+      ;; Arg N+5: length
+      (format stream "    // Arg ~d: length~%" idx)
+      (format stream "    uint64_t ~a_length = ~a;~%" cpp elems-var)
+      (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(uint64_t), &~a_length);~%~%" idx cpp)
+      (incf idx)
+      idx)))
+
 (defun %l0-emit-global-scratch-tensor-arg (stream param param-name param-type context-var device-var arg-index)
   "Emit the 3N+3 kernel arguments for a GLOBAL scratch tensor (an implicit parameter).
 
@@ -1763,6 +1822,11 @@
          (param-name-cpp (substitute #\_ #\- param-name))
          (ptr-var (format nil "~a_ptr" param-name-cpp))
          (host-var (format nil "~a_host" param-name-cpp)))
+    ;; BUG 094: a rank-1 SYMBOLIC size is phrased as a C++ expression over the geometry constants.
+    (when (and (%l0-scratch-symbolic-size-p size-expr) (= rank 1))
+      (return-from %l0-emit-global-scratch-tensor-arg
+        (%l0-emit-symbolic-global-scratch-arg stream param-name param-type context-var device-var
+                                              arg-index size-expr)))
     (unless (integerp size-expr)
       (error "Global scratch tensor ~a has non-integer :size-expr ~a. ~
               Only literal integer sizes are supported in the L0 hoist launcher."

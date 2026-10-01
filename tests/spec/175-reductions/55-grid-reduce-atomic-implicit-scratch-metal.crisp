@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;;
+;; ENDEAVOUR 176 -- IMPLICIT SCRATCH.  Spec 17 with its :local-scratch-vec left out.  TDD.
+;;
+;; Four workgroups (256 over 64), each thread contributing its global linear id, so the grid total
+;; is 0 + ... + 255 = 32640 in out[0]; slots 1..3 keep the harness pre-fill.  The workgroup-local
+;; scratch for the Phase 1 sweep is allocated by Crisp, typed float from the identity 0.0.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_atomic_implicit (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce-atomic! #'+ contrib 0.0 out)))

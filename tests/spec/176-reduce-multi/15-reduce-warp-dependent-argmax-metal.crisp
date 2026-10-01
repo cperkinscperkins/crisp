@@ -1,0 +1,41 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outv: 4 4 4 4
+;; HOIST-EXPECT: BUFFER outi: 4 20 36 52
+;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
+;;
+;; ENDEAVOUR 176 Phase 3 -- reduce-warp, DEPENDENT form: one combiner, a list of (var identity) clauses.
+;; TDD.
+;;
+;; argmax: the combiner takes two (value, index) states and keeps the larger value, the LOWER index on a
+;; tie -- exactly the reductions doc's example, an IF whose branches each (return a b) with an OR/AND
+;; test (the shape BUGs 092, 093 and 096 broke).  BMG warps are 16 lanes, 4 warps:
+;;
+;;     value = (rem lane-in-warp 5)  -> 0 1 2 3 4 0 1 2 3 4 0 1 2 3 4 0 ; max 4, at lanes 4, 9, 14
+;;     index = global id             -> the lowest of those: warp w's lane 4 = 16w + 4
+;;
+;; The tie is the point: a combiner applied out of order, or a tie-break ignored, picks 9 or 14.
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type uvec-t (vector ulong :address-space :global :align :compact))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))   ; tie-break: lower index wins
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel reduce_warp_argmax (&out outv outi)
+  (declare #'(&out vec-t uvec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((v (to-float (rem (to-int (warp-lane)) 5)))
+        (i (get-global-linear-id)))
+    (reduce-warp #'argmax-combine
+                 ((v (type-min float))
+                  (i (type-max ulong))))
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ outv (to-int (warp-id))) v)
+      (set! (~ outi (to-int (warp-id))) i))))

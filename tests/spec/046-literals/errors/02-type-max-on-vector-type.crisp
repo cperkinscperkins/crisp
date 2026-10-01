@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "not a numeric scalar type"
+;; CHECK-FAIL-FLAGS: --ir-target=spv
+;;
+;; ENDEAVOUR 176 -- type-min / type-max / type-infinity take a NUMERIC SCALAR type.  TDD.
+;;
+;; A storage-handle type (here a vector type) has no minimum or maximum value; the refusal names
+;; what the argument must be.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel tm_on_vec (&out out)
+  (declare #'(&out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (set! (~ out 0) (type-max ivec-t)))

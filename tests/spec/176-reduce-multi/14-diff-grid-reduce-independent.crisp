@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64
+;;
+;; ENDEAVOUR 176 Phase 2 -- AUTODIFF through an INDEPENDENT grid-reduce!, measured on metal.  TDD.
+;;
+;; Independent clauses do not interact, so the backward pass is each clause's own VJP.  The kernel has
+;; ONE output (VERIFY-AUTODIFF differentiates one): clause 1 sums A into OUT; clause 2 sums 2*A into a
+;; global SCRATCH cell, so its VJP runs too but contributes nothing to OUT.  d(out)/dA[i][j] = 1.
+;; Both clauses use #'+ -- last-man's VJP is +-only (175/errors/07).
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel diff_grid_reduce_independent (A &out out)
+  (declare #'(mat-t &out out-c)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tmp (make-scratch-cell float :address-space :global))
+        (tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (w (* 2.0 (~ A row col))))
+        (grid-reduce! ((#'+ v 0.0 out)
+                       (#'+ w 0.0 tmp)))))))

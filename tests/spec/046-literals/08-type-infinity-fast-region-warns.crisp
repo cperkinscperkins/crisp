@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; EXPECT-STDERR[--ir-target=spv]: "infinity under :fast precision"
+;;
+;; ENDEAVOUR 176 -- (type-infinity T) inside a (with-precision (fast) ...) region WARNS.  TDD.
+;;
+;; The same warning as 07, reached through a REGION rather than the command line.  A region sets the
+;; precision only around its own body (at codegen), so the check has to look at the precision in
+;; effect where the infinity is emitted -- not at a file- or flag-level setting.  Outside the region
+;; the kernel is :ieee, where an infinity is fine (04 uses one with no warning).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel inf_under_fast_region (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (with-precision (fast)
+    (set! (~ out 0) (type-infinity float))))

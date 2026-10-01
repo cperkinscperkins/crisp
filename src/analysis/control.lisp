@@ -1298,6 +1298,27 @@
       (t
        (analyze-expression nil env context location)))))
 
+(defun %if-missing-else-is-false-p (expr then-node)
+  "BUG 092.  True when the IF form EXPR has no else, or a NIL else, and its THEN branch THEN-NODE
+   produces a scalar value that a false 0 can unify with.  In CL, (if x y) means (if x y nil):
+   the false path has a value, and it is false.  Crisp analyzed a missing else as NO branch, so the
+   false path never stored the IF's result -- and CL's AND expands to exactly (IF X Y), so every
+   (and X Y) used as a value read an uninitialised slot on the X-false path.  -O3 then deleted X
+   outright, or (in the tile bounds checks) turned the path into an llvm.assume with no store.
+
+   Deliberately narrow:
+     * a void THEN (a statement IF, e.g. a SET! body) is unchanged -- there is no value to supply;
+     * a THEN whose type cannot promote with int (struct, tensor, ...) is unchanged, since a 0
+       else would be a type error; ensure-branch-compatibility keeps its old void-branch rule.
+   The int 0 literal is promoted to THEN's type by ensure-branch-compatibility, the same path any
+   mixed-type IF takes."
+  (and (null (fourth expr))
+       (let ((t-single (get-single-value-type then-node)))
+         (and t-single
+              (symbolp t-single)
+              (get-promoted-type t-single 'int)
+              t))))
+
 (defun analyze-if-expression-impl (expr env context location &key enforce-constant)
   (let* ((raw-cond-node (analyze-expression (second expr) env context (append location '(1))))
          (cond-node (try-constant-fold raw-cond-node)))
@@ -1341,7 +1362,18 @@
                                           (1+ *divergent-scope-depth*)
                                           *divergent-scope-depth*))
              (then-node (analyze-expression (third expr) env context (append location '(2))))
-             (else-node (if (fourth expr) (analyze-expression (fourth expr) env context (append location '(3))) nil)))
+             (else-node
+               (cond
+                 ((fourth expr)
+                  (analyze-expression (fourth expr) env context (append location '(3))))
+                 ;; BUG 092: a MISSING (or NIL) else is a false VALUE when THEN produces a scalar
+                 ;; one -- CL semantics, where (if x y) means (if x y nil).  CL's AND expands to
+                 ;; exactly (IF X Y), and the false path used to be left unstored.
+                 ((%if-missing-else-is-false-p expr then-node)
+                  (log:debug "BUG 092: missing/NIL else of a value IF analyzed as false (int 0): ~s" expr)
+                  (make-semantic-literal :value-type 'int :value 0
+                                         :source-location (append location '(3))))
+                 (t nil))))
 
       (multiple-value-bind (unified-type final-then final-else)
           (ensure-branch-compatibility then-node else-node location)

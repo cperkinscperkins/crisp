@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outs: 32640
+;; HOIST-EXPECT: BUFFER outm: 255
+;;
+;; ENDEAVOUR 176 Phase 2 -- grid-reduce!, INDEPENDENT form, default strategy (last-man).  TDD.
+;;
+;; Each clause names its own return cell, (fn var identity return-cell).  One last-man ELECTION serves
+;; both variables (one ticket per workgroup, not two -- independent-fusion.unit.lisp checks that).
+;; Grid 256 over 64:
+;;
+;;     s = global id (float)   #'+   identity 0.0  -> 0 + ... + 255 = 32640
+;;     m = global id (ulong)   #'max identity 0ul  -> 255
+
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-kernel grid_reduce_independent (&out outs outm)
+  (declare #'(&out out-c uout-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((s (to-float (get-global-linear-id)))
+        (m (get-global-linear-id)))
+    (grid-reduce! ((#'+   s 0.0 outs)
+                   (#'max m 0ul outm)))))

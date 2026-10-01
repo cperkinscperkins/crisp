@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=1.0 atol=1e-2 h=0.5 group=64
+;;
+;; ENDEAVOUR 176 Phase 1 -- AUTODIFF through grid-reduce!, measured on metal.  TDD.
+;;
+;; 175/26 measured the last-man VJP with every scratch buffer passed by hand.  Here the same reduction
+;; goes through grid-reduce! (default strategy = last-man) with NO scratch arguments, so the backward
+;; pass has to cope with implicit scratch as well.  out = sum of A, so d(out)/dA[i][j] = 1 for every
+;; element; two are checked.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel diff_grid_reduce (A &out out)
+  (declare #'(mat-t &out out-c)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (grid-reduce! #'+ v 0.0 out)))))

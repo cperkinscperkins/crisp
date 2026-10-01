@@ -423,7 +423,9 @@
    ;; defmacro in src/macros.lisp serve both.  (The overlay could not do this: mutating a
    ;; package export list at overlay-load time makes build.lisp's later targets fail with a
    ;; package-variance error, so it copied MACRO-FUNCTION between two distinct symbols instead.)
-   #:when-thread-in-warp-is #:when-thread-in-group-is))
+   #:when-thread-in-warp-is #:when-thread-in-group-is
+   ;; Endeavour 176: grid-reduce! is a macro, shared the same way.
+   #:grid-reduce!))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -537,6 +539,8 @@
 
                 ;; Endeavour 175: thread-selection sugar (see the export side above).
                 #:when-thread-in-warp-is #:when-thread-in-group-is
+                ;; Endeavour 176: grid-reduce! (see the export side above).
+                #:grid-reduce!
 
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~

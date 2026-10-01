@@ -1,0 +1,25 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "type of the identity"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 -- implicit scratch needs an identity whose type is VISIBLE.  TDD.
+;;
+;; When the scratch arguments are left out, Crisp allocates them in the Pass-1 scan, which runs
+;; before analysis knows any variable's type.  The element type is read from the identity's own
+;; form: a literal (0, 0.0, 0ul), (type-min/max/infinity T), (- X), or (to-T x).  Here the
+;; identity is a VARIABLE, whose type the scan cannot see, so Crisp must refuse -- clearly, and
+;; naming both ways out: write a typed identity, or pass :local-scratch-vec yourself.
+;;
+;; The same call WITH an explicit :local-scratch-vec is fine; only the implicit path needs this.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel gr_ident_var (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((ident 0.0)
+        (contrib (to-float (get-global-linear-id))))
+    (grid-reduce-atomic! #'+ contrib ident out)))

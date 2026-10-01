@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640 1 2 3
+;;
+;; ENDEAVOUR 176 -- IMPLICIT SCRATCH.  Spec 25 with ALL FOUR scratch arguments left out.  TDD.
+;;
+;; Last-man needs the most: a workgroup-local sweep vector, a :global partials vector (one slot per
+;; workgroup), a zero-initialised :global uint ticket counter, and a workgroup-local uint election
+;; flag.  Crisp allocates all four.  The two vectors are typed from the identity (0.0 -> float);
+;; the counter and flag are always uint.
+;;
+;; The global partials vector is sized by the NUMBER OF WORKGROUPS, which the hoister resolves
+;; symbolically -- 256 / 64 = 4 here.  Same grid and answer as 55.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel grid_reduce_last_man_implicit (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce-last-man! #'+ contrib 0.0 out)))

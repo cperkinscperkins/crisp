@@ -1,0 +1,21 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "appears in more than one clause"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 2 -- a variable may appear in only ONE clause of a call.  TDD.
+;;
+;; Two clauses reducing the same variable would each overwrite it with their own result; which one
+;; survives is an accident of ordering.  Refused, naming the variable.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel rw_twice (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((s (to-float (warp-lane))))
+    (reduce-warp ((#'+   s 0.0)
+                  (#'max s (type-min float))))
+    (set! (~ out 0) s)))

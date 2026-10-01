@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 32640
+;;
+;; ENDEAVOUR 176 Phase 1 -- (grid-reduce! fn var identity return-cell), the DEFAULT strategy.  TDD.
+;;
+;; grid-reduce! is the easy form: Phase 1 is a reduce-workgroup, Phase 2 is chosen by :strategy, and
+;; every scratch buffer is allocated implicitly (typed from the identity).  With no :strategy it is
+;; :last-man-standing -- which carries last-man's limit, num_workgroups <= local_work_size (4 <= 64).
+;;
+;; The result lands in a CELL (the doc's return-cell), not a length-1 vector.  Grid 256 over 64,
+;; each thread contributing its global linear id: 0 + ... + 255 = 32640.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel grid_reduce_default (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce! #'+ contrib 0.0 out)))

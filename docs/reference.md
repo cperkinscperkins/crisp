@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-09-23T06:41:48.491899Z
+Generated on 2026-10-01T17:19:33.834252Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -345,6 +345,13 @@ Generated on 2026-09-23T06:41:48.491899Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.  >    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is  >    (initial-phase ring-count) so codegen can inject the multi-lap flipping parity.
+
+
+---
+### DEFUN `%IF-MISSING-ELSE-IS-FALSE-P`
+- **Args**: `(EXPR THEN-NODE)`
+
+  > BUG 092.  True when the IF form EXPR has no else, or a NIL else, and its THEN branch THEN-NODE  >    produces a scalar value that a false 0 can unify with.  In CL, (if x y) means (if x y nil):  >    the false path has a value, and it is false.  Crisp analyzed a missing else as NO branch, so the  >    false path never stored the IF's result -- and CL's AND expands to exactly (IF X Y), so every  >    (and X Y) used as a value read an uninitialised slot on the X-false path.  -O3 then deleted X  >    outright, or (in the tile bounds checks) turned the path into an llvm.assume with no store.  >   >    Deliberately narrow:  >      * a void THEN (a statement IF, e.g. a SET! body) is unchanged -- there is no value to supply;  >      * a THEN whose type cannot promote with int (struct, tensor, ...) is unchanged, since a 0  >        else would be a type error; ensure-branch-compatibility keeps its old void-branch rule.  >    The int 0 literal is promoted to THEN's type by ensure-branch-compatibility, the same path any  >    mixed-type IF takes.
 
 
 ---
@@ -1410,6 +1417,41 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 
 ---
+### DEFUN `%SCRATCH-ALLOCATION-FORM-P`
+- **Args**: `(FORM)`
+
+  > T when FORM is a (make-scratch-vector|matrix|tensor|cell ...) allocation, by symbol name.
+
+
+---
+### DEFUN `%DEFAULT-SCRATCH-IMPLICIT-NAME`
+- **Args**: `(FN-NAME PARAM-NAME)`
+
+  > The implicit-parameter name a scratch DEFAULT of PARAM-NAME in generic function FN-NAME is  >    registered under: <PARAM>-DEFAULT_FROM_<FN>_1.  Built by the same rule the scratch scanners use  >    (<binding>_FROM_<fn>_<n>, interned in the binding's package), with the binding <PARAM>-DEFAULT  >    and a private counter of 1 -- so Pass 1 (which registers it) and instantiation (which binds the  >    parameter to it) compute the same symbol without consulting any table.
+
+
+---
+### DEFUN `%SCAN-GENERIC-DEFAULT-SCRATCH`
+- **Args**: `(FN-NAME)`
+
+  > Pass 1, endeavour 176.  When FN-NAME is a generic (&optional / &key) function, register every  >    make-scratch-* DEFAULT of its parameters as an implicit argument of FN-NAME.  Returns T when any  >    was registered (the caller then marks FN-NAME an originator).  >   >    The scan runs with *scratch-cell-counter* rebound to 0: the scanners name scratch by counter, and  >    Pass 2 replays the module-wide counter to find ordinary scratch again.  A default's scratch is  >    never replayed (instantiation binds the parameter to the implicit argument directly), so it must  >    not advance the module-wide count.
+
+
+---
+### DEFUN `%176-GENERIC-SKIP-SCRATCH`
+- **Args**: `(NAME BODY)`
+
+  > Endeavour 176.  At the point where Pass 2 (or single-pass compilation) SKIPS generic function NAME,  >    keep the scratch counter in step.  Multi-pass: advance it by the COUNT Pass 1 recorded, since Pass 1  >    advanced it that far while scanning the body.  Single-pass: there was no Pass 1, so scan the body  >    (scan-for-carriers) and the scratch defaults now, and record the counter as the START.
+
+
+---
+### DEFUN `%GENERATE-LAZY-VARIANT-IR`
+- **Args**: `(AST-NODE VARIANT-NAME &OPTIONAL BASE-NAME)`
+
+  > BUG 090.  Emit the IR for a lazily instantiated variant whose AST instantiate-generic-function  >    just analyzed.  Instantiation happens mid-analysis of the CALLER, so the builder's insertion  >    point is saved and restored around generation.  Does nothing without a module (Pass 1 /  >    signature-only analysis): the variant is then generated when Pass 2 instantiates it.  >   >    176: with BASE-NAME (the generic function's own name), the current function is bound to it and the  >    scratch counter replayed from the start Pass 1 recorded for it, so scratch in the variant's body  >    rebuilds the names Pass 1 registered (<binding>_FROM_<base>_<n>) -- for every variant alike.
+
+
+---
 ### DEFUN `COMPILE-DEF-FUNCTION`
 - **Args**: `(FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT
               LOCATION-MAP)`
@@ -1702,6 +1744,13 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 
 ---
+### DEFUN `%LAMBDA-LIST-GENERIC-P`
+- **Args**: `(PARAMS)`
+
+  > T when lambda list PARAMS has &optional or &key -- a generic function whose variants are instantiated  >    lazily.  Matched by name, so the reading package does not matter.
+
+
+---
 ### DEFUN `%PRE-REGISTER-DIFFERENTIABLE-FNS`
 - **Args**: `(FORMS &OPTIONAL RECORD-INFO)`
 
@@ -1754,6 +1803,13 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 ### DEFMACRO `DEF-BINARY-OP-ANALYZER`
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
+
+---
+### DEFUN `ANALYZE-SUB-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes a `(- ...)` expression.  With two arguments, subtraction.  With ONE, negation -- analyzed as  >    (* x -1), exact IEEE negation including -0.0 and infinities (BUG 095).
+
 
 ---
 ### DEFMACRO `DEF-UNARY-MATH-ANALYZER`
@@ -1994,6 +2050,41 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 
 ---
+### DEFUN `%TYPE-EXTREME-SCALAR-INFO`
+- **Args**: `(EXPR LOCATION)`
+
+  > Validate (type-min|type-max|type-infinity T) and return (values T category bits) for T's scalar  >    type, where category is :signed-int, :unsigned-int or :float and bits its width.  Refuses, naming  >    what the argument must be, when T is missing or not a numeric scalar type.
+
+
+---
+### DEFUN `%FLOAT-TYPE-EXTREME`
+- **Args**: `(TYPE-SYM BITS)`
+
+  > The largest FINITE value of floating-point type TYPE-SYM (BITS wide), as a Lisp float.
+
+
+---
+### DEFUN `%ANALYZE-TYPE-MIN`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (type-min T): the most negative value of numeric scalar type T, as a constant of type  >    T.  For a floating-point T that is the most negative FINITE value (see the section header).
+
+
+---
+### DEFUN `%ANALYZE-TYPE-MAX`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (type-max T): the most positive value of numeric scalar type T, as a constant of type  >    T.  For a floating-point T that is the most positive FINITE value (see the section header).
+
+
+---
+### DEFUN `%ANALYZE-TYPE-INFINITY`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (type-infinity T): positive infinity, as a constant of floating-point type T.  Negate it  >    for negative infinity.  Meaningful under :ieee precision; an integer T has no infinity and is  >    refused.
+
+
+---
 ### DEFUN `REGISTER-OPS-ANALYZERS`
 
   > Registers all expression analyzer functions.  > Redefined for 082-atomics to add atomic RMW op analyzers.  > Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler.
@@ -2041,10 +2132,168 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 
 ---
+### DEFPARAMETER `*176-GRID-REDUCE-STRATEGIES*`
+
+  > Endeavour 176.  grid-reduce!'s strategies: the :strategy keyword, the construct it becomes, and the  >    keys that construct accepts (:strategy itself is consumed by grid-reduce!).
+
+
+---
+### DEFMACRO `GRID-REDUCE!`
+- **Args**: `(&WHOLE FORM &REST ARGS)`
+
+  > (grid-reduce! fn var identity return-cell &key strategy message ...): a grid-wide reduction of VAR with  >    binop FN and IDENTITY into RETURN-CELL.  Phase 1 is reduce-workgroup; Phase 2 is :strategy -- :atomic,  >    :cas or :last-man-standing (the default).  Scratch is implicit unless passed.  See %grid-reduce!-expand.
+
+
+---
+### DEFUN `%FUNCTION-FORM-P`
+- **Args**: `(X)`
+
+  > T when X is #'f, i.e. (function f).
+
+
+---
+### DEFUN `%REDUCTION-CALL-SHAPE`
+- **Args**: `(FORM)`
+
+  > Endeavour 176.  :independent when FORM's first argument is a list of clauses; :dependent when it is  >    #'f followed by a list of clauses; :single otherwise.  Decided by shape alone, so it works in every  >    pass, before anything is analyzed.
+
+
+---
+### DEFUN `%INDEPENDENT-REDUCTION-FORM-P`
+- **Args**: `(FORM)`
+
+  > T when FORM is an independent reduce-warp / reduce-workgroup / grid-reduce! call.
+
+
+---
+### DEFUN `%INDEPENDENT-REDUCTION-EXPAND`
+- **Args**: `(FORM)`
+
+  > Endeavour 176 Phase 2a.  An independent reduction FORM as a PROGN of single-variable calls of the same  >    operator (same symbol, so same package), one per clause.  Validates first: each clause's shape and  >    keys, the call's keys, and that no variable appears in two clauses.  The per-reduction arguments --  >    reduce-warp's ACTIVE-THREADS, the call's :strategy / :message -- go to every single call.
+
+
+---
+### DEFPARAMETER `*176-INDEPENDENT-FORMS*`
+
+  > Endeavour 176.  For each construct with an independent form: the clause's positional length, the keys a  >    clause may carry (per-variable resources), and the keys the call may carry (per-reduction).
+
+
+---
+### DEFUN `%CLAUSE-KEY`
+- **Args**: `(CLAUSE MIN-LEN KEY)`
+
+  > The value of KEY among CLAUSE's keywords (after its MIN-LEN positional elements), or NIL.
+
+
+---
+### DEFUN `%FUSED-REDUCE-WARP-FORM`
+- **Args**: `(EXPR)`
+
+  > Endeavour 176 Phase 2b.  An independent reduce-warp as ONE butterfly: per iteration, every clause's  >    variable is combined with its shuffle partner.  Same steps as %reduce-warp-expand, k variables at once;  >    ACTIVE-THREADS applies to every clause (its lanes past the count take that clause's identity).
+
+
+---
+### DEFUN `%FUSED-REDUCE-WORKGROUP-FORM`
+- **Args**: `(EXPR &OPTIONAL ENV CONTEXT LOCATION)`
+
+  > Endeavour 176 Phase 2b.  An independent reduce-workgroup as ONE sweep: a fused warp reduction of every  >    clause, one barrier, one halving loop that combines every clause's per-warp partials, one read-back,  >    and one leader block for every :return-vec -- %reduce-workgroup-expand's steps, k variables at once.  >    A clause without :local-scratch-vec gets implicit scratch typed from ITS identity (a LET around the  >    whole form, deterministic names, so the Pass-1 scan and the analyzer see the same buffers).  With ENV  >    (the analyzer) each implicitly-scratched clause's identity is also checked against its variable.
+
+
+---
+### DEFUN `%ANALYZE-CHECK-REDUCTION-IDENTITY`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%check-reduction-identity OP-NAME VAR IDENTITY TYPE): the identity-vs-variable type check  >    for a fused grid-reduce!, whose macro expansion has no environment to do it in.  Emits nothing.
+
+
+---
+### DEFUN `%FUSED-GRID-REDUCE-FORM`
+- **Args**: `(FORM)`
+
+  > Endeavour 176 Phase 2b.  An independent grid-reduce!, lowered with its work done once for all clauses.  >    Phase 1 is ONE independent reduce-workgroup (itself fused).  Phase 2 by :strategy --  >      :atomic / :cas          one leader block applying each clause's atomic / CAS to its return cell;  >      :last-man-standing      every partial written, ONE ticket from ONE counter, ONE election flag, and  >                              the last workgroup's ONE fused sweep writing every return cell.  >    Scratch a clause or the call leaves out is implicit (typed from each identity; the shared counter and  >    flag are uint and named after the first clause's variable).  Refuses an unknown strategy, a key the  >    strategy does not use, and (for :atomic) an operator with no hardware atomic -- each with the message  >    the single-variable form gives.
+
+
+---
+### DEFUN `%INDEPENDENT-REDUCTION-SPLIT-FOR-AD`
+- **Args**: `(FORM)`
+
+  > Endeavour 176 Phase 2b.  The AD path's view of an independent call: the Phase-2a per-clause SPLIT, so the  >    backward walk meets only single forms with their own VJPs.  A shared :atomic-counter /  >    :election-flag-cell is DROPPED here -- the split runs one election per clause, and elections must not  >    share a counter; each single then gets its own implicit one.
+
+
+---
+### DEFPARAMETER `*176-DEPENDENT-FORMS*`
+
+  > Endeavour 176.  For each construct with a dependent form: the clause's positional length (var identity,  >    plus return-cell at grid level), the keys a clause may carry, and the keys the call may carry.
+
+
+---
+### DEFUN `%DEPENDENT-REDUCTION-FORM-P`
+- **Args**: `(FORM)`
+
+  > T when FORM is a dependent reduce-warp / reduce-workgroup / grid-reduce! call.
+
+
+---
+### DEFUN `%DEPENDENT-REDUCTION-VALIDATE`
+- **Args**: `(FORM)`
+
+  > Endeavour 176 Phase 3.  Validate a dependent call FORM: the call's own arguments, each clause's shape and  >    keys, and that no variable appears in two clauses.  Returns the clause list.
+
+
+---
+### DEFUN `%COMBINER-CALL`
+- **Args**: `(COMBINER ARGS)`
+
+  > The form calling COMBINER on ARGS: a direct call for a literal #'f (better code, and FUNCALL is not  >    differentiable), else FUNCALL -- as %175-apply-binop does for the two-argument case.
+
+
+---
+### DEFUN `%CHECK-DEPENDENT-COMBINER`
+- **Args**: `(OP-NAME COMBINER CLAUSES ENV CONTEXT LOCATION)`
+
+  > Endeavour 176 Phase 3.  A literal #'COMBINER must have a signature #'(T1..Tk T1..Tk => T1..Tk) where Ti is  >    the type of clause i's variable -- state A then state B, each in clause order.  Refused otherwise,  >    showing the signature the clauses need and the one(s) the combiner has.  An unknown function is left  >    for the ordinary call analysis to report.
+
+
+---
+### DEFUN `%FUSED-REDUCE-WARP-DEPENDENT-FORM`
+- **Args**: `(EXPR)`
+
+  > Endeavour 176 Phase 3.  A dependent reduce-warp as one butterfly: per iteration, every variable is  >    shuffled, then the combiner is called ONCE with (partner's state, own state) and its k results replace  >    the state.  ACTIVE-THREADS gives lanes past the count the IDENTITY STATE.
+
+
+---
+### DEFUN `%FUSED-REDUCE-WORKGROUP-DEPENDENT-FORM`
+- **Args**: `(EXPR &OPTIONAL ENV CONTEXT LOCATION)`
+
+  > Endeavour 176 Phase 3.  A dependent reduce-workgroup: a dependent reduce-warp, every variable's per-warp  >    partial written to its own scratch, one barrier, one halving loop whose step calls the combiner ONCE on  >    (own partials, partner partials), one read-back, one leader block for every :return-vec.  Implicit  >    scratch per clause is typed from its identity (with ENV, also checked against the variable).
+
+
+---
+### DEFUN `%FUSED-GRID-REDUCE-DEPENDENT-FORM`
+- **Args**: `(FORM)`
+
+  > Endeavour 176 Phase 3.  A dependent grid-reduce!: :last-man-standing only (:atomic and :cas commit one  >    word at a time, so they cannot keep a state together -- a Crisp limitation; packing a small state into  >    one 64-bit CAS is possible in principle).  Phase 1 is a dependent reduce-workgroup; every variable's  >    partial is written, ONE ticket from ONE counter decides the last workgroup, which runs a dependent  >    reduce-workgroup over the partials and writes every return cell.  Scratch left out is implicit.
+
+
+---
+### DEFUN `%REFUSE-DEPENDENT-AUTODIFF`
+- **Args**: `(FORM)`
+
+  > BUG 098.  The AD path meets a dependent reduction: refuse LOUDLY.  Its variables interact inside a user  >    combiner, so the per-clause split the independent form uses does not apply, and a scratch-based  >    cross-thread reduction differentiated mechanically is silently wrong.
+
+
+---
+### DEFUN `%GRID-REDUCE!-EXPAND`
+- **Args**: `(FORM)`
+
+  > Endeavour 176.  The expansion of grid-reduce!.  An INDEPENDENT call (a clause list) becomes a PROGN of  >    single grid-reduce! calls (%independent-reduction-expand); the dependent form is refused until Phase 3.  >    A single call (grid-reduce! FN VAR IDENTITY RETURN-CELL &key STRATEGY ...) becomes the construct STRATEGY  >    names, minus :strategy -- refusing a missing argument, a non-literal or unknown strategy, and a key the  >    chosen construct does not take.  The target is interned in the CALL's package, because the reductions  >    are distinct symbols in :crisp-language and :crisp.compiler (each registered in both).
+
+
+---
 ### DEFUN `%ANALYZE-REDUCE-WARP`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for reduce-warp -- expands and delegates.
+  > Analyzer for reduce-warp -- expands and delegates.  176: an independent call is lowered fused  >    (%fused-reduce-warp-form); a dependent call has its combiner checked against the clauses and is lowered  >    fused (%fused-reduce-warp-dependent-form).  Every dependent form reaches this analyzer, so the  >    combiner check covers reduce-workgroup and grid-reduce! too.
 
 
 ---
@@ -2055,10 +2304,86 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 
 ---
+### DEFPARAMETER `*176-IMPLICIT-SCRATCH-SPECS*`
+
+  > Endeavour 176.  For each reduction Crisp can supply scratch for: the operator's name, how many  >    leading elements of the form (operator included) are positional, and the scratch keys Crisp  >    allocates when the caller leaves them out, in the order they are bound.
+
+
+---
+### DEFUN `%IMPLICIT-SCRATCH-SPEC`
+- **Args**: `(OP)`
+
+  > The *176-implicit-scratch-specs* entry for operator symbol OP, or NIL.  Matched by name, since the  >    reductions are interned in both :crisp.compiler and :crisp-language.
+
+
+---
+### DEFUN `%IMPLICIT-SCRATCH-MISSING-KEYS`
+- **Args**: `(EXPR)`
+
+  > The scratch keys of reduction form EXPR that Crisp can supply and the caller left out (or passed as  >    NIL), in table order; NIL when EXPR is not such a reduction or supplies them all.  Walks the keyword  >    tail as pairs rather than with GETF, so a malformed tail is left for the expander to report.
+
+
+---
+### DEFUN `%SCAN-TYPE-BY-NAME`
+- **Args**: `(NAME)`
+
+  > The Crisp type symbol whose name is NAME (a string), or NIL.  Looked up in *crisp-types* so the  >    answer is the symbol the rest of the compiler uses.
+
+
+---
+### DEFUN `%IDENTITY-SCAN-TYPE`
+- **Args**: `(FORM)`
+
+  > Endeavour 176.  The Crisp type of identity FORM, read from the form ALONE -- no environment, since  >    this runs in the Pass-1 scan, before any variable has a type.  NIL when the type is not visible.  >   >    Recognised, mirroring the analyzer's own literal typing (analyze-expression Case 1/1.1/2):  >      integer literal                      -> int  >      float literal                        -> float   (all float literals are float)  >      suffixed literal (0ul, 1.5f, 255uc)  -> its suffix type (%try-parse-typed-literal)  >      (type-min T) (type-max T) (type-infinity T) -> T  >      (- X)                                -> the type of X  >      (to-T x)                             -> T, when T names a Crisp type
+
+
+---
+### DEFUN `%IMPLICIT-SCRATCH-BINDING-NAME`
+- **Args**: `(VAR KEY)`
+
+  > The DETERMINISTIC let-binding name for the scratch Crisp allocates for KEY of a reduction over VAR,  >    e.g. CONTRIB-LOCAL-SCRATCH.  Deterministic because Pass 2 finds the implicit parameter by  >    rebuilding <binding>_FROM_<fn>_<n>, so Pass 1 and Pass 2 must see the same name (a gensym would  >    differ).  It also names the buffer readably in the generated host code.
+
+
+---
+### DEFUN `%IMPLICIT-SCRATCH-ALLOC-FORM`
+- **Args**: `(KEY ELEM-TYPE)`
+
+  > The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25).  The  >    global partials are sized :match-workgroup-size -- see the stage-A section header for why that is  >    always enough.
+
+
+---
+### DEFUN `%IMPLICIT-SCRATCH-FORM`
+- **Args**: `(EXPR ELEM-TYPE)`
+
+  > Endeavour 176.  Reduction form EXPR with its missing scratch supplied: a LET binding each missing  >    buffer, around EXPR with the corresponding keys appended (any NIL-valued copy of such a key removed).  >    Used by BOTH the Pass-1 scan-operator methods and the analyzers, so the two passes see the same form  >    (and the same scratch order).
+
+
+---
+### DEFUN `%SCAN-REDUCTION-MAYBE-IMPLICIT`
+- **Args**: `(OP ARGS NEXT)`
+
+  > Pass 1.  An independent or dependent reduce-workgroup is scanned as its fused form (the same form the  >    analyzer sees).  Otherwise scan the implicit-scratch form of reduction (OP . ARGS) when Crisp will  >    supply its scratch, or call NEXT (the default scan).
+
+
+---
+### DEFUN `%CHECK-IDENTITY-MATCHES-VARIABLE`
+- **Args**: `(OP-NAME VAR IDENTITY ELEM-TYPE ENV CONTEXT LOCATION)`
+
+  > Endeavour 176.  With implicit scratch the scratch is typed from the IDENTITY, so a variable of a  >    different type would be reduced through mistyped scratch.  Refuse it, naming the fix.
+
+
+---
+### DEFUN `%ANALYZE-REDUCTION-MAYBE-IMPLICIT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION EXPANDER)`
+
+  > Endeavour 176.  Analyze reduction EXPR: an independent or dependent reduce-workgroup FUSED (with its  >    identity checks); otherwise supply its scratch when the caller left it out, else analyze  >    (EXPANDER EXPR) as before.
+
+
+---
 ### DEFUN `%ANALYZE-REDUCE-WORKGROUP`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for reduce-workgroup -- expands and delegates.  Being an ANALYZED form rather than a  >    macro is what keeps the construct visible to the autodiff walk (see the section header).
+  > Analyzer for reduce-workgroup -- expands and delegates, supplying implicit scratch (176).  Being an  >    ANALYZED form rather than a macro is what keeps the construct visible to the autodiff walk.
 
 
 ---
@@ -2086,7 +2411,7 @@ Generated on 2026-09-23T06:41:48.491899Z
 ### DEFUN `%ANALYZE-GRID-REDUCE-ATOMIC`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for grid-reduce-atomic! -- expands and delegates.
+  > Analyzer for grid-reduce-atomic! -- expands and delegates, supplying implicit scratch (176).
 
 
 ---
@@ -2128,7 +2453,7 @@ Generated on 2026-09-23T06:41:48.491899Z
 ### DEFUN `%ANALYZE-GRID-REDUCE-LAST-MAN`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for grid-reduce-last-man! -- expands and delegates.
+  > Analyzer for grid-reduce-last-man! -- expands and delegates, supplying implicit scratch (176).
 
 
 ---
@@ -2149,7 +2474,7 @@ Generated on 2026-09-23T06:41:48.491899Z
 ### DEFUN `%ANALYZE-GRID-REDUCE-SECOND-STAGE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for grid-reduce-second-stage! -- expands and delegates.
+  > Analyzer for grid-reduce-second-stage! -- expands and delegates, supplying implicit scratch (176).
 
 
 ---
@@ -2170,7 +2495,7 @@ Generated on 2026-09-23T06:41:48.491899Z
 ### DEFUN `%ANALYZE-GRID-REDUCE-CAS`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for grid-reduce-cas! -- expands and delegates.
+  > Analyzer for grid-reduce-cas! -- expands and delegates, supplying implicit scratch (176).
 
 
 ---
@@ -4821,6 +5146,13 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 
 ---
+### DEFUN `%IF-RESULT-LLVM-TYPE`
+- **Args**: `(TYPE-SPEC MODULE)`
+
+  > BUG 093.  The LLVM type of an IF's result slot.  An IF whose branches each return MULTIPLE values  >    carries a multi-value type LIST, e.g. (float ulong); crisp-type-to-llvm-type reads that as a  >    single spec and returns only the first type (`float`), so the slot, the merge load and the  >    function's `ret` disagreed with the { float, i64 } the branches built, and llvm-as rejected the  >    module.  A multi-value list gets the aggregate the multi-value `return` itself uses  >    (get-llvm-return-type); every other spec -- a symbol, (int), (tensor ...), (cell ...) -- goes  >    through crisp-type-to-llvm-type exactly as before.  >   >    How a multi-value list is told apart from a compound spec (measured): valid-type-p is T for int,  >    (int), (tensor ...), (vector ...), (cell ...) and NIL for (float ulong), (int int).  So: a list  >    of length > 1 that is NOT itself a valid type, but whose elements all are.
+
+
+---
 ### DEFUN `%DVEC-COERCE-ELEMENT-IR`
 - **Args**: `(ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV
               DI-BUILDER DI-SCOPE LOCATION-MAP)`
@@ -6057,6 +6389,27 @@ Generated on 2026-09-23T06:41:48.491899Z
 
 
 ---
+### DEFUN `%LAZY-VARIANT-LLVM-NAME`
+- **Args**: `(VARIANT-NAME PARAM-TYPES)`
+
+  > The LLVM function name generate-function-prototype (codegen.lisp) gives a non-entry function  >    named VARIANT-NAME with PARAM-TYPES: lower-cased, types appended with mangle-type-spec, and  >    - and ~ replaced by _.  Kept in step with that function by hand -- if the two ever disagree, the  >    memo below simply misses and the variant is generated again, which then collides loudly.
+
+
+---
+### DEFUN `%LAZY-VARIANT-ALREADY-GENERATED`
+- **Args**: `(VARIANT-NAME PARAM-TYPES &OPTIONAL (LLVM-PARAM-TYPES PARAM-TYPES))`
+
+  > BUG 090 (a).  The registered signature of VARIANT-NAME with (explicit) PARAM-TYPES if, and only if,  >    the CURRENT module already holds a DEFINED function for it; otherwise NIL.  Keyed on the module  >    itself rather than on compiler state, because the spec runner creates and disposes a module per  >    compile and a fresh compiler session per top-level form.  >   >    LLVM-PARAM-TYPES (176) are the types the LLVM name is mangled from: a variant that inherits implicit  >    scratch parameters is named with those types FIRST, exactly as any carrier function is.
+
+
+---
+### DEFUN `%BIND-DEFAULTS-TO-DEFAULT-SCRATCH`
+- **Args**: `(FN-NAME INJECTED-BINDINGS)`
+
+  > Endeavour 176.  INJECTED-BINDINGS ((param default-form) ...) with each make-scratch-* default that  >    Pass 1 registered for FN-NAME replaced by the implicit parameter itself, so the variant binds  >    the parameter to the scratch the caller passes instead of allocating its own.
+
+
+---
 ### DEFUN `INSTANTIATE-GENERIC-FUNCTION`
 - **Args**: `(GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)`
 
@@ -7245,6 +7598,14 @@ Generated on 2026-09-23T06:41:48.491899Z
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
 
 ---
+### DEFUN `%L0-EMIT-SYMBOLIC-GLOBAL-SCRATCH-ARG`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE CONTEXT-VAR DEVICE-VAR ARG-INDEX
+              SIZE-EXPR)`
+
+  > BUG 094.  Emit the 6 kernel arguments (3*rank+3 at rank 1) for a GLOBAL scratch VECTOR whose length  >    is a SYMBOLIC size, phrasing every size as a C++ expression over the geometry constants -- the  >    global counterpart of %l0-emit-symbolic-local-scratch-arg.  Argument ORDER matches  >    %l0-emit-global-scratch-tensor-arg exactly: ptr, byte-size, offset[0], stride[0], extent[0], length.  >   >    Allocation and zero-initialisation go through the same staged path as the literal-size case  >    (%l0-emit-staged-alloc + a zeroed host mirror), with the element count as an expression; the  >    staging copy is emitted later in the same function body, where <name>_elems is still in scope.  >   >    Endeavour 176 needs this for grid-reduce-last-man!'s implicit :global-scratch-vec.
+
+
+---
 ### DEFUN `%L0-EMIT-GLOBAL-SCRATCH-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE CONTEXT-VAR DEVICE-VAR
               ARG-INDEX)`
@@ -8254,6 +8615,13 @@ Generated on 2026-09-23T06:41:48.491899Z
 - **Args**: `(TYPE-SPEC)`
 
   > Creates a string representation of a type spec for name mangling.  >    Extended to handle integers (e.g. tensor arity N in canonical list form).
+
+
+---
+### DEFUN `%LAZY-VARIANT-NAME`
+- **Args**: `(BASE-NAME ACTIVE-ENV)`
+
+  > BUG 090 (b).  The mangled name of a lazily instantiated &optional / &key variant.  >    mangle-function-variant-name joins only the parameter TYPES, and bind-keyword-args represents  >    each supplied keyword as a placeholder parameter of type KEYWORD followed by its value -- so  >    (scale b :by 3) and (scale c :plus 5) both became SCALE_int_keyword_int, and the second call  >    would run the first call's variant.  Here each KEYWORD placeholder is replaced by the NAME of the  >    key it introduces (the parameter that follows it): SCALE_int_key-by_int vs SCALE_int_key-plus_int.  >    Keys are named in CALL order, so (:by 1 :plus 2) and (:plus 2 :by 1) are separate, both correct,  >    variants.  Non-keyword parameters mangle exactly as before.
 
 
 ---
@@ -10523,6 +10891,12 @@ Generated on 2026-09-23T06:41:48.491899Z
 ### DEFVAR `*SPLIT-BARRIER-DEPTH*`
 
   > How many split-barrier windows are open in the kernel currently being analysed, or NIL outside  >    one.  Bound per kernel by INTERNAL-DEF-FUNCTION and stepped by %ANALYZE-GPU-BUILTIN.  >   >    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the  >    second :arrive sees a non-zero depth and refuses.
+
+
+---
+### DEFVAR `*176-GENERIC-SCRATCH-RANGE*`
+
+  > Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter  >    before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1  >    (multi-pass) or at the function's skip point (single-pass); read when its variants are generated.
 
 
 ---

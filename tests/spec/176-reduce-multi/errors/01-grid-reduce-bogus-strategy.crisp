@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be one of"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 1 -- grid-reduce! refuses an unknown :strategy, listing the legal ones
+;; (:atomic, :cas, :last-man-standing).  TDD.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel gr_bogus (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce! #'+ contrib 0.0 out :strategy :tree)))

@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "not differentiable yet"
+;; CHECK-FAIL: "not differentiable yet"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 176 Phase 3 -- differentiating THROUGH a dependent reduction is refused LOUDLY (BUG 098).
+;;
+;; The variables interact inside a user-written combiner, so the per-clause trick the independent form
+;; uses does not apply, and AD through a scratch-based cross-thread reduction is otherwise silently
+;; wrong.  Until there is a real design (a user-registered combiner VJP is the leading candidate), the
+;; backward pass refuses, rather than producing a gradient nobody should trust.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type uvec-t (vector ulong :address-space :global :align :compact))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel rwd_ad (xs &out outv outi)
+  (declare #'(vec-t &out vec-t uvec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((v (~ xs (to-int (get-local-linear-id))))
+        (i (get-global-linear-id)))
+    (reduce-warp #'argmax-combine
+                 ((v (type-min float))
+                  (i (type-max ulong))))
+    (set! (~ outv 0) v)
+    (set! (~ outi 0) i)))

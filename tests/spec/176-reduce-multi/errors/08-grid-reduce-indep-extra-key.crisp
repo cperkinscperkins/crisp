@@ -1,0 +1,19 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "is not used by :strategy"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 2 -- a clause key the chosen strategy does not use is refused, as in the
+;; single-variable form (PHASE1-DECISIONS D4).  :atomic takes only :local-scratch-vec per clause.  TDD.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel gri_xkey (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((gv (make-scratch-vector float 4 :address-space :global))
+        (s (to-float (get-global-linear-id))))
+    (grid-reduce! ((#'+ s 0.0 out :global-scratch-vec gv))
+                  :strategy :atomic)))

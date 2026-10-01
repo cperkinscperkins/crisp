@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 1 1 1 1
+;;
+;; ENDEAVOUR 176 -- (type-min float), (type-max float), (type-infinity float), under :ieee.  TDD.
+;;
+;; For floating-point types, type-min and type-max are the most negative and most positive FINITE
+;; values -- NOT C's FLT_MIN, which is the smallest positive normal.  (type-infinity T) is positive
+;; infinity, and its negation negative infinity; they are meaningful under :ieee precision only.
+;;
+;; Each slot is a 1/0 check rather than a printed float, so the spec does not depend on how the
+;; harness formats floats:
+;;
+;;     out[0]  (type-max float) is 3.4028235e38                         -> 1
+;;     out[1]  (type-min float) is -3.4028235e38                        -> 1
+;;     out[2]  (type-max float) < (type-infinity float): finite, not inf -> 1
+;;     out[3]  (type-max float) + (type-max float) overflows to infinity -> 1
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel type_min_max_inf_float (&out out)
+  (declare #'(&out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 0))
+    (set! (~ out 0) (if (= (type-max float) 3.4028235e38) 1 0))
+    (set! (~ out 1) (if (= (type-min float) -3.4028235e38) 1 0))
+    (set! (~ out 2) (if (< (type-max float) (type-infinity float)) 1 0))
+    (set! (~ out 3) (if (= (+ (type-max float) (type-max float)) (type-infinity float)) 1 0))))

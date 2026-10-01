@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outs: 32640 1 2 3
+;; HOIST-EXPECT: BUFFER outm: 255 1 2 3
+;;
+;; ENDEAVOUR 176 -- TWO implicit-scratch reductions of DIFFERENT types in one kernel.  TDD.
+;;
+;; Implicit scratch is registered by the Pass-1 scan and found again in Pass 2 by replaying the
+;; same scratch counter in the same order.  Two reductions -- a float sum through the native
+;; atomic, then a ulong max through last-man -- give the scanner five buffers of two element
+;; types to number, and the analyzer must hand each reduction its own.  A mix-up shows as a
+;; type error or a wrong answer rather than passing quietly.
+;;
+;;     outs[0] = 0 + ... + 255 = 32640     (float, identity 0.0)
+;;     outm[0] = max(0 .. 255) = 255       (ulong, identity 0ul)
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type uvec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel implicit_two_reductions (&out outs outm)
+  (declare #'(&out vec-t uvec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((s (to-float (get-global-linear-id)))
+        (m (get-global-linear-id)))
+    (grid-reduce-atomic! #'+ s 0.0 outs)
+    (grid-reduce-last-man! #'max m 0ul outm)))

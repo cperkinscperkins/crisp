@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER outi: -2147483648 2147483647 2 3
+;; HOIST-EXPECT: BUFFER outu: 0 4294967295 2 3
+;; HOIST-EXPECT: BUFFER outl: 0 18446744073709551615 2 3
+;;
+;; ENDEAVOUR 176 -- (type-min T) and (type-max T) for INTEGER types.  TDD.
+;;
+;; The most negative and most positive values of the type, as a constant of that type.  They exist
+;; mainly to be reduction identities -- (type-max T) for min, (type-min T) for max, and
+;; (type-max ulong) for an argmax/argmin index -- but they are ordinary constants usable anywhere.
+;; Slots 2 and 3 of each buffer keep the harness pre-fill.
+
+(def-type ivec-t (vector int   :address-space :global :align :compact))
+(def-type uvec-t (vector uint  :address-space :global :align :compact))
+(def-type lvec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel type_min_max_ints (&out outi outu outl)
+  (declare #'(&out ivec-t uvec-t lvec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 0))
+    (set! (~ outi 0) (type-min int))
+    (set! (~ outi 1) (type-max int))
+    (set! (~ outu 0) (type-min uint))
+    (set! (~ outu 1) (type-max uint))
+    (set! (~ outl 0) (type-min ulong))
+    (set! (~ outl 1) (type-max ulong))))

@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outs: 120 120 120 120
+;; HOIST-EXPECT: BUFFER outm: 85 85 85 85
+;;
+;; ENDEAVOUR 176 Phase 2 -- reduce-warp, INDEPENDENT form: a list of (fn var identity) clauses.  TDD.
+;;
+;; Two variables of different types with different functions, reduced in one call.  BMG warps are 16
+;; lanes; the kernel has 64 threads, so 4 warps, and the LAST lane of each writes its warp's results:
+;;
+;;     s = lane (float)        #'+   identity 0.0             -> 0 + ... + 15   = 120
+;;     m = 100 - lane (int)    #'min identity (type-max int)  -> 100 - 15       = 85
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type ivec-t (vector int   :address-space :global :align :compact))
+
+(def-kernel reduce_warp_independent (&out outs outm)
+  (declare #'(&out vec-t ivec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((s (to-float (warp-lane)))
+        (m (- 100 (to-int (warp-lane)))))
+    (reduce-warp ((#'+   s 0.0)
+                  (#'min m (type-max int))))
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ outs (to-int (warp-id))) s)
+      (set! (~ outm (to-int (warp-id))) m))))

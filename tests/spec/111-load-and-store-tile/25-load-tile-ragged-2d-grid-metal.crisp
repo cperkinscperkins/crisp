@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 15 99 99 99
+;;
+;; BUG 092 -- the GRID-coordinate form, load-tile, over a ragged edge.  Same bounds check as
+;; load-tile-at, reached through the grid-coordinate scaling.
+;;
+;; A 3x3 tile at GRID (1 1) starts at absolute (3 3) of the 4x4 V (pre-filled 0..15), so again
+;; only tile(0,0) = V[3][3] = 15 is in bounds:
+;;
+;;     tile(0,0)  -> 15
+;;     tile(0,1)  col 4 OUT             -> 99
+;;     tile(1,0)  row 4 OUT             -> 99   <-- the broken case
+;;     tile(1,1)  row 4 OUT, col 4 OUT  -> 99
+
+(def-type mat-t (matrix ulong :address-space :global :align :compact))
+(def-type vec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel load_tile_ragged_2d_grid (V &out OUT)
+  (declare #'(mat-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-matrix ulong (3 3))))
+    (load-tile V tile (1 1) :identity (to-ulong 99))
+    (set! (~ OUT (to-ulong 0)) (~ tile 0 0))
+    (set! (~ OUT (to-ulong 1)) (~ tile 0 1))
+    (set! (~ OUT (to-ulong 2)) (~ tile 1 0))
+    (set! (~ OUT (to-ulong 3)) (~ tile 1 1))))

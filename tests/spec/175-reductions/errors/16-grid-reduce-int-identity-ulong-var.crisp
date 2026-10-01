@@ -1,0 +1,22 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must have the variable's type"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 -- implicit scratch: the identity's type must MATCH the variable's.  TDD.
+;;
+;; The variable is ULONG; the identity `0` is an INT literal.  With implicit scratch the element
+;; type is taken from the identity during the Pass-1 scan, so the scratch would be allocated as
+;; int -- and a ulong reduction through int scratch truncates.  The mismatch can only be seen in
+;; Pass 2, once the variable's type is known, and it must be refused there with the fix spelled
+;; out: write 0ul.  (60 is the passing version of this kernel.)
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type uvec-t (vector ulong :address-space :global :align :compact))
+
+(def-kernel gr_int_ident (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (get-global-linear-id)))
+    (grid-reduce-last-man! #'+ contrib 0 out)))

@@ -9,7 +9,7 @@ The warp shuffle is the undisputed king of speed. `reduce-warp` iteratively appl
 * **Cons:** Limited to a single warp (usually 32 threads).
 
 **Mechanics & Constraints:**
-`reduce-warp` applies `someFunction` to the `<someVar>` expression in the current thread and another thread in the same warp. It iterates until all threads in the warp whose lane ID is less than `active-threads` have been reduced.
+`reduce-warp` applies `someFunction` to the `<someVar>` expression in the current thread and another thread in the same warp. It combines the values of every lane whose lane ID is less than `active-threads`; lanes at or past `active-threads` contribute the identity, and every lane of the warp -- active or not -- ends up holding the result.
 
 * **Thread Limit:** Using a value for `active-threads` that is GREATER than the warp size for the GPU hardware results in undefined behavior. This reduction cannot reduce more than `+warp-size+` threads.
 * **Scope:** While `reduce-warp` coordinates other threads at the warp level, it is not a grid-level operation. This makes it highly versatile—it can be nested and used in a wide variety of contexts and applications.
@@ -34,28 +34,4 @@ The example below will output "warp total: 640" repeatedly, once for each warp, 
 
 ```
 
-**Possible Implementation:**
-
-```lisp
-;; -- reduce-warp --
-(defmacro reduce-warp (someFunction someVar identity &optional (active-threads (get-warp-size)))
-  (c-t-assert (is-type-of someFunction (binop-type (type-of someVar))) "type mismatch between someFunction and someVar")
-  (c-t-assert (is-type-of someVar (type-of identity)) "type mismatch between someVar and identity")
-  `(in-warp (lane-id)
-    (declare (warp-convergent)) ;; <-- tells compiler cannot be called in divergent branch.
-    
-    ;; Active threads use their value. Inactive threads use the identity.
-    (let ((val (if (< lane-id ,active-threads)
-                    ,someVar
-                    ,identity)))
-
-      ;; Perform the full, unconditional reduction on 'val'.
-      ;; The loop bounds are always based on the full warp size.
-      (dec-times-by-half+ (s (/ (get-warp-size) 2))
-        (set! val (funcall ,someFunction (shuffle-xor val s) val)))
-
-      ;; Write the final result (from lane 0) back into someVar for all threads.
-      (set! ,someVar (shuffle val 0)))))
-
-```
 

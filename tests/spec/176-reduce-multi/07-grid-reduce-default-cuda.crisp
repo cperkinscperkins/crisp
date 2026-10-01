@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 32640
+;;
+;; ENDEAVOUR 176 Phase 1 -- the CUDA twin of 03: grid-reduce! with the default strategy.  TDD.
+;;
+;; The CUDA hoister allocates the implicit scratch through its own path (warp size 32 under h100, so
+;; the local sweep vector has two slots); the answer is the same.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel grid_reduce_default (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((contrib (to-float (get-global-linear-id))))
+    (grid-reduce! #'+ contrib 0.0 out)))
