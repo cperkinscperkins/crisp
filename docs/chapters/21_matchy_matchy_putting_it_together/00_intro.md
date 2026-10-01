@@ -1,11 +1,17 @@
 # **Matchy Matchy: Putting it Together**
 
 
-By combining Phase 1 and Phase 2, you create your algorithms.
+By combining Phase 1 and Phase 2, you create your algorithms.  Every grid-level construct runs its own
+Phase 1 -- a `reduce-workgroup`, which is itself a warp shuffle followed by a shared-memory sweep -- and
+must be reached by every thread, so in practice you choose the Phase 2 strategy:
 
-**The Speed Demon Combo:** `Warp Shuffle` + `Last Man Standing`
-If your problem fits in a single warp per workgroup, doing a warp shuffle into a Last-Man-Standing global sweep is generally the fastest possible reduction on modern GPUs.
+**The Speed Demon:** `grid-reduce!` (its default, `:last-man-standing`)
+One kernel, no contention on the result, any commutative function.  Its one limit: the number of
+workgroups may not exceed `local_work_size`.
 
-**The Easy Button Combo:** `Shared Mem Sweep` + `Atomic Add`
-If you are just summing up a massive grid of floats, you do a standard `reduce-workgroup`, and have thread 0 do a `grid-reduce-atomic!`. No global scratchpads to allocate, no counters to manage.
+**The Easy Button:** `grid-reduce!` with `:strategy :atomic`
+Summing (or taking the min or max of) a massive grid: no global scratch at all, at the cost of
+contention on a single address.
+
+And when one warp is all you need, `reduce-warp` alone is the fastest of all: registers only, no barriers.
 

@@ -209,6 +209,50 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - (%FIND-ENTRY-POINT-DECLARATION DECLARE-FORMS)  environment.lisp
 - - - - - - - - - - - - - - - - (%VALIDATE-KERNEL-RETURN-TYPE RETURN-TYPES)  environment.lisp
 - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - - - - - - - (%176-GENERIC-SKIP-SCRATCH NAME BODY)  analysis/core.lisp
+- - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
+- - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
+- - - - - - - - - - - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
+                                                    (EQL 'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (%MMTS-SCAN-SECTIONS ARGS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - (%MMTS-SPLIT-SECTIONS BODY &OPTIONAL LOCATION)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - (%MMTS-SECTION-ERROR MESSAGE LOCATION)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - (%SCAN-REGISTER-TMA-DESCRIPTOR ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
+                                                      (EQL
+                                                       'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%RESOLVE-ASYNC-BARRIER-MODE-SCAN ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-BLOCK-P ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (RESOLVED-TARGET-ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - (%REGISTER-SCRATCH-TENSOR-IMPLICIT OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC-BASE OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%175-SCRATCH-ADDRESS-SPACE ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - (%SCAN-GENERIC-DEFAULT-SCRATCH FN-NAME)  analysis/core.lisp
+- - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp
+- - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp
 - - - - - - - - - - - - - - (%COMPILE-STANDARD-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp
 - - - - - - - - - - - - - - - - (%KERNEL-MMA-LOWERING SEMANTIC-FUNCTION)  codegen.lisp
@@ -298,12 +342,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - (%175-USES-WARP-COLLECTIVE-P X)  codegen.lisp
 - - - - - - - - - - - - - - - - - (%APPLY-CLUSTER-DIMS-ATTRIBUTE FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%RECORD-EFFECTIVE-CLUSTER-DIMS KERNEL-NAME DIMS)  codegen.lisp
 - - - - - - - - - - - - - - - - - - (%WARN-CLUSTER-DEGRADED KERNEL-NAME DECLARED)  codegen.lisp
 - - - - - - - - - - - - - - - - (GENERATE-FUNCTION-BODY SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER LOCATION-MAP)  codegen.lisp
@@ -441,6 +481,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%IF-RESULT-LLVM-TYPE TYPE-SPEC MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
@@ -883,7 +927,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - (%HP-CHECK-WORKGROUP-BOUNDS KERNEL-NAME LOCAL-SIZE-DECL PROFILE)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
 - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
 - - - - - - - - - - - - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
 - - - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
@@ -892,41 +936,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
-- - - - - - - - - - - - - - - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
-                                                            (EQL
-                                                             'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SCAN-SECTIONS ARGS)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SPLIT-SECTIONS BODY &OPTIONAL LOCATION)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SECTION-ERROR MESSAGE LOCATION)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (%SCAN-REGISTER-TMA-DESCRIPTOR ARGS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
-                                                              (EQL
-                                                               'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (%RESOLVE-ASYNC-BARRIER-MODE-SCAN ARGS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-BLOCK-P ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (RESOLVED-TARGET-ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%REGISTER-SCRATCH-TENSOR-IMPLICIT OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC-BASE OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (%175-SCRATCH-ADDRESS-SPACE ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
 - - - - - - - - - - - - - - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
@@ -950,8 +960,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-FUNCTION-VARIANT-NAME BASE-NAME PARAM-TYPES)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%BIND-DEFAULTS-TO-DEFAULT-SCRATCH FN-NAME INJECTED-BINDINGS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-NAME BASE-NAME ACTIVE-ENV)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-ALREADY-GENERATED VARIANT-NAME PARAM-TYPES &OPTIONAL (LLVM-PARAM-TYPES
+                                                                                                                       PARAM-TYPES))  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-LLVM-NAME VARIANT-NAME PARAM-TYPES)  environment.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%GENERATE-LAZY-VARIANT-IR AST-NODE VARIANT-NAME &OPTIONAL BASE-NAME)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - (%CHECK-STRUCT-MUTATING-CALL OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
@@ -1041,6 +1060,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS &OPTIONAL RECORD-INFO)  analysis/core.lisp
 - - - - - - (%SCAN-FORMS-FOR-RECORD-INFO FORMS)  autodiff.lisp
 - - - - - - (%EXTRACT-FN-BODY-AND-DECLARATIONS BODY-AND-LOC)  analysis/core.lisp [See above]
+- - - - - - (%LAMBDA-LIST-GENERIC-P PARAMS)  analysis/core.lisp
 - - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
 - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
 - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -1056,6 +1076,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [See above]
 - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
 - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
+- - - - - (%SCAN-GENERIC-DEFAULT-SCRATCH FN-NAME)  analysis/core.lisp [See above]
 - - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp [See above]
 - - - - - (INFER-PARAM-UNIFORMITY)  analysis/core.lisp
 - - - - - - (%UNI-TOPO-ORDER NODES)  analysis/core.lisp
@@ -1278,36 +1299,57 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%ATOMIC-OP-PARTS EXPR)  analysis/ops.lisp
 - - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
 
+- (%ANALYZE-CHECK-REDUCTION-IDENTITY EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%CHECK-IDENTITY-MATCHES-VARIABLE OP-NAME VAR IDENTITY ELEM-TYPE ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+
 - (%ANALYZE-GRID-REDUCE-ATOMIC EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%GRID-REDUCE-ATOMIC-EXPAND EXPR)  analysis/ops.lisp
-- - - (%GRID-REDUCE-ATOMIC-PARTS EXPR)  analysis/ops.lisp [See above]
-- - - (%GRID-ATOMIC-OP-NAME FN)  analysis/ops.lisp [See above]
-- - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp
-- - - (COMPILER-NO-OP)  macros.lisp
+- - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp
+- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp
+- - - - (%FUNCTION-FORM-P X)  analysis/ops.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (%FUSED-REDUCE-WORKGROUP-FORM EXPR &OPTIONAL ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - - (%INDEPENDENT-REDUCTION-EXPAND FORM)  analysis/ops.lisp
+- - - - - (%FUNCTION-FORM-P X)  analysis/ops.lisp [See above]
+- - - - (%CLAUSE-KEY CLAUSE MIN-LEN KEY)  analysis/ops.lisp
+- - - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp
+- - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp [See above]
+- - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - (%SCAN-TYPE-BY-NAME NAME)  analysis/ops.lisp
+- - - - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [RECURSION]
+- - - - (%CHECK-IDENTITY-MATCHES-VARIABLE OP-NAME VAR IDENTITY ELEM-TYPE ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-BINDING-NAME VAR KEY)  analysis/ops.lisp
+- - - - (%IMPLICIT-SCRATCH-ALLOC-FORM KEY ELEM-TYPE)  analysis/ops.lisp
+- - - - (WHEN-THREAD-IN-WARP-IS LANE &BODY BODY)  macros.lisp
+- - - - (COMPILER-NO-OP)  macros.lisp
+- - - (%FUSED-REDUCE-WORKGROUP-DEPENDENT-FORM EXPR &OPTIONAL ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - - (%DEPENDENT-REDUCTION-VALIDATE FORM)  analysis/ops.lisp
+- - - - (%CLAUSE-KEY CLAUSE MIN-LEN KEY)  analysis/ops.lisp [See above]
+- - - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]
+- - - - (%CHECK-IDENTITY-MATCHES-VARIABLE OP-NAME VAR IDENTITY ELEM-TYPE ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-BINDING-NAME VAR KEY)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-ALLOC-FORM KEY ELEM-TYPE)  analysis/ops.lisp [See above]
+- - - - (WHEN-THREAD-IN-WARP-IS LANE &BODY BODY)  macros.lisp [See above]
+- - - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - - (%IMPLICIT-SCRATCH-MISSING-KEYS EXPR)  analysis/ops.lisp
+- - - - (%IMPLICIT-SCRATCH-SPEC OP)  analysis/ops.lisp
+- - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]
+- - - (%CHECK-IDENTITY-MATCHES-VARIABLE OP-NAME VAR IDENTITY ELEM-TYPE ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
+- - - (%IMPLICIT-SCRATCH-FORM EXPR ELEM-TYPE)  analysis/ops.lisp
+- - - - (%IMPLICIT-SCRATCH-SPEC OP)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-MISSING-KEYS EXPR)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-BINDING-NAME VAR KEY)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-GRID-REDUCE-CAS EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%GRID-REDUCE-CAS-EXPAND EXPR)  analysis/ops.lisp
-- - - (%GRID-REDUCE-CAS-PARTS EXPR)  analysis/ops.lisp [See above]
-- - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
-- - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-GRID-REDUCE-LAST-MAN EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%GRID-REDUCE-LAST-MAN-EXPAND EXPR)  analysis/ops.lisp
-- - - (%GRID-REDUCE-LAST-MAN-PARTS EXPR)  analysis/ops.lisp [See above]
-- - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
-- - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
-- - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-GRID-REDUCE-SECOND-STAGE EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%GRID-REDUCE-SECOND-STAGE-EXPAND EXPR)  analysis/ops.lisp
-- - - (%GRID-REDUCE-SECOND-STAGE-PARTS EXPR)  analysis/ops.lisp [See above]
-- - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
-- - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
-- - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-LET-STAR-REJECTED EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 
@@ -1320,17 +1362,29 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%175-MINMAX-EXPAND EXPR WHICH LOCATION)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-REDUCE-WARP EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%REDUCE-WARP-EXPAND EXPR)  analysis/ops.lisp
+- - (%FUSED-REDUCE-WARP-FORM EXPR)  analysis/ops.lisp
+- - - (%INDEPENDENT-REDUCTION-EXPAND FORM)  analysis/ops.lisp [See above]
 - - - (%REDUCE-WARP-CHECK-ACTIVE-THREADS ACTIVE-THREADS)  analysis/ops.lisp
 - - - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
 - - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - (%CHECK-DEPENDENT-COMBINER OP-NAME COMBINER CLAUSES ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - (%FUNCTION-FORM-P X)  analysis/ops.lisp [See above]
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%DEPENDENT-REDUCTION-VALIDATE FORM)  analysis/ops.lisp [See above]
+- - (%FUSED-REDUCE-WARP-DEPENDENT-FORM EXPR)  analysis/ops.lisp
+- - - (%DEPENDENT-REDUCTION-VALIDATE FORM)  analysis/ops.lisp [See above]
+- - - (%REDUCE-WARP-CHECK-ACTIVE-THREADS ACTIVE-THREADS)  analysis/ops.lisp [See above]
+- - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - (%REDUCE-WARP-EXPAND EXPR)  analysis/ops.lisp
+- - - (%REDUCE-WARP-CHECK-ACTIVE-THREADS ACTIVE-THREADS)  analysis/ops.lisp [See above]
+- - - (COMPILER-NO-OP)  macros.lisp [See above]
 
 - (%ANALYZE-REDUCE-WORKGROUP EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (%REDUCE-WORKGROUP-EXPAND EXPR)  analysis/ops.lisp
-- - - (WHEN-THREAD-IN-WARP-IS LANE &BODY BODY)  macros.lisp
-- - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-SHUFFLE EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1341,6 +1395,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SHUFFLE-LITERAL-INTEGER NODE)  analysis/ops.lisp [See above]
 - - (%SHUFFLE-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp
 
+- (%ANALYZE-TYPE-INFINITY EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+
+- (%ANALYZE-TYPE-MAX EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp [See above]
+- - (%FLOAT-TYPE-EXTREME TYPE-SYM BITS)  analysis/ops.lisp
+
+- (%ANALYZE-TYPE-MIN EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp [See above]
+- - (%FLOAT-TYPE-EXTREME TYPE-SYM BITS)  analysis/ops.lisp [See above]
+
 - (%ANALYZE-WARP-COLLECTIVE-CHECK EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%SHUFFLE-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
 
@@ -1348,6 +1414,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
 
 - (%AUTODIFF-GRAD-CELL-TYPE)  autodiff.lisp
+
+- (%COMBINER-CALL COMBINER ARGS)  analysis/ops.lisp
+- - (%FUNCTION-FORM-P X)  analysis/ops.lisp [See above]
 
 - (%CRISP-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
 - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -1647,6 +1716,29 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%PARSE-CT-LITERAL VALUE)  macros.lisp
 - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 
+- (%GRID-REDUCE-ATOMIC-EXPAND EXPR)  analysis/ops.lisp
+- - (%GRID-REDUCE-ATOMIC-PARTS EXPR)  analysis/ops.lisp [See above]
+- - (%GRID-ATOMIC-OP-NAME FN)  analysis/ops.lisp [See above]
+- - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp
+- - (COMPILER-NO-OP)  macros.lisp [See above]
+
+- (%GRID-REDUCE-CAS-EXPAND EXPR)  analysis/ops.lisp
+- - (%GRID-REDUCE-CAS-PARTS EXPR)  analysis/ops.lisp [See above]
+- - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
+- - (COMPILER-NO-OP)  macros.lisp [See above]
+
+- (%GRID-REDUCE-LAST-MAN-EXPAND EXPR)  analysis/ops.lisp
+- - (%GRID-REDUCE-LAST-MAN-PARTS EXPR)  analysis/ops.lisp [See above]
+- - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
+- - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
+- - (COMPILER-NO-OP)  macros.lisp [See above]
+
+- (%GRID-REDUCE-SECOND-STAGE-EXPAND EXPR)  analysis/ops.lisp
+- - (%GRID-REDUCE-SECOND-STAGE-PARTS EXPR)  analysis/ops.lisp [See above]
+- - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
+- - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
+- - (COMPILER-NO-OP)  macros.lisp [See above]
+
 - (%HAS-EXPLICIT-N ARGS)  autodiff.lisp
 - - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp [See above]
 
@@ -1709,6 +1801,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%RECORD-MEMBER-COUNT REC-FORM)  metadata-val.lisp
 
+- (%REDUCE-WORKGROUP-EXPAND EXPR)  analysis/ops.lisp
+- - (WHEN-THREAD-IN-WARP-IS LANE &BODY BODY)  macros.lisp [See above]
+- - (COMPILER-NO-OP)  macros.lisp [See above]
+
 - (%RESOLVE-TO-BASE-TYPE-FOR-RECORDS PD-TYPE)  autodiff.lisp
 - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
 - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -1718,6 +1814,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%REWRITE-BARE-TILE-IN-FORM FORM ORIGIN-BINDING-SYMS CL-PKG)  analysis/control.lisp [RECURSION]
 
 - (%ROLE-NAME-EQ A B)  analysis/control.lisp
+
+- (%SCAN-REDUCTION-MAYBE-IMPLICIT OP ARGS NEXT)  analysis/ops.lisp
+- - (%INDEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp
+- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
+- - (SCAN-FORM (FORM CONS))  analysis/core.lisp [See above]
+- - (%FUSED-REDUCE-WORKGROUP-FORM EXPR &OPTIONAL ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
+- - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp
+- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
+- - (%FUSED-REDUCE-WORKGROUP-DEPENDENT-FORM EXPR &OPTIONAL ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
+- - (%IMPLICIT-SCRATCH-MISSING-KEYS EXPR)  analysis/ops.lisp [See above]
+- - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]
+- - (%IMPLICIT-SCRATCH-FORM EXPR ELEM-TYPE)  analysis/ops.lisp [See above]
 
 - (%SPV-COOP-USES-P TXT TYPE-ID)  mma.lisp
 - - (%SPV-TOKENS S)  mma.lisp
@@ -2400,6 +2508,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - - (TRY-CONSTANT-FOLD NODE)  analysis/ops.lisp [See above]
 - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - - - (%IF-MISSING-ELSE-IS-FALSE-P EXPR THEN-NODE)  analysis/control.lisp
+- - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - (GET-PROMOTED-TYPE TYPE-A-NAME TYPE-B-NAME)  type-checker.lisp [See above]
 - - - - (ENSURE-BRANCH-COMPATIBILITY THEN-NODE ELSE-NODE LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-STATIC-WHEN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
@@ -2457,6 +2568,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (NUMERIC-TYPE-CATEGORY TYPE-NAME)  analysis/structs.lisp
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+
+- (ANALYZE-SUB-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-TEMPLATE-INSTANTIATION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -2567,7 +2681,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ANF-TRANSFORM EXPR)  anf-transform.lisp
 - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp
 - - - - (ANF-IS-ATOMIC? EXPR)  anf-transform.lisp
+- - - - (%INDEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp [See above]
 - - - - (ANF-NORMALIZE EXPR IS-NESTED?)  anf-transform.lisp [RECURSION]
+- - - - (%INDEPENDENT-REDUCTION-SPLIT-FOR-AD FORM)  analysis/ops.lisp
+- - - - - (%INDEPENDENT-REDUCTION-EXPAND FORM)  analysis/ops.lisp [See above]
+- - - - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp [See above]
+- - - - (%REFUSE-DEPENDENT-AUTODIFF FORM)  analysis/ops.lisp
 - - - - (ANF-FRESH-TEMP)  anf-transform.lisp
 - - - - (%ANF-NORMALIZE-SET! EXPR IS-NESTED?)  anf-transform.lisp
 - - - - - (ANF-NORMALIZE-PLACE PLACE)  anf-transform.lisp
@@ -2753,6 +2872,29 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (GET-TEMPLATE-SIGNATURE NAME CONCRETE-TYPES)  templates.lisp
 
+- (GRID-REDUCE! &WHOLE FORM &REST ARGS)  analysis/ops.lisp
+- - (%GRID-REDUCE!-EXPAND FORM)  analysis/ops.lisp
+- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
+- - - (%FUSED-GRID-REDUCE-FORM FORM)  analysis/ops.lisp
+- - - - (%INDEPENDENT-REDUCTION-EXPAND FORM)  analysis/ops.lisp [See above]
+- - - - (%GRID-ATOMIC-OP-NAME FN)  analysis/ops.lisp [See above]
+- - - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
+- - - - (COMPILER-NO-OP)  macros.lisp [See above]
+- - - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-BINDING-NAME VAR KEY)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-ALLOC-FORM KEY ELEM-TYPE)  analysis/ops.lisp [See above]
+- - - - (%CLAUSE-KEY CLAUSE MIN-LEN KEY)  analysis/ops.lisp [See above]
+- - - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
+- - - (%FUSED-GRID-REDUCE-DEPENDENT-FORM FORM)  analysis/ops.lisp
+- - - - (%DEPENDENT-REDUCTION-VALIDATE FORM)  analysis/ops.lisp [See above]
+- - - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-BINDING-NAME VAR KEY)  analysis/ops.lisp [See above]
+- - - - (%IMPLICIT-SCRATCH-ALLOC-FORM KEY ELEM-TYPE)  analysis/ops.lisp [See above]
+- - - - (%CLAUSE-KEY CLAUSE MIN-LEN KEY)  analysis/ops.lisp [See above]
+- - - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
+- - - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
+- - - - (COMPILER-NO-OP)  macros.lisp [See above]
+
 - (INITIALIZE-TEMPLATES)  templates.lisp
 
 - (IS-ADDRESS-SPACE? X)  enums.lisp
@@ -2778,7 +2920,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp [See above]
 - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 
-- (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
+- (MANGLE-FUNCTION-VARIANT-NAME BASE-NAME PARAM-TYPES)  mangling.lisp
 
 - (MANGLE-TYPE-SPEC TYPE-SPEC)  mangling.lisp
 

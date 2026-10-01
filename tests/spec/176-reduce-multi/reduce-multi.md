@@ -163,11 +163,21 @@ Sugar over the existing grid-level constructs, and the first real use of Phase 0
 
 ## Phase 4: docs and wrap-up
 
-- [ ] return-vec -> return-cell for the Phase 2 reductions; drop the `single-result` / "vector of size 1" language
-- [ ] single-variable `grid-reduce!` signature: add `:atomic-counter` and `:election-flag-cell`
-- [ ] Binop-Type section: commutative AND associative
-- [ ] "Matchy Matchy": both combos, as written, can't be expressed
-- [ ] typos: "muust", "indeterminant", camelCase scratch names, the `def-enum` defined twice
-- [ ] fold the excerpt into the design doc (`ideal_001.md` and `docs/chapters/`)
-- [ ] `ci-stop.txt` -> 176
-- [ ] `plan/definition-of-done.md`
+- [x] return-vec -> return-cell for the Phase 2 reductions; `single-result` / "vector of size 1" language gone
+      (a length-1 vector is still accepted; accumulate-vs-write stated per strategy)
+- [x] single-variable `grid-reduce!` signature: all keys listed (Phase 1)
+- [x] Binop-Type section: commutative AND associative (+ float last-bits note, dependent combiner signature)
+- [x] "Matchy Matchy": rewritten to combos that can be written (grid-reduce! default / :atomic; reduce-warp)
+- [x] typos: "muust", "indeterminant", camelCase scratch names, the duplicate `def-enum`
+- [x] "Required, allocated by the CALLER" paragraphs -> optional (implicit scratch); :message marked reserved
+- [x] reduce-warp: lanes past active-threads hold the result; reduce-workgroup: every thread holds the partial
+- [x] fold the excerpt into the design doc: docs/ideal_001.md reductions section replaced; chapters regenerated
+      (199 pure renames from renumbering; new: type-limits, full-reductions, several-variables, vector-api)
+- [x] type-min/max/infinity documented: new "Type Limits" subsection after Base Numeric Types
+- [x] overlays folded into src/ + tests/run-specs.lisp and EMPTIED (2026-10-01); grid-reduce! exported via package.lisp
+- [x] regenerate reference.md / call graph / globals table (definition of done)
+- [x] ci.yml / run-all-tests.bat need nothing: both run the whole spine to ci-stop in every mode
+- [x] verified on folded src, overlays empty (2026-10-01): unit 341, E2E 1324/1324, negative 296/296,
+      --differentiate 006/016/175/176, --single-pass 016/046/176 -- all clean
+- [ ] `plan/definition-of-done.md` walk-through; CUDA on metal (pod) for 176/07, 175/59
+- [x] `ci-stop.txt` -> 176

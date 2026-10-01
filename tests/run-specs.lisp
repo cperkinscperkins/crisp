@@ -1489,6 +1489,37 @@
 
 
 
+(defun %vad-find-simd-width (forms)
+  "The :SIMD-WIDTH recorded anywhere in the metacrisp FORMS (the hardware-profile section), or NIL."
+  (labels ((walk (x)
+             (cond ((and (consp x) (consp (cdr x)) (eq (car x) :simd-width) (integerp (cadr x)))
+                    (return-from %vad-find-simd-width (cadr x)))
+                   ((consp x) (walk (car x)) (walk (cdr x))))))
+    (walk forms)
+    nil))
+
+(defun %vad-resolve-symbolic-size (size kern forms)
+  "Endeavour 176.  SIZE (an implicit param's :size-expr) as an element COUNT.  An integer is returned as
+   is.  A symbolic size -- implicit reduction scratch is :match-num-warps-per-workgroup (local sweep) or
+   :match-workgroup-size (last-man's global partials) -- is resolved from KERN's declared local size and
+   the hardware profile's SIMD width found in FORMS, by the same rules as the hoisters
+   (%l0-scratch-symbolic-expr): ceiling division for warps, warp width 32 when no profile is recorded."
+  (if (not (keywordp size))
+      size
+      (let* ((ls (getf kern :local-size))            ; (local-size :set-to N) or (local-size :set-to (A B))
+             (n (and (consp ls) (third ls)))
+             (n (cond ((integerp n) n)
+                      ((and (consp n) (eq (car n) 'quote)) (reduce #'* (second n)))
+                      ((and (consp n) (every #'integerp n)) (reduce #'* n))
+                      (t nil)))
+             (warp (or (%vad-find-simd-width forms) 32)))
+        (unless n
+          (error "%vad-resolve-symbolic-size: symbolic :size-expr ~s needs a compile-time (local-size :set-to N); kernel declares ~s"
+                 size ls))
+        (cond ((string-equal (symbol-name size) "MATCH-WORKGROUP-SIZE") n)
+              ((string-equal (symbol-name size) "MATCH-NUM-WARPS-PER-WORKGROUP") (ceiling n warp))
+              (t (error "%vad-resolve-symbolic-size: unsupported symbolic :size-expr ~s" size))))))
+
 (defun %vad-read-implicit-params (file kernel-name &key grad)
   "Reads the forward or backward kernel's metacrisp file for FILE and
    extracts its :implicit-params, returning a list of plists each
@@ -1568,7 +1599,9 @@
                                ;; an element count.
                                (dims (and (listp size) size)))
                           (list :base (first range)
-                                :n-elements (if dims (reduce #'* dims) size)
+                                ;; 176: a SYMBOLIC size (implicit reduction scratch) is resolved to a
+                                ;; count from the kernel's local size and the profile's SIMD width.
+                                :n-elements (if dims (reduce #'* dims) (%vad-resolve-symbolic-size size kern forms))
                                 :rows (and dims (first dims))
                                 :cols (and dims (second dims))
                                 ;; 147/08: a RING is a rank-3 scratch tensor whose

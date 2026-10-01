@@ -2755,6 +2755,12 @@ in single-pass mode."
                 :n-float-params n-float-params
                 :n-return n-return))))
 
+(defun %lambda-list-generic-p (params)
+  "T when lambda list PARAMS has &optional or &key -- a generic function whose variants are instantiated
+   lazily.  Matched by name, so the reading package does not matter."
+  (some (lambda (p) (and (symbolp p) (member (symbol-name p) '("&OPTIONAL" "&KEY") :test #'string-equal)))
+        params))
+
 (defun %pre-register-differentiable-fns (forms &optional record-info)
   "When *differentiate-p* is T, walk FORMS for def-function forms and
 pre-register them in *differentiable-functions* (and *differentiable-hof-store*
@@ -2781,7 +2787,14 @@ RECORD-INFO is an alist of (NAME-STR . FIELD-COUNT) built by
                  (%extract-fn-body-and-declarations body-and-loc)
                (declare (ignore declare-forms))
                (let ((is-system (member '(crisp-system-generated) declarations :test #'equal)))
-                 (unless (or is-system (%fn-name-is-grad-p name))
+                 ;; BUG 097 (stopgap): an &optional / &key function is NOT differentiable yet -- its variants
+                 ;; are instantiated lazily and no _GRAD companion is generated for them, so registering it
+                 ;; made the backward pass call <name>_GRAD, which does not exist.  Unregistered, a call in an
+                 ;; inactive context is a constant, and one that needs a gradient fails loudly as "not
+                 ;; differentiable".  The real fix -- a lazily instantiated _GRAD per variant -- is BUG 097.
+                 (when (%lambda-list-generic-p params)
+                   (log:info "BUG 097: ~a has &optional/&key parameters -- not registered as differentiable" name))
+                 (unless (or is-system (%fn-name-is-grad-p name) (%lambda-list-generic-p params))
                    (handler-case
                        (multiple-value-bind (env return-types)
                            (parse-function-declarations params declarations)

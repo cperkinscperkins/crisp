@@ -1107,7 +1107,14 @@
 
    ;; Float types
    ((eq (crisp-type-category crisp-type) :float)
-     (llvm-const-real llvm-type (coerce value 'double-float)))
+     (progn
+       ;; 176: an INFINITE float constant under :fast precision is undefined (LLVM's ninf) -- warn rather
+       ;; than refuse, because precision can be forced from the command line.  Checked HERE, at codegen,
+       ;; because a (with-precision (fast) ...) region scopes *math-precision* over codegen only.
+       (when (and (floatp value) (sb-ext:float-infinity-p value) (eq *math-precision* :fast))
+         (log:warn "176: infinite float constant under :fast precision")
+         (format *error-output* "WARNING: (type-infinity ...) yields an infinity under :fast precision, where the compiler may assume no value is infinite -- the result is undefined.  Use (type-max T) / (type-min T), or an :ieee region.~%"))
+       (llvm-const-real llvm-type (coerce value 'double-float))))
 
    ;; Void
    ((eq (crisp-type-category crisp-type) :void)
