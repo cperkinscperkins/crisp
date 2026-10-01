@@ -123,11 +123,16 @@ Sugar over the existing grid-level constructs, and the first real use of Phase 0
 
 ## Phase 2: independent
 
-- [ ] TDD tests: `reduce-warp`, then `reduce-workgroup`, then `grid-reduce!`
-- [ ] IR check: one shuffle sweep and one barrier serve all the clauses
-- [ ] IR check: a k-clause last-man call draws ONE atomic ticket, not k
-- [ ] autodiff: compose the existing per-clause VJPs; `VERIFY-AUTODIFF`
-- [ ] on metal: `TEST-HOIST[L0]` / `HOIST-EXPECT` for the grid-level form
+- [x] TDD tests: `reduce-warp`, then `reduce-workgroup`, then `grid-reduce!` (176/09-14, errors/04-08,
+      independent-fusion.unit.lisp)
+- [x] 2a: per-clause expansion -- correct, AD for free (all metal specs + VERIFY-AUTODIFF passed here)
+- [x] 2b: FUSED forward lowering (analyzers + Pass-1 scanner see the same fused form); the AD path (ANF)
+      keeps the per-clause SPLIT, so backward uses the existing per-variable VJPs -- no new VJP
+- [x] IR check: one shuffle sweep and one barrier serve all the clauses
+- [x] IR check: a k-clause last-man call draws ONE atomic ticket, not k (unfused: 2 tickets / 10 barriers /
+      8 loops; fused 2-clause = 1-clause: 1 / 5 / 4)
+- [x] autodiff: per-clause VJPs; 176/14 VERIFY-AUTODIFF analytical=1.0 numerical=1.0 (BMG)
+- [x] on metal: 176/09-13 on BMG
 
 
 ## Phase 3: dependent

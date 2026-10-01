@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outs: 32640
+;; HOIST-EXPECT: BUFFER outm: 255
+;;
+;; ENDEAVOUR 176 Phase 2 -- independent grid-reduce! with :strategy :atomic.  TDD.
+;;
+;; :atomic applies to every clause, so every clause's function needs a hardware atomic (#'+ and #'max
+;; here; errors/06 pins the refusal when one does not).  :atomic ACCUMULATES into the cells, which the
+;; harness pre-fills with 0 -- the identity of both.  Grid 256 over 64:
+;;
+;;     s = global id (float)   #'+   -> 32640
+;;     m = global id (int)     #'max -> 255
+
+(def-type out-c  (cell float :address-space :global))
+(def-type iout-c (cell int   :address-space :global))
+
+(def-kernel grid_reduce_independent_atomic (&out outs outm)
+  (declare #'(&out out-c iout-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((s (to-float (get-global-linear-id)))
+        (m (to-int (get-global-linear-id))))
+    (grid-reduce! ((#'+   s 0.0 outs)
+                   (#'max m 0   outm))
+                  :strategy :atomic)))

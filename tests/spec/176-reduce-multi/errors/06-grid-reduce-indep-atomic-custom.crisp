@@ -1,0 +1,24 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "native hardware atomic"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 2 -- :strategy :atomic applies to EVERY clause, so one clause whose function has
+;; no hardware atomic refuses the whole call -- with the same message grid-reduce-atomic! gives.  TDD.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-function my-op (a b)
+  (declare #'(float float => float))
+  (+ a (* 0.5 b)))
+
+(def-kernel gri_atomic_custom (&out outa outb)
+  (declare #'(&out out-c out-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((s (to-float (get-global-linear-id)))
+        (t2 (to-float (get-global-linear-id))))
+    (grid-reduce! ((#'+     s  0.0 outa)
+                   (#'my-op t2 0.0 outb))
+                  :strategy :atomic)))
