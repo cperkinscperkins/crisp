@@ -359,3 +359,86 @@ Accepts bindings of length >= 2 (fix: was = 2, dropping multi-value bindings)."
 
    (t
      (error "Codegen for literal of unknown type category: ~a" (crisp-type-name crisp-type)))))
+
+;;;; ===========================================================================
+;;;; Endeavour 176 Phase 1 -- (grid-reduce! fn var identity return-cell &key strategy message ...).
+;;;;
+;;;; The easy form: Phase 1 is a reduce-workgroup, Phase 2 is picked by :strategy, every scratch buffer is
+;;;; implicit.  A MACRO that rewrites into the matching ANALYZED construct -- grid-reduce-atomic!,
+;;;; grid-reduce-cas! or grid-reduce-last-man! -- never into a lowering, so:
+;;;;   * the ANF transform and the backward walk expand it and meet a construct with a registered VJP --
+;;;;     AD through grid-reduce! needs nothing of its own;
+;;;;   * the Pass-1 scan expands it (the default scan-operator macroexpands) and meets the implicit-scratch
+;;;;     scanners, so its scratch reaches the kernel signature.
+;;;; The second-stage strategy is deliberately absent: it needs a second kernel launch, which a single
+;;;; call cannot arrange (decided 2026-09-28; grid-reduce-second-stage! remains the explicit tool).
+;;;;
+;;;; RETURN-CELL may be a cell or a length-1 vector: the underlying constructs write (~ out 0), which Crisp
+;;;; accepts for a cell (verified on BMG with grid-reduce-atomic! and -last-man!, 2026-10-01).
+;;;; ===========================================================================
+
+;; src/analysis/ops.lisp  (new)
+(defparameter *176-grid-reduce-strategies*
+  '((:atomic            "GRID-REDUCE-ATOMIC!"   (:local-scratch-vec :message))
+    (:cas               "GRID-REDUCE-CAS!"      (:local-scratch-vec :message))
+    (:last-man-standing "GRID-REDUCE-LAST-MAN!" (:local-scratch-vec :global-scratch-vec :atomic-counter
+                                                 :election-flag-cell :message)))
+  "Endeavour 176.  grid-reduce!'s strategies: the :strategy keyword, the construct it becomes, and the
+   keys that construct accepts (:strategy itself is consumed by grid-reduce!).")
+
+;; src/analysis/ops.lisp  (new)
+(defun %grid-reduce!-expand (form)
+  "Endeavour 176.  The expansion of (grid-reduce! FN VAR IDENTITY RETURN-CELL &key STRATEGY ...): the same
+   call to the construct STRATEGY names, minus :strategy.  Refuses -- before anything is analyzed -- a
+   missing argument, a strategy that is not a literal keyword, an unknown strategy, and a key the chosen
+   construct does not take.  The target symbol is interned in the CALL's package, because the reductions
+   are distinct symbols in :crisp-language and :crisp.compiler (each registered in both)."
+  (let ((op (first form)))
+    (unless (>= (length form) 5)
+      (error 'crisp-compiler-error
+             :message (format nil "grid-reduce!: expected (grid-reduce! fn var identity return-cell &key strategy message), got ~s." form)
+             :source-location nil))
+    (destructuring-bind (fn var identity out &rest keys) (rest form)
+      (unless (evenp (length keys))
+        (error 'crisp-compiler-error
+               :message (format nil "grid-reduce!: the keyword arguments ~s are not key/value pairs." keys)
+               :source-location nil))
+      (let* ((strategy-given (loop for (k v) on keys by #'cddr thereis (and (eq k :strategy) (list v))))
+             (strategy (if strategy-given (first strategy-given) :last-man-standing))
+             (entry nil))
+        (unless (keywordp strategy)
+          (error 'crisp-compiler-error
+                 :message (format nil "grid-reduce!: :strategy ~s must be known at compile time -- write one of :atomic, :cas or :last-man-standing.  The strategy decides which construct the call becomes, so a value computed at run time cannot choose it." strategy)
+                 :source-location nil))
+        (setf entry (assoc strategy *176-grid-reduce-strategies*))
+        (unless entry
+          (error 'crisp-compiler-error
+                 :message (format nil "grid-reduce!: unknown :strategy ~s.  The strategy must be one of :atomic, :cas or :last-man-standing (the default).  For a two-kernel reduction use grid-reduce-second-stage! in the second kernel." strategy)
+                 :source-location nil))
+        (let ((pass-through '()))
+          (loop for (k v) on keys by #'cddr
+                unless (eq k :strategy)
+                  do (unless (member k (third entry))
+                       (error 'crisp-compiler-error
+                              :message (format nil "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~}." k strategy (third entry))
+                              :source-location nil))
+                     (push v pass-through) (push k pass-through))
+          (let ((target (intern (second entry) (or (and (symbolp op) (symbol-package op))
+                                                   (find-package :crisp-language)))))
+            (log:debug "176: ~s -> ~s" form (list* target fn var identity out pass-through))
+            `(,target ,fn ,var ,identity ,out ,@pass-through)))))))
+
+;; src/analysis/ops.lisp  (new) -- defined on the :crisp.compiler symbol, and installed on the
+;; :crisp-language one, which is what user source reads.  (At fold time: export GRID-REDUCE! from
+;; :crisp.compiler and import it into :crisp-language in src/package.lisp, as the WHEN-THREAD-IN-*
+;; macros are, and drop the copy below -- an overlay cannot change package exports.)
+(defmacro grid-reduce! (&whole form &rest args)
+  "(grid-reduce! fn var identity return-cell &key strategy message ...): a grid-wide reduction of VAR with
+   binop FN and IDENTITY into RETURN-CELL.  Phase 1 is reduce-workgroup; Phase 2 is :strategy -- :atomic,
+   :cas or :last-man-standing (the default).  Scratch is implicit unless passed.  See %grid-reduce!-expand."
+  (declare (ignore args))
+  (%grid-reduce!-expand form))
+
+(let ((lang-sym (intern "GRID-REDUCE!" (find-package :crisp-language))))
+  (unless (eq lang-sym 'grid-reduce!)
+    (setf (macro-function lang-sym) (macro-function 'grid-reduce!))))

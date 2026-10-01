@@ -112,11 +112,13 @@ Sugar over the existing grid-level constructs, and the first real use of Phase 0
 
 - [x] TDD tests: `:atomic`, `:cas`, `:last-man-standing`, and the default (176/03-08 incl. CUDA twin
       and VERIFY-AUTODIFF; errors/01-03 bogus strategy, non-literal strategy, :atomic + custom op)
-- [ ] decide: return-cell only, or cell OR length-1 vector (proposed: both, so 175's vector specs stay)
-- [ ] `grid-reduce!` must expand into the existing ANALYZED forms, not into their lowering,
-      or the VJP registry never sees them
-- [ ] autodiff: should come for free from the existing VJPs; confirm with `VERIFY-AUTODIFF`
-- [ ] on metal: `TEST-HOIST[L0]` / `HOIST-EXPECT`
+- [x] return-cell OR length-1 vector: both already work -- (~ cell 0) is accepted (BMG-verified)
+- [x] `grid-reduce!` must expand into the existing ANALYZED forms, not into their lowering,
+      or the VJP registry never sees them -- a macro to grid-reduce-atomic!/-cas!/-last-man!
+- [x] autodiff: free from the existing VJPs -- 176/08 VERIFY-AUTODIFF analytical=1.0 numerical=1.0 (BMG);
+      needed a runner fix for symbolic scratch sizes (spec-runner overlay)
+- [x] on metal: 176/03-06 on BMG (32640 default / :atomic / :cas; 255 ulong max); 07 CUDA compiles.
+      Decisions: put_temp_files_here/176/PHASE1-DECISIONS.md
 
 
 ## Phase 2: independent
