@@ -3584,3 +3584,41 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         NOT DONE: a dedicated negation node (codegen fneg directly).  Not needed for correctness.
 
         FOUND BY.  Endeavour 176, spec 046/05, 2026-09-30.
+
+[ ] 096 THE ANF TRANSFORM MISSED CL:LET, SO (or X Y) CRASHED UNDER --differentiate.
+
+        SYMPTOM.  Any (or X Y) in a differentiated kernel (CI, 006/09):
+
+            The value CRISP-LANGUAGE::%ANF-T-5 is not of type SEQUENCE
+
+        CAUSE (backtrace, 2026-09-30).  CL's OR expands to (CL:LET ((#:g X)) (IF #:g #:g Y)).  anf-normalize
+        (src/anf-transform.lisp:258) dispatched on (eq op 'let) -- Crisp's own LET, a different symbol -- so
+        the CL:LET fell through to the function-call path and its binding list was lifted into a temp as if it
+        were an argument.  %handle-value-let-backward then received (CL:LET %ANF-T-1 %ANF-T-2) and died in
+        REMOVE-IF-NOT.  The scanner 100 lines later already matched LET by name; flatten-anf-body had the same
+        EQ test.  Pre-existing, not from this week's IF changes: 006/09 was simply the first spec to
+        differentiate an OR.  (AND was fine: it expands to IF.)
+
+        FIX (drafted 2026-09-30 in the overlay): anf-normalize and flatten-anf-body match LET by name.  CL:LET
+        is treated like Crisp's sequential let -- the same for one binding, and CL macro expansions do not rely
+        on parallel binding.  006/09 passes under --differentiate.
+
+
+[ ] 097 &optional / &key FUNCTIONS HAVE NO _GRAD COMPANION, so they cannot be differentiated through.
+
+        SYMPTOM (CI --differentiate, 016/07-09): "Unsupported form 'ADD-K_GRAD' found in function body."
+
+        CAUSE.  %pre-register-differentiable-fns registered every def-function as differentiable, generic ones
+        included, so the kernel's backward walk emitted a call to <name>_GRAD.  But compile-def-function skips
+        a generic function entirely -- forward AND its _GRAD companion -- and variants are instantiated lazily
+        with no _GRAD.  Not a regression: before BUG 090 these specs could not even run forward.
+
+        STOPGAP (drafted 2026-09-30 in the overlay): generic functions are not registered as differentiable
+        (%lambda-list-generic-p).  A call that needs a gradient now fails LOUDLY -- "Function ADD-K is not
+        differentiable" -- instead of naming a function that never existed.  Integer data is differentiated
+        too (since endeavour 085), so 016/07 and 016/08 are active and carry
+        SKIP-WITH[--differentiate] naming this bug; 016/09 passes.
+
+        REAL FIX (not started): a lazily instantiated _GRAD per variant, mirroring the forward instantiation
+        (BUG 090's machinery on the backward side), with the backward walk calling the companion of the call
+        shape it differentiates.

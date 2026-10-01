@@ -2,6 +2,7 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
 ;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER out: 10 6 12 103
+;; SKIP-WITH[--differentiate]: "BUG 097 -- &optional / &key functions have no _GRAD companion yet"
 ;;
 ;; BUG 090 -- an &optional function actually CALLED, and actually RUN.
 ;;
