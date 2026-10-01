@@ -100,7 +100,8 @@ Every later phase uses at least one of these.
 - - [x] 091 params after `&out ... &optional` treated as &out
 - - [x] 092 `(and X Y)` / a value IF with no else left its false path unstored (tile bounds too)
 - - [x] 093 an IF whose branches each `(return a b)` was typed as its FIRST value
-- - [ ] Chris: fold the overlay into src/ (list in the 2026-09-30 session), empty it, rerun suites
+- - [x] overlays FOLDED into src/ and emptied 2026-09-30 (everything through type-* and BUG 095):
+        unit 341/341, E2E 1295/1295, negative 285/285; --single-pass 016 19/19, 046 8/8, 175 77/77
 - [x] `reduce-warp`: lanes past `active-threads` DO get the result (175/04 verifies it on BMG)
 
 

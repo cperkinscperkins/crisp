@@ -28,7 +28,17 @@
              :source-location location)))))
 
 (def-binary-op-analyzer analyze-add-expression make-semantic-add "+")
-(def-binary-op-analyzer analyze-sub-expression make-semantic-sub "-")
+(def-binary-op-analyzer %analyze-sub-binary make-semantic-sub "-")
+
+;; BUG 095: one-argument minus.
+(defun analyze-sub-expression (expr env context location)
+  "Analyzes a `(- ...)` expression.  With two arguments, subtraction.  With ONE, negation -- analyzed as
+   (* x -1), exact IEEE negation including -0.0 and infinities (BUG 095)."
+  (if (= (length expr) 2)
+      (progn
+        (log:debug "BUG 095: unary minus ~s analyzed as (* x -1)" expr)
+        (analyze-expression (list '* (second expr) -1) env context location))
+      (%analyze-sub-binary expr env context location)))
 (def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
 (def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
@@ -752,6 +762,75 @@ set!  analyzer's behavior in analysis/structs.lisp."
 
 ;; src/analysis/ops.lisp -- whole-function replacement of register-ops-analyzers
 ;; adding mod and rem registrations.
+;;;; Endeavour 176 -- (type-min T), (type-max T), (type-infinity T): typed constants.  For floating-point
+;;;; T, type-min / type-max are the FINITE extremes in every precision context (not C's FLT_MIN).
+
+(defun %type-extreme-scalar-info (expr location)
+  "Validate (type-min|type-max|type-infinity T) and return (values T category bits) for T's scalar
+   type, where category is :signed-int, :unsigned-int or :float and bits its width.  Refuses, naming
+   what the argument must be, when T is missing or not a numeric scalar type."
+  (let* ((op-name (string-downcase (symbol-name (car expr))))
+         (type-arg (second expr))
+         (resolved (and (= (length expr) 2) (symbolp type-arg) (resolve-type-alias type-arg)))
+         (ct (and (symbolp resolved) (gethash resolved *crisp-types*)))
+         (category (and ct (crisp-type-category ct))))
+    (unless (member category '(:signed-int :unsigned-int :float))
+      (error 'crisp-compiler-error
+             :message (format nil "~a: ~s is not a numeric scalar type.  (~a T) takes one integer or floating-point type -- int, uint, long, ulong, float, double and the like -- and gives a constant of that type."
+                              op-name (if (= (length expr) 2) type-arg (rest expr)) op-name)
+             :source-location location))
+    (values resolved category (crisp-type-size ct))))
+
+(defun %float-type-extreme (type-sym bits)
+  "The largest FINITE value of floating-point type TYPE-SYM (BITS wide), as a Lisp float."
+  (cond
+    ((= bits 64) most-positive-double-float)
+    ((= bits 32) most-positive-single-float)
+    ;; 16-bit: the two formats differ, so tell them apart by name.
+    ((string-equal (symbol-name type-sym) "BFLOAT16") 3.3895314e38) ; 0x7F7F
+    (t 65504.0)))                                                    ; half, 0x7BFF
+
+(defun %analyze-type-min (expr env context location)
+  "Analyzer for (type-min T): the most negative value of numeric scalar type T, as a constant of type
+   T.  For a floating-point T that is the most negative FINITE value (see the section header)."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (make-semantic-literal :value-type type-sym
+                           :value (ecase category
+                                    (:signed-int   (- (expt 2 (1- bits))))
+                                    (:unsigned-int 0)
+                                    (:float        (- (%float-type-extreme type-sym bits))))
+                           :source-location location)))
+
+(defun %analyze-type-max (expr env context location)
+  "Analyzer for (type-max T): the most positive value of numeric scalar type T, as a constant of type
+   T.  For a floating-point T that is the most positive FINITE value (see the section header)."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (make-semantic-literal :value-type type-sym
+                           :value (ecase category
+                                    (:signed-int   (1- (expt 2 (1- bits))))
+                                    (:unsigned-int (1- (expt 2 bits)))
+                                    (:float        (%float-type-extreme type-sym bits)))
+                           :source-location location)))
+
+(defun %analyze-type-infinity (expr env context location)
+  "Analyzer for (type-infinity T): positive infinity, as a constant of floating-point type T.  Negate it
+   for negative infinity.  Meaningful under :ieee precision; an integer T has no infinity and is
+   refused."
+  (declare (ignore env context))
+  (multiple-value-bind (type-sym category bits) (%type-extreme-scalar-info expr location)
+    (unless (eq category :float)
+      (error 'crisp-compiler-error
+             :message (format nil "type-infinity: ~(~a~) has no infinity -- only floating-point types do.  The largest ~(~a~) is (type-max ~(~a~))."
+                              type-sym type-sym type-sym)
+             :source-location location))
+    (make-semantic-literal :value-type type-sym
+                           :value (if (= bits 64)
+                                      sb-ext:double-float-positive-infinity
+                                      sb-ext:single-float-positive-infinity)
+                           :source-location location)))
+
 (defun register-ops-analyzers ()
   "Registers all expression analyzer functions.
 Redefined for 082-atomics to add atomic RMW op analyzers.
@@ -883,7 +962,11 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                         ("ATOMIC-BINOP!"             %analyze-atomic-binop!)
                         ("ATOMIC-OP!"                %analyze-atomic-op!)
                         ("MIN"                       %analyze-min-expression)
-                        ("MAX"                       %analyze-max-expression)))
+                        ("MAX"                       %analyze-max-expression)
+                        ;; 176: typed constants for reduction identities (and anything else).
+                        ("TYPE-MIN"                  %analyze-type-min)
+                        ("TYPE-MAX"                  %analyze-type-max)
+                        ("TYPE-INFINITY"             %analyze-type-infinity)))
           (setf (gethash (intern (first pair) pkg) *expression-analyzers*)
                 (second pair)))))))
 
@@ -1010,10 +1093,173 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                     (set! (~ ,return-vec (to-int (get-workgroup-id 0))) ,var))))
        (compiler-no-op))))
 
+;;;; Endeavour 176 -- IMPLICIT SCRATCH.  When a reduction's scratch keys are omitted, the reduction is
+;;;; rewritten -- in BOTH passes, by %implicit-scratch-form -- into a LET of make-scratch-* around the
+;;;; reduction with the keys supplied.  Pass 1 scans that let (scan-operator methods below), so the
+;;;; existing implicit-parameter plumbing carries the scratch to the kernel; Pass 2 analyzes the same
+;;;; let.  The element type comes from the IDENTITY, read at scan time.  Last-man's global partials are
+;;;; sized :match-workgroup-size, which its num_workgroups <= local_work_size limit makes sufficient.
+;;;; Design: tests/spec/176-reduce-multi/reduce-multi.md.
+
+(defparameter *176-implicit-scratch-specs*
+  '(("REDUCE-WORKGROUP"          4 (:local-scratch-vec))
+    ("GRID-REDUCE-ATOMIC!"       5 (:local-scratch-vec))
+    ("GRID-REDUCE-CAS!"          5 (:local-scratch-vec))
+    ("GRID-REDUCE-LAST-MAN!"     5 (:local-scratch-vec :global-scratch-vec :atomic-counter :election-flag-cell))
+    ("GRID-REDUCE-SECOND-STAGE!" 6 (:local-scratch-vec)))
+  "Endeavour 176.  For each reduction Crisp can supply scratch for: the operator's name, how many
+   leading elements of the form (operator included) are positional, and the scratch keys Crisp
+   allocates when the caller leaves them out, in the order they are bound.")
+
+(defun %implicit-scratch-spec (op)
+  "The *176-implicit-scratch-specs* entry for operator symbol OP, or NIL.  Matched by name, since the
+   reductions are interned in both :crisp.compiler and :crisp-language."
+  (and (symbolp op)
+       (assoc (symbol-name op) *176-implicit-scratch-specs* :test #'string-equal)))
+
+(defun %implicit-scratch-missing-keys (expr)
+  "The scratch keys of reduction form EXPR that Crisp can supply and the caller left out, in table
+   order; NIL when EXPR is not such a reduction or supplies them all.  Walks the keyword tail as
+   pairs rather than with GETF, so a malformed tail is left for the expander to report."
+  (let ((spec (%implicit-scratch-spec (car expr))))
+    (when spec
+      (let ((tail (nthcdr (second spec) expr)))
+        (remove-if (lambda (key)
+                     (loop for (k nil) on tail by #'cddr thereis (eq k key)))
+                   (third spec))))))
+
+(defun %scan-type-by-name (name)
+  "The Crisp type symbol whose name is NAME (a string), or NIL.  Looked up in *crisp-types* so the
+   answer is the symbol the rest of the compiler uses."
+  (loop for k being the hash-keys of *crisp-types*
+        when (and (symbolp k) (string-equal (symbol-name k) name))
+          return k))
+
+(defun %identity-scan-type (form)
+  "Endeavour 176.  The Crisp type of identity FORM, read from the form ALONE -- no environment, since
+   this runs in the Pass-1 scan, before any variable has a type.  NIL when the type is not visible.
+
+   Recognised, mirroring the analyzer's own literal typing (analyze-expression Case 1/1.1/2):
+     integer literal                      -> int
+     float literal                        -> float   (all float literals are float)
+     suffixed literal (0ul, 1.5f, 255uc)  -> its suffix type (%try-parse-typed-literal)
+     (type-min T) (type-max T) (type-infinity T) -> T
+     (- X)                                -> the type of X
+     (to-T x)                             -> T, when T names a Crisp type"
+  (cond
+    ((integerp form) 'int)
+    ((floatp form) 'float)
+    ((and (symbolp form) form (not (keywordp form)))
+     (let ((lit (ignore-errors (%try-parse-typed-literal form nil))))
+       (and lit (semantic-node-type lit))))
+    ((and (consp form) (symbolp (car form)))
+     (let ((head (symbol-name (car form))))
+       (cond
+         ((and (member head '("TYPE-MIN" "TYPE-MAX" "TYPE-INFINITY") :test #'string-equal)
+               (symbolp (second form)))
+          (%scan-type-by-name (symbol-name (second form))))
+         ((and (string= head "-") (= (length form) 2))
+          (%identity-scan-type (second form)))
+         ((and (> (length head) 3) (string-equal "TO-" head :end2 3))
+          (%scan-type-by-name (subseq head 3)))
+         (t nil))))
+    (t nil)))
+
+(defun %implicit-scratch-binding-name (var key)
+  "The DETERMINISTIC let-binding name for the scratch Crisp allocates for KEY of a reduction over VAR,
+   e.g. CONTRIB-LOCAL-SCRATCH.  Deterministic because Pass 2 finds the implicit parameter by
+   rebuilding <binding>_FROM_<fn>_<n>, so Pass 1 and Pass 2 must see the same name (a gensym would
+   differ).  It also names the buffer readably in the generated host code."
+  (intern (format nil "~a-~a" (symbol-name var)
+                  (ecase key
+                    (:local-scratch-vec  "LOCAL-SCRATCH")
+                    (:global-scratch-vec "GLOBAL-SCRATCH")
+                    (:atomic-counter     "COUNTER")
+                    (:election-flag-cell "ELECTION-FLAG")))
+          (or (symbol-package var) (find-package :crisp-language))))
+
+(defun %implicit-scratch-alloc-form (key elem-type)
+  "The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25).  The
+   global partials are sized :match-workgroup-size -- see the stage-A section header for why that is
+   always enough."
+  (ecase key
+    (:local-scratch-vec  `(make-scratch-vector ,elem-type :match-num-warps-per-workgroup))
+    (:global-scratch-vec `(make-scratch-vector ,elem-type :match-workgroup-size :address-space :global))
+    (:atomic-counter     '(make-scratch-cell uint :address-space :global))
+    (:election-flag-cell '(make-scratch-cell uint))))
+
+(defun %implicit-scratch-form (expr elem-type)
+  "Endeavour 176.  Reduction form EXPR with its missing scratch supplied: a LET binding each missing
+   buffer, around EXPR with the corresponding keys appended.  Used by BOTH the Pass-1 scan-operator
+   methods and the analyzers, so the two passes see the same form (and the same scratch order)."
+  (let* ((spec (%implicit-scratch-spec (car expr)))
+         (var (third expr))
+         (missing (%implicit-scratch-missing-keys expr))
+         (names (mapcar (lambda (k) (%implicit-scratch-binding-name var k)) missing)))
+    `(let ,(mapcar (lambda (name key) (list name (%implicit-scratch-alloc-form key elem-type))) names missing)
+       (,@(subseq expr 0 (second spec))
+        ,@(nthcdr (second spec) expr)
+        ,@(loop for key in missing for name in names append (list key name))))))
+
+(defun %scan-reduction-maybe-implicit (op args next)
+  "Pass 1.  Scan the implicit-scratch form of reduction (OP . ARGS) when Crisp will supply its scratch;
+   otherwise call NEXT (the default scan).  An identity whose type is not visible is scanned as-is and
+   refused by the analyzer, which can say why."
+  (let* ((expr (cons op args))
+         (missing (%implicit-scratch-missing-keys expr))
+         (elem-type (and missing (symbolp (third expr)) (%identity-scan-type (fourth expr)))))
+    (if elem-type
+        (progn
+          (log:debug "176: Pass 1 implicit scratch ~s for ~s (element type ~s)" missing op elem-type)
+          (scan-form (%implicit-scratch-form expr elem-type)))
+        (funcall next))))
+
+(macrolet ((def-implicit-scratch-scanners (&rest names)
+             `(progn
+                ,@(loop for name in names
+                        append (loop for pkg in '(:crisp.compiler :crisp-language)
+                                     collect `(defmethod scan-operator ((op (eql (intern ,name (find-package ,pkg)))) args)
+                                                (%scan-reduction-maybe-implicit op args (lambda () (call-next-method)))))))))
+  (def-implicit-scratch-scanners "REDUCE-WORKGROUP" "GRID-REDUCE-ATOMIC!" "GRID-REDUCE-CAS!"
+                                 "GRID-REDUCE-LAST-MAN!" "GRID-REDUCE-SECOND-STAGE!"))
+
+(defun %check-identity-matches-variable (op-name var identity elem-type env context location)
+  "Endeavour 176.  With implicit scratch the scratch is typed from the IDENTITY, so a variable of a
+   different type would be reduced through mistyped scratch.  Refuse it, naming the fix."
+  (let* ((var-type (semantic-node-type (analyze-expression var env context location)))
+         (a (resolve-type-alias var-type))
+         (b (resolve-type-alias elem-type)))
+    (unless (if (and (symbolp a) (symbolp b))
+                (string-equal (symbol-name a) (symbol-name b))
+                (equal a b))
+      (error 'crisp-compiler-error
+             :message (format nil "~a: the identity ~s is ~(~a~) but ~a is ~(~a~).  The identity must have the variable's type when Crisp allocates the scratch for you, because the scratch is typed from it -- write the identity as a ~(~a~), e.g. (to-~(~a~) ~s)."
+                              op-name identity b var a a a identity)
+             :source-location location))))
+
+(defun %analyze-reduction-maybe-implicit (expr env context location expander)
+  "Endeavour 176.  Analyze reduction EXPR, supplying its scratch when the caller left it out; else
+   analyze (EXPANDER EXPR) exactly as before."
+  (let ((missing (%implicit-scratch-missing-keys expr))
+        (var (third expr)))
+    (if (or (null missing) (not (symbolp var)))
+        (analyze-expression (funcall expander expr) env context location)
+        (let* ((op-name (string-downcase (symbol-name (car expr))))
+               (identity (fourth expr))
+               (elem-type (%identity-scan-type identity)))
+          (unless elem-type
+            (error 'crisp-compiler-error
+                   :message (format nil "~a: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass ~{~s~^ ~} yourself."
+                                    op-name identity missing)
+                   :source-location location))
+          (%check-identity-matches-variable op-name var identity elem-type env context location)
+          (log:debug "176: implicit scratch ~s for ~a over ~s (element type ~s)" missing op-name var elem-type)
+          (analyze-expression (%implicit-scratch-form expr elem-type) env context location)))))
+
 (defun %analyze-reduce-workgroup (expr env context location)
-  "Analyzer for reduce-workgroup -- expands and delegates.  Being an ANALYZED form rather than a
-   macro is what keeps the construct visible to the autodiff walk (see the section header)."
-  (analyze-expression (%reduce-workgroup-expand expr) env context location))
+  "Analyzer for reduce-workgroup -- expands and delegates, supplying implicit scratch (176).  Being an
+   ANALYZED form rather than a macro is what keeps the construct visible to the autodiff walk."
+  (%analyze-reduction-maybe-implicit expr env context location #'%reduce-workgroup-expand))
 
 (defun %grid-atomic-op-name (fn)
   "The atomic operator name for a literal #'op, or NIL if OP has no hardware atomic."
@@ -1058,8 +1304,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (compiler-no-op)))))
 
 (defun %analyze-grid-reduce-atomic (expr env context location)
-  "Analyzer for grid-reduce-atomic! -- expands and delegates."
-  (analyze-expression (%grid-reduce-atomic-expand expr) env context location))
+  "Analyzer for grid-reduce-atomic! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-atomic-expand))
 
 (defun %175-minmax-expand (expr which location)
   "Expands (min a b) / (max a b) into a single-evaluation comparison.
@@ -1149,8 +1395,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (compiler-no-op)))))
 
 (defun %analyze-grid-reduce-last-man (expr env context location)
-  "Analyzer for grid-reduce-last-man! -- expands and delegates."
-  (analyze-expression (%grid-reduce-last-man-expand expr) env context location))
+  "Analyzer for grid-reduce-last-man! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-last-man-expand))
 
 (defun %grid-reduce-second-stage-parts (expr)
   "Destructures (grid-reduce-second-stage! FN VAR IDENTITY IN-VEC RETURN-VEC &key ...).
@@ -1199,8 +1445,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (compiler-no-op)))))
 
 (defun %analyze-grid-reduce-second-stage (expr env context location)
-  "Analyzer for grid-reduce-second-stage! -- expands and delegates."
-  (analyze-expression (%grid-reduce-second-stage-expand expr) env context location))
+  "Analyzer for grid-reduce-second-stage! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-second-stage-expand))
 
 (defun %grid-reduce-cas-parts (expr)
   "Destructures (grid-reduce-cas! FN VAR IDENTITY RETURN-VEC &key ...).
@@ -1234,8 +1480,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
        (compiler-no-op))))
 
 (defun %analyze-grid-reduce-cas (expr env context location)
-  "Analyzer for grid-reduce-cas! -- expands and delegates."
-  (analyze-expression (%grid-reduce-cas-expand expr) env context location))
+  "Analyzer for grid-reduce-cas! -- expands and delegates, supplying implicit scratch (176)."
+  (%analyze-reduction-maybe-implicit expr env context location #'%grid-reduce-cas-expand))
 
 (defun analyze-atomic-cas!-expression (expr env context location)
   "Analyzes (atomic-cas! target expected desired).

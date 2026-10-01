@@ -160,3 +160,18 @@
    ((integerp type-spec) (format nil "~a" type-spec))
    ((listp    type-spec) (format nil "~{~a~^_~}" (mapcar #'mangle-type-spec type-spec)))
    (t (error "Cannot mangle unknown type specifier: ~a" type-spec))))
+
+(defun %lazy-variant-name (base-name active-env)
+  "BUG 090 (b).  The mangled name of a lazily instantiated &optional / &key variant.
+   mangle-function-variant-name joins only the parameter TYPES, and bind-keyword-args represents
+   each supplied keyword as a placeholder parameter of type KEYWORD followed by its value -- so
+   (scale b :by 3) and (scale c :plus 5) both became SCALE_int_keyword_int, and the second call
+   would run the first call's variant.  Here each KEYWORD placeholder is replaced by the NAME of the
+   key it introduces (the parameter that follows it): SCALE_int_key-by_int vs SCALE_int_key-plus_int.
+   Keys are named in CALL order, so (:by 1 :plus 2) and (:plus 2 :by 1) are separate, both correct,
+   variants.  Non-keyword parameters mangle exactly as before."
+  (let ((parts (loop for (p next) on active-env
+                     collect (if (and (eq (parameter-def-type p) 'keyword) next)
+                                 (format nil "key-~a" (string-downcase (symbol-name (parameter-def-name next))))
+                                 (mangle-param-type-name (parameter-def-type p))))))
+    (intern (format nil "~a_~{~a~^_~}" base-name parts) (symbol-package base-name))))

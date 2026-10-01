@@ -429,3 +429,8 @@
 
    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the
    second :arrive sees a non-zero depth and refuses.")
+
+(defvar *176-generic-scratch-range* (make-hash-table :test 'eq)
+  "Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter
+   before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1
+   (multi-pass) or at the function's skip point (single-pass); read when its variants are generated.")

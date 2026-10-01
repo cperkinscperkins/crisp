@@ -181,6 +181,49 @@
     (let ((injected-bindings (inject-defaults remainder-env defaults)))
       (values active-env injected-bindings nil))))
 
+;;;; BUG 090 / endeavour 176 -- lazily instantiated &optional / &key variants: naming, reuse, scratch defaults.
+
+(defun %lazy-variant-llvm-name (variant-name param-types)
+  "The LLVM function name generate-function-prototype (codegen.lisp) gives a non-entry function
+   named VARIANT-NAME with PARAM-TYPES: lower-cased, types appended with mangle-type-spec, and
+   - and ~ replaced by _.  Kept in step with that function by hand -- if the two ever disagree, the
+   memo below simply misses and the variant is generated again, which then collides loudly."
+  (substitute #\_ #\~ (substitute #\_ #\- (string-downcase
+                                            (format nil "~a~{_~a~}" variant-name
+                                                    (mapcar #'mangle-type-spec param-types))))))
+
+(defun %lazy-variant-already-generated (variant-name param-types &optional (llvm-param-types param-types))
+  "BUG 090 (a).  The registered signature of VARIANT-NAME with (explicit) PARAM-TYPES if, and only if,
+   the CURRENT module already holds a DEFINED function for it; otherwise NIL.  Keyed on the module
+   itself rather than on compiler state, because the spec runner creates and disposes a module per
+   compile and a fresh compiler session per top-level form.
+
+   LLVM-PARAM-TYPES (176) are the types the LLVM name is mangled from: a variant that inherits implicit
+   scratch parameters is named with those types FIRST, exactly as any carrier function is."
+  (let ((module (and *compiler-session* (compiler-session-module *compiler-session*))))
+    (when module
+      (let ((fn (llvm-get-named-function module (%lazy-variant-llvm-name variant-name llvm-param-types))))
+        (when (and fn (not (cffi:null-pointer-p fn))
+                   (plusp (llvm-count-basic-blocks fn)))
+          (find-if (lambda (sig)
+                     (equal (mapcar #'parameter-def-type (function-signature-parameters sig))
+                            param-types))
+                   (gethash variant-name *function-table*)))))))
+
+(defun %bind-defaults-to-default-scratch (fn-name injected-bindings)
+  "Endeavour 176.  INJECTED-BINDINGS ((param default-form) ...) with each make-scratch-* default that
+   Pass 1 registered for FN-NAME replaced by the implicit parameter itself, so the variant binds
+   the parameter to the scratch the caller passes instead of allocating its own."
+  (let ((implicits (gethash fn-name *implicit-arg-map*)))
+    (loop for (param form) in injected-bindings
+          collect (let ((uname (and (%scratch-allocation-form-p form)
+                                    (%default-scratch-implicit-name fn-name param))))
+                    (if (and uname (find uname implicits :key #'car))
+                        (progn
+                          (log:debug "176: default ~a of ~a bound to implicit ~a" param fn-name uname)
+                          (list param uname))
+                        (list param form))))))
+
 (defun instantiate-generic-function (generic-def explicit-arg-types context location)
   "Instantiates a lazy generic function variant for the given argument types."
   (multiple-value-bind (active-env injected-bindings error-message)
@@ -197,13 +240,33 @@
                          unless (and (listp f) (eq (car f) 'declare))
                        collect f)))
 
+      ;; 176: a scratch DEFAULT is bound to the implicit parameter Pass 1 registered for it.
+      (setf injected-bindings (%bind-defaults-to-default-scratch name injected-bindings))
+
       ;; Apply injected bindings (Defaults)
       (when injected-bindings
             (setf body (list `(let* ,injected-bindings ,@body))))
 
       (let* ((active-param-names (mapcar #'parameter-def-name active-env))
              (active-param-types (mapcar #'parameter-def-type active-env))
-             (mangled-name (mangle-function-variant-name name active-param-types)))
+             (mangled-name (%lazy-variant-name name active-env)))
+
+        ;; BUG 090 (a): one variant per call shape PER MODULE.  The signature is registered under the
+        ;; MANGLED name, but calls look up the BASE name, so without this every call site re-analyzed
+        ;; -- and, now that variants are generated, would re-define -- the same variant.
+        ;; 176: the variant inherits the BASE name's implicit arguments (scratch defaults, and anything
+        ;; propagated to the base), so its definition accepts what the call site passes -- calls look up
+        ;; the base name.  Its LLVM name is then mangled with those types first, like any carrier.
+        (let ((base-implicits (gethash name *implicit-arg-map*)))
+          (when base-implicits
+            (setf (gethash mangled-name *implicit-arg-map*) base-implicits)))
+
+        (let ((reused (%lazy-variant-already-generated
+                       mangled-name active-param-types
+                       (append (mapcar #'cdr (gethash mangled-name *implicit-arg-map*)) active-param-types))))
+          (when reused
+            (log:debug "BUG 090: reusing lazy variant ~s, already generated in this module" mangled-name)
+            (return-from instantiate-generic-function reused)))
 
         (log:info "Lazy Instantiating ~s (Arity ~a) with types ~s" mangled-name (length explicit-arg-types) active-param-types)
 
@@ -216,6 +279,10 @@
                                                    declarations
                                                    (or (generic-function-def-source-location generic-def) location)
                                                    context)))
+
+          ;; BUG 090: GENERATE the variant.  It used to be analyzed and then dropped, so the call site
+          ;; emitted a bare `declare` and the module carried an unresolved import.
+          (%generate-lazy-variant-ir ast-node mangled-name name)
 
           ;; Register the signature now that compilation succeeded (and return types might differ/be inferred?)
           ;; Note: Generic def return types are authoritative if present, but AST might have inferred them.
@@ -714,7 +781,8 @@
                       (push (make-parameter-def
                              :name name
                              :type (parse-type-specifier ts)
-                             :kind (cond (out-start :out) (t :in))
+                             :kind (cond ((and out-start (not optional-start) (not key-start)) :out) ; BUG 091
+                                         (t :in))
                              :is-optional (not (null optional-start))
                              :is-key (not (null key-start))
                              :default-value def-val)
