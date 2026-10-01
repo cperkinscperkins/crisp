@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outv: 99
+;; HOIST-EXPECT: BUFFER outi: 99
+;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
+;;
+;; ENDEAVOUR 176 Phase 3 -- grid-reduce!, DEPENDENT form (last-man, the only strategy it allows).  TDD.
+;;
+;; Each clause names its return cell, (var identity return-cell).  Four workgroups (256 over 64), so the
+;; argmax crosses WORKGROUPS through last-man's partials; one election serves both variables.
+;;
+;;     value = (rem global-id 100)  -> max 99, at global ids 99 and 199 (different workgroups)
+;;     index = global id            -> the lower: 99
+
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel grid_reduce_argmax (&out outv outi)
+  (declare #'(&out out-c uout-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((v (to-float (rem (to-int (get-global-linear-id)) 100)))
+        (i (get-global-linear-id)))
+    (grid-reduce! #'argmax-combine
+                  ((v (type-min float) outv)
+                   (i (type-max ulong) outi)))))

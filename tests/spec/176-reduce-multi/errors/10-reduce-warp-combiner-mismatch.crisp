@@ -1,0 +1,28 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "the combiner must be"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 176 Phase 3 -- a dependent combiner must take two k-value states and return one:
+;; #'(T1 .. Tk T1 .. Tk => T1 .. Tk), with Ti the type of clause i's variable, in clause order.  TDD.
+;;
+;; Here the clauses are (float, ulong) but the combiner is an ordinary float binop.  Refused, showing
+;; the signature the clauses need and the one the combiner has.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function plus2 (a b)
+  (declare #'(float float => float))
+  (+ a b))
+
+(def-kernel rwd_mismatch (&out out)
+  (declare #'(&out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((v (to-float (warp-lane)))
+        (i (get-global-linear-id)))
+    (reduce-warp #'plus2
+                 ((v 0.0)
+                  (i 0ul)))
+    (set! (~ out 0) v)))

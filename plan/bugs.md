@@ -3622,3 +3622,25 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         REAL FIX (not started): a lazily instantiated _GRAD per variant, mirroring the forward instantiation
         (BUG 090's machinery on the backward side), with the backward walk calling the companion of the call
         shape it differentiates.
+
+[ ] 098 DEPENDENT REDUCTIONS ARE NOT DIFFERENTIABLE (a declared gap, refused loudly).
+
+        WHAT.  (reduce-warp | reduce-workgroup | grid-reduce! #'combiner ((var identity ...) ...)) --
+        endeavour 176 Phase 3.  Under --differentiate the AD path refuses it:
+
+            reduce-warp: dependent reductions are not differentiable yet (BUG 098) -- the variables
+            interact inside the combiner #'ARGMAX-COMBINE, so the backward pass has no rule for them.
+
+        WHY NOT EASY.  The independent form differentiates by splitting into per-clause reductions, each
+        with its own VJP -- exact because the clauses do not interact.  A dependent combiner couples its
+        variables inside a user function, and a scratch-based cross-thread reduction differentiated
+        mechanically is SILENTLY wrong (see the cross-thread-dataflow note), so a loud refusal beats any
+        partial answer.
+
+        OPTIONS (decided 2026-10-01 to defer; regroup after Phase 3):
+          * a user-registered VJP for the combiner (Chris: not opposed), in the spirit of endeavour 123's
+            FFI VJPs -- general, but users write the transpose;
+          * special-casing selection combiners (argmax / argmin): the gradient goes to the winning value,
+            none to the index -- covers the motivating case only.
+
+        SPECS.  176/15-18 carry SKIP-WITH[--differentiate] naming this bug; 176/errors/11 pins the refusal.

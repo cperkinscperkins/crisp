@@ -453,6 +453,16 @@ value of each state, and so on. The combiner returns its state as multiple value
                 (my-idx (type-max ulong)))))
 ```
 
+The combiner is checked against the clauses: with clause variables of types `T1 ... Tk`, it must be
+`#'(T1 ... Tk T1 ... Tk => T1 ... Tk)`, and anything else is a compilation error that shows both the
+signature the clauses need and the one the combiner has. Each combine step calls it once, with all
+`k` values of both states.
+
+**Autodiff is not supported yet for the dependent form.** Its variables interact inside your combiner,
+so Crisp has no backward rule for it, and a kernel that differentiates through one is a compilation
+error rather than a silently wrong gradient. (The independent form *is* differentiable: each clause
+is differentiated on its own.)
+
 ### 3. The Workgroup Level
 
 `reduce-workgroup` takes the same clauses. Each clause may name its own `:return-vec` and

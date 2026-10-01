@@ -137,10 +137,17 @@ Sugar over the existing grid-level constructs, and the first real use of Phase 0
 
 ## Phase 3: dependent
 
-- [ ] TDD tests: `reduce-warp`, then `reduce-workgroup`, then `grid-reduce!`
-- [ ] type check: the combiner is `#'(T1..Tk T1..Tk => T1..Tk)`, matching the clause types in order
-- [ ] autodiff: per the design-review decision above
-- [ ] on metal: argmax with ties (lower index wins) and with padding lanes
+- [x] TDD tests: `reduce-warp`, then `reduce-workgroup`, then `grid-reduce!` (176/15-18 argmax with ties,
+      errors/09-11)
+- [x] type check: the combiner is `#'(T1..Tk T1..Tk => T1..Tk)`, matching the clause types in order
+      (%check-dependent-combiner, in the warp analyzer every dependent path reaches)
+- [x] autodiff: DECIDED 2026-10-01 -- refused loudly for now (BUG 098); positive specs carry SKIP-WITH
+      naming it; errors/11 pins the refusal.  Regroup on a user-registered combiner VJP.
+- [x] on metal: argmax with ties (lower index wins) and with padding lanes -- 15 (4 / 4 20 36 52),
+      16 (7 / 7 23 39 55), 17 (9 / 9), 18 (99 / 99), all BMG
+- [x] lowered FUSED from the start (one combiner call per step, multi-value LET); last-man only
+- [x] verified 2026-10-01: unit 341/341, E2E 1324/1324, negative 296/296, --differentiate 175 77/77 and
+      176 29/29, --single-pass 176 29/29
 
 
 ## Negative tests (errors/)

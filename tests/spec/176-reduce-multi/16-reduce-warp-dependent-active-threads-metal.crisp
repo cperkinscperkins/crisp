@@ -1,0 +1,37 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outv: 7 7 7 7
+;; HOIST-EXPECT: BUFFER outi: 7 23 39 55
+;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
+;;
+;; ENDEAVOUR 176 Phase 3 -- dependent reduce-warp with ACTIVE-THREADS 8.  TDD.
+;;
+;; Lanes 8..15 contribute the IDENTITY STATE -- ((type-min float), (type-max ulong)) -- which must lose
+;; to every real state, ties included.  Lanes 0..7 contribute (lane, global id); the max value is 7 at
+;; lane 7, so warp w's answer is (7, 16w + 7).  The LAST lane (inactive) writes, so it must hold the
+;; result too.
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+(def-type uvec-t (vector ulong :address-space :global :align :compact))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel reduce_warp_argmax_active (&out outv outi)
+  (declare #'(&out vec-t uvec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((v (to-float (warp-lane)))
+        (i (get-global-linear-id)))
+    (reduce-warp #'argmax-combine
+                 ((v (type-min float))
+                  (i (type-max ulong)))
+                 8)
+    (when (= (to-int (warp-lane)) (- (to-int (warp-size)) 1))
+      (set! (~ outv (to-int (warp-id))) v)
+      (set! (~ outi (to-int (warp-id))) i))))
