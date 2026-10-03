@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "Add (declare (reduction-vjp f)) to the combiner"
+;; CHECK-FAIL: "Add (declare (reduction-vjp f)) to the combiner"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 177 Phase 4 -- a dependent reduction whose combiner declares NO reduction-vjp is still refused
+;; under --differentiate (BUG 098's refusal), and the message now says what fixes it.  The forward compiles.
+;;
+;; 176/errors/11 pins the older wording ("not differentiable yet", which this message keeps); this one pins
+;; the advice.  The kernel has a real input A, so the refusal is the reduction's and not "no differentiable
+;; parameter".
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel rw_dep_nolocal (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (i (to-ulong col)))
+        (reduce-warp #'argmax-combine
+                     ((v (type-min float))
+                      (i (type-max ulong))))
+        (set! (~ C row col) v)))))

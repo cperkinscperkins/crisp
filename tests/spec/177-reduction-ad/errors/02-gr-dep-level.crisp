@@ -1,0 +1,45 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "not differentiable yet at this level (BUG 102)"
+;; CHECK-FAIL: "not differentiable yet at this level (BUG 102)"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 177 Phase 3 -- a DEPENDENT grid-reduce! is refused under --differentiate, even with a
+;; reduction-vjp declared on its combiner: a declared gap, BUG 102.
+;;
+;; The lowering is known (the result is read from the return cells, its adjoint from their _GRAD, then one
+;; call to the local VJP -- no replay, no sum), but it cannot be MEASURED yet: a dependent grid-reduce!
+;; needs a return cell per clause, so two &out cells here, and VERIFY-AUTODIFF seeds and reads exactly one
+;; output.  An unmeasured gradient is how BUGs 099-101 shipped, so this is refused rather than guessed.
+;;
+;; The kernel has a real input A so the only thing refused is the reduction -- a kernel with no
+;; differentiable parameter would fail for that reason instead.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t   (vector float :address-space :global :align :compact))
+(def-type out-c   (cell float :address-space :global))
+(def-type uout-c  (cell ulong :address-space :global))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp argmax-local-vjp))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
+  (declare #'(float ulong float ulong float float => float float))
+  (if (= i ri)
+      (return rv-bar 0.0)
+      (return 0.0 0.0)))
+
+(def-kernel gr_dep_level (A &out outv outi)
+  (declare #'(vec-t &out out-c uout-c => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((v (~ A (get-global-linear-id)))
+        (i (get-global-linear-id)))
+    (grid-reduce! #'argmax-combine
+                  ((v (type-min float) outv)
+                   (i (type-max ulong) outi)))))

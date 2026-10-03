@@ -3739,3 +3739,28 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         very likely shares it (unmeasured).
 
         PROBES.  put_temp_files_here/177/zz-probe177-e-act{2,10}.crisp
+
+[ ] 102 A DEPENDENT grid-reduce! IS NOT DIFFERENTIABLE (a declared gap, refused loudly).
+
+        WHAT.  Endeavour 177 made the dependent reduce-warp and reduce-workgroup differentiable through the
+        combiner's (declare (reduction-vjp f)).  The grid-level form is still refused under --differentiate,
+        even with the declaration:
+
+            grid-reduce!: a dependent reduction is not differentiable yet at this level (BUG 102) -- reduce-warp
+            and reduce-workgroup are, through the combiner's reduction-vjp.
+
+        THE LOWERING IS KNOWN, and simpler than the all-reduces: no replay and no sum.  The result is read
+        from the return cells (a backward kernel's &out buffers hold the forward's outputs -- the
+        VERIFY-AUTODIFF harness restores them deliberately), the result adjoint is the cells' _GRAD, and
+        each thread calls the local VJP on (own state, result, result adjoint).  The own state is the
+        variable itself: a grid reduction is not versioned or replayed, so the backward holds its
+        pre-reduction value.
+
+        THE BLOCKER IS MEASUREMENT.  A dependent grid-reduce! needs a return cell per clause, so an argmax has
+        two &out cells, and VERIFY-AUTODIFF allocates, seeds and reads exactly ONE output.  Shipping an
+        unmeasured gradient is how BUGs 099-101 got out, so this stays refused until the harness can take
+        extra &out cells (loss on the first; the others zero-seeded, their forward values restored).
+
+        SPECS.  177/errors/02 pins the refusal.  (176/15-18 carried SKIP-WITH[--differentiate] for BUG 098 --
+        a FALSE gap claim, removed 2026-10-02: those kernels have no differentiable input, so their backward is
+        empty and never reaches the reduction; they pass under --differentiate as they are.)

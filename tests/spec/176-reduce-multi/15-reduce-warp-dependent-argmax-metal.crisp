@@ -3,7 +3,6 @@
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; HOIST-EXPECT: BUFFER outv: 4 4 4 4
 ;; HOIST-EXPECT: BUFFER outi: 4 20 36 52
-;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
 ;;
 ;; ENDEAVOUR 176 Phase 3 -- reduce-warp, DEPENDENT form: one combiner, a list of (var identity) clauses.
 ;; TDD.

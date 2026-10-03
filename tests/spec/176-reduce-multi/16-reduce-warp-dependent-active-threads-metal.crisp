@@ -3,7 +3,6 @@
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; HOIST-EXPECT: BUFFER outv: 7 7 7 7
 ;; HOIST-EXPECT: BUFFER outi: 7 23 39 55
-;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
 ;;
 ;; ENDEAVOUR 176 Phase 3 -- dependent reduce-warp with ACTIVE-THREADS 8.  TDD.
 ;;

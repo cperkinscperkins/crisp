@@ -1,0 +1,35 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "is not a defined function"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 177 Phase 4 -- a reduction-vjp naming a function that does not exist is refused at the reduction.
+;;
+;; Checked on the FORWARD pass (decided 2026-10-02): a wrong reduction-vjp is harmless until --differentiate,
+;; but forward-only compiles are the common case, so an unchecked one would rot unnoticed and then fail deep
+;; in generated backward code.  Checked at the reduction call site, where both functions are known.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp no-such-local-vjp))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel rw_vjp_undefined (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (i (to-ulong col)))
+        (reduce-warp #'argmax-combine
+                     ((v (type-min float))
+                      (i (type-max ulong))))
+        (set! (~ C row col) v)))))

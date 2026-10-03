@@ -217,24 +217,38 @@ carries the results back.  No snapshot needed.
 - [x] all green on BMG; unit 341/341, E2E 1344/1344, negative 297/297, `--differentiate` 177 10/10, 175 82/82
 
 
-## Phase 3: grid-reduce!
+## Phase 3: grid-reduce! -- a DECLARED GAP (BUG 102), decided 2026-10-02
 
-- [ ] TDD: argmax across workgroups (last-man), VERIFY-AUTODIFF
-- [ ] implementation
+The lowering is known (result from the return cells, adjoint from their _GRAD, one VJP call), but it cannot
+be measured: an argmax needs two &out return cells and VERIFY-AUTODIFF handles one output.  Refused rather
+than shipped unmeasured.
+
+- [x] the refusal names BUG 102 and what IS differentiable (177/errors/02 pins it, with a reduction-vjp declared)
+- [x] BUG 102 filed with the lowering and the blocker (a multi-output VERIFY-AUTODIFF)
+- [x] 176/15-18's SKIP-WITH[--differentiate] REMOVED -- a false gap claim: their kernels have no
+      differentiable input, so the backward is empty and never reaches the reduction (measured: they pass)
 
 
-## Negative tests
+## Negative tests -- DONE 2026-10-02
 
-- [ ] dependent reduction, no reduction-vjp, under --differentiate (the BUG 098 message, now naming the fix)
-- [ ] reduction-vjp signature mismatch
-- [ ] combiner passed as a value, not a literal #'f
+- [x] dependent reduction, no reduction-vjp, under --differentiate: the refusal names the fix (errors/05;
+      176/errors/11 keeps the older wording)
+- [x] reduction-vjp signature mismatch -- checked on the FORWARD pass at the reduction call site, beside
+      176's combiner check (decided 2026-10-02: forward-only compiles are the common case, so an AD-only
+      check would rot): errors/03 (ulong adjoints, the natural wrong guess), errors/04 (VJP not defined)
+- [x] dependent grid-reduce! (errors/02, BUG 102); :return-vec (errors/01)
+- [-] combiner passed as a value: CANNOT reach AD -- a dependent form needs a literal #'f by shape, so a value
+      combiner is classified :single and refused by the forward.  The refusal's "function VALUE" branch is
+      dead code; drop it at the fold.
+- [x] unit 341/341, E2E 1347/1347, negative 301/301, `--differentiate` 177 13/13
 
 
 ## Phase 4: wrap-up
 
-- [ ] `[CUDA]`-pinned VERIFY-AUTODIFF twins, for the CUDA pod run that follows this endeavour
+- [x] `[CUDA]`-pinned VERIFY-AUTODIFF twins, for the CUDA pod run that follows this endeavour: 10 argmax
+      winner (32), 11 moments active (108.8), 12 moments padding -- the gate (0), 13 workgroup moments (217.6).
+      NEVER EXECUTED; compile for PTX under --differentiate; skip locally
 - [ ] docs: the dependent section of the reductions doc (the AD paragraph), the reduction-vjp declaration,
       the limitation
-- [ ] retire 176/errors/11 (it pins the refusal this endeavour lifts) and the BUG 098 SKIP-WITHs on
-      176/15-18 -- or keep them as the "no reduction-vjp declared" cases
+- [x] 176/errors/11 KEPT as the "no reduction-vjp declared" case; 176/15-18's SKIP-WITHs REMOVED (false claims)
 - [ ] BUG 098 closed; fold; definition of done

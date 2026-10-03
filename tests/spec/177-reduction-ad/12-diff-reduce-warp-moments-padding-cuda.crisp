@@ -1,0 +1,41 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x16@1:0.1 at.A=0,10 expect.A=0.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; !!! NEVER EXECUTED YET.  Written 2026-10-02, no NVIDIA box available.  VALIDATE THIS FIRST on the
+;; !!! next pod run before reading a failure here as a compiler defect (cf. 175/14, BUG 067).
+;;
+;; ENDEAVOUR 177 -- the CUDA twin of 06, the active-threads GATE test: lane 10 is past active-threads (8)
+;; and must get 0.0 (ungated it would read 32 (1 + 2 * 2.0) = 160.0).
+;;
+;; A separate file because a spec may carry only ONE VERIFY-AUTODIFF line, [CUDA] or not.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; A sum and a sum of squares carried together -- the moments behind a variance.  Written as a DEPENDENT
+;; combiner on purpose: this is the non-selection case, where EVERY contributing lane has a gradient.
+(def-function moments-combine (s-a q-a s-b q-b)
+  (declare #'(float float float float => float float)
+           (reduction-vjp moments-local-vjp))
+  (return (+ s-a s-b) (+ q-a q-b)))
+
+;; Each result component is a plain sum of the lanes' components, so d result / d own = 1: a lane's own
+;; adjoint is the result's adjoint, component by component.
+(def-function moments-local-vjp (s q rs rq rs-bar rq-bar)
+  (declare #'(float float float float float float => float float))
+  (return rs-bar rq-bar))
+
+(def-kernel diff_rw_moments_padding (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((s (~ A row col)))
+        (let ((q (* s s)))
+          (reduce-warp #'moments-combine
+                       ((s 0.0)
+                        (q 0.0))
+                       8)
+          ;; every lane -- active or padding -- holds both totals and writes their sum
+          (set! (~ C row col) (+ s q)))))))
