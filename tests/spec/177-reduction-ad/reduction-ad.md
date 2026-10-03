@@ -166,6 +166,26 @@ Either way the integer adjoint is `float`, and the gate for padding lanes is req
 - [x] all five green on BMG
 - [x] unit 341/341, E2E 1329/1329, negative 296/296; `--differentiate` 124 16/16, 175 79/79
 
+## Phase 1a: BUG 100 -- versioned in-place writes (the backward gets the RESULT state)
+
+- [x] TDD, red first with the predicted wrong values: 124/17 set! (6.0 vs 108), 124/18 set! chain (1.0 vs 8.0),
+      175/65 reduce-warp then v*v (56 vs 896), 175/66 copy + reduce-warp + product (29.2 vs 56), 175/67
+      reduce-workgroup then v*v (531.2 vs 33996.8)
+- [x] `%ad-version-in-place-writes`: (SET! V e) -> (V%V1 e); a reduction of V -> (V%V1 V) + the reduction on
+      V%V1; later reads use V%V1.  `%ad-assemble-primal-replay` splits the replay LET after each copy and
+      re-runs the reduction there.  No reverse-walk change: the copy rule (099) and the existing VJPs carry
+      the adjoints.
+- [x] all five green on BMG; unit 341/341, E2E 1334/1334, negative 296/296, FULL `--differentiate` 1334/1334
+- Scope left open, by design: writes inside if/loop bodies; a variable rebound later or used in a later
+  multi-value binding is not versioned; grid reductions are not replayed.
+
+## Phase 1b: the dependent VJP, on top of 1a
+
+With 1a, a dependent reduction versioned like the singles gives the backward both states: `V`/`W` hold this
+thread's own state, `V%V1`/`W%V1` the result.  The dependent VJP is then: a `+` all-reduce of each clause
+variable's adjoint, one call to the user's local VJP, the active-threads gate (as BUG 101), and the copy rule
+carries the results back.  No snapshot needed.
+
 
 ## Phase 1: reduce-warp
 

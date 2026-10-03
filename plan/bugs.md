@@ -3671,8 +3671,17 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         PROBE.  put_temp_files_here/177/zz-probe177-a-alias.crisp
 
-[ ] 100 IN-PLACE SCALAR WRITES ARE INVISIBLE TO AD -- set! of a local, and the in-place reductions,
+[x] 100 IN-PLACE SCALAR WRITES ARE INVISIBLE TO AD -- set! of a local, and the in-place reductions,
         both give SILENTLY wrong gradients.
+
+        FIXED 2026-10-02 (overlay, pending fold), endeavour 177 Phase 1: the AD path VERSIONS top-level in-place
+        scalar writes -- (SET! V e) becomes the binding (V%V1 e); a reduce-warp / reduce-workgroup of V becomes
+        the copy (V%V1 V) plus the reduction on V%V1 -- and later reads use the new version.  The primal replay
+        is split after each copy so the reduction re-runs there (%ad-version-in-place-writes,
+        %ad-assemble-primal-replay).  Adjoints need no new rule: the copy rule (099) and the existing VJPs.
+        Specs 124/17 (108, was 6.0), 124/18 (8.0, was 1.0), 175/65 (896, was 56), 175/66 (56, was 29.2),
+        175/67 (33996.8, was 531.2).  STILL OPEN, by design: writes inside if/loop bodies, a variable rebound
+        later or used in a later multi-value binding (not versioned), and grid reductions (not replayed).
 
         MEASURED (endeavour 177 Phase 0, BMG, VERIFY-AUTODIFF, A = 1.0 + 0.1*k):
 
