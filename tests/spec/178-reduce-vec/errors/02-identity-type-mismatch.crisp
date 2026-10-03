@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must have the vector's element type"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 178 -- the identity must have the vector's element type: a float identity over an int
+;; vector is refused (the partial and the implicit scratch are typed from the identity).
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector int :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_e02 (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out))

@@ -113,6 +113,29 @@
           collect (loop for j from 0 below cols
                         collect (cl:float (+ start (* step (+ (* i cols) j))) 1.0)))))
 
+(defun %vad-generated-vector-p (str)
+  "T when STR is the compact 1-D vector generator form `N@START:STEP` -- an `@` with no `x`
+   before it (that would be the matrix form).  Endeavour 178."
+  (and (position #\@ str)
+       (not (%vad-generated-matrix-p str))))
+
+(defun %vad-parse-generated-vector (str token)
+  "Parses `N@START:STEP` into a list of N floats, element i being START + STEP*i -- a linear ramp.
+
+   Endeavour 178.  reduce-vec is only interesting when the vector is LONGER than the grid, so
+   that every thread folds several elements; a few hundred literals in a directive line would
+   make the spec unreadable.  A ramp is non-uniform, so a max/min has a unique winner."
+  (let* ((at (position #\@ str))
+         (n (%vad-parse-float (subseq str 0 at) token))
+         (rest (subseq str (1+ at)))
+         (colon (position #\: rest))
+         (start (%vad-parse-float (if colon (subseq rest 0 colon) rest) token))
+         (step  (if colon (%vad-parse-float (subseq rest (1+ colon)) token) 1)))
+    (unless (and (integerp n) (> n 0))
+      (error "VERIFY-AUTODIFF: vector generator needs a positive integer length N, got ~A" str))
+    (loop for i from 0 below n
+          collect (cl:float (+ start (* step i)) 1.0))))
+
 (defun %vad-parse-index-spec (str token key)
   "Parses `R,C` into the list (R C), or a bare `I` into the integer I.
 
@@ -402,6 +425,9 @@
                ;; 145 (P6): compact matrix generator `RxC@START:STEP`.
                ((%vad-generated-matrix-p val-str)
                 (push (cons key (%vad-parse-generated-matrix val-str token)) inputs))
+               ;; 178: compact 1-D vector generator `N@START:STEP`.
+               ((%vad-generated-vector-p val-str)
+                (push (cons key (%vad-parse-generated-vector val-str token)) inputs))
                (t
                 (push (cons key (%vad-parse-float val-str token)) inputs)))))
          (unless atol

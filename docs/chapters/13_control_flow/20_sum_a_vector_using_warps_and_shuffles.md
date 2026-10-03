@@ -74,7 +74,7 @@ a `float` or `int` accumulator halves it.
 Like the previous sum_vector demonstration, this example is provided so that you can see
 "Crisp-ish" constructs used together, this time with shuffles and warps. The vector is not
 fully summed. That requires a second kernel pass. Most expedient is to make another kernel
-that employs `reduce-vec-second-stage` (see below) and then you will have a two step
+that employs `grid-reduce-second-stage!` (see below) and then you will have a two step
 solution. If you would like to see the hoisting code in action, then use either a
 continuation kernel (see above) or `def-orchestration` (see below).
 

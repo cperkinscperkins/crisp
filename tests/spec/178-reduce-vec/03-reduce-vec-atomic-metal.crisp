@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 178 -- reduce-vec with :strategy :atomic (the "Easy Button"), and a :message.
+;;
+;; :atomic ACCUMULATES into the result cell, so it must start at the identity; the harness zeroes a
+;; scalar output cell, which is the identity of +.  Input 0 1 2 3 -> 6.  Two workgroups, so two
+;; leaders really do race on the one address.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_atomic (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out :strategy :atomic :message "sum of A"))

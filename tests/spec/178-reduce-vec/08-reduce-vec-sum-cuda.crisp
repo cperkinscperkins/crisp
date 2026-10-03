@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 178 -- the CUDA twin of 01: reduce-vec with the default strategy.
+;;
+;; NOT YET RUN ON NVIDIA (written on the BMG box).  Under h100 the warp is 32, so the implicit local
+;; scratch is sized differently from 01's; the answer is the same.  Input 0 1 2 3 -> 6.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_cuda (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out))

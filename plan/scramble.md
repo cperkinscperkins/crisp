@@ -861,6 +861,8 @@ MISC
 - - [ ] overly long functions
 - - [ ] compiler warnings in tests.  most fixable in compiler, no?
 - - [ ] warnings when building compiler
+- - [ ] src/specials.lisp: its tail (after "end of generated file") holds hand-folded 155 defvars/defconstants
+      defined nowhere else -- scripts/gen-specials.lisp WIPES them on regeneration.  Give them home files.
 
 
 Reductions
@@ -871,7 +873,8 @@ Reductions
 - [x] implement
 - [x] (type-min float) (type-max long)   <-- 
 - [x] multiple value reductions.
-- - [ ] auto differentiation ( dependent multi-var pending)
+- - [x] auto differentiation -- dependent multi-var done (177: reduce-warp / reduce-workgroup via (declare (reduction-vjp f)))
+- - [ ] grid-level dependent AD (BUG 102) -- needs VERIFY-AUTODIFF to take more than one &out output
 - [ ] reduce-vec
 - [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )

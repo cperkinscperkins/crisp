@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=300@0:0.01 at.A=257 expect.A=1.0 atol=1e-2 h=0.5 group=64 groups=2
+;;
+;; ENDEAVOUR 178 -- AUTODIFF through reduce-vec (default strategy, :last-man-standing), measured on
+;; metal.  TDD.
+;;
+;; The vector (300) is LONGER than the grid (2 x 64 = 128), so every thread folds two or three
+;; elements into its partial before the grid reduction.  out = sum of A, so d(out)/dA[k] = 1 for
+;; every k.  Element 257 = 2*128 + 1 is thread 1's THIRD stride iteration -- a gradient that only
+;; reached each thread's first element would read 0 there.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel diff_rv_sum (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out))

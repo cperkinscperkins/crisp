@@ -1,18 +1,14 @@
 # Higher Order Function Operations
 
 - map-stride
-- reduce-to-warp
-- reduce-to-workgroup
-- reduce-to-1-second-stage
-- reduce-to-1-atomic
-- reduce-to-1-cas
-- reduce-to-1-cont
-- reduce-vec-first-stage
-- reduce-vec-second-stage
-- reduce-vec-warp
-- reduce-vec-atomic
-- reduce-vec-cas
-- reduce-vec-cont
+- reduce-warp
+- reduce-workgroup
+- grid-reduce!
+- grid-reduce-atomic!
+- grid-reduce-cas!
+- grid-reduce-last-man!
+- grid-reduce-second-stage!
+- reduce-vec
 - binop-type     
 - predicate-type
 - get-identity-f  ; needs writeup

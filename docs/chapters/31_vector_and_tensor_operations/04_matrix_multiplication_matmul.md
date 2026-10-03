@@ -53,7 +53,7 @@ the hardware accellerated types that have a widened accumulator, quantized integ
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
     (let ((C-scratch (make-scratch-vector (length~ A) :name "dot product")))  
       (map-stride #'* (A B) C-scratch)
-      (reduce-vec-atomic #'+ C-scratch 0 RESULT)))
+      (reduce-vec #'+ C-scratch 0 RESULT :strategy :atomic)))
 
   ;; -- dot-prod-seq --
   (def-function dot-prod-seq (A B)

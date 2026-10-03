@@ -30,7 +30,7 @@ These dot product and matmul implementations work for ALL types.
     (let ((C-scratch (make-scratch-vector (accum T) Al :name "dot product"))
           (zero (identity-of #'+ (accum T))))  
       (map-stride #'*! (A B) C-scratch) ;; widening multiplication *!
-      (reduce-vec-atomic #'+ C-scratch zero RESULT)))) ;; <-- this broadcasts
+      (reduce-vec #'+ C-scratch zero RESULT :strategy :atomic)))) ;; <-- this broadcasts
 
 
 ;; same TILE_DIM as used by convert-layout 

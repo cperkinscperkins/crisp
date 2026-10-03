@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 3
+;; SKIP-WITH[--differentiate]: "grid-reduce-cas! differentiates only the + reduction; #'max has no VJP yet -- spec 12 measures :cas with +"
+;;
+;; ENDEAVOUR 178 -- reduce-vec with :strategy :cas, reducing with #'max.
+;;
+;; Input 0 1 2 3 -> max 3.  The identity is (type-min float), whose type is visible on its face, so
+;; the implicit scratch can be typed from it.  :cas accumulates into the cell like :atomic does; the
+;; harness zeroes it, which is below every element here, so the result is still the max.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_cas_max (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'max A (type-min float) out :strategy :cas))

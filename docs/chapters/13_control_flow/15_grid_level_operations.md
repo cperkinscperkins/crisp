@@ -8,7 +8,7 @@ The following Crisp functions and macros are grid level operations, they either 
 higher order function arguments that must be thread level (only) operations. 
 
 - all `-stride` functions
-- all grid-wide reduction variants ( `reduce-to-1-*`, `reduce-vec-*`)
+- all grid-wide reductions (`grid-reduce!` and the `grid-reduce-*!` strategies, `reduce-vec`)
 - `filter`
 - `convert-layout` 
 - `when-is-last-workgroup`

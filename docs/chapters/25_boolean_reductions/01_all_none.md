@@ -24,6 +24,6 @@ Possible Implementation
         (unless (funcall predicateF (~ someVec i))
           (set! partial-result 0))))
 
-    (reduce-to-1-cas #'logand partial-result 1 result-vec)))
+    (grid-reduce! #'logand partial-result 1 result-vec :strategy :cas)))
 ```
 

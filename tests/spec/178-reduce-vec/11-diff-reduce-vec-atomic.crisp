@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=300@0:0.01 at.A=200 expect.A=1.0 atol=1e-2 h=0.5 group=64 groups=2
+;;
+;; ENDEAVOUR 178 -- AUTODIFF through reduce-vec :strategy :atomic, measured on metal.
+;;
+;; 300 elements over a 128-thread grid; element 200 = 128 + 72 is thread 72's SECOND stride
+;; iteration.  out = sum of A, so d(out)/dA[k] = 1.  The VJP is grid-reduce-atomic!'s broadcast,
+;; then the stride fold's backward (the loop-carried set! rule, endeavour 178).
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel diff_rv_atomic (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out :strategy :atomic))

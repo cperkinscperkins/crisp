@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 3
+;; SKIP-WITH[--differentiate]: "grid-reduce-last-man! differentiates only the + reduction; a custom binop has no VJP yet"
+;;
+;; ENDEAVOUR 178 -- reduce-vec with a user-defined binop over a uint vector, :last-man-standing.
+;;
+;; The doc's "flexible" case: last-man takes any commutative, associative function.  rv-bigger is
+;; max written by hand, over uint, with identity 0u.  Input 0 1 2 3 -> 3.  The custom function is
+;; applied twice per element path: once in each thread's stride fold, then by the grid reduction.
+
+(def-type in-vec (vector uint :address-space :global :align :compact))
+(def-type out-c  (cell uint :address-space :global))
+
+(def-function rv-bigger (a b)
+  (declare #'(uint uint => uint))
+  (if (> a b) a b))
+
+(def-kernel rv_custom (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'rv-bigger A 0u out :strategy :last-man-standing))

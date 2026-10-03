@@ -79,7 +79,7 @@ all applied to the topic of a workgroup sized reduction using local memory and a
 
 But, again, the vector is not fully summed. That'll require a second kernel pass. 
  The simplest solution there is to make another kernel that
-employs `reduce-vec-second-stage` (see below) and then you'll have a two step solution. If you would
+employs `grid-reduce-second-stage!` (see below) and then you'll have a two step solution. If you would
 like to see the hoisting code in action, then use either a continuation kernel (see above) 
 or  `def-orchestration` (see below).
 
