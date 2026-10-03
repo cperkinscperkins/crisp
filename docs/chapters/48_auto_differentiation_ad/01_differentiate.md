@@ -29,6 +29,12 @@ To be compatible with `--differentiate`, a kernel must meet the following criter
   branch a plain `if`. Value-producing conditionals (e.g.
   `(set! (~ res) (if+ cond a b))`) propagate the result adjoint into whichever branch
   was taken; an untaken `when+`/`unless+` contributes zero gradient.
+- Reassignment and in-place reductions: a `set!` of a scalar local, and a reduction that
+  leaves its result in its own variable (`reduce-warp`, `reduce-workgroup`), are
+  differentiated against the value the variable held *at that point*. The backward pass
+  replays them, so a later `(* v v)` sees the reduced `v`, and a copy `(let ((v0 v)) ...)`
+  passes its gradient back to `v`. This holds for straight-line code; a reassignment inside
+  an `if` or loop body is not verified yet.
 
 
 #### The Generated Gradient Signature

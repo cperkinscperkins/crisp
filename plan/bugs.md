@@ -3623,7 +3623,13 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (BUG 090's machinery on the backward side), with the backward walk calling the companion of the call
         shape it differentiates.
 
-[ ] 098 DEPENDENT REDUCTIONS ARE NOT DIFFERENTIABLE (a declared gap, refused loudly).
+[x] 098 DEPENDENT REDUCTIONS ARE NOT DIFFERENTIABLE (a declared gap, refused loudly).
+
+        CLOSED 2026-10-02 by endeavour 177 (overlay, pending fold): reduce-warp and reduce-workgroup differentiate
+        through a (declare (reduction-vjp f)) on the combiner -- f takes (own state, result, result adjoint) and
+        returns the own adjoint; checked on the forward pass.  Specs 177/01-09 (BMG), CUDA twins 177/10-13.
+        Without the declaration the refusal stays and names the fix (177/errors/05, 176/errors/11).  The
+        dependent grid-reduce! moved to BUG 102.
 
         WHAT.  (reduce-warp | reduce-workgroup | grid-reduce! #'combiner ((var identity ...) ...)) --
         endeavour 176 Phase 3.  Under --differentiate the AD path refuses it:

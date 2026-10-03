@@ -30,11 +30,11 @@ For argmax:
       (return val-b idx-b)))
 
 (def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
-  (declare #'(float ulong float ulong float ulong => float ulong))
+  (declare #'(float ulong float ulong float float => float float))   ; integer adjoints are FLOAT (Phase 0)
   ;; the winning thread gets the gradient of the value; indices get none
   (if (= i ri)
-      (return rv-bar 0ul)
-      (return 0.0 0ul)))
+      (return rv-bar 0.0)
+      (return 0.0 0.0)))
 ```
 
 ### Why this shape (the options considered)
@@ -81,11 +81,16 @@ With the combiner `#'(T1 .. Tk T1 .. Tk => T1 .. Tk)`, the local VJP is
        own state  result     result     own-state
                              adjoint    adjoint
 
-where `Ai` is the adjoint type of `Ti` (`float` for `float`; for integer components, whatever Crisp's AD
-uses for integer adjoints -- see Phase 0).  Checked against the combiner at the call site, like the
-combiner's own signature check (Phase 3 of 176).
+where `Ai` is the adjoint type of `Ti`: `double` for `double`, `float` for everything else, integers included
+(Phase 0).  Checked against the combiner on the FORWARD pass at the call site, beside the combiner's own
+signature check (Phase 4).
 
 ### Backward lowering, per construct
+
+> **Superseded in part (2026-10-02).**  The snapshot below was replaced by Phase 1a's VERSIONING: on the AD
+> path each clause variable gets a copy `(V%V1 V)` and the reduction runs on the copies, re-run in the
+> backward's replay -- so the backward holds the own state (V) AND the result (V%V1), with no snapshot.  The
+> dependent grid-reduce! is a declared gap (BUG 102).  See Phases 1a-3 below for what was built.
 
 The forward lowering is unchanged (fused).  On the AD path:
 
@@ -248,7 +253,10 @@ than shipped unmeasured.
 - [x] `[CUDA]`-pinned VERIFY-AUTODIFF twins, for the CUDA pod run that follows this endeavour: 10 argmax
       winner (32), 11 moments active (108.8), 12 moments padding -- the gate (0), 13 workgroup moments (217.6).
       NEVER EXECUTED; compile for PTX under --differentiate; skip locally
-- [ ] docs: the dependent section of the reductions doc (the AD paragraph), the reduction-vjp declaration,
-      the limitation
+- [x] docs (2026-10-02), in the excerpt, ideal_001.md and the chapters alike: the dependent-reduction AD
+      section (declaration, signature with float integer adjoints, argmax example, what Crisp does incl. the
+      active-threads gate, the forward-pass check, the limitation, the two refusals); the grid-reduce! bullet
+      (dependent form excepted); an AD-chapter bullet on reassignment / in-place reductions (BUG 099/100);
+      the declare table row.  reference.md + call graph to regenerate AFTER the fold
 - [x] 176/errors/11 KEPT as the "no reduction-vjp declared" case; 176/15-18's SKIP-WITHs REMOVED (false claims)
 - [ ] BUG 098 closed; fold; definition of done

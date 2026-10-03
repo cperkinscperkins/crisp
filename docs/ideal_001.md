@@ -3848,6 +3848,7 @@ For template usage, see the subequent section.
 | `constexpr`   | `(constexpr someVar)`       | Yes | Yes | delares that some param or variable must be compile time calculable. Compiler will error if it is not |
 | `to-uniform`  | `(to-uniform someVar)`      | No  | Yes | tells the compiler to MAKE the newly defined variable uniform across the entire workgroup. This is non-trivial. See [to-uniform](#to-uniform-) |
 | `forward-only` | see [Auto-Differentiation](#auto-differentiation-ad)| Yes | No | tells the compiler that this function is forward-only and should not be differentiated. Will not be compiled when the `-differentiate` flag is used. |
+| `reduction-vjp` | `(reduction-vjp argmax-local-vjp)` | Yes | No | on the combiner of a dependent multi-variable reduction: names the local VJP that makes the reduction differentiable -- (own state, result, result adjoint) => own adjoint. See [Dependent Reductions](#2-dependent-reductions). |
 | `max-registers` | `(max-registers 64)`        | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler error if it exceeds. |
 |`warn-max-registers` | `(warn-max-registers 64)` | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler warning if it exceeds. It will also name which kernel args might be candidates for `no-sroa`  |
 | `no-sroa` | `(no-sroa someVar)` |             | Yes | No | The variable named (typicall a Storage Handle) will not be automatically expanded into its SROA components at the kernel boundary, but is instead brought over as a single constant memory struct. This can lower register usage, but is only available for storage handles that do NOT use mutable strides or offsets. | 
@@ -6668,7 +6669,7 @@ Another thing Crisp can do to make things simpler is to simply elect a Phase 2 s
 * `return-cell` is a `cell` of `<someVar>`'s type (a length-1 vector is also accepted). `:atomic` and `:cas` *accumulate* into it, so it should start at the identity; `:last-man-standing` *writes* it.
 * Every scratch argument is optional and is allocated by Crisp when left out, typed from the identity (see the condition above). A scratch key the chosen strategy does not use is a compilation error: `:atomic` and `:cas` take only `:local-scratch-vec`.
 * `:atomic` still requires an operator with a native hardware atomic (`#'+`, `#'min`, `#'max`).
-* Autodiff works through `grid-reduce!`: it becomes one of the three constructs above, each of which has its own VJP.
+* Autodiff works through `grid-reduce!`: it becomes one of the three constructs above, each of which has its own VJP. The exception is the dependent multi-variable form, which is not differentiable yet (see *Reducing Several Variables at Once*).
 
 ```
 (grid-reduce! #'+ sumF 0.0f float-c :strategy :cas :message "gridwise reduction of sumF")
@@ -6815,10 +6816,63 @@ The combiner is checked against the clauses: with clause variables of types `T1 
 signature the clauses need and the one the combiner has. Each combine step calls it once, with all
 `k` values of both states.
 
-**Autodiff is not supported yet for the dependent form.** Its variables interact inside your combiner,
-so Crisp has no backward rule for it, and a kernel that differentiates through one is a compilation
-error rather than a silently wrong gradient. (The independent form *is* differentiable: each clause
-is differentiated on its own.)
+**Autodiff through a dependent reduction needs one more function from you: a local VJP.** The variables
+interact inside your combiner, so Crisp cannot derive the backward rule on its own. You declare it on the
+combiner with `(declare (reduction-vjp f))`. Given *this thread's* contribution, the *result*, and the
+result's adjoint, `f` returns this thread's adjoint:
+
+```
+#'(T1 ... Tk   T1 ... Tk   A1 ... Ak  =>  A1 ... Ak)
+   own state   result      result         own adjoint
+                           adjoint
+```
+
+`Ai` is the adjoint type of `Ti`: `double` for a `double`, and `float` for every other type, integers
+included. An index has a `float` adjoint, though it is usually zero.
+
+```lisp
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp argmax-local-vjp))          ; the one new line
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
+  (declare #'(float ulong float ulong float float => float float))
+  ;; the winning thread takes the value's gradient; an index has none
+  (if (= i ri)
+      (return rv-bar 0.0)
+      (return 0.0 0.0)))
+```
+
+Crisp does the rest. The backward pass recomputes the result and sums the result's adjoint over every
+thread that holds it. It then calls `f` once per thread. Threads past `active-threads` get a zero
+adjoint: your VJP cannot see `active-threads`, so it need not handle them. The VJP is checked against
+the combiner and the clauses on every compile, not only under `--differentiate`, so a mismatch is
+reported where you wrote it.
+
+**The limitation:** a thread's adjoint must be computable from its own contribution and the result. That
+covers the reductions people actually write:
+
+* selections, such as argmax, argmin, max and min ("am I the winner?");
+* sums, counts and means;
+* moments and Welford-style variance;
+* log-sum-exp (`exp(x - R)`);
+* products (`R / x`, away from zero).
+
+It fails only when the gradient needs something the result discarded, such as a runner-up. If you need
+that, shape the state to keep it.
+
+Without a `reduction-vjp`, differentiating through a dependent reduction is a compilation error that says
+what to add. It is never a silently wrong gradient. Two cases are not differentiable yet, with or without
+the declaration:
+
+* a dependent `grid-reduce!` (reduce within the workgroup first);
+* `:return-vec` in a dependent clause.
+
+The independent form needs none of this: each of its clauses is differentiated on its own.
 
 ### 3. The Workgroup Level
 
@@ -11111,6 +11165,12 @@ To be compatible with `--differentiate`, a kernel must meet the following criter
   branch a plain `if`. Value-producing conditionals (e.g.
   `(set! (~ res) (if+ cond a b))`) propagate the result adjoint into whichever branch
   was taken; an untaken `when+`/`unless+` contributes zero gradient.
+- Reassignment and in-place reductions: a `set!` of a scalar local, and a reduction that
+  leaves its result in its own variable (`reduce-warp`, `reduce-workgroup`), are
+  differentiated against the value the variable held *at that point*. The backward pass
+  replays them, so a later `(* v v)` sees the reduced `v`, and a copy `(let ((v0 v)) ...)`
+  passes its gradient back to `v`. This holds for straight-line code; a reassignment inside
+  an `if` or loop body is not verified yet.
 
 
 #### The Generated Gradient Signature
