@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=8@0:0.1 at.A=5 expect.A=1.0 atol=1e-2 h=0.5
+;;
+;; ENDEAVOUR 178 -- the BUG reduce-vec exposed, on its own: a scalar SET! inside a loop had no
+;; backward at all.
+;;
+;; MEASURED before the fix: d out/dA[5] = 0.0 (FD 1.0).  A set! of a scalar local is turned into a
+;; fresh binding at top level (BUG 100's versioning), but a LOOP-CARRIED variable cannot be
+;; versioned, and the backward walk dropped (set! p x) on the floor -- a silent zero, for dotimes,
+;; loop-vector-stride and therefore every reduce-vec.  The rule now emitted is x_adj += p_adj,
+;; p_adj := 0.  The seed is deliberately an active value (a product with A[0]) so the gradient of
+;; A[0] would also flow; A[5] is checked.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel loop_carried_sum (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((p (* 1.0 (~ A 0))))
+    (dotimes (i 8)
+      (set! p (+ p (~ A i))))
+    (set! (~ out) p)))

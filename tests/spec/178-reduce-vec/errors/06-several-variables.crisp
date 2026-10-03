@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "reduces ONE vector"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 178 -- reduce-vec has no multi-variable form (out of scope by design).  A clause list is
+;; refused, pointing at grid-reduce!.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_e06 (A &out out out2)
+  (declare #'(in-vec &out out-c out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec ((#'+ A 0.0 out) (#'max A (type-min float) out2))))

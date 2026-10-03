@@ -21,6 +21,6 @@ Possible Implementation
         (when (funcall predicateF (~ someVec i))
           (set! partial-result 1))))
 
-    (reduce-to-1-cas #'logior partial-result 0 result-vec)))
+    (grid-reduce! #'logior partial-result 0 result-vec :strategy :cas)))
 ```
 

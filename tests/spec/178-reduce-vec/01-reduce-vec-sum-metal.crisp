@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 178 -- (reduce-vec fn vec identity out-cell), the DEFAULT strategy (:last-man-standing).
+;;
+;; The hoist harness fills an input vector with 4 elements, 0 1 2 3, so the sum is 6.  The grid is
+;; 2 workgroups of 64: 124 of the 128 threads own NO element, and contribute only the identity --
+;; which is what seeding each thread's partial with the identity is for.  Two workgroups make the
+;; last-man election real (one loses, one sweeps), and 2 <= 64 keeps last-man's limit.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out))

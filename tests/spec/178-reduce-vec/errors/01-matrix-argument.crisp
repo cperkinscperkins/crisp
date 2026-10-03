@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be a vector"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 178 -- reduce-vec reduces a VECTOR.  A matrix is refused; it does not flatten.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_e01 (M &out out)
+  (declare #'(in-mat &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ M 0.0 out))

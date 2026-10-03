@@ -3770,3 +3770,73 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         SPECS.  177/errors/02 pins the refusal.  (176/15-18 carried SKIP-WITH[--differentiate] for BUG 098 --
         a FALSE gap claim, removed 2026-10-02: those kernels have no differentiable input, so their backward is
         empty and never reaches the reduction; they pass under --differentiate as they are.)
+
+[x] 103 A SCALAR set! INSIDE A LOOP HAD NO BACKWARD -- silently zero gradient.
+
+        FIXED 2026-10-03, endeavour 178 (overlay, pending fold): %gfw-process-set! (src/autodiff.lisp) gains
+        the rule for (set! V x) of a scalar local: x_adj += V_adj, then V_adj := 0.
+
+        MEASURED (BMG, VERIFY-AUTODIFF) before the fix, every one analytical=0.0 numerical=1.0:
+
+            (let ((p 0.0)) (dotimes (i 8) (set! p (+ p (~ A i)))) (set! (~ out) p))      at.A=5
+            the same with loop-vector-stride, single thread
+            (let ((p 0.0)) (loop-vector-stride A (i) (set! p (+ p (~ A i)))) (grid-reduce! #'+ p 0.0 out))
+              -- which is reduce-vec's whole expansion, at 1, 2 and 3 elements per thread
+            The SAME update outside a loop:  analytical=1.0  PASS.
+
+        CAUSE.  BUG 100 versions top-level in-place scalar writes into fresh bindings, so a straight-line
+        set! never reaches the backward as a set!.  A LOOP-CARRIED variable cannot be versioned, so its set!
+        does reach %gfw-process-set!, which handled only (set! (~ t i..) v) and returned NIL for
+        (set! v x).  The emitted backward loop body had t3 = p + t2's adjoint rule but nothing feeding
+        t3_adj, which is reset to zero each iteration (107's iteration-local reset).  No spec caught it:
+        no VERIFY-AUTODIFF spec had a loop-carried scalar (145/01 has one but only compiles).
+
+        THE LIMIT is BUG 105.  SPECS.  178/14 (sum), 178/15 (difference, -1), 178/10-12 (reduce-vec, all
+        strategies, 300 elements over 128 threads).  178/reduce-vec.unit.lisp pins the taint analysis.
+
+[x] 104 A STRING REACHING ANF WAS "Unsupported form for anf-transform".
+
+        FIXED 2026-10-03, endeavour 178 (overlay, pending fold): anf-is-atomic? (src/anf-transform.lisp)
+        accepts a string -- a constant, like a number.
+
+        MEASURED: (let ((p 0.0)) (loop-vector-stride ..) (grid-reduce! #'+ p 0.0 out :strategy :atomic
+        :message "a sum")) died under --differentiate:  Unsupported form for anf-transform: "a sum".  At top
+        level the same grid-reduce! compiled; inside a LET its :message reaches ANF as an argument.  Every
+        reduce-vec is a LET, so reduce-vec :message hit it.  SPEC.  178/03 (:message, --differentiate pass).
+
+[ ] 105 A NONLINEAR LOOP-CARRIED VARIABLE IS NOT DIFFERENTIABLE (a declared gap, refused loudly).
+
+        WHAT.  The backward replays a loop in FORWARD order and never re-runs the loop's set!s, so inside the
+        backward loop a variable set! across iterations holds a STALE primal.  BUG 103's rule is exact when
+        the body's derivatives never read that primal -- a running sum or difference.  A running product,
+        min or max does read it, and before 178 gave a silent zero (BUG 103); after BUG 103's rule alone it
+        would give a different wrong number.  So %gfw-process-dotimes now calls %ad-check-loop-carried-primals:
+        it taints every variable the loop body set!s that is bound outside the loop, closes over the body's
+        bindings, and refuses if any emitted backward form reads a tainted primal outside a replayed LET
+        binding:
+
+            Cannot differentiate this loop: p is updated by set! across iterations (loop (i 8)), and the
+            gradient of the loop body depends on its value at each iteration. ...
+
+        THE FIX is the 172/175 prerequisite never done: a REVERSE-order backward loop with the per-iteration
+        primal available (a tape, or recompute-from-start per iteration).  Until then reductions keep their
+        semantic VJPs (which is why grid-reduce! differentiates + only, and reduce-vec with it).
+
+        SPEC.  178/errors/09 pins the refusal.
+
+[ ] 106 VERIFY-AUTODIFF ON CUDA CANNOT ALLOCATE :global IMPLICIT SCRATCH -- and the refusal CRASHED the runner.
+
+        MEASURED, A100 pod, 2026-10-03 (branch reduce-vec).  178/13 (reduce-vec, default :last-man-standing,
+        VERIFY-AUTODIFF[CUDA]) reached %vad-global-scratch-unsupported (tests/verify-autodiff-runner.lisp).  The
+        refusal itself is honest -- the :global scratch path (BUG 084) was written for :l0 only -- but its
+        FORMAT string used ~<newline> continuations in a CRLF file (see memory: tilde-continuation-breaks-on-CRLF),
+        so PRINTING it raised a FORMAT error, which escaped the per-spec handler and killed the whole
+        --differentiate phase (1364 specs in, no summary; run-on-pod.sh logged it as CRASH).
+
+        FIXED (the crash): both ~-continued messages in verify-autodiff-runner.lisp (lines 759, 2285) joined
+        onto one line.  178/13 moved to :strategy :atomic (local scratch only, which CUDA allocates -- 175/14).
+
+        OPEN (the gap): no GRID-level reduction (last-man, cas, second-stage) is gradient-checked on NVIDIA;
+        175-177 have no such [CUDA] spec, almost certainly for this reason.  The fix is the CUDA twin of the
+        L0 :global path -- cuMemAlloc plus the same descriptor words, zeroed per launch (BUG 084's re-zero
+        rule) -- then a [CUDA] copy of 178/10 (default strategy) and 178/12 (:cas).

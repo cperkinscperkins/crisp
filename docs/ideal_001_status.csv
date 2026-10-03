@@ -249,7 +249,7 @@ Invoking Functions: `funcall`,243,implemented
 `grid-reduce-last-man!`,248,implemented
 `grid-reduce-second-stage!`,249,implemented
 `grid-reduce!`,250,implemented
-`reduce-vec`,251,not implemented
+`reduce-vec`,251,implemented
 Boolean Reductions,252,not implemented
 `all?` / `none?`,253,not implemented
 `any?`,254,not implemented
@@ -519,4 +519,4 @@ max-pool,517,not implemented
 Average Pool,518,not implemented
 ReLU,519,not implemented
 Acknowledgements,520,implemented
-SUMMARY (Total: 520),Impl: 276 (53.1%),Not Impl: 221 (42.5%) | Part: 23 (4.4%)
+SUMMARY (Total: 520),Impl: 277 (53.3%),Not Impl: 220 (42.3%) | Part: 23 (4.4%)

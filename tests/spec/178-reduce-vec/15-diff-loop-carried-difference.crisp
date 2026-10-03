@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=8@0:0.1 at.A=6 expect.A=-1.0 atol=1e-2 h=0.5
+;;
+;; ENDEAVOUR 178 -- the loop-carried SET! rule with a SUBTRACTION: p := p - A[i] for i < 8, so
+;; d out/dA[k] = -1.  The sign has to survive the copy (set! p t) as well as the (- p a) rule.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel loop_carried_difference (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((p 10.0))
+    (dotimes (i 8)
+      (set! p (- p (~ A i))))
+    (set! (~ out) p)))

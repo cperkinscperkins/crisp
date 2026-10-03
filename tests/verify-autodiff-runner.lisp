@@ -756,10 +756,7 @@
        ;; guessing would under-bind exactly as the old catch-all did.
        (t (let ((dims (getf p :dims)))
             (unless dims
-              (error "VERIFY-AUTODIFF: implicit param at slot ~D has arg-width ~D ~
-                      and no :dims, so its tensor record cannot be built.  Widths ~
-                      3/6/9 are cell/vector/matrix; anything else needs :dims from ~
-                      the metacrisp :size-expr."
+              (error "VERIFY-AUTODIFF: implicit param at slot ~D has arg-width ~D and no :dims, so its tensor record cannot be built.  Widths 3/6/9 are cell/vector/matrix; anything else needs :dims from the metacrisp :size-expr."
                      (getf p :base) (getf p :arg-width)))
             (bind-local-scratch-tensor-arg
              kernel (getf p :base) dims (getf p :elem-bytes))))))))
@@ -2282,11 +2279,7 @@
                                               (cffi:foreign-type-size :uint64) p-off)))))
 
 (defun %vad-global-scratch-unsupported (what)
-  (error "VERIFY-AUTODIFF: this kernel has a :global implicit scratch ~a, which only the :l0 ~
-          runtime can allocate today; current runtime is ~A.  The :global path was added for ~
-          BUG 084 against L0 because that is where the grid-level reductions are verified; the ~
-          CUDA twin is the same shape (cuMemAlloc plus the same descriptor words) and simply ~
-          has not been needed yet."
+  (error "VERIFY-AUTODIFF: this kernel has a :global implicit scratch ~a, which only the :l0 runtime can allocate today; current runtime is ~A.  The :global path was added for BUG 084 against L0 because that is where the grid-level reductions are verified; the CUDA twin is the same shape (cuMemAlloc plus the same descriptor words) and simply has not been needed yet."
          what *ad-runtime*))
 
 (defun bind-global-scratch-vector-arg (kernel base-index n-elements elem-bytes)

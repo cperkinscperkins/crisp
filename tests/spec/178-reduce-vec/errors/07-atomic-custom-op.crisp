@@ -1,0 +1,21 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "has no native hardware atomic"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 178 -- :atomic needs an operator with a hardware atomic (+, min, max).  A custom binop
+;; is refused by the grid-reduce-atomic! it becomes.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-function rv-e07-op (a b)
+  (declare #'(float float => float))
+  (+ a b))
+
+(def-kernel rv_e07 (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'rv-e07-op A 0.0 out :strategy :atomic))

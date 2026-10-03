@@ -5439,7 +5439,7 @@ The following Crisp functions and macros are grid level operations, they either 
 higher order function arguments that must be thread level (only) operations. 
 
 - all `-stride` functions
-- all grid-wide reduction variants ( `reduce-to-1-*`, `reduce-vec-*`)
+- all grid-wide reductions (`grid-reduce!` and the `grid-reduce-*!` strategies, `reduce-vec`)
 - `filter`
 - `convert-layout` 
 - `when-is-last-workgroup`
@@ -5621,7 +5621,7 @@ all applied to the topic of a workgroup sized reduction using local memory and a
 
 But, again, the vector is not fully summed. That'll require a second kernel pass. 
  The simplest solution there is to make another kernel that
-employs `reduce-vec-second-stage` (see below) and then you'll have a two step solution. If you would
+employs `grid-reduce-second-stage!` (see below) and then you'll have a two step solution. If you would
 like to see the hoisting code in action, then use either a continuation kernel (see above) 
 or  `def-orchestration` (see below).
 
@@ -5912,7 +5912,7 @@ a `float` or `int` accumulator halves it.
 Like the previous sum_vector demonstration, this example is provided so that you can see
 "Crisp-ish" constructs used together, this time with shuffles and warps. The vector is not
 fully summed. That requires a second kernel pass. Most expedient is to make another kernel
-that employs `reduce-vec-second-stage` (see below) and then you will have a two step
+that employs `grid-reduce-second-stage!` (see below) and then you will have a two step
 solution. If you would like to see the hoisting code in action, then use either a
 continuation kernel (see above) or `def-orchestration` (see below).
 
@@ -6985,25 +6985,65 @@ cannot be placed inside divergent control paths.
 
 ## **The Vector API**
 
-### `reduce-vec` 📝
+### `reduce-vec` ✅
 
-Because reducing a 1D vector or tensor is so common, Crisp provides a high-level wrapper that automatically handles the grid-stride loops and applies the combinations for you:
+Because reducing a whole vector is so common, Crisp provides a wrapper that writes the grid-stride
+loop and the grid reduction for you:
 
-`(reduce-vec someFunction vec identity &out out-cell &key strategy)`
+```
+(reduce-vec someFunction vec identity out-cell
+            &key strategy message
+                 local-scratch-vec global-scratch-vec atomic-counter election-flag-cell)
+```
 
-Instead of manually writing the strided loops and managing the scratchpads, you simply tell `reduce-vec` which Macro Strategy to employ:
+Each thread folds its grid-stride share of `vec` into a private partial that starts at `identity`,
+and the partials are then combined across the grid by `grid-reduce!` with the chosen `:strategy`.
+A call means exactly this:
 
+```lisp
+(let ((partial identity))
+  (loop-vector-stride vec (i)
+    (set! partial (someFunction partial (~ vec i))))
+  (grid-reduce! someFunction partial identity out-cell :strategy strategy ...))
+```
 
-The `strategy` is one of `:atomic`, `:cas` or `:last-man-standing`, exactly as for `grid-reduce!`.
-The "second stage" isn't available because it requires a second kernel enqueue.
+* `someFunction`: a `binop-type` `#'(T T => T)`, commutative and associative (see below).
+* `vec`: a **vector** (a rank-1 tensor) of `T`. Matrices and tensors are not flattened; passing
+  one is a compilation error.
+* `identity`: the identity of `someFunction`, of type `T` -- the vector's element type. A
+  mismatch (`0.0` over an `int` vector) is a compilation error. When Crisp allocates the scratch
+  for you, the identity's type must also be visible on its face, exactly as for `grid-reduce!`
+  (see *Full Reductions Made Easy* above).
+* `out-cell`: a `:global` cell of `T`, as for `grid-reduce!`. `:atomic` and `:cas` *accumulate*
+  into it, so it should start at the identity; `:last-man-standing` *writes* it.
+* `:strategy`: `:atomic`, `:cas` or `:last-man-standing` (the default), written as a literal
+  keyword. There is no second-stage strategy: it needs a second kernel launch, which one call
+  cannot arrange.
+* The scratch keys and `:message` are passed straight through to `grid-reduce!`. Any scratch you
+  leave out is allocated for you, and a key the chosen strategy does not use is a compilation
+  error (`:atomic` and `:cas` take only `:local-scratch-vec`).
 
+**The grid does not have to match the vector.** That is the point of the stride: launch about as
+many threads as the hardware runs at once, and each folds several elements. A thread that owns no
+element at all contributes only the identity. `:last-man-standing` still carries its limit -- the
+number of workgroups must not exceed `local_work_size` -- but since the grid size is now yours to
+choose, any vector length can meet it.
+
+`reduce-vec` is a grid-level operation, so it cannot be nested inside another grid-level stride.
+Several calls in one kernel are fine, one after another; each gets its own scratch. It reduces one
+vector with one function: to reduce several variables at once, write the stride loop yourself and
+hand the partials to `grid-reduce!` with clauses (see *Reducing Several Variables at Once*).
+
+**Autodiff** works through `reduce-vec` for the `#'+` reduction, under every strategy, exactly as
+for `grid-reduce!`: d(out)/d(vec[i]) is d(out) for every element. `min`, `max` and custom functions
+are a compilation error under `--differentiate`.
 
 ```lisp
 ;; Example: The "Easy Button" atomic strategy
 (reduce-vec #'+ my-large-vector 0.0 result-cell :strategy :atomic)
 
-;; Example: The flexible "Last Man Standing" strategy for custom operations
-(reduce-vec #'my-custom-hash-combine my-large-vector 0 result-cell :strategy :last-man-standing )
+;; Example: The flexible "Last Man Standing" strategy (the default) for custom operations
+(reduce-vec #'my-custom-hash-combine my-large-vector 0u result-cell)
 
 ```
 
@@ -7044,7 +7084,7 @@ Possible Implementation
         (unless (funcall predicateF (~ someVec i))
           (set! partial-result 0))))
 
-    (reduce-to-1-cas #'logand partial-result 1 result-vec)))
+    (grid-reduce! #'logand partial-result 1 result-vec :strategy :cas)))
 ```
 
 ### `any?` 📝
@@ -7069,7 +7109,7 @@ Possible Implementation
         (when (funcall predicateF (~ someVec i))
           (set! partial-result 1))))
 
-    (reduce-to-1-cas #'logior partial-result 0 result-vec)))
+    (grid-reduce! #'logior partial-result 0 result-vec :strategy :cas)))
 ```
 
 ## Segmented Reduction 📝
@@ -8664,7 +8704,7 @@ the hardware accellerated types that have a widened accumulator, quantized integ
       (r-t-assert (= (length~ A) (length~ B)) "lengths must match")) 
     (let ((C-scratch (make-scratch-vector (length~ A) :name "dot product")))  
       (map-stride #'* (A B) C-scratch)
-      (reduce-vec-atomic #'+ C-scratch 0 RESULT)))
+      (reduce-vec #'+ C-scratch 0 RESULT :strategy :atomic)))
 
   ;; -- dot-prod-seq --
   (def-function dot-prod-seq (A B)
@@ -9711,14 +9751,15 @@ Possible Implementation
       ;; so we can't use the short version of load-tile. 
       (let ((identity-val (identity-of #'max F)))
         (load-tile input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
-        (let ((max-val (reduce-vec-warp scratch-vec #'max identity-val)) ;;
-              (scale-f (to (scale MFB) max-val))
-              (target-block (~ output-mfb-vec warp-num)))
-          (when-thread-in-warp-is 0 
-            (set! (scale~ target-block) scale-f))
-          (in-warp (lane-id)
-            (when (< lane-id (count MFB))
-              (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val)))))))))
+        (let ((max-val (if (< (warp-lane) (count MFB)) (~ scratch-vec (warp-lane)) identity-val)))
+          (reduce-warp #'max max-val identity-val) ;; max-val is now the same in every lane
+          (let ((scale-f (to (scale MFB) max-val))
+                (target-block (~ output-mfb-vec warp-num)))
+            (when-thread-in-warp-is 0 
+              (set! (scale~ target-block) scale-f))
+            (in-warp (lane-id)
+              (when (< lane-id (count MFB))
+                (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val))))))))))
 
     ;; 2D
     (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
@@ -14014,7 +14055,7 @@ These dot product and matmul implementations work for ALL types.
     (let ((C-scratch (make-scratch-vector (accum T) Al :name "dot product"))
           (zero (identity-of #'+ (accum T))))  
       (map-stride #'*! (A B) C-scratch) ;; widening multiplication *!
-      (reduce-vec-atomic #'+ C-scratch zero RESULT)))) ;; <-- this broadcasts
+      (reduce-vec #'+ C-scratch zero RESULT :strategy :atomic)))) ;; <-- this broadcasts
 
 
 ;; same TILE_DIM as used by convert-layout 
@@ -14297,18 +14338,14 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 
 ### Higher Order Function Operations
 - map-stride
-- reduce-to-warp
-- reduce-to-workgroup
-- reduce-to-1-second-stage
-- reduce-to-1-atomic
-- reduce-to-1-cas
-- reduce-to-1-cont
-- reduce-vec-first-stage
-- reduce-vec-second-stage
-- reduce-vec-warp
-- reduce-vec-atomic
-- reduce-vec-cas
-- reduce-vec-cont
+- reduce-warp
+- reduce-workgroup
+- grid-reduce!
+- grid-reduce-atomic!
+- grid-reduce-cas!
+- grid-reduce-last-man!
+- grid-reduce-second-stage!
+- reduce-vec
 - binop-type     
 - predicate-type
 - get-identity-f  ; needs writeup

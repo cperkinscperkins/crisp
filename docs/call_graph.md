@@ -1309,6 +1309,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%ATOMIC-OP-PARTS EXPR)  analysis/ops.lisp
 - - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
 
+- (%ANALYZE-CHECK-REDUCE-VEC-ELEMENT EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp
+- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [RECURSION]
+- - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+
 - (%ANALYZE-CHECK-REDUCTION-IDENTITY EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%CHECK-IDENTITY-MATCHES-VARIABLE OP-NAME VAR IDENTITY ELEM-TYPE ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -1530,6 +1539,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%EXPAND-WORKGROUP-STRIDE-FORM EXPR LOCATION)  analysis/control.lisp
 - - - - - (%WORKGROUP-STRIDE-PARSE EXPR)  analysis/control.lisp
 - - - - - (%BUILD-EXACT-ITER-COUNT-FORM START-SYM STRIDE-SYM LEN-SYM CL-PKG)  analysis/control.lisp [See above]
+- - - (%REDUCE-VEC-EXPAND FORM)  analysis/ops.lisp
+- - - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
+- - - - (%REDUCE-VEC-PARTIAL-NAME VEC OUT PKG)  analysis/ops.lisp
 - - - (%EXPAND-LET-STRIDE-OP FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp
 - - - - (%EXPAND-STRIDE-MACROS-IN-FORM FORM TYPE-RESOLVER-FN LOCATION)  macros.lisp [RECURSION]
 - - (%COMPUTE-BACKWARD-KERNEL-PARAMS FLAT-INPUTS FLAT-INPUT-TYPES OUTPUTS OUTPUT-TYPES RECORD-SUBS-HT REC-GRAD-OUT-PARAMS REC-GRAD-OUT-TYPES PKG INPUTS)  macros.lisp
@@ -1666,6 +1678,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%MMA-AD-ACCUMULATOR-FITS-REGISTERS-P DIMS)  autodiff.lisp [See above]
 - - - (%GFW-PROCESS-SET! FORM EMIT-FN LOCAL-ADJ-FN INPUTS OUTPUTS SCRATCH-TILE-SYMS INTERMEDIATE-ZERO KERNEL-PKG)  autodiff.lisp
 - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
+- - - - (%AD-LITERAL-SYMBOL-P SYM)  autodiff.lisp
 - - - (%AUGMENT-SCRATCH-ADJ-BINDINGS BINDINGS KERNEL-PKG)  autodiff.lisp
 - - - - (%MMA-AD-ADJ-INIT INIT-FORM)  autodiff.lisp
 - - - - - (%MMA-AD-REGISTER-OPERAND-TILE-P INIT-FORM)  autodiff.lisp [See above]
@@ -1700,6 +1713,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
 - - - - (%DOTIMES-FAMILY-HEAD-P HEAD)  anf-transform.lisp [See above]
 - - - (%GFW-PROCESS-DOTIMES FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP INTERMEDIATE-ZERO)  autodiff.lisp
+- - - - (%AD-CHECK-LOOP-CARRIED-PRIMALS BINDING BODY LOCAL-VARS BACKWARD-FORMS)  autodiff.lisp
+- - - - - (%AD-LOOP-CARRIED-TAINTED BODY LOCAL-VARS)  autodiff.lisp
+- - - - - (%AD-STALE-PRIMAL-READS FORMS TAINTED)  autodiff.lisp
 - - - - (%AD-REPLAY-FORMS-FOR-SCOPE FORMS &OPTIONAL INHERITED)  autodiff.lisp [See above]
 - - - (%GFW-PROCESS-IF FORM EMIT-FN PROCESS-FORM-FN COND-FORM THEN-FORM ELSE-FORM)  autodiff.lisp
 - - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp [See above]
@@ -1975,10 +1991,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp
-- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [RECURSION]
+- - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
 - - (%GET-TENSOR-ALIGN TYPE)  analysis/structs.lisp
 - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -2973,6 +2986,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (POSITION-TILE-AT TILE PARENT GRID-LIST)  macros.lisp
 
 - (PRINT-OBJECT (OBJ PARAMETER-DEF) STREAM) :COMMON-LISP  parameters.lisp
+
+- (REDUCE-VEC &WHOLE FORM &REST ARGS)  analysis/ops.lisp
+- - (%REDUCE-VEC-EXPAND FORM)  analysis/ops.lisp [See above]
 
 - (REGISTER-OVERLOAD ALIAS REAL-NAME)  environment.lisp
 

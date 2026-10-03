@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "is not used by :strategy"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 178 -- a scratch key the chosen strategy does not use is refused: :atomic takes only
+;; :local-scratch-vec (and :message).
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_e05 (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (let ((gv (make-scratch-vector float 2 :address-space :global)))
+    (reduce-vec #'+ A 0.0 out :strategy :atomic :global-scratch-vec gv)))

@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 178 -- reduce-vec over a vector LONGER than the grid.
+;;
+;; The point of reduce-vec is that the grid need not match the vector: each thread folds its
+;; grid-stride share into a private partial first.  With the harness's 4-element input (0 1 2 3) and
+;; a grid of just 2 threads, each thread folds TWO elements (thread 0: 0+2, thread 1: 1+3) before the
+;; grid reduction.  Sum = 6.  (Longer vectors are measured under --differentiate, spec 10, where the
+;; VERIFY-AUTODIFF runner can supply a few hundred elements.)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_stride (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 2)
+           (local-size  :set-to 2))
+  (reduce-vec #'+ A 0.0 out))

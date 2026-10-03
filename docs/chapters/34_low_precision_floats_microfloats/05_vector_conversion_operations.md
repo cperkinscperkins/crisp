@@ -48,14 +48,15 @@ Possible Implementation
       ;; so we can't use the short version of load-tile. 
       (let ((identity-val (identity-of #'max F)))
         (load-tile input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
-        (let ((max-val (reduce-vec-warp scratch-vec #'max identity-val)) ;;
-              (scale-f (to (scale MFB) max-val))
-              (target-block (~ output-mfb-vec warp-num)))
-          (when-thread-in-warp-is 0 
-            (set! (scale~ target-block) scale-f))
-          (in-warp (lane-id)
-            (when (< lane-id (count MFB))
-              (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val)))))))))
+        (let ((max-val (if (< (warp-lane) (count MFB)) (~ scratch-vec (warp-lane)) identity-val)))
+          (reduce-warp #'max max-val identity-val) ;; max-val is now the same in every lane
+          (let ((scale-f (to (scale MFB) max-val))
+                (target-block (~ output-mfb-vec warp-num)))
+            (when-thread-in-warp-is 0 
+              (set! (scale~ target-block) scale-f))
+            (in-warp (lane-id)
+              (when (< lane-id (count MFB))
+                (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val))))))))))
 
     ;; 2D
     (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 

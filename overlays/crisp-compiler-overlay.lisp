@@ -5,17 +5,16 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
-;;;; EMPTY as of 2026-10-02 -- endeavour 177 (reduction-ad) folded into src/:
-;;;;   * BUG 099 copy-binding clause      -> %handle-single-value-backward (src/autodiff.lisp)
-;;;;   * BUG 101 active-threads gate      -> %175-vjp-reduce-warp (src/autodiff.lisp)
-;;;;   * BUG 100 versioned in-place writes -> %ad-version-in-place-writes, %ad-assemble-primal-replay and
-;;;;     the two edits in %generate-backward-kernel-ast (src/macros.lisp)
-;;;;   * 177 dependent-reduction AD        -> *reduction-vjps*, %check-reduction-vjp etc. (src/analysis/ops.lisp),
-;;;;     %177-vjp-dependent-reduction (src/autodiff.lisp)
-;;;; The three overlay WRAPPERS were inlined rather than moved: register-function-signature
-;;;; (src/environment.lisp), anf-normalize (src/anf-transform.lisp), %check-dependent-combiner
-;;;; (src/analysis/ops.lisp).  The VJP re-registrations were dropped -- src's own registration covers them.
-;;;; *176-generic-scratch-range* moved from the tail of the GENERATED src/specials.lisp to
-;;;; src/analysis/core.lisp, where regeneration cannot delete it.
+;;;; EMPTY as of 2026-10-03 -- endeavour 178 (reduce-vec) folded into src/:
+;;;;   * reduce-vec                          -> %reduce-vec-partial-name, %reduce-vec-expand, defmacro reduce-vec,
+;;;;                                            %analyze-check-reduce-vec-element (src/analysis/ops.lisp), registered
+;;;;                                            in register-ops-analyzers' pair list; #:reduce-vec exported from
+;;;;                                            :crisp.compiler and imported by :crisp-language (src/package.lisp),
+;;;;                                            replacing the overlay's MACRO-FUNCTION copy and wrapper
+;;;;   * AD pre-pass expands REDUCE-VEC      -> %expand-stride-macros-in-form (src/macros.lisp)
+;;;;   * BUG 103/105 loop-carried set!       -> %ad-literal-symbol-p, %ad-loop-carried-tainted, %ad-stale-primal-reads,
+;;;;                                            %ad-check-loop-carried-primals, %gfw-process-set!, %gfw-process-dotimes
+;;;;                                            (src/autodiff.lisp)
+;;;;   * BUG 104 strings are ANF-atomic      -> anf-is-atomic? (src/anf-transform.lisp)
 
 (in-package :crisp.compiler)

@@ -861,6 +861,8 @@ MISC
 - - [ ] overly long functions
 - - [ ] compiler warnings in tests.  most fixable in compiler, no?
 - - [ ] warnings when building compiler
+- - [ ] src/specials.lisp: its tail (after "end of generated file") holds hand-folded 155 defvars/defconstants
+      defined nowhere else -- scripts/gen-specials.lisp WIPES them on regeneration.  Give them home files.
 
 
 Reductions
@@ -871,12 +873,13 @@ Reductions
 - [x] implement
 - [x] (type-min float) (type-max long)   <-- 
 - [x] multiple value reductions.
-- - [ ] auto differentiation ( dependent multi-var pending)
-- [ ] reduce-vec
+- - [x] auto differentiation -- dependent multi-var done (177: reduce-warp / reduce-workgroup via (declare (reduction-vjp f)))
+- - [ ] grid-level dependent AD (BUG 102) -- needs VERIFY-AUTODIFF to take more than one &out output
+- [x] reduce-vec
 - [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )
-- [ ] doc update: there are still old 'reduce-vec-1-cont' calls in the code base. 
-- - [ ] plus lots of reduce-vec-warp instead of (reduce-vec :reduction-strategy :warp)
+- [x] doc update: there are still old 'reduce-vec-1-cont' calls in the code base. 
+- - [x] plus lots of reduce-vec-warp instead of (reduce-vec :reduction-strategy :warp)
 - [ ] doc update  warp-size not get-warp-size, warp-id not get-warp-id  and get-workgroup-id (not get-group-id)
 - [ ] doc update "Sum Vector Using Local Memory" needs updating
 - [ ] ibid "Sum Vector using Shuffles"

@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 178 -- reduce-vec passes grid-reduce!'s scratch keys straight through.
+;;
+;; Every scratch buffer :last-man-standing uses is supplied by hand here, exactly as for
+;; grid-reduce!.  Passing the scratch yourself also lifts the "identity type must be visible"
+;; requirement, though this spec still writes 0.0.  Input 0 1 2 3 -> 6.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_explicit (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (let ((sv   (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv   (make-scratch-vector float 2 :address-space :global))
+        (ctr  (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (reduce-vec #'+ A 0.0 out
+                :local-scratch-vec sv
+                :global-scratch-vec gv
+                :atomic-counter ctr
+                :election-flag-cell flag)))

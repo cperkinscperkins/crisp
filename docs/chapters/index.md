@@ -169,7 +169,7 @@
 - [Choosing the Identity and Function](23_reducing_several_variables_at_once/09_choosing_the_identity_and_function.md)
 
 ## **The Vector API**
-- [`reduce-vec` 📝](24_the_vector_api/01_reduce_vec.md)
+- [`reduce-vec` ✅](24_the_vector_api/01_reduce_vec.md)
 - [**Binop-Type, Commutativity and Associativity ✅**](24_the_vector_api/02_binop_type_commutativity_and_associativity.md)
 
 ## Boolean Reductions 📝

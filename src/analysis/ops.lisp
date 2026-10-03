@@ -968,7 +968,9 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                         ("TYPE-MAX"                  %analyze-type-max)
                         ("TYPE-INFINITY"             %analyze-type-infinity)
                         ;; 176 Phase 2b: the identity check a fused grid-reduce! expansion carries.
-                        ("%CHECK-REDUCTION-IDENTITY" %analyze-check-reduction-identity)))
+                        ("%CHECK-REDUCTION-IDENTITY" %analyze-check-reduction-identity)
+                        ;; 178: the rank / element-type check a reduce-vec expansion carries.
+                        ("%CHECK-REDUCE-VEC-ELEMENT" %analyze-check-reduce-vec-element)))
           (setf (gethash (intern (first pair) pkg) *expression-analyzers*)
                 (second pair)))))))
 
@@ -1067,6 +1069,114 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
    :cas or :last-man-standing (the default).  Scratch is implicit unless passed.  See %grid-reduce!-expand."
   (declare (ignore args))
   (%grid-reduce!-expand form))
+
+;;;; ===========================================================================
+;;;; Endeavour 178 -- reduce-vec: a whole-vector grid reduction.
+;;;;
+;;;;   (reduce-vec fn vec identity out-cell &key strategy message
+;;;;               local-scratch-vec global-scratch-vec atomic-counter election-flag-cell)
+;;;;
+;;;; Sugar over grid-reduce!: each thread folds its grid-stride share of VEC into a private
+;;;; partial (seeded with IDENTITY, so a thread that owns no element contributes the identity),
+;;;; and the partials go through grid-reduce! with the same :strategy and scratch keys.
+;;;; ===========================================================================
+
+(defun %reduce-vec-partial-name (vec out pkg)
+  "Endeavour 178.  The DETERMINISTIC name of reduce-vec's per-thread partial, e.g. DATA-INTO-OUT.
+   Deterministic, never a gensym, because the implicit scratch grid-reduce! allocates is named after
+   the variable it reduces (%implicit-scratch-binding-name), and Pass 1 and Pass 2 must agree on that
+   name.  Naming it after the vector AND the result cell keeps two reduce-vec calls in one kernel --
+   a sum and a max of the same vector, say -- from sharing scratch, and names the buffers readably in
+   the generated host code."
+  (flet ((part (x default)
+           (if (and x (symbolp x)) (symbol-name x) default)))
+    (intern (format nil "~a-INTO-~a" (part vec "REDUCE-VEC") (part out "OUT")) pkg)))
+
+(defun %reduce-vec-expand (form)
+  "Endeavour 178.  The expansion of (reduce-vec FN VEC IDENTITY OUT-CELL &key STRATEGY ...):
+
+     (let ((P IDENTITY))
+       (%check-reduce-vec-element :reduce-vec VEC P)
+       (loop-vector-stride VEC (I) (set! P (FN P (~ VEC I))))
+       (grid-reduce! FN P IDENTITY OUT-CELL :strategy STRATEGY ...scratch keys...))
+
+   A literal #'op is applied directly (%175-apply-binop), so the fold is differentiable.  Refuses a
+   multi-variable call (out of scope), a missing argument, a non-literal or unknown strategy (there is
+   no second stage: it needs a second kernel launch) and a key the strategy does not use -- naming
+   reduce-vec rather than leaving grid-reduce! to name itself.  The default strategy is
+   :last-man-standing, as for grid-reduce!."
+  (flet ((fail (fmt &rest args)
+           (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil)))
+    (unless (eq (%reduction-call-shape form) :single)
+      (fail "reduce-vec: reduces ONE vector with one function, (reduce-vec fn vec identity out-cell &key strategy).  To reduce several variables at once, fold them yourself in a loop-vector-stride and pass them to grid-reduce! with clauses."))
+    (unless (>= (length form) 5)
+      (fail "reduce-vec: expected (reduce-vec fn vec identity out-cell &key strategy message), got ~s." form))
+    (destructuring-bind (fn vec identity out &rest keys) (rest form)
+      (unless (evenp (length keys))
+        (fail "reduce-vec: the keyword arguments ~s are not key/value pairs." keys))
+      (let* ((op (car form))
+             (pkg (or (and (symbolp op) (symbol-package op)) (find-package :crisp-language)))
+             (strategy-given (loop for (k v) on keys by #'cddr thereis (and (eq k :strategy) (list v))))
+             (strategy (if strategy-given (first strategy-given) :last-man-standing))
+             (entry nil))
+        (unless (keywordp strategy)
+          (fail "reduce-vec: :strategy ~s must be known at compile time -- write one of :atomic, :cas or :last-man-standing.  The strategy decides which construct the call becomes, so a value computed at run time cannot choose it." strategy))
+        (setf entry (assoc strategy *176-grid-reduce-strategies*))
+        (unless entry
+          (fail "reduce-vec: unknown :strategy ~s.  The strategy must be one of :atomic, :cas or :last-man-standing (the default).  There is no second-stage strategy: it needs a second kernel launch, which one call cannot arrange." strategy))
+        (loop for (k nil) on keys by #'cddr
+              unless (or (eq k :strategy) (member k (third entry)))
+                do (fail "reduce-vec: ~s is not used by :strategy ~s, which takes ~{~s~^, ~}." k strategy (third entry)))
+        (let* ((p (%reduce-vec-partial-name vec out pkg))
+               (i (intern (format nil "~a-I" (symbol-name p)) pkg))
+               (expansion
+                 `(let ((,p ,identity))
+                    (%check-reduce-vec-element :reduce-vec ,vec ,p)
+                    (loop-vector-stride ,vec (,i)
+                      (set! ,p ,(%175-apply-binop fn p `(~ ,vec ,i))))
+                    (,(intern "GRID-REDUCE!" pkg) ,fn ,p ,identity ,out ,@keys))))
+          (log:debug "178: ~s -> ~s" form expansion)
+          expansion)))))
+
+
+(defmacro reduce-vec (&whole form &rest args)
+  "(reduce-vec fn vec identity out-cell &key strategy message ...): reduce every element of the rank-1
+   VEC with binop FN and IDENTITY into OUT-CELL.  Each thread grid-strides VEC into a private partial;
+   the partials go through grid-reduce! with :strategy (:atomic, :cas or :last-man-standing, the
+   default) and the same optional scratch keys.  See %reduce-vec-expand."
+  (declare (ignore args))
+  (%reduce-vec-expand form))
+
+
+(defun %analyze-check-reduce-vec-element (expr env context location)
+  "Analyzer for (%check-reduce-vec-element OP-NAME VEC PARTIAL), which reduce-vec's expansion carries.
+   VEC must be rank 1 (reduce-vec does not flatten matrices or tensors), and its element type must be
+   the identity's -- the partial is seeded with the identity and folded with the elements, and the
+   implicit scratch is typed from the identity, so a mismatch would reduce through mistyped memory.
+   Emits nothing."
+  (destructuring-bind (op-name vec partial) (rest expr)
+    (let* ((vec-type (semantic-node-type (analyze-expression vec env context location)))
+           (rank (%get-tensor-arity vec-type)))
+      (log:debug "178: ~a over ~s : ~s (rank ~s)" op-name vec vec-type rank)
+      (unless (eql rank 1)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): ~s must be a vector (a rank-1 tensor), but its type ~s ~a.  reduce-vec does not flatten matrices or tensors."
+                                op-name vec vec-type
+                                (if rank (format nil "has rank ~d" rank) "is not a tensor"))
+               :source-location location))
+      (let ((elem (resolve-type-alias (semantic-node-type
+                                       (analyze-expression `(~ ,vec 0) env context location))))
+            (ptype (resolve-type-alias (semantic-node-type
+                                        (analyze-expression partial env context location)))))
+        (unless (if (and (symbolp elem) (symbolp ptype))
+                    (string-equal (symbol-name elem) (symbol-name ptype))
+                    (equal elem ptype))
+          (error 'crisp-compiler-error
+                 :message (format nil "~(~a~): the elements of ~s are ~(~a~) but the identity is ~(~a~).  The identity must have the vector's element type -- write it as a ~(~a~)."
+                                  op-name vec elem ptype elem)
+                 :source-location location)))))
+  (make-semantic-literal :value-type 'int :value 0 :source-location location))
+
 
 (defun %function-form-p (x)
   "T when X is #'f, i.e. (function f)."

@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "Cannot differentiate this loop"
+;; CHECK-FAIL: "Cannot differentiate this loop"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 178 -- the LIMIT of the loop-carried set! rule.  The backward replays a loop in forward
+;; order without the per-iteration values of a variable set! across iterations, so a running PRODUCT
+;; (whose gradient reads p at each iteration) would be silently wrong.  It is refused instead.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_e09 (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (let ((p 1.0))
+    (dotimes (i 8)
+      (set! p (* p (~ A i))))
+    (set! (~ out) p)))

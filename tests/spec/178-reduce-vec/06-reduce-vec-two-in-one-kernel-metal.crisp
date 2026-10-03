@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER total: 6
+;; HOIST-EXPECT: BUFFER biggest: 3
+;; SKIP-WITH[--differentiate]: "the #'max reduce-vec has no VJP (grid-reduce! differentiates only +); spec 10 measures the sum"
+;;
+;; ENDEAVOUR 178 -- two reduce-vec calls over the SAME vector in one kernel, both :last-man-standing.
+;;
+;; Each call's implicit scratch (local scratch, global partials, counter, election flag) is named
+;; after its per-thread partial, which reduce-vec names after the vector AND the result cell
+;; (A-INTO-TOTAL, A-INTO-BIGGEST).  Named after the vector alone, the two calls would share one
+;; atomic counter, and the second election would start from the first one's leftover ticket count.
+;; Input 0 1 2 3 -> sum 6, max 3.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_two (A &out total biggest)
+  (declare #'(in-vec &out out-c out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+   A 0.0              total)
+  (reduce-vec #'max A (type-min float) biggest))

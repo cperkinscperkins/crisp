@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "autodiff is supported only for the + reduction"
+;; CHECK-FAIL: "autodiff is supported only for the + reduction"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 178 -- reduce-vec differentiates the + reduction only (as grid-reduce! does).  A max is
+;; refused LOUDLY under --differentiate rather than producing a wrong gradient.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_e08 (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'max A (type-min float) out))
