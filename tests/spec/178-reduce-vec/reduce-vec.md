@@ -14,12 +14,13 @@ Plan
 
 - [x] discuss any API changes. Make them (here and in ideal_001.md)
 - [x] write TDD tests, including tests for autodifferentiation
-- [x] implement (overlay -- pending fold into src/; see "Fold-back" below)
+- [x] implement -- FOLDED into src/ 2026-10-03 (overlay empty; see "Fold-back" below)
 - [x] test on-metal, as required -- BMG done (forward + VERIFY-AUTODIFF)
 - [x] test on NVIDIA (A100, 2026-10-03): 08 forward BUFFER out: 6; 175-177 [CUDA] AD specs all PASS [cuda]
-- [ ] 13-diff-reduce-vec-sum-cuda: first run CRASHED the --differentiate phase (BUG 106: CUDA VAD has no :global
-      scratch, and the refusal's CRLF ~-continuation broke FORMAT).  Message fixed; spec moved to :atomic; re-run pending
-- [ ] fold the overlay into src/, regenerate reference/call graph/chapters
+- [x] 13-diff-reduce-vec-sum-cuda: A100 re-run PASS [cuda] analytical=1.0 numerical=1.0.  First run CRASHED the --differentiate phase (BUG 106: CUDA VAD has no :global
+      scratch, and the refusal's CRLF ~-continuation broke FORMAT).  Message fixed; spec moved to :atomic
+- [x] fold the overlay into src/, regenerate reference/call graph/chapters/globals -- suites on the folded build:
+      unit 341/341, negative 311/311, E2E 1376/1376, --differentiate 1376/1376
 
 
 API decisions (agreed 2026-10-03)
@@ -96,7 +97,7 @@ Measured on BMG (2026-10-03)
     14 AD loop-carried sum       1.0 / 1.0       15 AD loop-carried difference   -1.0 / -0.9999995
 
 
-Fold-back (overlays/crisp-compiler-overlay.lisp -> src/)
+Fold-back (overlays/crisp-compiler-overlay.lisp -> src/) -- DONE 2026-10-03
 =======================================================
 
 Only the LAST copy of each function is live (the overlay appends corrections):
@@ -104,7 +105,7 @@ Only the LAST copy of each function is live (the overlay appends corrections):
 - src/analysis/ops.lisp:  %reduce-vec-partial-name, %reduce-vec-expand (2nd copy), defmacro reduce-vec,
   %analyze-check-reduce-vec-element (2nd copy); add ("%CHECK-REDUCE-VEC-ELEMENT" %analyze-check-reduce-vec-element)
   to register-ops-analyzers' pair list and DROP the overlay wrapper; DROP the macro-function copy block and add
-  #:reduce-vec to the three package.lisp sites beside #:grid-reduce!.
+  #:reduce-vec to the TWO package.lisp sites #:grid-reduce! uses (:crisp.compiler export, :crisp-language import).
 - src/macros.lisp:        %expand-stride-macros-in-form (the REDUCE-VEC clause).
 - src/autodiff.lisp:      %ad-literal-symbol-p (2nd copy), %gfw-process-set!, %ad-loop-carried-tainted,
   %ad-stale-primal-reads, %ad-check-loop-carried-primals (2nd copy), %gfw-process-dotimes.

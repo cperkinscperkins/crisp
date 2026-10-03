@@ -425,7 +425,9 @@
    ;; package-variance error, so it copied MACRO-FUNCTION between two distinct symbols instead.)
    #:when-thread-in-warp-is #:when-thread-in-group-is
    ;; Endeavour 176: grid-reduce! is a macro, shared the same way.
-   #:grid-reduce!))
+   #:grid-reduce!
+   ;; Endeavour 178: reduce-vec is a macro over grid-reduce!, shared the same way.
+   #:reduce-vec))
 
 (defpackage :crisp.main
   (:use :cl)
@@ -541,6 +543,8 @@
                 #:when-thread-in-warp-is #:when-thread-in-group-is
                 ;; Endeavour 176: grid-reduce! (see the export side above).
                 #:grid-reduce!
+                ;; Endeavour 178: reduce-vec (see the export side above).
+                #:reduce-vec
 
                 ;; Accessors
                 #:address~ #:byte-size~ #:address-space~

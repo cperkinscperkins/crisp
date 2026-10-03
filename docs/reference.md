@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-03T06:29:24.923798Z
+Generated on 2026-10-03T19:05:07.294761Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2151,6 +2151,34 @@ Generated on 2026-10-03T06:29:24.923798Z
 
 
 ---
+### DEFUN `%REDUCE-VEC-PARTIAL-NAME`
+- **Args**: `(VEC OUT PKG)`
+
+  > Endeavour 178.  The DETERMINISTIC name of reduce-vec's per-thread partial, e.g. DATA-INTO-OUT.  >    Deterministic, never a gensym, because the implicit scratch grid-reduce! allocates is named after  >    the variable it reduces (%implicit-scratch-binding-name), and Pass 1 and Pass 2 must agree on that  >    name.  Naming it after the vector AND the result cell keeps two reduce-vec calls in one kernel --  >    a sum and a max of the same vector, say -- from sharing scratch, and names the buffers readably in  >    the generated host code.
+
+
+---
+### DEFUN `%REDUCE-VEC-EXPAND`
+- **Args**: `(FORM)`
+
+  > Endeavour 178.  The expansion of (reduce-vec FN VEC IDENTITY OUT-CELL &key STRATEGY ...):  >   >      (let ((P IDENTITY))  >        (%check-reduce-vec-element :reduce-vec VEC P)  >        (loop-vector-stride VEC (I) (set! P (FN P (~ VEC I))))  >        (grid-reduce! FN P IDENTITY OUT-CELL :strategy STRATEGY ...scratch keys...))  >   >    A literal #'op is applied directly (%175-apply-binop), so the fold is differentiable.  Refuses a  >    multi-variable call (out of scope), a missing argument, a non-literal or unknown strategy (there is  >    no second stage: it needs a second kernel launch) and a key the strategy does not use -- naming  >    reduce-vec rather than leaving grid-reduce! to name itself.  The default strategy is  >    :last-man-standing, as for grid-reduce!.
+
+
+---
+### DEFMACRO `REDUCE-VEC`
+- **Args**: `(&WHOLE FORM &REST ARGS)`
+
+  > (reduce-vec fn vec identity out-cell &key strategy message ...): reduce every element of the rank-1  >    VEC with binop FN and IDENTITY into OUT-CELL.  Each thread grid-strides VEC into a private partial;  >    the partials go through grid-reduce! with :strategy (:atomic, :cas or :last-man-standing, the  >    default) and the same optional scratch keys.  See %reduce-vec-expand.
+
+
+---
+### DEFUN `%ANALYZE-CHECK-REDUCE-VEC-ELEMENT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%check-reduce-vec-element OP-NAME VEC PARTIAL), which reduce-vec's expansion carries.  >    VEC must be rank 1 (reduce-vec does not flatten matrices or tensors), and its element type must be  >    the identity's -- the partial is seeded with the identity and folded with the elements, and the  >    implicit scratch is typed from the identity, so a mismatch would reduce through mistyped memory.  >    Emits nothing.
+
+
+---
 ### DEFUN `%FUNCTION-FORM-P`
 - **Args**: `(X)`
 
@@ -2977,7 +3005,7 @@ Generated on 2026-10-03T06:29:24.923798Z
 ### DEFUN `ANF-IS-ATOMIC?`
 - **Args**: `(EXPR)`
 
-  > Returns true if EXPR is considered an atomic value in ANF.
+  > Returns true if EXPR is considered an atomic value in ANF.  178: strings included.
 
 
 ---
@@ -3423,9 +3451,40 @@ Generated on 2026-10-03T06:29:24.923798Z
 
 
 ---
+### DEFUN `%AD-LITERAL-SYMBOL-P`
+- **Args**: `(SYM)`
+
+  > Endeavour 178.  T if SYM is a Crisp typed literal spelled as a symbol (2ul, 1.5f, -3.0d): the CL  >    reader interns those as symbols, so they must not be given an adjoint.
+
+
+---
+### DEFUN `%AD-LOOP-CARRIED-TAINTED`
+- **Args**: `(BODY LOCAL-VARS)`
+
+  > Endeavour 178.  The variables of a loop BODY whose value depends on a LOOP-CARRIED one: every  >    symbol a scalar SET! in BODY writes that is not bound inside the loop (not in LOCAL-VARS), closed  >    over the body's bindings -- a binding (x e) whose E mentions a tainted symbol taints X.
+
+
+---
+### DEFUN `%AD-STALE-PRIMAL-READS`
+- **Args**: `(FORMS TAINTED)`
+
+  > Endeavour 178.  The TAINTED primal symbols the emitted backward FORMS read outside a LET binding's  >    value (where the primal replay recomputes them).  Head positions are skipped: they name operators.
+
+
+---
+### DEFUN `%AD-CHECK-LOOP-CARRIED-PRIMALS`
+- **Args**: `(BINDING BODY LOCAL-VARS BACKWARD-FORMS)`
+
+  > Endeavour 178.  Refuse a loop whose backward body reads a loop-carried primal.  The backward  >    replays a loop in FORWARD order and does not re-run the loop's SET!s, so such a primal is STALE:  >    the gradient would be silently wrong.  A linear fold (p := p + x) reads none and passes.
+
+
+---
 ### DEFUN `%GFW-PROCESS-SET!`
 - **Args**: `(FORM EMIT-FN LOCAL-ADJ-FN INPUTS OUTPUTS SCRATCH-TILE-SYMS
               INTERMEDIATE-ZERO KERNEL-PKG)`
+
+  > Backward of a SET! statement.  >      (set! (~ OUT i..) v)      -- OUT an output: v_adj += OUT_GRAD[i..]  >      (set! (~ IN i..) v)       -- IN an input: refused (only outputs may be written)  >      (set! (~ TILE i..) v)     -- a scratch tile: v_adj += TILE_ADJ[i..], then TILE_ADJ[i..] := 0  >      (set! V x)                -- ENDEAVOUR 178: a scalar local.  x_adj += V_adj, then V_adj := 0  >                                   (V is overwritten, so its adjoint before the write is zero).  >    A scalar set! reaches here only where BUG 100's versioning could not turn it into a binding --  >    in practice a LOOP-CARRIED variable; see %ad-check-loop-carried-primals for the limit.
+
 
 ---
 ### DEFPARAMETER `*AD-SLM-SCRATCH-CTORS*`
@@ -3452,7 +3511,7 @@ Generated on 2026-10-03T06:29:24.923798Z
 - **Args**: `(FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP
               INTERMEDIATE-ZERO)`
 
-  > Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the  >    body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A  >    pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the  >    forward's load sites record other stages' origins.  >   >    ENDEAVOUR 149: a tile re-staged each iteration has no single primal value, so its replay  >    belongs HERE -- inside the loop body, ahead of the consumers, evaluated afresh for each  >    value of the loop variable.  That falls out of emitting at this scope: the replayed  >    statements close over BINDING exactly as the forward's did.  >   >    ENDEAVOUR 172: emits the forward loop's own head (less any +), so a dec-times / by-factor /  >    power-step loop replays with its own iteration sequence rather than as a dotimes.
+  > Unchanged except that it publishes the loop variable in *ad-loop-vars* while walking the  >    body, so a VJP dispatched inside can ask what coordinate it is being evaluated at.  A  >    pipelined ring operand needs this: its primal lives at the CONSUMING iteration, and the  >    forward's load sites record other stages' origins.  >   >    ENDEAVOUR 149: a tile re-staged each iteration has no single primal value, so its replay  >    belongs HERE -- inside the loop body, ahead of the consumers, evaluated afresh for each  >    value of the loop variable.  That falls out of emitting at this scope: the replayed  >    statements close over BINDING exactly as the forward's did.  >   >    ENDEAVOUR 172: emits the forward loop's own head (less any +), so a dec-times / by-factor /  >    power-step loop replays with its own iteration sequence rather than as a dotimes.  >   >    ENDEAVOUR 178: refuses a loop whose backward body would read a STALE loop-carried primal  >    (%ad-check-loop-carried-primals) -- a nonlinear fold over a variable set! across iterations.
 
 
 ---

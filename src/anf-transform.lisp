@@ -10,12 +10,18 @@
 (defun anf-fresh-temp ()
   (intern (format nil "%ANF-T-~D" (incf *anf-counter*))))
 
+;; Endeavour 178: a STRING is atomic.  MEASURED: (let ((p 0.0)) (loop-vector-stride ..)
+;; (grid-reduce! #'+ p 0.0 out :strategy :atomic :message "a sum")) died under --differentiate with
+;; "Unsupported form for anf-transform: \"a sum\"" -- the reserved :message key of every reduction
+;; reaches ANF as an argument once the call sits inside a LET.  A string is a constant, like a number.
 (defun anf-is-atomic? (expr)
-  "Returns true if EXPR is considered an atomic value in ANF."
+  "Returns true if EXPR is considered an atomic value in ANF.  178: strings included."
   (or (numberp expr)
+      (stringp expr)
       (keywordp expr)
       (symbolp expr)
       (and (consp expr) (eq (car expr) 'function))))
+
 
 (defun anf-normalize-args (args)
   "Returns (VALUES normalized-args bindings-list)"

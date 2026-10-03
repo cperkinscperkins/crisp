@@ -862,6 +862,9 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 
 
 
+;; Endeavour 178: one new clause -- REDUCE-VEC is expanded here (then walked), because its expansion
+;; CONTAINS a loop-vector-stride that this pre-pass must rewrite.  Left unexpanded, ANF later macroexpands
+;; reduce-vec and meets the raw loop-vector-stride, and AD dies with "Function SET! is not differentiable".
 (defun %expand-stride-macros-in-form (form type-resolver-fn location)
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride
@@ -887,6 +890,10 @@ processes float inputs — integer tensor inputs contribute zero gradient."
           (%expand-hardware-stride-op form type-resolver-fn location))
         ((string-equal op-name "WORKGROUP-STRIDE")
           (%expand-workgroup-stride-op form type-resolver-fn location))
+        ;; 178: reduce-vec hides a loop-vector-stride -- expand it, then walk the expansion.
+        ((string-equal op-name "REDUCE-VEC")
+          (log:debug "178: AD pre-pass expanding ~s" form)
+          (%expand-stride-macros-in-form (%reduce-vec-expand form) type-resolver-fn location))
         ((string-equal op-name "LET")
           (%expand-let-stride-op form type-resolver-fn location))
         (t
