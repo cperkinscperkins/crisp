@@ -16,7 +16,9 @@ Plan
 - [x] write TDD tests, including tests for autodifferentiation
 - [x] implement (overlay -- pending fold into src/; see "Fold-back" below)
 - [x] test on-metal, as required -- BMG done (forward + VERIFY-AUTODIFF)
-- [ ] test on NVIDIA: 08-reduce-vec-sum-cuda (forward) and 13-diff-reduce-vec-sum-cuda (AD) are written, not yet run
+- [x] test on NVIDIA (A100, 2026-10-03): 08 forward BUFFER out: 6; 175-177 [CUDA] AD specs all PASS [cuda]
+- [ ] 13-diff-reduce-vec-sum-cuda: first run CRASHED the --differentiate phase (BUG 106: CUDA VAD has no :global
+      scratch, and the refusal's CRLF ~-continuation broke FORMAT).  Message fixed; spec moved to :atomic; re-run pending
 - [ ] fold the overlay into src/, regenerate reference/call graph/chapters
 
 

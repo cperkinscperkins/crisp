@@ -3,10 +3,14 @@
 ;; HOIST-HARDWARE-PROFILE: h100
 ;; VERIFY-AUTODIFF[CUDA]: A=300@0:0.01 at.A=257 expect.A=1.0 atol=1e-2 h=0.5 group=64 groups=2
 ;;
-;; ENDEAVOUR 178 -- the CUDA twin of 10: AUTODIFF through reduce-vec (default strategy).
+;; ENDEAVOUR 178 -- AUTODIFF through reduce-vec on CUDA, :strategy :atomic.  The CUDA twin of 11.
 ;;
-;; NOT YET RUN ON NVIDIA (written on the BMG box, where a [CUDA] check SKIPs).  Element 257 is
-;; thread 1's third stride iteration; d(out)/dA[k] = 1.
+;; :atomic, not the default, ON PURPOSE.  The default (:last-man-standing) and :cas need :global
+;; implicit scratch, and the CUDA VERIFY-AUTODIFF runtime cannot allocate that yet (BUG 106) -- the
+;; first A100 run (2026-10-03) reached that refusal here, and a CRLF ~-continuation in the refusal's
+;; FORMAT string crashed the whole --differentiate phase.  :atomic needs only local scratch, which the
+;; CUDA runtime does allocate (175/14).  Element 257 is thread 1's third stride iteration;
+;; d(out)/dA[k] = 1.
 
 (def-type in-vec (vector float :address-space :global :align :compact))
 (def-type out-c  (cell float :address-space :global))
@@ -15,4 +19,4 @@
   (declare #'(in-vec &out out-c => nil)
            (global-size :set-to 128)
            (local-size  :set-to 64))
-  (reduce-vec #'+ A 0.0 out))
+  (reduce-vec #'+ A 0.0 out :strategy :atomic))

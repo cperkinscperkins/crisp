@@ -3823,3 +3823,20 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         semantic VJPs (which is why grid-reduce! differentiates + only, and reduce-vec with it).
 
         SPEC.  178/errors/09 pins the refusal.
+
+[ ] 106 VERIFY-AUTODIFF ON CUDA CANNOT ALLOCATE :global IMPLICIT SCRATCH -- and the refusal CRASHED the runner.
+
+        MEASURED, A100 pod, 2026-10-03 (branch reduce-vec).  178/13 (reduce-vec, default :last-man-standing,
+        VERIFY-AUTODIFF[CUDA]) reached %vad-global-scratch-unsupported (tests/verify-autodiff-runner.lisp).  The
+        refusal itself is honest -- the :global scratch path (BUG 084) was written for :l0 only -- but its
+        FORMAT string used ~<newline> continuations in a CRLF file (see memory: tilde-continuation-breaks-on-CRLF),
+        so PRINTING it raised a FORMAT error, which escaped the per-spec handler and killed the whole
+        --differentiate phase (1364 specs in, no summary; run-on-pod.sh logged it as CRASH).
+
+        FIXED (the crash): both ~-continued messages in verify-autodiff-runner.lisp (lines 759, 2285) joined
+        onto one line.  178/13 moved to :strategy :atomic (local scratch only, which CUDA allocates -- 175/14).
+
+        OPEN (the gap): no GRID-level reduction (last-man, cas, second-stage) is gradient-checked on NVIDIA;
+        175-177 have no such [CUDA] spec, almost certainly for this reason.  The fix is the CUDA twin of the
+        L0 :global path -- cuMemAlloc plus the same descriptor words, zeroed per launch (BUG 084's re-zero
+        rule) -- then a [CUDA] copy of 178/10 (default strategy) and 178/12 (:cas).
