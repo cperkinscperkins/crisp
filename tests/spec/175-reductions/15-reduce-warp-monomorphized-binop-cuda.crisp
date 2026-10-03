@@ -6,8 +6,8 @@
 ;; HOIST-EXPECT: BUFFER out: 31 496 2 3
 ;; SKIP-WITH[--differentiate]: "forward monomorphization only"
 ;;
-;; !!! NEVER EXECUTED YET.  Written 2026-09-21, no NVIDIA box available.  VALIDATE THIS FIRST on
-;; !!! the next pod run before reading a failure here as a compiler defect.
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): its Hoist[CUDA] host run
+;; PASSED.  (That run's only failures were BUG 089's four libdevice specs.)
 ;;
 ;; ENDEAVOUR 175 -- the CUDA twin of 11-reduce-warp-monomorphized-binop-metal.
 ;;

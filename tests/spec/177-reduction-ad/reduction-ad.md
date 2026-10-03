@@ -252,7 +252,7 @@ than shipped unmeasured.
 
 - [x] `[CUDA]`-pinned VERIFY-AUTODIFF twins, for the CUDA pod run that follows this endeavour: 10 argmax
       winner (32), 11 moments active (108.8), 12 moments padding -- the gate (0), 13 workgroup moments (217.6).
-      NEVER EXECUTED; compile for PTX under --differentiate; skip locally
+      executed and PASSED on the 2026-10-02 pod run (see below); skip locally
 - [x] docs (2026-10-02), in the excerpt, ideal_001.md and the chapters alike: the dependent-reduction AD
       section (declaration, signature with float integer adjoints, argmax example, what Crisp does incl. the
       active-threads gate, the forward-pass check, the limitation, the two refusals); the grid-reduce! bullet

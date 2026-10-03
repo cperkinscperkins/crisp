@@ -6,10 +6,8 @@
 ;; HOIST-EXPECT: BUFFER out: 2016 1 2 3
 ;; SKIP-WITH[--differentiate]: "forward contention only; the + VJP is measured on the BMG side (spec 37)"
 ;;
-;; !!! NEVER EXECUTED YET.  Written 2026-09-22; no NVIDIA box was available.  VALIDATE THIS
-;; !!! FIRST on the next pod run, before reading any failure here as a compiler defect.  An
-;; !!! unrun directive is a guess -- 173 spec 12 carried one that turned out to be
-;; !!! unexpressible by the harness (BUG 067), which is what this warning exists to prevent.
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): its Hoist[CUDA] host run
+;; PASSED.  (That run's only failures were BUG 089's four libdevice specs.)
 ;;
 ;; ENDEAVOUR 175 -- atomic-binop! under contention, on NVIDIA.  CUDA twin of spec 35.
 ;;

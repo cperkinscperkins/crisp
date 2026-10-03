@@ -1,9 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; VERIFY-AUTODIFF[CUDA]: A=4x16@0:0.01 at.A=0,2 expect.A=64.0 group=64 h=0.5 atol=5e-1 output-mat=4x16
 ;;
-;; !!! NEVER EXECUTED YET.  Written 2026-09-21, no NVIDIA box available.  VALIDATE THIS FIRST on
-;; !!! the next pod run before reading a failure here as a compiler defect.  173 spec 12 is the
-;; !!! cautionary case: its unrun directive turned out to be unexpressible by the harness (BUG 067).
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): VERIFY-AUTODIFF PASS [cuda],
+;; analytical=64.0 numerical=64.00012.
 ;;
 ;; ENDEAVOUR 175 -- the CUDA twin of 09-diff-reduce-workgroup.
 ;;
