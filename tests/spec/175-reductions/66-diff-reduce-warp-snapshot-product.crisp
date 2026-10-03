@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,2 expect.A=56.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; BUG 100(b) with BUG 099: a COPY taken before the reduction, multiplied by the result after it.
+;;
+;; v0 = this lane's value, v = the warp sum S afterwards, every lane writes v*v0, so per warp
+;; sum(C) = S * S and d/dA[0,2] = 2S = 56.0.  This is the "snapshot" shape 177's design first proposed.
+;;
+;; It needs BOTH primals at once -- v0 before and v after -- which is exactly what a replay that skips
+;; the reduction cannot give.  Before 099 it read 28.0; with 099 fixed and 100 not, the copy's adjoint
+;; arrives but is computed against the pre-reduction v: S + A[0,2] = 29.2.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_rw_snapshot_product (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (let ((v0 v))
+          (reduce-warp #'+ v 0.0)
+          (set! (~ C row col) (* v v0)))))))

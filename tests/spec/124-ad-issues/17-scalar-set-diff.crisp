@@ -1,0 +1,20 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=5e-2 expect.x=108.0
+;;
+;; BUG 100(a): a set! of a scalar local was invisible to AD -- a silently wrong gradient.
+;;
+;;     v := x;  v := v*v;  res = v*v       so res = x^4 and dres/dx = 4x^3 = 108.0
+;;
+;; Before the fix the backward dropped the set! entirely and differentiated the last line against the
+;; ORIGINAL v: analytical 2x = 6.0 (measured on a matrix probe in endeavour 177 Phase 0 as 2.4 vs 8.11).
+;; Two things were missing: no adjoint flowed through the assignment (%gfw-process-set! handled only a
+;; (~ ...) place), and the primal replay -- a LET of the forward's bindings -- never ran the set!, so
+;; every later read of v saw its first value.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel scalar_set_diff (x &out res)
+  (declare #'(in-c &out out-c))
+  (let ((v (~ x)))
+    (set! v (* v v))
+    (set! (~ res) (* v v))))

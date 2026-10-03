@@ -1,0 +1,43 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "is not differentiable yet in a dependent reduction"
+;; CHECK-FAIL: "is not differentiable yet in a dependent reduction"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv --differentiate
+;;
+;; ENDEAVOUR 177 Phase 2 -- a dependent reduce-workgroup with :return-vec is refused under --differentiate.
+;;
+;; :return-vec writes the per-workgroup result to a vector: a SECOND output, which 175's single-variable
+;; VJP already refuses.  The dependent form refuses it the same way, loudly -- and the backward's replay
+;; would otherwise write the forward's output again.  The forward compiles (176/17 runs it on metal).
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp argmax-local-vjp))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
+  (declare #'(float ulong float ulong float float => float float))
+  (if (= i ri)
+      (return rv-bar 0.0)
+      (return 0.0 0.0)))
+
+(def-kernel rwg_dep_out (A &out C rv)
+  (declare #'(mat-t &out mat-t vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (i (to-ulong tid)))
+        (reduce-workgroup #'argmax-combine
+                          ((v (type-min float) :return-vec rv)
+                           (i (type-max ulong))))
+        (set! (~ C row col) v)))))

@@ -3623,7 +3623,13 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (BUG 090's machinery on the backward side), with the backward walk calling the companion of the call
         shape it differentiates.
 
-[ ] 098 DEPENDENT REDUCTIONS ARE NOT DIFFERENTIABLE (a declared gap, refused loudly).
+[x] 098 DEPENDENT REDUCTIONS ARE NOT DIFFERENTIABLE (a declared gap, refused loudly).
+
+        CLOSED 2026-10-02 by endeavour 177 (overlay, pending fold): reduce-warp and reduce-workgroup differentiate
+        through a (declare (reduction-vjp f)) on the combiner -- f takes (own state, result, result adjoint) and
+        returns the own adjoint; checked on the forward pass.  Specs 177/01-09 (BMG), CUDA twins 177/10-13.
+        Without the declaration the refusal stays and names the fix (177/errors/05, 176/errors/11).  The
+        dependent grid-reduce! moved to BUG 102.
 
         WHAT.  (reduce-warp | reduce-workgroup | grid-reduce! #'combiner ((var identity ...) ...)) --
         endeavour 176 Phase 3.  Under --differentiate the AD path refuses it:
@@ -3644,3 +3650,123 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
             none to the index -- covers the motivating case only.
 
         SPECS.  176/15-18 carry SKIP-WITH[--differentiate] naming this bug; 176/errors/11 pins the refusal.
+
+
+[x] 099 A TOP-LEVEL COPY BINDING, (let ((v0 v)) ...), DROPS v0's ADJOINT -- a SILENTLY wrong gradient.
+
+        FIXED 2026-10-02 (overlay, pending fold): a copy-binding clause at the head of %handle-single-value-backward,
+        scoped to scalar dataflow (not a tensor input, scratch tile or view alias; only when v has an adjoint).
+        Specs 124/15 (6.0, was 3.0) and 124/16 (6.0, was 0.0).
+
+        MEASURED (endeavour 177 Phase 0, BMG, VERIFY-AUTODIFF, A = 1.0 + 0.1*k):
+
+            (let ((v (~ A row col)))
+              (let ((v0 v))
+                (set! (~ C row col) (* v v0))))        ; d/dA = 2A = 2.4 at A[0,2]
+
+            analytical=1.2   numerical=2.4000244
+
+        The backward computes V0_ADJ and never folds it back into V_ADJ.  No reduction, no loop --
+        just a let that names a variable.
+
+        LIKELY CAUSE (a hypothesis; read, not proven).  A flat-ANF binding (V0 V) reaches
+        %handle-single-value-backward (src/autodiff.lisp), which has no clause for a bare-symbol
+        value and falls through to its final (t nil).  The copy rule DOES exist -- in
+        %backward-value-expr ("copy: v <- s => s_adj += v_adj"), used for let/if VALUE expressions --
+        but the top-level walk never goes there.
+
+        PROBE.  put_temp_files_here/177/zz-probe177-a-alias.crisp
+
+[x] 100 IN-PLACE SCALAR WRITES ARE INVISIBLE TO AD -- set! of a local, and the in-place reductions,
+        both give SILENTLY wrong gradients.
+
+        FIXED 2026-10-02 (overlay, pending fold), endeavour 177 Phase 1: the AD path VERSIONS top-level in-place
+        scalar writes -- (SET! V e) becomes the binding (V%V1 e); a reduce-warp / reduce-workgroup of V becomes
+        the copy (V%V1 V) plus the reduction on V%V1 -- and later reads use the new version.  The primal replay
+        is split after each copy so the reduction re-runs there (%ad-version-in-place-writes,
+        %ad-assemble-primal-replay).  Adjoints need no new rule: the copy rule (099) and the existing VJPs.
+        Specs 124/17 (108, was 6.0), 124/18 (8.0, was 1.0), 175/65 (896, was 56), 175/66 (56, was 29.2),
+        175/67 (33996.8, was 531.2).  STILL OPEN, by design: writes inside if/loop bodies, a variable rebound
+        later or used in a later multi-value binding (not versioned), and grid reductions (not replayed).
+
+        MEASURED (endeavour 177 Phase 0, BMG, VERIFY-AUTODIFF, A = 1.0 + 0.1*k):
+
+        (a) set! of a scalar local --
+                (set! v (* v v))  (set! (~ C row col) (* v v))       ; C = A^4, d/dA = 4A^3
+                analytical=2.4   numerical=8.109375 (central FD at h=0.5; exact 6.912)
+            2.4 = 2A: the backward differentiated the LAST line against the ORIGINAL v and dropped the
+            set! entirely.  The dumped _GRAD has no adjoint flow through the assignment
+            (%gfw-process-set! handles only a (~ ...) place) and its primal replay binds v to the
+            pre-set! value.
+
+        (b) a reduction followed by a NONLINEAR use of the reduced variable --
+                (reduce-warp #'+ v 0.0)  (set! (~ C row col) (* v v))  ; per warp sum(C) = 16 S^2
+                analytical=56.0   numerical=896.0
+            The reduction's own VJP (175) is right.  What is wrong is the PRIMAL the backward uses for
+            v afterwards: the replay is a LET of the forward's bindings only, so it never runs the
+            reduction, and every later use of v sees the pre-reduction value (2*v*g where it should
+            be 2*S*g).  175's specs never caught it because every one of them uses the reduced value
+            LINEARLY (C = v), where the primal does not enter the adjoint.
+
+        (c) both together, the snapshot shape 177's design proposed --
+                (let ((v0 v)) (reduce-warp #'+ v 0.0) (set! (~ C row col) (* v v0)))
+                analytical=28.0   numerical=56.0          (BUG 099 and 100b at once)
+
+        SCOPE.  None of the 126 specs carrying VERIFY-AUTODIFF mutates a scalar with set!, so (a) has
+        never been gradient-checked.  Loops (107) have their own iteration-local handling and were not
+        probed here.  Every in-place reduction form (reduce-warp, reduce-workgroup, grid-reduce-*,
+        and 176's independent split, which lowers to them) shares (b) -- only reduce-warp measured.
+
+        LIKELY SHARED FIX (hypothesis).  Version in-place scalar writes on the AD path -- each set! /
+        reduction of x binds a fresh name the later code reads -- so the replay can run them in
+        order and each version carries its own adjoint.  149's statement replay is demand-driven for
+        scratch TILES only (%ad-replay-forms-for-scope); it does not reach scalars.
+
+        PROBES.  put_temp_files_here/177/zz-probe177-{b-post,c-snap,d-set}.crisp
+
+[x] 101 PADDING LANES OF AN active-threads REDUCTION RECEIVE THE FULL GRADIENT -- silently wrong.
+
+        FIXED 2026-10-02 (overlay, pending fold): %175-vjp-reduce-warp keeps the ungated sum, then zeroes the
+        adjoint of lanes at or past active-threads.  Specs 175/63 (0.0, was 16.0), 175/64 (active lane, 16.0),
+        176/19 (independent split, 0.0, was 48.0).
+
+        MEASURED (endeavour 177 Phase 0, BMG, VERIFY-AUTODIFF): (reduce-warp #'+ v 0.0 8), every lane
+        writes v, so per warp sum(C) = 16 * (sum of lanes 0..7).
+
+            at.A=0,2  (active lane)    analytical=16.0  numerical=16.0     PASS
+            at.A=0,10 (padding lane)   analytical=16.0  numerical=0.0      FAIL
+
+        CAUSE (read in %175-vjp-reduce-warp).  The VJP is `(reduce-warp #'+ v_adj 0.0)` WITHOUT
+        active-threads, justified by "the inactive lanes' adjoints are zero".  That is true of
+        nothing here: padding lanes HOLD the result (175/04 pins that), so their OUTPUT adjoints are
+        real and belong in the sum -- correct.  But the all-reduce then hands the sum back to EVERY
+        lane as its INPUT adjoint, and a padding lane's input never entered the reduction; it must get
+        zero.  Fix shape: keep the full sum, then (if (< lane n) sum 0.0).  reduce-workgroup's VJP
+        very likely shares it (unmeasured).
+
+        PROBES.  put_temp_files_here/177/zz-probe177-e-act{2,10}.crisp
+
+[ ] 102 A DEPENDENT grid-reduce! IS NOT DIFFERENTIABLE (a declared gap, refused loudly).
+
+        WHAT.  Endeavour 177 made the dependent reduce-warp and reduce-workgroup differentiable through the
+        combiner's (declare (reduction-vjp f)).  The grid-level form is still refused under --differentiate,
+        even with the declaration:
+
+            grid-reduce!: a dependent reduction is not differentiable yet at this level (BUG 102) -- reduce-warp
+            and reduce-workgroup are, through the combiner's reduction-vjp.
+
+        THE LOWERING IS KNOWN, and simpler than the all-reduces: no replay and no sum.  The result is read
+        from the return cells (a backward kernel's &out buffers hold the forward's outputs -- the
+        VERIFY-AUTODIFF harness restores them deliberately), the result adjoint is the cells' _GRAD, and
+        each thread calls the local VJP on (own state, result, result adjoint).  The own state is the
+        variable itself: a grid reduction is not versioned or replayed, so the backward holds its
+        pre-reduction value.
+
+        THE BLOCKER IS MEASUREMENT.  A dependent grid-reduce! needs a return cell per clause, so an argmax has
+        two &out cells, and VERIFY-AUTODIFF allocates, seeds and reads exactly ONE output.  Shipping an
+        unmeasured gradient is how BUGs 099-101 got out, so this stays refused until the harness can take
+        extra &out cells (loss on the first; the others zero-seeded, their forward values restored).
+
+        SPECS.  177/errors/02 pins the refusal.  (176/15-18 carried SKIP-WITH[--differentiate] for BUG 098 --
+        a FALSE gap claim, removed 2026-10-02: those kernels have no differentiable input, so their backward is
+        empty and never reaches the reduction; they pass under --differentiate as they are.)

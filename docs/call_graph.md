@@ -172,6 +172,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - - - - - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp
+- - - - - - - - - - - - - - - (%DECLARED-REDUCTION-VJP FORM)  analysis/ops.lisp
 - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp
 - - - - - - - - - - - - - - - - (ANALYZE-RETURN-TYPE-FROM-SPEC FN-SPEC)  environment.lisp
 - - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp
@@ -856,6 +857,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL TENSOR-INPUTS-HT ANY-DOUBLE RETURN-ADJ-TYPES)  autodiff.lisp
 - - - - - - - - - - - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
                                                                                                                               T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%HW-OP-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
@@ -876,7 +878,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - (%AD-INERT-RING-GET-P EXPR)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%HANDLE-MATH-AND-TRIG-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - (%HANDLE-TILDE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp
 - - - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - (%HANDLE-SUB-FN-CALL-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN HOF-HANDLER-FN)  autodiff.lisp
@@ -1274,8 +1276,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
 
 - (%175-VJP-REDUCE-WARP FORM CTX)  autodiff.lisp
+- - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp
+- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp
+- - - - (%FUNCTION-FORM-P X)  analysis/ops.lisp
+- - (%177-VJP-DEPENDENT-REDUCTION FORM CTX &OPTIONAL LANE-FORM)  autodiff.lisp
+- - - (%DEPENDENT-REDUCTION-VJP FORM)  analysis/ops.lisp
+- - - (%REFUSE-DEPENDENT-AUTODIFF FORM)  analysis/ops.lisp
 
 - (%175-VJP-REDUCE-WORKGROUP FORM CTX)  autodiff.lisp
+- - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp [See above]
+- - (%177-VJP-DEPENDENT-REDUCTION FORM CTX &OPTIONAL LANE-FORM)  autodiff.lisp [See above]
 
 - (%AD-REPLAY-READ-SYMS FORM)  autodiff.lisp
 
@@ -1307,8 +1317,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%ANALYZE-GRID-REDUCE-ATOMIC EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp
-- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp
-- - - - (%FUNCTION-FORM-P X)  analysis/ops.lisp
+- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - (%FUSED-REDUCE-WORKGROUP-FORM EXPR &OPTIONAL ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - - - (%INDEPENDENT-REDUCTION-EXPAND FORM)  analysis/ops.lisp
@@ -1374,6 +1383,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (%CHECK-REDUCTION-VJP OP-NAME COMBINER CLAUSES ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - - (%FUNCTION-FORM-P X)  analysis/ops.lisp [See above]
+- - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%DEPENDENT-REDUCTION-VALIDATE FORM)  analysis/ops.lisp [See above]
 - - (%FUSED-REDUCE-WARP-DEPENDENT-FORM EXPR)  analysis/ops.lisp
 - - - (%DEPENDENT-REDUCTION-VALIDATE FORM)  analysis/ops.lisp [See above]
@@ -1565,6 +1579,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%AD-CANONICALIZE-WARP-SPECIALIZATION FORM)  autodiff.lisp
 - - - (%LOWER-WARP-SPECIALIZATION EXPR LOCATION &KEY (GATED T))  analysis/control.lisp
 - - - - (%PARSE-WARP-SPECIALIZATION EXPR LOCATION)  analysis/control.lisp
+- - (%AD-VERSION-IN-PLACE-WRITES FLAT-ANF)  macros.lisp
+- - - (%AD-FORM-HEAD-NAME FORM)  macros.lisp
+- - - (%AD-VERSIONABLE-P V REST)  macros.lisp
+- - - - (%AD-TREE-HAS-HEAD-P SYM TREE)  macros.lisp
+- - - - - (%AD-TREE-HAS-HEAD-P SYM TREE)  macros.lisp [RECURSION]
+- - - - (%AD-MULTI-VALUE-BINDING-SHAPE-P FORM)  macros.lisp
+- - - - - (%AD-FORM-HEAD-NAME FORM)  macros.lisp [See above]
+- - - - (%AD-TREE-MENTIONS-P SYM TREE)  macros.lisp
+- - - - - (%AD-TREE-MENTIONS-P SYM TREE)  macros.lisp [RECURSION]
+- - - (%AD-VERSION-SYM V N)  macros.lisp
+- - - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp [See above]
 - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp [See above]
 - - (%MMA-AD-TILE-SOURCE-MAP FLAT-ANF)  autodiff.lisp
 - - - (%MMA-AD-WALK-FORMS TREE FN)  autodiff.lisp
@@ -1805,6 +1830,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (WHEN-THREAD-IN-WARP-IS LANE &BODY BODY)  macros.lisp [See above]
 - - (COMPILER-NO-OP)  macros.lisp [See above]
 
+- (%REDUCTION-VJP-ADJOINT-TYPE TY)  analysis/ops.lisp
+- - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+
 - (%RESOLVE-TO-BASE-TYPE-FOR-RECORDS PD-TYPE)  autodiff.lisp
 - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
 - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
@@ -1820,8 +1848,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
 - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [See above]
 - - (%FUSED-REDUCE-WORKGROUP-FORM EXPR &OPTIONAL ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
-- - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp
-- - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
+- - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp [See above]
 - - (%FUSED-REDUCE-WORKGROUP-DEPENDENT-FORM EXPR &OPTIONAL ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
 - - (%IMPLICIT-SCRATCH-MISSING-KEYS EXPR)  analysis/ops.lisp [See above]
 - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]
@@ -2686,7 +2713,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%INDEPENDENT-REDUCTION-SPLIT-FOR-AD FORM)  analysis/ops.lisp
 - - - - - (%INDEPENDENT-REDUCTION-EXPAND FORM)  analysis/ops.lisp [See above]
 - - - - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp [See above]
-- - - - (%REFUSE-DEPENDENT-AUTODIFF FORM)  analysis/ops.lisp
+- - - - (%DEPENDENT-REDUCTION-VJP FORM)  analysis/ops.lisp [See above]
+- - - - (%REFUSE-DEPENDENT-AUTODIFF FORM)  analysis/ops.lisp [See above]
 - - - - (ANF-FRESH-TEMP)  anf-transform.lisp
 - - - - (%ANF-NORMALIZE-SET! EXPR IS-NESTED?)  anf-transform.lisp
 - - - - - (ANF-NORMALIZE-PLACE PLACE)  anf-transform.lisp

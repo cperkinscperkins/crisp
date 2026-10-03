@@ -3,7 +3,6 @@
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; HOIST-EXPECT: BUFFER rv: 9 1 2 3
 ;; HOIST-EXPECT: BUFFER ri: 9 1 2 3
-;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
 ;;
 ;; ENDEAVOUR 176 Phase 3 -- reduce-workgroup, DEPENDENT form, with a per-clause :return-vec.  TDD.
 ;;

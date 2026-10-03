@@ -14,6 +14,13 @@
 (in-package :crisp.compiler)
 
 (declaim (special
+          *173-SUBGROUP-PINNED*
+          *176-DEPENDENT-FORMS*
+          *176-GENERIC-SCRATCH-RANGE*
+          *176-GRID-REDUCE-STRATEGIES*
+          *176-IMPLICIT-SCRATCH-SPECS*
+          *176-INDEPENDENT-FORMS*
+          *177-DIFFERENTIABLE-DEPENDENT-FORMS*
           *AD-ANY-OUTPUT-DOUBLE*
           *AD-BARRIER-RING-SYMS*
           *AD-INLINING-FNS*
@@ -24,6 +31,7 @@
           *AD-SCRATCH-SYMS*
           *AD-SLM-SCRATCH-CTORS*
           *AD-TILE-SRC-MAP*
+          *AD-VERSIONED-REDUCTIONS*
           *AD-VIEW-ALIAS-MAP*
           *ANALYSIS-ACCESS-MODE*
           *ANF-COUNTER*
@@ -62,6 +70,7 @@
           *DIFFERENTIABLE-HOF-STORE*
           *DIFFERENTIATE-P*
           *DIVERGENT-SCOPE-DEPTH*
+          *DOTIMES-FAMILY-NAMES*
           *EMIT-METADATA*
           *EXPRESSION-ANALYZERS*
           *FFI-BASEPTR-SRC*
@@ -70,9 +79,13 @@
           *FOREIGN-FUNCTIONS*
           *FUNCTION-TABLE*
           *GENERIC-FUNCTIONS*
+          *GRAD-INHERITABLE-DISPATCH-KEYS*
+          *GRID-ATOMIC-OPERATOR-MAP*
           *GRID-FUNCTIONS*
           *HARDWARE-PROFILE-SCHEMA*
           *HARDWARE-PROFILES*
+          *HW-INTERNAL-OP-SYMBOLS*
+          *HW-OP-SYMBOLS*
           *IMPLICIT-ARG-MAP*
           *IMPLICIT-SCRATCH-SIZE-EXPR-MAP*
           *IN-DISPATCH-CONTEXT*
@@ -89,8 +102,10 @@
           *KERNEL-INFERRED-TILE-SHAPES*
           *KERNEL-READONLY-TENSOR-SYMS*
           *KERNEL-REGISTER-MODE*
+          *LOOP-VARIANT-SPECS*
           *MATH-PRECISION*
           *MMA-SCRATCH-TILE-DIMS*
+          *MMTS-SECTIONS*
           *MULTICAST-CLUSTER-DIMS*
           *NATIVE-BUILTIN-MANGLED-NAMES*
           *NVPTX-TARGET-INITIALIZED*
@@ -101,6 +116,7 @@
           *PTX-REGISTER-DEMAND*
           *RECORD-DEFINITIONS*
           *RECORD-PARAM-FIELD-ADJS*
+          *REDUCTION-VJPS*
           *REGISTER-TILE-DIMS*
           *REQUESTED-HARDWARE-PROFILE*
           *RESOLVE-DEPTH*
@@ -110,6 +126,8 @@
           *SCANNING-FUNCTION-NAME*
           *SCRATCH-CELL-COUNTER*
           *SCRATCH-TILE-DIMS*
+          *SHUFFLE-OP-NAMES*
+          *SHUFFLE-VALUE-TYPES*
           *SIDE-CHANNEL-ORIGINATORS*
           *SIGNAL-CLUSTER-EXTENT*
           *SLM-HIGH-WATER-FRACTION*
@@ -134,6 +152,8 @@
           *UNI-MEET-TABLE*
           *VJP-REGISTRY*
           *VOLATILE-VAR-READS*
+          *WARP-COLLECTIVE-OPERATOR-NAMES*
+          *WGMMA-16-TRANS*
           *WGMMA-ACC-DIMS*
           *WGMMA-ACC-OCCUPANCY-WARN-FRACTION*
           *WGMMA-NODE-SWIZZLE*
@@ -429,8 +449,3 @@
 
    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the
    second :arrive sees a non-zero depth and refuses.")
-
-(defvar *176-generic-scratch-range* (make-hash-table :test 'eq)
-  "Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter
-   before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1
-   (multi-pass) or at the function's skip point (single-pass); read when its variants are generated.")

@@ -1,0 +1,44 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x16@1:0.1 at.A=1,15 expect.A=32.0 atol=1e-1 h=0.01 group=64 output-mat=4x16
+;;
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): PASS [cuda], value as predicted.
+;;
+;; ENDEAVOUR 177 -- the CUDA twin of 01.  NVIDIA warps are 32 lanes, so warp 0 spans rows 0 AND 1: its
+;; maximum is A[1,15] = 4.1, held and written by 32 lanes -- d/dA[1,15] = 32.0.  The ulong index travels
+;; through the shuffles as two 32-bit halves on PTX.
+;;
+;; A separate file because a spec may carry only ONE VERIFY-AUTODIFF line, [CUDA] or not.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp argmax-local-vjp))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+;; own state (v i), result (rv ri), result adjoint (rv-bar ri-bar) => own adjoint.  The winning lane
+;; takes the value's adjoint; the index is piecewise constant and gets none.  Integer components have
+;; FLOAT adjoints (the AD walk's type for every scalar local -- endeavour 177 Phase 0).
+(def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
+  (declare #'(float ulong float ulong float float => float float))
+  (if (= i ri)
+      (return rv-bar 0.0)
+      (return 0.0 0.0)))
+
+(def-kernel diff_rw_argmax_winner (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (i (to-ulong col)))
+        (reduce-warp #'argmax-combine
+                     ((v (type-min float))
+                      (i (type-max ulong))))
+        ;; every lane holds the warp's maximum and writes it
+        (set! (~ C row col) v)))))

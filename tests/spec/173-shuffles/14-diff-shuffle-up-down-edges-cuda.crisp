@@ -1,9 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; VERIFY-AUTODIFF[CUDA]: A=4x16@0:0.01 B=4x16@0:0.01 at.A=0,0 expect.A=3.0 at.B=0,3 expect.B=7.0 group=64 h=0.5 atol=1e-2 output-mat=4x16
 ;;
-;; !!! NEVER EXECUTED YET.  Written 2026-09-19 and deliberately left unvalidated -- no NVIDIA
-;; !!! box was available at the time.  VALIDATE THIS FIRST on the next pod run, before reading
-;; !!! any failure here as a compiler defect.  See the same warning on 13.
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): VERIFY-AUTODIFF PASS [cuda]
+;; (A: analytical=3.0 numerical=3.0; B: analytical=7.0, within tolerance).
 ;;
 ;; Endeavour 173 A|D: the CUDA TWIN of 10-diff-shuffle-up-down-edges.  See 13 for why a twin
 ;; file rather than a second directive (at most one VERIFY-AUTODIFF line per spec).

@@ -142,6 +142,8 @@ Sugar over the existing grid-level constructs, and the first real use of Phase 0
 - [x] type check: the combiner is `#'(T1..Tk T1..Tk => T1..Tk)`, matching the clause types in order
       (%check-dependent-combiner, in the warp analyzer every dependent path reaches)
 - [x] autodiff: DECIDED 2026-10-01 -- refused loudly for now (BUG 098); positive specs carry SKIP-WITH
+      LIFTED by endeavour 177 (2026-10-02) for reduce-warp and reduce-workgroup, through a (declare
+      (reduction-vjp f)) on the combiner; the dependent grid-reduce! remains refused (BUG 102).
       naming it; errors/11 pins the refusal.  Regroup on a user-registered combiner VJP.
 - [x] on metal: argmax with ties (lower index wins) and with padding lanes -- 15 (4 / 4 20 36 52),
       16 (7 / 7 23 39 55), 17 (9 / 9), 18 (99 / 99), all BMG

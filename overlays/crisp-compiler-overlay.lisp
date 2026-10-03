@@ -5,15 +5,17 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
-;;;; EMPTY as of 2026-10-01 -- endeavour 176 Phases 1-3 folded into src/ (grid-reduce!, the independent and
-;;;; dependent multi-variable reductions, BUG 096/097, the :fast type-infinity warning).  The spec-runner
-;;;; overlay (VERIFY-AUTODIFF symbolic scratch sizes) was folded into tests/run-specs.lisp in the same pass.
-;;;;
-;;;; Two things did NOT move, deliberately:
-;;;;   * the MACRO-FUNCTION copy that put grid-reduce! on a separate :crisp-language symbol -- src/package.lisp
-;;;;     now exports GRID-REDUCE! from :crisp.compiler and imports it into :crisp-language, so there is one
-;;;;     symbol and one defmacro (as for WHEN-THREAD-IN-*).
-;;;;   * %REFUSE-DEPENDENT-FORM -- Phase 2's placeholder refusal of the dependent shape; Phase 3 replaced
-;;;;     every caller.
+;;;; EMPTY as of 2026-10-02 -- endeavour 177 (reduction-ad) folded into src/:
+;;;;   * BUG 099 copy-binding clause      -> %handle-single-value-backward (src/autodiff.lisp)
+;;;;   * BUG 101 active-threads gate      -> %175-vjp-reduce-warp (src/autodiff.lisp)
+;;;;   * BUG 100 versioned in-place writes -> %ad-version-in-place-writes, %ad-assemble-primal-replay and
+;;;;     the two edits in %generate-backward-kernel-ast (src/macros.lisp)
+;;;;   * 177 dependent-reduction AD        -> *reduction-vjps*, %check-reduction-vjp etc. (src/analysis/ops.lisp),
+;;;;     %177-vjp-dependent-reduction (src/autodiff.lisp)
+;;;; The three overlay WRAPPERS were inlined rather than moved: register-function-signature
+;;;; (src/environment.lisp), anf-normalize (src/anf-transform.lisp), %check-dependent-combiner
+;;;; (src/analysis/ops.lisp).  The VJP re-registrations were dropped -- src's own registration covers them.
+;;;; *176-generic-scratch-range* moved from the tail of the GENERATED src/specials.lisp to
+;;;; src/analysis/core.lisp, where regeneration cannot delete it.
 
 (in-package :crisp.compiler)

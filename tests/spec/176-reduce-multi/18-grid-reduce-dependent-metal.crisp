@@ -3,7 +3,6 @@
 ;; HOIST-HARDWARE-PROFILE: bmg
 ;; HOIST-EXPECT: BUFFER outv: 99
 ;; HOIST-EXPECT: BUFFER outi: 99
-;; SKIP-WITH[--differentiate]: "BUG 098 -- dependent reductions are not differentiable yet"
 ;;
 ;; ENDEAVOUR 176 Phase 3 -- grid-reduce!, DEPENDENT form (last-man, the only strategy it allows).  TDD.
 ;;

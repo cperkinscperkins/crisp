@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF[CUDA]: A=4x16@1:0.1 at.A=0,2 expect.A=217.6 atol=5e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): PASS [cuda], value as predicted.
+;;
+;; ENDEAVOUR 177 -- the CUDA twin of 09.  A workgroup reduction does not depend on the warp size (two
+;; 32-lane warps here, four 16-lane ones on bmg), so the answer is the same 217.6.
+;;
+;; A separate file because a spec may carry only ONE VERIFY-AUTODIFF line, [CUDA] or not.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function moments-combine (s-a q-a s-b q-b)
+  (declare #'(float float float float => float float)
+           (reduction-vjp moments-local-vjp))
+  (return (+ s-a s-b) (+ q-a q-b)))
+
+(def-function moments-local-vjp (s q rs rq rs-bar rq-bar)
+  (declare #'(float float float float float float => float float))
+  (return rs-bar rq-bar))
+
+(def-kernel diff_rwg_moments (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((ssv (make-scratch-vector float 4))
+        (qsv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((s (~ A row col)))
+          (let ((q (* s s)))
+            (reduce-workgroup #'moments-combine
+                              ((s 0.0 :local-scratch-vec ssv)
+                               (q 0.0 :local-scratch-vec qsv)))
+            (set! (~ C row col) (+ s q))))))))

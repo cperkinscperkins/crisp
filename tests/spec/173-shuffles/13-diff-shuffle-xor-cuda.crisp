@@ -1,11 +1,8 @@
 ;; TEST-EXPECT: PASS
 ;; VERIFY-AUTODIFF[CUDA]: A=4x16@0:0.01 at.A=0,2 expect.A=4.0 group=64 h=0.5 atol=1e-2 output-mat=4x16
 ;;
-;; !!! NEVER EXECUTED YET.  Written 2026-09-19 and deliberately left unvalidated -- no NVIDIA
-;; !!! box was available at the time.  VALIDATE THIS FIRST on the next pod run, before reading
-;; !!! any failure here as a compiler defect.  An unrun directive is a guess: spec 12 carried
-;; !!! one that turned out to be unexpressible by the harness (bug 067), which is exactly the
-;; !!! mistake this warning exists to prevent repeating.
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): VERIFY-AUTODIFF PASS [cuda],
+;; analytical=4.0 numerical=4.0000305.
 ;;
 ;; Endeavour 173 A|D: the CUDA TWIN of 09-diff-shuffle-xor.
 ;;

@@ -359,6 +359,17 @@
 
 ;;; Redefine register-function-signature to inject validation
 (defun register-function-signature (form location)
+  "Registers the signature of a def-function / def-kernel FORM in the environment.
+   Endeavour 177: also records a def-function's (declare (reduction-vjp f)) in *REDUCTION-VJPS* -- or clears
+   a stale entry, so in-process runs that redefine a function without it never see an old one."
+  (when (and (consp form) (symbolp (car form)) (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+             (second form) (symbolp (second form)))
+    (let ((vjp (%declared-reduction-vjp form))
+          (key (symbol-name (second form))))
+      (if vjp
+          (progn (log:debug "177: ~a declares reduction-vjp ~a" (second form) vjp)
+                 (setf (gethash key *reduction-vjps*) vjp))
+          (remhash key *reduction-vjps*))))
   (let* ((name (second form))
          (params (third form))
          (body (cdddr form))

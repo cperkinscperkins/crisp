@@ -1,0 +1,45 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "the reduction-vjp must be"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 177 Phase 4 -- a reduction-vjp whose signature does not fit the combiner is refused, showing the
+;; signature it must have.  The VJP takes (own state, result, result adjoint) and returns the own adjoint,
+;; and an INTEGER component's adjoint is FLOAT -- so ulong adjoints, the natural guess, are wrong.
+;;
+;; Checked on the FORWARD pass (decided 2026-10-02): a wrong reduction-vjp is harmless until --differentiate,
+;; but forward-only compiles are the common case, so an unchecked one would rot unnoticed and then fail deep
+;; in generated backward code.  Checked at the reduction call site, where both functions are known.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp argmax-local-vjp))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+;; ULONG adjoints for the index -- the shape the 177 design doc first sketched, before Phase 0 found that
+;; an integer component's adjoint is FLOAT.
+(def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
+  (declare #'(float ulong float ulong float ulong => float ulong))
+  (if (= i ri)
+      (return rv-bar 0ul)
+      (return 0.0 0ul)))
+
+(def-kernel rw_vjp_shape (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (i (to-ulong col)))
+        (reduce-warp #'argmax-combine
+                     ((v (type-min float))
+                      (i (type-max ulong))))
+        (set! (~ C row col) v)))))

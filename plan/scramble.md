@@ -869,8 +869,9 @@ Reductions
 - [x] need to compose correctly
 - [x] shuffles
 - [x] implement
-- [ ] (type-min float) (type-max long)   <-- 
-- [ ] multiple value reductions.
+- [x] (type-min float) (type-max long)   <-- 
+- [x] multiple value reductions.
+- - [ ] auto differentiation ( dependent multi-var pending)
 - [ ] reduce-vec
 - [ ] benchmark
 - [ ] out of core.  ( def-orchestration ? )

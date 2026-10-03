@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,2 expect.A=33996.8 atol=2.0 h=0.5 group=64 output-mat=4x16
+;;
+;; BUG 100(b) through reduce-workgroup: the same nonlinear use, across all 64 threads.
+;;
+;; S = the workgroup's sum of A = 1.0 + 0.1k over k = 0..63, so S = 64 + 0.1*2016 = 265.6.  Every thread
+;; writes S*S, so sum(C) = 64 S^2 and d/dA[0,2] = 128 S = 33996.8.  Before the fix the multiply's adjoint
+;; used each thread's own pre-reduction value, and the VJP's sum of those gave 2S = 531.2.
+;;
+;; atol is 2.0 because sum(C) is ~4.5e6 and its float rounding survives the FD's division by 2h; the two
+;; candidate answers are 64x apart.  The explicit 4-element scratch is as in 175/09.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_rwg_nonlinear_use (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((sv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((v (~ A row col)))
+          (reduce-workgroup #'+ v 0.0 :local-scratch-vec sv)
+          (set! (~ C row col) (* v v)))))))

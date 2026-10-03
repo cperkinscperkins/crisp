@@ -13,7 +13,7 @@
 * `return-cell` is a `cell` of `<someVar>`'s type (a length-1 vector is also accepted). `:atomic` and `:cas` *accumulate* into it, so it should start at the identity; `:last-man-standing` *writes* it.
 * Every scratch argument is optional and is allocated by Crisp when left out, typed from the identity (see the condition above). A scratch key the chosen strategy does not use is a compilation error: `:atomic` and `:cas` take only `:local-scratch-vec`.
 * `:atomic` still requires an operator with a native hardware atomic (`#'+`, `#'min`, `#'max`).
-* Autodiff works through `grid-reduce!`: it becomes one of the three constructs above, each of which has its own VJP.
+* Autodiff works through `grid-reduce!`: it becomes one of the three constructs above, each of which has its own VJP. The exception is the dependent multi-variable form, which is not differentiable yet (see *Reducing Several Variables at Once*).
 
 ```
 (grid-reduce! #'+ sumF 0.0f float-c :strategy :cas :message "gridwise reduction of sumF")

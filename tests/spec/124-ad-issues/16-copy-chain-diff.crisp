@@ -1,0 +1,17 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=6.0
+;;
+;; BUG 099, companion to 15: a CHAIN of copy bindings with only the LAST copy used.
+;;
+;; res = v1 * v1, v1 = v0 = v = x, so dres/dx = 2x = 6.0.  Every step of the chain must pass the
+;; adjoint back (v1 -> v0 -> v).  Before the fix none did, so x's gradient was ZERO -- the copy
+;; bindings were walked and emitted nothing.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel copy_chain_diff (x &out res)
+  (declare #'(in-c &out out-c))
+  (let ((v (~ x)))
+    (let ((v0 v))
+      (let ((v1 v0))
+        (set! (~ res) (* v1 v1))))))
