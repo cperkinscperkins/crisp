@@ -1,0 +1,18 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=5e-2 expect.x=8.0
+;;
+;; BUG 100(a), companion to 17: two set!s in a row, the first linear and the second not.
+;;
+;;     v := x;  v := v + 1;  v := v*v;  res = v       so res = (x+1)^2 and dres/dx = 2(x+1) = 8.0
+;;
+;; Each assignment must see the PREVIOUS value of v (the primal) and pass its adjoint back to it.
+;; Before the fix both set!s were dropped and res = v read the original v: analytical 1.0.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel scalar_set_chain_diff (x &out res)
+  (declare #'(in-c &out out-c))
+  (let ((v (~ x)))
+    (set! v (+ v 1.0))
+    (set! v (* v v))
+    (set! (~ res) v)))

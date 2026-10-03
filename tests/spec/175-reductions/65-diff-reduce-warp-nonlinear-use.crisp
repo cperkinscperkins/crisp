@@ -1,0 +1,30 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,2 expect.A=896.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; BUG 100(b): a reduction followed by a NONLINEAR use of the reduced variable -- silently wrong.
+;;
+;; S = the warp's sum (16 lanes on bmg), every lane writes S*S, so per warp sum(C) = 16 S^2 and
+;; d/dA[0,2] = 32 S.  Row 0 holds 1.0 .. 2.5, S = 28.0, so 896.0.
+;;
+;; Before the fix: analytical 56.0 (measured, endeavour 177 Phase 0).  The reduction's own VJP was right;
+;; the PRIMAL was not.  The backward's replay is a LET of the forward's bindings and never ran the
+;; reduction, so the multiply's adjoint used v's PRE-reduction value: 2*v*g where it should be 2*S*g.
+;; Every earlier 175 VJP spec writes the reduced value LINEARLY (C = v), where the primal does not enter
+;; the adjoint at all -- which is how this hid.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_rw_nonlinear_use (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (reduce-warp #'+ v 0.0)
+        (set! (~ C row col) (* v v))))))
