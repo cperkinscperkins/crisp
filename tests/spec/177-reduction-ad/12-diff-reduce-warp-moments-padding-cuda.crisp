@@ -1,8 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; VERIFY-AUTODIFF[CUDA]: A=4x16@1:0.1 at.A=0,10 expect.A=0.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
 ;;
-;; !!! NEVER EXECUTED YET.  Written 2026-10-02, no NVIDIA box available.  VALIDATE THIS FIRST on the
-;; !!! next pod run before reading a failure here as a compiler defect (cf. 175/14, BUG 067).
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): PASS [cuda], value as predicted.
 ;;
 ;; ENDEAVOUR 177 -- the CUDA twin of 06, the active-threads GATE test: lane 10 is past active-threads (8)
 ;; and must get 0.0 (ungated it would read 32 (1 + 2 * 2.0) = 160.0).

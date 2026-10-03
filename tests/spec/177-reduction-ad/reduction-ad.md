@@ -269,4 +269,6 @@ than shipped unmeasured.
       alone, the replay split); E2E 1352/1352; negative 301/301; FULL --differentiate 1352/1352; --single-pass
       177 18/18; chapters regenerated (split-docs reproduces the committed text); reference.md, call graph,
       globals matrix regenerated.  CI needs no edit (it runs to ci-stop = 177-reduction-ad).
-- [ ] CUDA pod run (177/10-13 and the 175/176 backlog) -- next, by plan
+- [x] CUDA pod run 2026-10-02: 177/10-13 PASS [cuda] at the predicted values (32.0, 108.8, 0.0, 217.6); the
+      175/176 CUDA backlog passed (incl. 175/59 implicit scratch, 175/07, 175/14 = 64.0).  Only failures: the four
+      libdevice specs of BUG 089, pre-existing.

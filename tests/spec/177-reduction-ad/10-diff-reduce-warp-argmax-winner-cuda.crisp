@@ -1,8 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; VERIFY-AUTODIFF[CUDA]: A=4x16@1:0.1 at.A=1,15 expect.A=32.0 atol=1e-1 h=0.01 group=64 output-mat=4x16
 ;;
-;; !!! NEVER EXECUTED YET.  Written 2026-10-02, no NVIDIA box available.  VALIDATE THIS FIRST on the
-;; !!! next pod run before reading a failure here as a compiler defect (cf. 175/14, BUG 067).
+;; EXECUTED on the RunPod CUDA run of 2026-10-02 (branch mv-reduction-ad): PASS [cuda], value as predicted.
 ;;
 ;; ENDEAVOUR 177 -- the CUDA twin of 01.  NVIDIA warps are 32 lanes, so warp 0 spans rows 0 AND 1: its
 ;; maximum is A[1,15] = 4.1, held and written by 32 lanes -- d/dA[1,15] = 32.0.  The ulong index travels
