@@ -186,6 +186,22 @@ thread's own state, `V%V1`/`W%V1` the result.  The dependent VJP is then: a `+` 
 variable's adjoint, one call to the user's local VJP, the active-threads gate (as BUG 101), and the copy rule
 carries the results back.  No snapshot needed.
 
+- [x] TDD, red first (the BUG 098 refusal): 01 argmax winner (16), 02 loser (0), 03 active-threads winner
+      (16), 04 active-threads padding lane (0 -- but argmax's VJP returns 0 for any non-winner, so this
+      one cannot catch a missing gate), 05/06 a NON-selection dependent combiner, (sum, sum of squares):
+      active lane 16 (1 + 2A) = 54.4, padding lane 0 (ungated it would read 80 -- 06 is the gate's test)
+- [x] `*reduction-vjps*`, kept current by a wrapper on `register-function-signature` (a redefinition
+      without the declaration clears the entry)
+- [x] ANF: a dependent reduce-warp whose combiner declares a reduction-vjp passes through as an opaque
+      statement; anything else keeps the BUG 098 refusal, which now names the fix
+- [x] versioning: one copy per clause variable, then the reduction over the copies, replayed
+- [x] `%177-vjp-dependent-reduction`: + all-reduce of each adjoint, the user's local VJP, the
+      active-threads gate; `reduce-warp`'s VJP delegates the dependent shape to it
+- [x] all six green on BMG; unit 341/341, E2E 1340/1340, negative 296/296, `--differentiate` 176 30/30
+- Adjoint type of an integer component is FLOAT (Phase 0), so argmax's VJP is
+  `#'(float ulong float ulong float float => float float)` -- the design doc's example (ulong adjoints)
+  is superseded; fix it in the docs pass.
+
 
 ## Phase 1: reduce-warp
 

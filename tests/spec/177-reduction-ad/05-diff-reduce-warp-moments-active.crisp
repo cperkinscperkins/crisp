@@ -1,0 +1,46 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,2 expect.A=54.4 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; ENDEAVOUR 177 Phase 1b -- a dependent, NON-selection combiner: every active lane has a gradient.
+;;
+;; Lanes 0..7 reduce (s, q) = (A, A^2); every lane writes S + Q, so per warp sum(C) = 16 (S + Q) and
+;; d/dA[0,2] = 16 (1 + 2 A[0,2]) = 16 * 3.4 = 54.4.  The q = s*s BEFORE the reduction must chain back
+;; through the copy to A, so this also exercises the 1a versioning with a nonlinear producer.
+;;
+;; 06 is the padding-lane twin -- the real test of the active-threads gate, since argmax's VJP returns
+;; zero for any non-winner anyway (see 04).
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+;; A sum and a sum of squares carried together -- the moments behind a variance.  Written as a DEPENDENT
+;; combiner on purpose: this is the non-selection case, where EVERY contributing lane has a gradient.
+(def-function moments-combine (s-a q-a s-b q-b)
+  (declare #'(float float float float => float float)
+           (reduction-vjp moments-local-vjp))
+  (return (+ s-a s-b) (+ q-a q-b)))
+
+;; Each result component is a plain sum of the lanes' components, so d result / d own = 1: a lane's own
+;; adjoint is the result's adjoint, component by component.
+(def-function moments-local-vjp (s q rs rq rs-bar rq-bar)
+  (declare #'(float float float float float float => float float))
+  (return rs-bar rq-bar))
+
+(def-kernel diff_rw_moments_active (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((s (~ A row col)))
+        (let ((q (* s s)))
+          (reduce-warp #'moments-combine
+                       ((s 0.0)
+                        (q 0.0))
+                       8)
+          ;; every lane -- active or padding -- holds both totals and writes their sum
+          (set! (~ C row col) (+ s q)))))))

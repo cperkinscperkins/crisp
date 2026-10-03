@@ -496,3 +496,229 @@
                                           (let (,@all-reassembly)
                                             ,(%ad-assemble-primal-replay forward-bindings replay-statements backward-walk))
                                           (return)))))))))))))
+
+;;; ===========================================================================================
+;;; Endeavour 177 Phase 1b -- AD of a DEPENDENT reduce-warp through the combiner's reduction-vjp.
+;;;
+;;; The user declares, on the combiner, a LOCAL VJP: (own state, result state, result adjoint) => own
+;;; adjoint.  Phase 1a made the backward hold both states -- the dependent reduction is versioned like a
+;;; single one, so V/W are this lane's own values and V%V1/W%V1 the result.  The VJP is then:
+;;;   1. a + all-reduce of each clause variable's adjoint (the result is held by every lane, so its
+;;;      adjoint is the sum of all lanes' -- padding lanes included, they hold it too);
+;;;   2. one call to the user's local VJP, whose results REPLACE the variables' adjoints;
+;;;   3. the active-threads gate (as BUG 101) -- the user's VJP cannot see active-threads.
+;;; The copy rule (BUG 099) then carries each adjoint back to the pre-reduction variable.
+;;; ===========================================================================================
+
+;; src/analysis/ops.lisp
+(defvar *reduction-vjps* (make-hash-table :test 'equal)
+  "Endeavour 177.  Combiner name (a string) -> the function symbol its (declare (reduction-vjp f))
+   names.  Kept current by REGISTER-FUNCTION-SIGNATURE, which every def-function passes through: a
+   redefinition WITHOUT the declaration removes the entry, so in-process runs never see a stale one.")
+
+;; src/analysis/ops.lisp
+(defun %declared-reduction-vjp (form)
+  "Endeavour 177.  The function symbol a (def-function name params . body) FORM declares as its
+   (reduction-vjp f), or NIL.  Declarations are matched by symbol NAME (either package)."
+  (loop for f in (cdddr form)
+        while (and (consp f) (symbolp (car f)) (string-equal (symbol-name (car f)) "DECLARE"))
+        do (loop for d in (rest f)
+                 when (and (consp d) (symbolp (car d))
+                           (string-equal (symbol-name (car d)) "REDUCTION-VJP"))
+                   do (return-from %declared-reduction-vjp (second d)))))
+
+;; src/analysis/ops.lisp
+(defun %dependent-reduction-vjp (form)
+  "Endeavour 177.  The reduction-vjp declared on the combiner of the dependent reduction FORM, or NIL --
+   also NIL when the combiner is not a literal #'f (a function VALUE has no declaration to find)."
+  (let ((comb (second form)))
+    (and (consp comb) (symbolp (car comb)) (string-equal (symbol-name (car comb)) "FUNCTION")
+         (symbolp (second comb))
+         (gethash (symbol-name (second comb)) *reduction-vjps*))))
+
+;; src/environment.lisp  (at fold time: put the bookkeeping at the head of register-function-signature)
+(defvar *177-orig-register-function-signature* (fdefinition 'register-function-signature))
+(defun register-function-signature (form location)
+  "Endeavour 177 wrapper: records a def-function's (reduction-vjp f) in *REDUCTION-VJPS* (or clears a
+   stale entry), then registers the signature as before."
+  (when (and (consp form) (symbolp (car form)) (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+             (second form) (symbolp (second form)))
+    (let ((vjp (%declared-reduction-vjp form))
+          (key (symbol-name (second form))))
+      (if vjp
+          (progn (log:debug "177: ~a declares reduction-vjp ~a" (second form) vjp)
+                 (setf (gethash key *reduction-vjps*) vjp))
+          (remhash key *reduction-vjps*))))
+  (funcall *177-orig-register-function-signature* form location))
+
+;; src/analysis/ops.lisp
+(defparameter *177-differentiable-dependent-forms* '("REDUCE-WARP")
+  "Endeavour 177.  The dependent reductions whose backward is implemented (Phase 1b: reduce-warp).")
+
+;; src/analysis/ops.lisp
+(defun %refuse-dependent-autodiff (form)
+  "BUG 098 / endeavour 177.  The AD path meets a dependent reduction it cannot differentiate: refuse
+   LOUDLY, naming what would make it differentiable.  (KEEP \"not differentiable yet\": 176/errors/11
+   matches on it.)"
+  (let ((comb (second form))
+        (implemented (member (symbol-name (car form)) *177-differentiable-dependent-forms*
+                             :test #'string-equal)))
+    (error 'crisp-compiler-error
+           :message
+           (cond
+            ((not (and (consp comb) (symbolp (second comb))))
+              (format nil "~(~a~): this dependent reduction is not differentiable yet -- its combiner ~s is a function VALUE, so there is no (declare (reduction-vjp ...)) to find.  Name the combiner directly as #'f."
+                      (car form) comb))
+            ((not implemented)
+              (format nil "~(~a~): dependent reductions are not differentiable yet for this construct (endeavour 177 implements ~{~(~a~)~^, ~} so far)."
+                      (car form) *177-differentiable-dependent-forms*))
+            (t
+              (format nil "~(~a~): this dependent reduction is not differentiable yet -- its variables interact inside the combiner ~s, which declares no local VJP.  Add (declare (reduction-vjp f)) to the combiner, where f takes (own state, result state, result adjoint) and returns this thread's adjoint."
+                      (car form) comb)))
+           :source-location nil)))
+
+;; src/anf-transform.lisp  (at fold time: replace the BUG 098 refusal in anf-normalize with this test)
+(defvar *177-orig-anf-normalize* (fdefinition 'anf-normalize))
+(defun anf-normalize (expr is-nested?)
+  "Endeavour 177 wrapper: a dependent reduction whose combiner declares a reduction-vjp passes through
+   as an opaque STATEMENT (its clauses are not expressions to normalize); its VJP takes it from there.
+   Everything else as before -- including the BUG 098 refusal of the rest."
+  (if (and (consp expr)
+           (%dependent-reduction-form-p expr)
+           (member (symbol-name (car expr)) *177-differentiable-dependent-forms* :test #'string-equal)
+           (%dependent-reduction-vjp expr))
+      (progn (log:debug "177: dependent ~a passes through ANF for its reduction-vjp" (car expr))
+             (values expr nil))
+      (funcall *177-orig-anf-normalize* expr is-nested?)))
+
+;; src/autodiff.lisp
+(defun %177-vjp-dependent-reduction (form ctx lane-form)
+  "Endeavour 177.  VJP of a dependent all-reduce (see the section header).  LANE-FORM is the thread's
+   index within the reduction, compared against active-threads for the gate."
+  (let* ((head      (car form))
+         (comb      (second form))
+         (vjp       (%dependent-reduction-vjp form))
+         (clauses   (third form))
+         (active    (fourth form))
+         (local-adj (getf ctx :local-adj))
+         (flat      (getf ctx :flat-anf))
+         (vars      (mapcar #'first clauses))
+         ;; Phase 1a versioned each clause variable: (V%V1 V) precedes the reduction.  V is the
+         ;; pre-reduction value -- this thread's own state.
+         (origins   (mapcar (lambda (nv)
+                              (let ((b (find-if (lambda (f) (and (consp f) (= (length f) 2)
+                                                                 (eq (first f) nv) (symbolp (second f))))
+                                                flat)))
+                                (and b (second b))))
+                            vars))
+         (adjs      (mapcar local-adj vars))
+         (gs        (loop repeat (length vars) collect (gensym "RVJP-")))
+         (plus      (list 'function (intern "+" (symbol-package head)))))
+    (unless vjp
+      (%refuse-dependent-autodiff form))
+    (when (some #'null origins)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~): the dependent reduction over ~{~a~^, ~} could not be differentiated -- the backward pass has no copy of the pre-reduction values (a clause variable is rebound later, or used in a later multi-value binding, so it was not versioned)."
+                              head vars)
+             :source-location nil))
+    (log:debug "177 VJP dependent ~a: ~a(~{~a~^ ~} | ~{~a~^ ~} | ~{~a~^ ~})" head vjp origins vars adjs)
+    `(progn
+       ,@(loop for a in adjs collect `(,head ,plus ,a 0.0))
+       (let ((,@gs (,vjp ,@origins ,@vars ,@adjs)))
+         ,@(loop for a in adjs for g in gs collect `(set! ,a ,g)))
+       ,@(when active
+           `((when (>= (to-int ,lane-form) (to-int ,active))
+               ,@(loop for a in adjs collect `(set! ,a (- ,a ,a)))))))))
+
+;; src/macros.lisp  (177 Phase 1b: SUPERSEDES the copy above -- adds the dependent branch)
+(defun %ad-version-in-place-writes (flat-anf)
+  "BUG 100.  Versions the top-level in-place scalar writes of FLAT-ANF (see the section header).
+   Returns (values NEW-FLAT-ANF REPLAY-STATEMENTS), the latter an alist (VERSION-SYM . STATEMENT) of
+   the reductions the primal replay must re-run, in order."
+  (let ((out '()) (stmts '()) (scalars '()) (counter 0) (rest flat-anf))
+    (loop while rest
+          do (let* ((form (pop rest))
+                    (head (%ad-form-head-name form)))
+               (cond
+                ;; (SET! V e) of a scalar local -> (V%Vn e)
+                ((and (equal head "SET!") (= (length form) 3)
+                      (symbolp (second form)) (member (second form) scalars)
+                      (%ad-versionable-p (second form) rest))
+                  (let* ((v (second form))
+                         (nv (%ad-version-sym v (incf counter))))
+                    (log:debug "BUG 100: set! ~a -> binding ~a" v nv)
+                    (push (list nv (third form)) out)
+                    (push nv scalars)
+                    (setf rest (subst nv v rest))))
+                ;; Endeavour 177: a DEPENDENT reduction -> one copy per clause variable, then the
+                ;; reduction over the copies.  Keyed for the replay on the LAST copy.
+                ((and (member head *ad-versioned-reductions* :test #'equal)
+                      (%dependent-reduction-form-p form)
+                      (every (lambda (c) (%ad-versionable-p (first c) rest)) (third form)))
+                  (let* ((vars (mapcar #'first (third form)))
+                         (nvs  (mapcar (lambda (v) (%ad-version-sym v (incf counter))) vars))
+                         (stmt (list* (first form) (second form)
+                                      (mapcar (lambda (c nv) (cons nv (rest c))) (third form) nvs)
+                                      (cdddr form))))
+                    (log:debug "177: dependent ~a of ~a -> copies ~a + replayed statement" head vars nvs)
+                    (loop for v in vars for nv in nvs do (push (list nv v) out))
+                    (push stmt out)
+                    (push (cons (car (last nvs)) stmt) stmts)
+                    (setf scalars (append nvs scalars))
+                    (loop for v in vars for nv in nvs do (setf rest (subst nv v rest)))))
+                ;; (REDUCE-xxx f V id ..) -> (V%Vn V) (REDUCE-xxx f V%Vn id ..)
+                ((and (member head *ad-versioned-reductions* :test #'equal)
+                      (>= (length form) 4)
+                      (%ad-versionable-p (third form) rest))
+                  (let* ((v (third form))
+                         (nv (%ad-version-sym v (incf counter)))
+                         (stmt (list* (first form) (second form) nv (cdddr form))))
+                    (log:debug "BUG 100: ~a of ~a -> copy ~a + replayed statement" head v nv)
+                    (push (list nv v) out)
+                    (push stmt out)
+                    (push (cons nv stmt) stmts)
+                    (push nv scalars)
+                    (setf rest (subst nv v rest))))
+                (t
+                  ;; a scalar local: bound by a two-element binding whose value is not a constructor
+                  (when (and (consp form) (= (length form) 2) (car form) (symbolp (car form))
+                             (let ((h (%ad-form-head-name (second form))))
+                               (not (and h (>= (length h) 5) (string= "MAKE-" h :end2 5)))))
+                    (push (car form) scalars))
+                  (push form out)))))
+    (values (nreverse out) (nreverse stmts))))
+
+;; src/autodiff.lisp  (177 Phase 1b: SUPERSEDES the copy above -- delegates the dependent form)
+(defun %175-vjp-reduce-warp (form ctx)
+  "VJP for reduce-warp: a warp all-reduce is self-transposing, so the backward pass is another
+   reduce-warp of the adjoint.  See the section header."
+  ;; Endeavour 177: the DEPENDENT form has its own rule, through the combiner's reduction-vjp.
+  (when (%dependent-reduction-form-p form)
+    (return-from %175-vjp-reduce-warp (%177-vjp-dependent-reduction form ctx '(warp-lane))))
+  (let* ((fn  (second form))
+         (var (third form))
+         (local-adj (getf ctx :local-adj)))
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "reduce-warp: autodiff is supported only for the + reduction.  The transpose of a SUM all-reduce is another sum all-reduce, which is exact and needs nothing recorded from the forward pass.  min/max would route the adjoint to the lane that supplied the winning value, which requires the forward pass to stash an argmin/argmax; an arbitrary binop needs the partial derivatives of that op at every butterfly step.  Neither is recorded.  Use the + reduction, or mark the kernel with a differentiate-skip if it is forward-only."))
+    (unless (and var (symbolp var))
+      (return-from %175-vjp-reduce-warp nil))
+    (let ((vadj (funcall local-adj var)))
+      (log:debug "175 VJP reduce-warp: all-reduce of ~a" vadj)
+      ;; In place, mirroring the forward.
+      ;; The SUM runs WITHOUT active-threads: a padding lane holds the result too, so its output
+      ;; adjoint is real and belongs in the sum.  But the sum is then every lane's INPUT adjoint,
+      ;; and a padding lane's input never entered the reduction -- BUG 101: it must get zero.
+      ;; (Before the gate, a padding lane read the full gradient: 16.0 where FD gives 0.0.)
+      (let ((active (fifth form)))
+        (if active
+            `(progn
+               (reduce-warp ,fn ,vadj 0.0)
+               (when (>= (to-int (warp-lane)) (to-int ,active))
+                 (set! ,vadj (- ,vadj ,vadj))))
+            `(reduce-warp ,fn ,vadj 0.0))))))
+
+;; src/autodiff.lisp  (re-register: captured by function OBJECT)
+(eval-when (:load-toplevel :execute)
+  (register-vjp "REDUCE-WARP" (function %175-vjp-reduce-warp)))
