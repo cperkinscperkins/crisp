@@ -1,0 +1,31 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,10 expect.A=0.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; BUG 101 through the INDEPENDENT form.  The AD path splits an independent reduce-warp into one
+;; single-variable reduce-warp per clause, carrying active-threads onto each, so every clause meets
+;; 175's reduce-warp VJP -- and its padding-lane bug.  175/63 pins the single form; this pins that
+;; the split still reaches the fixed VJP.
+;;
+;; v and w = 2v are reduced over lanes 0..7 of a 16-lane bmg warp; every lane writes v + w, so per
+;; warp sum(C) = 16 * 3 * (A[0..7]).  A[0,10] is in a padding lane: derivative 0.0 (an active lane
+;; would read 48.0).  Before the fix, a padding lane got the full 48.0.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_indep_active_padding (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (let ((w (* 2.0 v)))
+          (reduce-warp ((#'+ v 0.0)
+                        (#'+ w 0.0))
+                       8)
+          (set! (~ C row col) (+ v w)))))))

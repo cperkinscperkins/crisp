@@ -1,0 +1,21 @@
+;; VERIFY-AUTODIFF: x=3.0 atol=1e-3 expect.x=6.0
+;;
+;; BUG 099: a COPY binding, (let ((v0 v)) ...), dropped v0's adjoint -- a silently wrong gradient.
+;;
+;; res = v * v0 with v0 a copy of v, so res = x^2 and dres/dx = 2x = 6.0.  Before the fix the
+;; backward computed V0_ADJ and never folded it back into V_ADJ, so only the v factor's half of the
+;; product rule survived: analytical 3.0 (measured on BMG, endeavour 177 Phase 0, as 1.2 vs 2.4 on a
+;; matrix probe).  The copy rule existed -- %backward-value-expr, for let/if VALUE expressions --
+;; but a flat-ANF binding (V0 V) went to %handle-single-value-backward, which had no clause for a
+;; bare symbol and fell through to (t nil).
+;;
+;; 16 is the companion: a CHAIN of copies with only the last one used, where the bug gave zero.
+
+(def-type in-c  (cell float :address-space :global))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel copy_binding_diff (x &out res)
+  (declare #'(in-c &out out-c))
+  (let ((v (~ x)))
+    (let ((v0 v))
+      (set! (~ res) (* v v0)))))

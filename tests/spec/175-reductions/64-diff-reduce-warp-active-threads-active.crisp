@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,2 expect.A=16.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; BUG 101, companion to 63: an ACTIVE lane of an active-threads reduce-warp.
+;;
+;; Same kernel as 63.  A[0,2] is in lane 2 < 8, so it reaches all 16 outputs of its warp: the
+;; derivative is 16.0.  This passed before the fix too; it is here so the fix -- gating the input
+;; adjoint by (< lane active-threads) -- cannot pass 63 by zeroing everything.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_rw_active_lane (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (reduce-warp #'+ v 0.0 8)
+        ;; Every lane -- active or padding -- holds the total and writes it.
+        (set! (~ C row col) v)))))

@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,10 expect.A=0.0 atol=1e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; BUG 101: a PADDING lane of an active-threads reduce-warp got the full gradient.
+;;
+;; (reduce-warp #'+ v 0.0 8) on a 16-lane bmg warp: lanes 0..7 contribute, lanes 8..15 contribute
+;; the identity, and EVERY lane ends up holding the total (175/04 pins that).  Every lane writes it,
+;; so per warp sum(C) = 16 * (A[0..7]).  A[0,10] sits in a padding lane and never entered the sum:
+;; its derivative is 0.0.
+;;
+;; Before the fix: analytical=16.0, numerical=0.0 (measured on BMG, endeavour 177 Phase 0).  The VJP
+;; was an all-reduce of the adjoint WITHOUT active-threads -- right for the SUM (padding lanes' OUTPUT
+;; adjoints are real, they hold the result) but it handed that sum back to every lane as its INPUT
+;; adjoint, and a padding lane's input contributed nothing.
+;;
+;; 64 is the companion: an ACTIVE lane, so a gate that zeroes too much is caught too.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel diff_rw_active_padding (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (reduce-warp #'+ v 0.0 8)
+        ;; Every lane -- active or padding -- holds the total and writes it.
+        (set! (~ C row col) v)))))
