@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-01T17:19:33.834252Z
+Generated on 2026-10-03T06:00:29.323682Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1106,6 +1106,12 @@ Generated on 2026-10-01T17:19:33.834252Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
 
+### DEFVAR `*176-GENERIC-SCRATCH-RANGE*`
+
+  > Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter  >    before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1  >    (multi-pass) or at the function's skip point (single-pass); read when its variants are generated.
+
+
+---
 ### DEFVAR `*ANALYSIS-ACCESS-MODE*`
 
 ---
@@ -2276,10 +2282,50 @@ Generated on 2026-10-01T17:19:33.834252Z
 
 
 ---
+### DEFVAR `*REDUCTION-VJPS*`
+
+  > Endeavour 177.  Combiner name (a string) -> the function symbol its (declare (reduction-vjp f))  >    names.  Kept current by REGISTER-FUNCTION-SIGNATURE, which every def-function passes through: a  >    redefinition WITHOUT the declaration removes the entry, so in-process runs never see a stale one.
+
+
+---
+### DEFUN `%DECLARED-REDUCTION-VJP`
+- **Args**: `(FORM)`
+
+  > Endeavour 177.  The function symbol a (def-function name params . body) FORM declares as its  >    (reduction-vjp f), or NIL.  Declarations are matched by symbol NAME (either package).
+
+
+---
+### DEFUN `%DEPENDENT-REDUCTION-VJP`
+- **Args**: `(FORM)`
+
+  > Endeavour 177.  The reduction-vjp declared on the combiner of the dependent reduction FORM, or NIL --  >    also NIL when the combiner is not a literal #'f (a function VALUE has no declaration to find).
+
+
+---
+### DEFPARAMETER `*177-DIFFERENTIABLE-DEPENDENT-FORMS*`
+
+  > Endeavour 177.  The dependent reductions whose backward is implemented.
+
+
+---
+### DEFUN `%REDUCTION-VJP-ADJOINT-TYPE`
+- **Args**: `(TY)`
+
+  > Endeavour 177.  The adjoint type of a clause variable of type TY, as the AD walk gives it: DOUBLE for a  >    double, FLOAT for every other scalar -- integers included (endeavour 177 Phase 0: a local's adjoint is  >    float whatever its type).  The double case follows the rule but has no measured spec yet.
+
+
+---
+### DEFUN `%CHECK-REDUCTION-VJP`
+- **Args**: `(OP-NAME COMBINER CLAUSES ENV CONTEXT LOCATION)`
+
+  > Endeavour 177.  If the literal #'COMBINER declares (reduction-vjp F), F must exist with the signature  >    #'(T1..Tk T1..Tk A1..Ak => A1..Ak) -- own state, result state, result adjoint => own adjoint -- where Ti  >    is clause i's variable type and Ai its adjoint type (%reduction-vjp-adjoint-type).  Refused otherwise,  >    showing the signature it must have.
+
+
+---
 ### DEFUN `%REFUSE-DEPENDENT-AUTODIFF`
 - **Args**: `(FORM)`
 
-  > BUG 098.  The AD path meets a dependent reduction: refuse LOUDLY.  Its variables interact inside a user  >    combiner, so the per-clause split the independent form uses does not apply, and a scratch-based  >    cross-thread reduction differentiated mechanically is silently wrong.
+  > BUG 098 / endeavour 177.  The AD path meets a dependent reduction it cannot differentiate: refuse  >    LOUDLY, naming what would make it differentiable.  (KEEP "not differentiable yet": 176/errors/11  >    and 177/errors/02 match on it.)
 
 
 ---
@@ -4464,6 +4510,13 @@ Generated on 2026-10-01T17:19:33.834252Z
 
 
 ---
+### DEFUN `%177-VJP-DEPENDENT-REDUCTION`
+- **Args**: `(FORM CTX &OPTIONAL LANE-FORM)`
+
+  > Endeavour 177.  VJP of a dependent all-reduce (reduce-warp, reduce-workgroup):  >      1. a + all-reduce of each clause variable's adjoint -- the result is held by every thread, so its  >         adjoint is the sum of all threads' (padding lanes included: they hold it too).  A clause's  >         :local-scratch-vec, if it names one, is reused for that sum; otherwise the sum gets implicit  >         scratch, as the forward did;  >      2. one call to the combiner's reduction-vjp, whose results REPLACE the variables' adjoints;  >      3. with LANE-FORM (reduce-warp, whose 4th element is active-threads), the active-threads gate --  >         the user's VJP cannot see it (cf. BUG 101).  >    The copy rule (BUG 099) then carries each adjoint back to the pre-reduction variable, which Phase 1a's  >    versioning left as (V%Vn V) ahead of the reduction.
+
+
+---
 ### DEFUN `%175-VJP-GRID-REDUCE-ATOMIC`
 - **Args**: `(FORM CTX)`
 
@@ -6449,6 +6502,9 @@ Generated on 2026-10-01T17:19:33.834252Z
 ### DEFUN `REGISTER-FUNCTION-SIGNATURE`
 - **Args**: `(FORM LOCATION)`
 
+  > Registers the signature of a def-function / def-kernel FORM in the environment.  >    Endeavour 177: also records a def-function's (declare (reduction-vjp f)) in *REDUCTION-VJPS* -- or clears  >    a stale entry, so in-process runs that redefine a function without it never see an old one.
+
+
 ---
 ### DEFVAR `*KERNEL-DECLARED-SIGNATURES*`
 
@@ -8161,6 +8217,68 @@ Generated on 2026-10-01T17:19:33.834252Z
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
   > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.  Endeavor 113: also normalises  >    request-load-tile-at -> load-tile-at and await-request -> nil  >    for the backward pass.
+
+
+---
+### DEFPARAMETER `*AD-VERSIONED-REDUCTIONS*`
+
+  > BUG 100.  The in-place reductions whose result the backward's primal replay re-runs: the  >    all-reduces, which touch nothing but the variable and their scratch.
+
+
+---
+### DEFUN `%AD-FORM-HEAD-NAME`
+- **Args**: `(FORM)`
+
+  > The symbol-name of FORM's head, or NIL.
+
+
+---
+### DEFUN `%AD-TREE-HAS-HEAD-P`
+- **Args**: `(SYM TREE)`
+
+  > T if some list inside TREE (or TREE itself) has SYM as its head -- in an ANF body that is a  >    binding of SYM, since a variable is never called.
+
+
+---
+### DEFUN `%AD-TREE-MENTIONS-P`
+- **Args**: `(SYM TREE)`
+
+  > T if SYM occurs anywhere in TREE.
+
+
+---
+### DEFUN `%AD-MULTI-VALUE-BINDING-SHAPE-P`
+- **Args**: `(FORM)`
+
+  > T if FORM looks like a flat-ANF multi-value binding (V1 V2 .. expr).
+
+
+---
+### DEFUN `%AD-VERSIONABLE-P`
+- **Args**: `(V REST)`
+
+  > BUG 100.  May V be versioned, given REST (the flat-ANF forms after the write)?  Not if a later form  >    rebinds it, nor if it appears in a later multi-value binding (see the section header).
+
+
+---
+### DEFUN `%AD-VERSION-SYM`
+- **Args**: `(V N)`
+
+  > The Nth version of variable V: V%VN.
+
+
+---
+### DEFUN `%AD-VERSION-IN-PLACE-WRITES`
+- **Args**: `(FLAT-ANF)`
+
+  > BUG 100.  Versions the top-level in-place scalar writes of FLAT-ANF (see the section header).  >    Returns (values NEW-FLAT-ANF REPLAY-STATEMENTS), the latter an alist (VERSION-SYM . STATEMENT) of  >    the reductions the primal replay must re-run, in order.
+
+
+---
+### DEFUN `%AD-ASSEMBLE-PRIMAL-REPLAY`
+- **Args**: `(BINDINGS STMTS BODY)`
+
+  > BUG 100.  The backward's primal replay around BODY: a LET of BINDINGS, SPLIT after each version  >    symbol's binding so the reduction in STMTS (VERSION-SYM . STATEMENT) re-runs exactly there --  >        (let (b1 .. (V%V1 V)) (reduce-warp #'+ V%V1 0.0) (let (..rest..) BODY))  >    A statement whose version binding was dropped from the replay (an unreplayable dependency) cannot  >    run and is skipped -- every later binding reading it was dropped with it.
 
 
 ---
@@ -10891,12 +11009,6 @@ Generated on 2026-10-01T17:19:33.834252Z
 ### DEFVAR `*SPLIT-BARRIER-DEPTH*`
 
   > How many split-barrier windows are open in the kernel currently being analysed, or NIL outside  >    one.  Bound per kernel by INTERNAL-DEF-FUNCTION and stepped by %ANALYZE-GPU-BUILTIN.  >   >    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the  >    second :arrive sees a non-zero depth and refuses.
-
-
----
-### DEFVAR `*176-GENERIC-SCRATCH-RANGE*`
-
-  > Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter  >    before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1  >    (multi-pass) or at the function's skip point (single-pass); read when its variants are generated.
 
 
 ---

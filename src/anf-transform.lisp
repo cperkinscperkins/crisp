@@ -214,9 +214,15 @@
        ;; fused lowering.)
        (when (%independent-reduction-form-p expr)
          (return-from anf-normalize (anf-normalize (%independent-reduction-split-for-ad expr) is-nested?)))
-       ;; 176 Phase 3 / BUG 098: a DEPENDENT reduction has no backward rule yet -- refuse loudly.
+       ;; 176 Phase 3 / BUG 098, endeavour 177: a DEPENDENT reduction whose combiner declares a
+       ;; reduction-vjp passes through as an opaque STATEMENT (its clauses are not expressions to
+       ;; normalize) -- its VJP takes it from there.  Any other dependent reduction is refused loudly.
        (when (%dependent-reduction-form-p expr)
-         (%refuse-dependent-autodiff expr))
+         (if (and (member (symbol-name (car expr)) *177-differentiable-dependent-forms* :test #'string-equal)
+                  (%dependent-reduction-vjp expr))
+             (progn (log:debug "177: dependent ~a passes through ANF for its reduction-vjp" (car expr))
+                    (return-from anf-normalize (values expr nil)))
+             (%refuse-dependent-autodiff expr)))
        (when (and (symbolp op)
                   (macro-function op)
                   (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let

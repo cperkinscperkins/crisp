@@ -259,4 +259,14 @@ than shipped unmeasured.
       (dependent form excepted); an AD-chapter bullet on reassignment / in-place reductions (BUG 099/100);
       the declare table row.  reference.md + call graph to regenerate AFTER the fold
 - [x] 176/errors/11 KEPT as the "no reduction-vjp declared" case; 176/15-18's SKIP-WITHs REMOVED (false claims)
-- [ ] BUG 098 closed; fold; definition of done
+- [x] BUG 098 closed (warp + workgroup; grid -> BUG 102)
+- [x] FOLDED 2026-10-02, overlay EMPTY.  Superseded overlay copies deleted first; forms script-extracted
+      (put_temp_files_here/177/fold.py); the three overlay wrappers inlined (register-function-signature,
+      anf-normalize, %check-dependent-combiner); VJP re-registrations dropped; the refusal's unreachable
+      "function VALUE" branch dropped.  *176-generic-scratch-range* moved out of the GENERATED specials.lisp
+      (its tail -- 155's hand-folded defvars/defconstants -- preserved across the regeneration).
+- [x] definition of done: unit 341/341 + versioning.unit.lisp (8 tests: the versioning shapes, the cases left
+      alone, the replay split); E2E 1352/1352; negative 301/301; FULL --differentiate 1352/1352; --single-pass
+      177 18/18; chapters regenerated (split-docs reproduces the committed text); reference.md, call graph,
+      globals matrix regenerated.  CI needs no edit (it runs to ci-stop = 177-reduction-ad).
+- [ ] CUDA pod run (177/10-13 and the 175/176 backlog) -- next, by plan

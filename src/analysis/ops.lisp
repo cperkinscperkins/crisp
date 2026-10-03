@@ -1447,7 +1447,9 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                                             (list (mapcar #'parameter-def-type (function-signature-parameters sig))
                                                   (remove nil (function-signature-return-types sig))))
                                           sigs))
-                 :source-location location))))))
+                 :source-location location)))))
+  ;; Endeavour 177: then the combiner's reduction-vjp, if it declares one -- on the FORWARD pass.
+  (%check-reduction-vjp op-name combiner clauses env context location))
 
 (defun %fused-reduce-warp-dependent-form (expr)
   "Endeavour 176 Phase 3.  A dependent reduce-warp as one butterfly: per iteration, every variable is
@@ -1601,14 +1603,98 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                     (compiler-no-op))))
           (if lets `(let ,(nreverse lets) ,body) body))))))
 
+(defvar *reduction-vjps* (make-hash-table :test 'equal)
+  "Endeavour 177.  Combiner name (a string) -> the function symbol its (declare (reduction-vjp f))
+   names.  Kept current by REGISTER-FUNCTION-SIGNATURE, which every def-function passes through: a
+   redefinition WITHOUT the declaration removes the entry, so in-process runs never see a stale one.")
+
+(defun %declared-reduction-vjp (form)
+  "Endeavour 177.  The function symbol a (def-function name params . body) FORM declares as its
+   (reduction-vjp f), or NIL.  Declarations are matched by symbol NAME (either package)."
+  (loop for f in (cdddr form)
+        while (and (consp f) (symbolp (car f)) (string-equal (symbol-name (car f)) "DECLARE"))
+        do (loop for d in (rest f)
+                 when (and (consp d) (symbolp (car d))
+                           (string-equal (symbol-name (car d)) "REDUCTION-VJP"))
+                   do (return-from %declared-reduction-vjp (second d)))))
+
+(defun %dependent-reduction-vjp (form)
+  "Endeavour 177.  The reduction-vjp declared on the combiner of the dependent reduction FORM, or NIL --
+   also NIL when the combiner is not a literal #'f (a function VALUE has no declaration to find)."
+  (let ((comb (second form)))
+    (and (consp comb) (symbolp (car comb)) (string-equal (symbol-name (car comb)) "FUNCTION")
+         (symbolp (second comb))
+         (gethash (symbol-name (second comb)) *reduction-vjps*))))
+
+(defparameter *177-differentiable-dependent-forms* '("REDUCE-WARP" "REDUCE-WORKGROUP")
+  "Endeavour 177.  The dependent reductions whose backward is implemented.")
+
+(defun %reduction-vjp-adjoint-type (ty)
+  "Endeavour 177.  The adjoint type of a clause variable of type TY, as the AD walk gives it: DOUBLE for a
+   double, FLOAT for every other scalar -- integers included (endeavour 177 Phase 0: a local's adjoint is
+   float whatever its type).  The double case follows the rule but has no measured spec yet."
+  (let ((r (resolve-type-alias ty)))
+    (if (and (symbolp r) (string-equal (symbol-name r) "DOUBLE"))
+        r
+        (intern "FLOAT" (find-package :crisp.compiler)))))
+
+(defun %check-reduction-vjp (op-name combiner clauses env context location)
+  "Endeavour 177.  If the literal #'COMBINER declares (reduction-vjp F), F must exist with the signature
+   #'(T1..Tk T1..Tk A1..Ak => A1..Ak) -- own state, result state, result adjoint => own adjoint -- where Ti
+   is clause i's variable type and Ai its adjoint type (%reduction-vjp-adjoint-type).  Refused otherwise,
+   showing the signature it must have."
+  (when (%function-form-p combiner)
+    (let* ((fname (second combiner))
+           (vjp (gethash (symbol-name fname) *reduction-vjps*)))
+      (when vjp
+        (let* ((sigs (gethash vjp *function-table*))
+               (norm (lambda (ty) (let ((r (resolve-type-alias ty))) (if (symbolp r) (symbol-name r) r))))
+               (var-types (mapcar (lambda (c)
+                                    (resolve-type-alias
+                                     (semantic-node-type (analyze-expression (first c) env context location))))
+                                  clauses))
+               (adj-types (mapcar #'%reduction-vjp-adjoint-type var-types))
+               (want-params (append var-types var-types adj-types)))
+          (log:debug "177: checking reduction-vjp ~a of ~a against ~a => ~a" vjp fname want-params adj-types)
+          (unless sigs
+            (error 'crisp-compiler-error
+                   :message (format nil "~a: the combiner ~(~a~) declares (reduction-vjp ~(~a~)), but ~(~a~) is not a defined function"
+                                    op-name fname vjp vjp)
+                   :source-location location))
+          (unless (find-if (lambda (sig)
+                             (let ((ps (mapcar #'parameter-def-type (function-signature-parameters sig)))
+                                   (rs (remove nil (function-signature-return-types sig))))
+                               (and (= (length ps) (length want-params))
+                                    (= (length rs) (length adj-types))
+                                    (every (lambda (a b) (equal (funcall norm a) (funcall norm b))) ps want-params)
+                                    (every (lambda (a b) (equal (funcall norm a) (funcall norm b))) rs adj-types))))
+                           sigs)
+            (error 'crisp-compiler-error
+                   :message (format nil "~a: the reduction-vjp must be #'(~{~(~a~)~^ ~}  ~{~(~a~)~^ ~}  ~{~(~a~)~^ ~} => ~{~(~a~)~^ ~}) for these clauses -- own state, result state, result adjoint => own adjoint (an integer component's adjoint is float).  ~(~a~) is declared ~{~(~s~)~^ or ~}"
+                                    op-name var-types var-types adj-types adj-types vjp
+                                    (mapcar (lambda (sig)
+                                              (list (mapcar #'parameter-def-type (function-signature-parameters sig))
+                                                    (remove nil (function-signature-return-types sig))))
+                                            sigs))
+                   :source-location location)))))))
+
 (defun %refuse-dependent-autodiff (form)
-  "BUG 098.  The AD path meets a dependent reduction: refuse LOUDLY.  Its variables interact inside a user
-   combiner, so the per-clause split the independent form uses does not apply, and a scratch-based
-   cross-thread reduction differentiated mechanically is silently wrong."
-  (error 'crisp-compiler-error
-         :message (format nil "~(~a~): dependent reductions are not differentiable yet (BUG 098) -- the variables interact inside the combiner ~s, so the backward pass has no rule for them.  Keep this kernel out of differentiation."
-                          (car form) (second form))
-         :source-location nil))
+  "BUG 098 / endeavour 177.  The AD path meets a dependent reduction it cannot differentiate: refuse
+   LOUDLY, naming what would make it differentiable.  (KEEP \"not differentiable yet\": 176/errors/11
+   and 177/errors/02 match on it.)"
+  (let ((comb (second form))
+        (implemented (member (symbol-name (car form)) *177-differentiable-dependent-forms*
+                             :test #'string-equal)))
+    (error 'crisp-compiler-error
+           :message
+           (cond
+            ((not implemented)
+              (format nil "~(~a~): a dependent reduction is not differentiable yet at this level (BUG 102) -- ~{~(~a~)~^ and ~} are, through the combiner's reduction-vjp.  Reduce within the workgroup first, or use an independent form"
+                      (car form) *177-differentiable-dependent-forms*))
+            (t
+              (format nil "~(~a~): this dependent reduction is not differentiable yet -- its variables interact inside the combiner ~s, which declares no local VJP.  Add (declare (reduction-vjp f)) to the combiner, where f takes (own state, result state, result adjoint) and returns this thread's adjoint"
+                      (car form) comb)))
+           :source-location nil)))
 
 (macrolet ((def-warp-scanners ()
              `(progn

@@ -870,6 +870,29 @@
                                         scratch-tile-syms)
   "Generates backward-pass adjoint updates for a single ANF binding (v := expr)."
   (cond
+   ;; BUG 099: a COPY binding, v := s.  The reverse walk has already processed every use of v, so
+   ;; v's adjoint is final here and flows to s unchanged.  Without this clause the binding fell
+   ;; through to (t nil) and v's adjoint was dropped -- (let ((v0 v)) (* v v0)) differentiated to x,
+   ;; not 2x.  (%backward-value-expr has the same rule for let/if VALUE expressions; the top-level
+   ;; walk never went there.)
+   ;;
+   ;; Scoped to SCALAR dataflow: a tensor input, a scratch tile, or a view alias keeps its adjoint
+   ;; in a TENSOR named <sym>_ADJ, and minting a scalar of the same name here would shadow it (the
+   ;; collision described at the accessor clause below).  And only when v already HAS an adjoint --
+   ;; a copy nothing downstream reads contributes nothing, and must not mint a binding for s.
+   ((and expr (symbolp expr) (not (keywordp expr)))
+     (when (and (not (eq expr v))
+                (gethash v adjoint-map)
+                (not (and tensor-inputs-ht (gethash expr tensor-inputs-ht)))
+                ;; scratch-tile-syms is a HASH TABLE here (a list elsewhere) -- accept either.
+                (not (if (hash-table-p scratch-tile-syms)
+                         (gethash expr scratch-tile-syms)
+                         (member expr scratch-tile-syms)))
+                (not (%ad-resolve-view-alias expr))
+                (not (%ad-resolve-view-alias v)))
+       (log:debug "099: copy binding ~a := ~a -- adjoint flows to ~a" v expr expr)
+       (funcall emit-fn `(set! ,(funcall local-adj-fn expr)
+                               (+ ,(funcall local-adj-fn expr) ,(funcall local-adj-fn v))))))
    ;; Endeavour 170: the hardware math ops carry their own backward rules.  First, because the
    ;; clauses below key on operator names this one does not share.
    ((%hw-op-form-op expr)
@@ -6500,6 +6523,9 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 (defun %175-vjp-reduce-warp (form ctx)
   "VJP for reduce-warp: a warp all-reduce is self-transposing, so the backward pass is another
    reduce-warp of the adjoint.  See the section header."
+  ;; Endeavour 177: the DEPENDENT form has its own rule, through the combiner's reduction-vjp.
+  (when (%dependent-reduction-form-p form)
+    (return-from %175-vjp-reduce-warp (%177-vjp-dependent-reduction form ctx '(warp-lane))))
   (let* ((fn  (second form))
          (var (third form))
          (local-adj (getf ctx :local-adj)))
@@ -6511,14 +6537,26 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
       (return-from %175-vjp-reduce-warp nil))
     (let ((vadj (funcall local-adj var)))
       (log:debug "175 VJP reduce-warp: all-reduce of ~a" vadj)
-      ;; In place, mirroring the forward, and WITHOUT active-threads: the inactive lanes' adjoints
-      ;; are zero and contribute nothing to the sum.
-      `(reduce-warp ,fn ,vadj 0.0))))
+      ;; In place, mirroring the forward.
+      ;; The SUM runs WITHOUT active-threads: a padding lane holds the result too, so its output
+      ;; adjoint is real and belongs in the sum.  But the sum is then every lane's INPUT adjoint,
+      ;; and a padding lane's input never entered the reduction -- BUG 101: it must get zero.
+      ;; (Before the gate, a padding lane read the full gradient: 16.0 where FD gives 0.0.)
+      (let ((active (fifth form)))
+        (if active
+            `(progn
+               (reduce-warp ,fn ,vadj 0.0)
+               (when (>= (to-int (warp-lane)) (to-int ,active))
+                 (set! ,vadj (- ,vadj ,vadj))))
+            `(reduce-warp ,fn ,vadj 0.0))))))
 
 (defun %175-vjp-reduce-workgroup (form ctx)
   "VJP for reduce-workgroup: an all-reduce is self-transposing, so the backward pass is another
    all-reduce of the adjoint.  See the section header for the derivation and spec 09 for the
    measured value (64, against 1.0 for the mechanical reversal)."
+  ;; Endeavour 177: the DEPENDENT form has its own rule, through the combiner's reduction-vjp.
+  (when (%dependent-reduction-form-p form)
+    (return-from %175-vjp-reduce-workgroup (%177-vjp-dependent-reduction form ctx)))
   (let* ((fn         (second form))
          (var        (third form))
          (keys       (cddddr form))
@@ -6538,6 +6576,74 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
       ;; In place, mirroring the forward -- the operation consumes v and produces v, so the
       ;; input adjoint REPLACES the output adjoint rather than accumulating onto it.
       `(reduce-workgroup ,fn ,vbar 0.0 :local-scratch-vec ,scratch))))
+
+;;; ===========================================================================================
+;;; Endeavour 177 Phase 1b -- AD of a DEPENDENT reduce-warp through the combiner's reduction-vjp.
+;;;
+;;; The user declares, on the combiner, a LOCAL VJP: (own state, result state, result adjoint) => own
+;;; adjoint.  Phase 1a made the backward hold both states -- the dependent reduction is versioned like a
+;;; single one, so V/W are this lane's own values and V%V1/W%V1 the result.  The VJP is then:
+;;;   1. a + all-reduce of each clause variable's adjoint (the result is held by every lane, so its
+;;;      adjoint is the sum of all lanes' -- padding lanes included, they hold it too);
+;;;   2. one call to the user's local VJP, whose results REPLACE the variables' adjoints;
+;;;   3. the active-threads gate (as BUG 101) -- the user's VJP cannot see active-threads.
+;;; The copy rule (BUG 099) then carries each adjoint back to the pre-reduction variable.
+;;; ===========================================================================================
+
+(defun %177-vjp-dependent-reduction (form ctx &optional lane-form)
+  "Endeavour 177.  VJP of a dependent all-reduce (reduce-warp, reduce-workgroup):
+     1. a + all-reduce of each clause variable's adjoint -- the result is held by every thread, so its
+        adjoint is the sum of all threads' (padding lanes included: they hold it too).  A clause's
+        :local-scratch-vec, if it names one, is reused for that sum; otherwise the sum gets implicit
+        scratch, as the forward did;
+     2. one call to the combiner's reduction-vjp, whose results REPLACE the variables' adjoints;
+     3. with LANE-FORM (reduce-warp, whose 4th element is active-threads), the active-threads gate --
+        the user's VJP cannot see it (cf. BUG 101).
+   The copy rule (BUG 099) then carries each adjoint back to the pre-reduction variable, which Phase 1a's
+   versioning left as (V%Vn V) ahead of the reduction."
+  (let* ((head      (car form))
+         (comb      (second form))
+         (vjp       (%dependent-reduction-vjp form))
+         (clauses   (third form))
+         (active    (and lane-form (fourth form)))
+         (local-adj (getf ctx :local-adj))
+         (flat      (getf ctx :flat-anf))
+         (vars      (mapcar #'first clauses))
+         (origins   (mapcar (lambda (nv)
+                              (let ((b (find-if (lambda (f) (and (consp f) (= (length f) 2)
+                                                                 (eq (first f) nv) (symbolp (second f))))
+                                                flat)))
+                                (and b (second b))))
+                            vars))
+         (adjs      (mapcar local-adj vars))
+         (gs        (loop repeat (length vars) collect (gensym "RVJP-")))
+         (plus      (list 'function (intern "+" (symbol-package head)))))
+    (unless vjp
+      (%refuse-dependent-autodiff form))
+    (dolist (c clauses)
+      (when (getf (cddr c) :return-vec)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): :return-vec is not differentiable yet in a dependent reduction (clause ~a) -- the per-workgroup partial it writes is a SECOND output, as for the single-variable form.  Read the result from the variable instead"
+                                head (first c))
+               :source-location nil)))
+    (when (some #'null origins)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~): the dependent reduction over ~{~a~^, ~} could not be differentiated -- the backward pass has no copy of the pre-reduction values (a clause variable is rebound later, or used in a later multi-value binding, so it was not versioned)"
+                              head vars)
+             :source-location nil))
+    (log:debug "177 VJP dependent ~a: ~a(~{~a~^ ~} | ~{~a~^ ~} | ~{~a~^ ~})" head vjp origins vars adjs)
+    `(progn
+       ,@(loop for a in adjs
+               for c in clauses
+               for scratch = (getf (cddr c) :local-scratch-vec)
+               collect (if scratch
+                           `(,head ,plus ,a 0.0 :local-scratch-vec ,scratch)
+                           `(,head ,plus ,a 0.0)))
+       (let ((,@gs (,vjp ,@origins ,@vars ,@adjs)))
+         ,@(loop for a in adjs for g in gs collect `(set! ,a ,g)))
+       ,@(when active
+           `((when (>= (to-int ,lane-form) (to-int ,active))
+               ,@(loop for a in adjs collect `(set! ,a (- ,a ,a)))))))))
 
 (defun %175-vjp-grid-reduce-atomic (form ctx)
   "VJP: out[0] is the sum over the whole grid, so every thread's adjoint is the output cell's
