@@ -1,0 +1,46 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=3,15 expect.A=64.0 atol=2e-1 h=0.01 group=64 output-mat=4x16
+;;
+;; ENDEAVOUR 177 Phase 2 -- a DEPENDENT reduce-workgroup differentiates through the combiner's reduction-vjp.
+;;
+;; argmax across all 64 threads (four bmg warps), every thread writes the maximum, so sum(C) = 64 * max.
+;; A = 1.0 + 0.1k rises over all 64 elements, so A[3,15] = 7.3 wins: d/dA[3,15] = 64.0 (h = 0.01 keeps the
+;; winner in first place).  Same lowering as reduce-warp (Phase 1b), with the result adjoint a
+;; reduce-workgroup + sum.  IMPLICIT scratch throughout -- the backward's replay and its adjoint sums get
+;; their own.  08 is a loser (0.0).
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp argmax-local-vjp))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
+  (declare #'(float ulong float ulong float float => float float))
+  (if (= i ri)
+      (return rv-bar 0.0)
+      (return 0.0 0.0)))
+
+(def-kernel diff_rwg_argmax_winner (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (i (to-ulong tid)))
+        ;; no :local-scratch-vec -- implicit scratch, in the forward AND in the backward
+        (reduce-workgroup #'argmax-combine
+                          ((v (type-min float))
+                           (i (type-max ulong))))
+        ;; every thread holds the workgroup's maximum and writes it
+        (set! (~ C row col) v)))))

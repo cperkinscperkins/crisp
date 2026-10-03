@@ -722,3 +722,100 @@
 ;; src/autodiff.lisp  (re-register: captured by function OBJECT)
 (eval-when (:load-toplevel :execute)
   (register-vjp "REDUCE-WARP" (function %175-vjp-reduce-warp)))
+
+;;; ===========================================================================================
+;;; Endeavour 177 Phase 2 -- the dependent reduce-workgroup, on the Phase 1b lowering.
+;;; ===========================================================================================
+
+;; src/analysis/ops.lisp  (SUPERSEDES the Phase 1b value)
+(defparameter *177-differentiable-dependent-forms* '("REDUCE-WARP" "REDUCE-WORKGROUP")
+  "Endeavour 177.  The dependent reductions whose backward is implemented.")
+
+;; src/autodiff.lisp  (SUPERSEDES the Phase 1b copy: per-clause scratch, :return-vec refusal, and
+;; active-threads read only where the construct has it)
+(defun %177-vjp-dependent-reduction (form ctx &optional lane-form)
+  "Endeavour 177.  VJP of a dependent all-reduce (reduce-warp, reduce-workgroup):
+     1. a + all-reduce of each clause variable's adjoint -- the result is held by every thread, so its
+        adjoint is the sum of all threads' (padding lanes included: they hold it too).  A clause's
+        :local-scratch-vec, if it names one, is reused for that sum; otherwise the sum gets implicit
+        scratch, as the forward did;
+     2. one call to the combiner's reduction-vjp, whose results REPLACE the variables' adjoints;
+     3. with LANE-FORM (reduce-warp, whose 4th element is active-threads), the active-threads gate --
+        the user's VJP cannot see it (cf. BUG 101).
+   The copy rule (BUG 099) then carries each adjoint back to the pre-reduction variable, which Phase 1a's
+   versioning left as (V%Vn V) ahead of the reduction."
+  (let* ((head      (car form))
+         (comb      (second form))
+         (vjp       (%dependent-reduction-vjp form))
+         (clauses   (third form))
+         (active    (and lane-form (fourth form)))
+         (local-adj (getf ctx :local-adj))
+         (flat      (getf ctx :flat-anf))
+         (vars      (mapcar #'first clauses))
+         (origins   (mapcar (lambda (nv)
+                              (let ((b (find-if (lambda (f) (and (consp f) (= (length f) 2)
+                                                                 (eq (first f) nv) (symbolp (second f))))
+                                                flat)))
+                                (and b (second b))))
+                            vars))
+         (adjs      (mapcar local-adj vars))
+         (gs        (loop repeat (length vars) collect (gensym "RVJP-")))
+         (plus      (list 'function (intern "+" (symbol-package head)))))
+    (unless vjp
+      (%refuse-dependent-autodiff form))
+    (dolist (c clauses)
+      (when (getf (cddr c) :return-vec)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): :return-vec is not differentiable yet in a dependent reduction (clause ~a) -- the per-workgroup partial it writes is a SECOND output, as for the single-variable form.  Read the result from the variable instead"
+                                head (first c))
+               :source-location nil)))
+    (when (some #'null origins)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~): the dependent reduction over ~{~a~^, ~} could not be differentiated -- the backward pass has no copy of the pre-reduction values (a clause variable is rebound later, or used in a later multi-value binding, so it was not versioned)"
+                              head vars)
+             :source-location nil))
+    (log:debug "177 VJP dependent ~a: ~a(~{~a~^ ~} | ~{~a~^ ~} | ~{~a~^ ~})" head vjp origins vars adjs)
+    `(progn
+       ,@(loop for a in adjs
+               for c in clauses
+               for scratch = (getf (cddr c) :local-scratch-vec)
+               collect (if scratch
+                           `(,head ,plus ,a 0.0 :local-scratch-vec ,scratch)
+                           `(,head ,plus ,a 0.0)))
+       (let ((,@gs (,vjp ,@origins ,@vars ,@adjs)))
+         ,@(loop for a in adjs for g in gs collect `(set! ,a ,g)))
+       ,@(when active
+           `((when (>= (to-int ,lane-form) (to-int ,active))
+               ,@(loop for a in adjs collect `(set! ,a (- ,a ,a)))))))))
+
+;; src/autodiff.lisp  (177 Phase 2: delegates the dependent form)
+(defun %175-vjp-reduce-workgroup (form ctx)
+  "VJP for reduce-workgroup: an all-reduce is self-transposing, so the backward pass is another
+   all-reduce of the adjoint.  See the section header for the derivation and spec 09 for the
+   measured value (64, against 1.0 for the mechanical reversal)."
+  ;; Endeavour 177: the DEPENDENT form has its own rule, through the combiner's reduction-vjp.
+  (when (%dependent-reduction-form-p form)
+    (return-from %175-vjp-reduce-workgroup (%177-vjp-dependent-reduction form ctx)))
+  (let* ((fn         (second form))
+         (var        (third form))
+         (keys       (cddddr form))
+         (scratch    (getf keys :local-scratch-vec))
+         (return-vec (getf keys :return-vec))
+         (local-adj  (getf ctx :local-adj)))
+    (unless (and (consp fn) (symbolp (car fn))
+                 (string-equal (symbol-name (car fn)) "FUNCTION")
+                 (string= (symbol-name (second fn)) "+"))
+      (error "reduce-workgroup: autodiff is supported only for the + reduction.  The transpose of a SUM reduction is another sum reduction, which is exact and needs nothing recorded from the forward pass.  min/max would route the adjoint to the winning thread, which requires the forward pass to stash an argmin/argmax; an arbitrary binop needs the partial derivatives of that op at every combining node, i.e. the whole combining tree and its intermediates.  Neither is recorded today.  Use the + reduction, or mark the kernel SKIP-WITH[--differentiate] if it is forward-only."))
+    (when return-vec
+      (error "reduce-workgroup: :return-vec is not differentiable yet.  The per-workgroup partial written to that vector is a SECOND output of this form, so a correct VJP must also collect whatever gradient flows back through it.  The expansion that writes it is hidden inside the analyzer, so the walk cannot see that store and the contribution would be silently dropped.  Refusing rather than returning an incomplete gradient.  Drop the key, or write the element yourself after the reduction."))
+    (unless (and var (symbolp var))
+      (return-from %175-vjp-reduce-workgroup nil))
+    (let ((vbar (funcall local-adj var)))
+      (log:debug "175 VJP reduce-workgroup: all-reduce of ~a" vbar)
+      ;; In place, mirroring the forward -- the operation consumes v and produces v, so the
+      ;; input adjoint REPLACES the output adjoint rather than accumulating onto it.
+      `(reduce-workgroup ,fn ,vbar 0.0 :local-scratch-vec ,scratch))))
+
+;; src/autodiff.lisp  (re-register: captured by function OBJECT)
+(eval-when (:load-toplevel :execute)
+  (register-vjp "REDUCE-WORKGROUP" (function %175-vjp-reduce-workgroup)))

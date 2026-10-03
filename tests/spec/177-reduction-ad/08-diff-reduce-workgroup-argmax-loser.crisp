@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,2 expect.A=0.0 atol=2e-1 h=0.01 group=64 output-mat=4x16
+;;
+;; ENDEAVOUR 177 Phase 2, companion to 07: a non-winning thread of a dependent reduce-workgroup gets nothing.
+;;
+;; A[0,2] = 1.2 is not the workgroup's maximum: d/dA[0,2] = 0.0.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong)
+           (reduction-vjp argmax-local-vjp))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-function argmax-local-vjp (v i rv ri rv-bar ri-bar)
+  (declare #'(float ulong float ulong float float => float float))
+  (if (= i ri)
+      (return rv-bar 0.0)
+      (return 0.0 0.0)))
+
+(def-kernel diff_rwg_argmax_loser (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col))
+            (i (to-ulong tid)))
+        ;; no :local-scratch-vec -- implicit scratch, in the forward AND in the backward
+        (reduce-workgroup #'argmax-combine
+                          ((v (type-min float))
+                           (i (type-max ulong))))
+        ;; every thread holds the workgroup's maximum and writes it
+        (set! (~ C row col) v)))))

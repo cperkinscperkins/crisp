@@ -203,20 +203,18 @@ carries the results back.  No snapshot needed.
   is superseded; fix it in the docs pass.
 
 
-## Phase 1: reduce-warp
-
-- [ ] TDD: argmax with a reduction-vjp, VERIFY-AUTODIFF -- the winner's value gets 1, a non-winner 0, the
-      index nothing
-- [ ] TDD: active-threads (padding lanes contribute nothing)
-- [ ] implementation
+## Phase 1: reduce-warp -- DONE as Phase 1b above (177/01-06)
 
 
-## Phase 2: reduce-workgroup
+## Phase 2: reduce-workgroup -- DONE 2026-10-02
 
-- [ ] TDD: argmax across warps, VERIFY-AUTODIFF
-- [ ] TDD: a NON-selection combiner -- (count, sum) for a mean, or Welford -- to prove the rule is not
-      argmax-specific (d mean / dx = 1/n)
-- [ ] implementation
+- [x] TDD, red first (the refusal): 07 argmax winner across 64 threads (64), 08 loser (0) -- both IMPLICIT
+      scratch; 09 the (sum, sum of squares) non-selection combiner with EXPLICIT per-clause scratch,
+      64 (1 + 2A) = 217.6
+- [x] implementation: REDUCE-WORKGROUP enabled; the dependent VJP reuses a clause's :local-scratch-vec for
+      its adjoint sum (implicit scratch otherwise -- it works inside a backward kernel), reads active-threads
+      only for reduce-warp, and refuses :return-vec (a second output, as 175 does) -- errors/01
+- [x] all green on BMG; unit 341/341, E2E 1344/1344, negative 297/297, `--differentiate` 177 10/10, 175 82/82
 
 
 ## Phase 3: grid-reduce!

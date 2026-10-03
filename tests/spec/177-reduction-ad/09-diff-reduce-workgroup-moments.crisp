@@ -1,0 +1,41 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@1:0.1 at.A=0,2 expect.A=217.6 atol=5e-1 h=0.5 group=64 output-mat=4x16
+;;
+;; ENDEAVOUR 177 Phase 2 -- a NON-selection dependent combiner across the workgroup: (sum, sum of squares).
+;;
+;; All 64 threads reduce (s, q) = (A, A^2) and write S + Q, so sum(C) = 64 (S + Q) and
+;; d/dA[0,2] = 64 (1 + 2 A[0,2]) = 64 * 3.4 = 217.6.  Every thread has a gradient here (no winner), and the
+;; q = s*s producer must chain back through the copy.  The clause keys name EXPLICIT scratch (07 and 08 use
+;; implicit), so the backward's adjoint sums reuse it.  atol 0.5: sum(C) is ~1e5 and its float rounding
+;; survives the FD; h = 0.5 is exact for a quadratic.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function moments-combine (s-a q-a s-b q-b)
+  (declare #'(float float float float => float float)
+           (reduction-vjp moments-local-vjp))
+  (return (+ s-a s-b) (+ q-a q-b)))
+
+(def-function moments-local-vjp (s q rs rq rs-bar rq-bar)
+  (declare #'(float float float float float float => float float))
+  (return rs-bar rq-bar))
+
+(def-kernel diff_rwg_moments (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((ssv (make-scratch-vector float 4))
+        (qsv (make-scratch-vector float 4)))
+    (let ((tid (to-int (get-local-linear-id))))
+      (let ((row (/ tid 16))
+            (col (rem tid 16)))
+        (let ((s (~ A row col)))
+          (let ((q (* s s)))
+            (reduce-workgroup #'moments-combine
+                              ((s 0.0 :local-scratch-vec ssv)
+                               (q 0.0 :local-scratch-vec qsv)))
+            (set! (~ C row col) (+ s q))))))))
