@@ -1937,9 +1937,8 @@
            kernel base-index buffer :byte-size byte-size :offset offset))
 
 (defun launch-kernel-1d (queue kernel &key (global-size 1) (group-size 1))
-  ;; BUG 084: global implicit scratch is per-dispatch working memory, and VERIFY-AUTODIFF
-  ;; re-launches the forward kernel once per finite-difference probe.  See
-  ;; %VAD-ZERO-GLOBAL-SCRATCH for why leaving it dirty silently zeroes the numerical gradient.
+  ;; BUG 084 / endeavour 179: zeroes newly bound global implicit scratch ONCE, never between
+  ;; re-launches, so a kernel that leaves state behind fails here.  See %VAD-ZERO-GLOBAL-SCRATCH.
   (%vad-zero-global-scratch)
   (funcall (ecase *ad-runtime*
              (:opencl 'opencl-launch-kernel-1d)
@@ -2292,33 +2291,41 @@
     (:l0 (l0-bind-global-scratch-cell-arg kernel base-index byte-size))
     ((:opencl :cuda) (%vad-global-scratch-unsupported "cell"))))
 
+(defvar *vad-global-scratch-zeroed* nil
+  "Entries of *VAD-GLOBAL-SCRATCH-ALLOCS* already zeroed (compared by EQ).  Endeavour 179: each
+   buffer is zeroed ONCE, before the first launch that sees it, never again.")
+
 (defun %vad-zero-global-scratch ()
-  "Re-zeroes every :global implicit scratch buffer.  Called before EVERY launch, not once at
-   bind time, because these buffers carry state across dispatches and VERIFY-AUTODIFF launches
-   the forward kernel many times -- once per finite-difference probe.
+  "Zeroes each :global implicit scratch buffer ONCE -- before the first launch after it was bound
+   -- and then never again, however many times the kernel is re-launched.
 
-   THIS IS NOT HOUSEKEEPING, it is required for correctness, and grid-reduce-last-man! is the
-   construct that proves it.  Its election works by having each workgroup draw a ticket from a
-   global counter and letting the one that draws num_groups-1 store the answer.  Zero the
-   counter once and the FIRST launch elects correctly; on the second it starts at num_groups,
-   nobody draws the winning ticket, and the result is simply never written.  The measured
-   symptom was a perfect analytical gradient against a numerical one of exactly 0.0 -- the
-   perturbed re-launches were all returning the unmodified output buffer.
+   Endeavour 179 reversed BUG 084's fix on purpose.  BUG 084 re-zeroed before EVERY launch,
+   because grid-reduce-last-man!'s ticket counter was never reset by the kernel: zero it once and
+   the first launch elects correctly, but on the second it starts at num_groups, nobody draws
+   the winning ticket, and the result is never written (measured: analytical 1.0 against a
+   numerical 0.0).  That made VERIFY-AUTODIFF pass while any real host program that launched
+   the kernel twice got a stale answer.  The kernel now resets its own counter, and the harness
+   stops hiding the problem: VERIFY-AUTODIFF re-launches the forward kernel once per
+   finite-difference probe, which makes every last-man AD spec a relaunch test.
 
-   Nothing is lost by zeroing: implicit scratch is per-dispatch working memory by definition.
-   A kernel that wanted state across launches would take a real parameter."
+   The one zeroing that remains is the kernel's documented precondition: an implicit counter
+   must start at zero, as the L0 hoist arranges at setup.  A kernel that leaves any OTHER global
+   scratch dirty across launches will now fail here, and should."
   (when (eq *ad-runtime* :l0)
     (dolist (entry *vad-global-scratch-allocs*)
-      (let ((buf (car entry)) (bytes (cdr entry)))
-        (dotimes (i bytes)
-          (setf (cffi:mem-aref buf :uint8 i) 0))))))
+      (unless (member entry *vad-global-scratch-zeroed* :test #'eq)
+        (let ((buf (car entry)) (bytes (cdr entry)))
+          (dotimes (i bytes)
+            (setf (cffi:mem-aref buf :uint8 i) 0)))
+        (push entry *vad-global-scratch-zeroed*)))))
 
 (defun %vad-free-global-scratch (context)
   "Frees the device allocations made for :global implicit scratch params."
   (when (eq *ad-runtime* :l0)
     (dolist (entry *vad-global-scratch-allocs*)
       (ignore-errors (ze-mem-free context (car entry)))))
-  (setf *vad-global-scratch-allocs* nil))
+  (setf *vad-global-scratch-allocs* nil
+        *vad-global-scratch-zeroed* nil))
 
 
 ;;; ======================================================================

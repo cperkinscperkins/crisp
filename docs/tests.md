@@ -631,6 +631,27 @@ scratch before accumulating into it — see BUG 041, which this directive
 found on CUDA and which had been masked on Intel for as long as staged-tile
 AD has existed.
 
+### Global scratch is zeroed once, not between launches (endeavour 179)
+
+`:global` implicit scratch (e.g. the partials and ticket counter of a
+last-man-standing reduction) is zeroed **once**, before the first launch
+after it is bound, and **never between re-launches**. This is deliberate.
+VERIFY-AUTODIFF launches the forward kernel once per finite-difference
+probe, which makes every VERIFY-AUTODIFF spec a **relaunch test**: a kernel
+that leaves state behind in global scratch gives a different answer on the
+second launch, and the check fails.
+
+The history: BUG 084 re-zeroed before every launch, because
+`grid-reduce-last-man!` never reset its ticket counter. That made the AD
+specs pass while any real host program that launched the kernel twice got
+a stale answer. The symptom to recognise is a correct analytical gradient
+against a numerical one of exactly `0.0` (every perturbed re-launch
+returned the first launch's output). Endeavour 179 makes the kernel reset
+its own counter, and the harness no longer hides it.
+
+Implementation: `%vad-zero-global-scratch` in
+`tests/verify-autodiff-runner.lisp`.
+
 ### Output file cleanup
 
 The verify pass compiles fresh `<basename>.spv` and `<basename>_grad.spv`
