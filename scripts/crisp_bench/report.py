@@ -301,7 +301,9 @@ def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH
             m = cfg.get("m", 0)
             n = cfg.get("n", 0)
             k = cfg.get("k", 0)
-            size_key = n if n > 0 else cfg.get("elements", 0)
+            # Reduction points key on their BYTE size (as fp32-element equivalents, which _mib labels),
+            # so an fp64 row at 256 MiB lines up with an fp32 row at 256 MiB.
+            size_key = n if n > 0 else ((cfg["size_mb"] << 20) // 4 if "size_mb" in cfg else cfg.get("elements", 0))
             data[suite][gpu][chapter][prec_key][size_key][competitor] = pt
 
     lines = []

@@ -402,11 +402,11 @@ def _output_count(rec: KernelRecord, p: Param) -> int:
     return 1
 
 
-def write_plan(plan: Dict[str, Any], spv: Path, out: Path, warmup: int, iters: int,
+def write_plan(plan: Dict[str, Any], spv: Path, out: Path, warmup: int, iters: int,  # spv: the module (.spv or .ptx)
                build_flags: str = '') -> Path:
     lines = [
         "# argument plan -- written by scripts/crisp_bench/metacrisp.py; read by reduce_fixture_l0.cpp",
-        f"spv {spv}",
+        f"module {spv}",
         f"kernel {plan['kernel']}",
         "local {} {} {}".format(*plan['local']),
         f"groups {plan['groups']}",

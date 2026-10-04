@@ -283,6 +283,19 @@ by up to 3e-3.  Verification tolerance is therefore 1e-4 by default (catches one
 contribution in 2560), with an explicit, commented `BENCH-RTOL: 1e-2` on the per-element steps;
 the measured error is always reported.
 
+### Phase 5 prepared (2026-10-03) -- NVIDIA, not yet run
+
+- `benchmarks/reduction/fixture/reduce_fixture_cuda.cpp`: the CUDA twin, same plan, same results
+  format.  Local scratch slots carry BYTE OFFSETS into one dynamic shared block (as
+  crisp-hoist-cuda emits -- checked against its output); CUDA-event timing; `groups eu` = SMs.
+- `benchmarks/reduction/ceiling/read_bw.cu`: the CUDA twin of the ceiling probe.
+- `reduction.py --platform=nvidia`: PTX + the CUDA fixture.  The plan's module line is now
+  `module` (the L0 fixture accepts the old `spv` too).
+- Compile-checked locally in `nvidia/cuda:12.4.1-devel-ubuntu22.04`: both build (`-Wall`
+  clean); all 21 reduction kernels compile to PTX and assemble with `ptxas -arch=sm_90`.
+- `bench-on-pod.sh --bench=reduction`: ceiling -> stale demo (fatal if not caught) -> sweep ->
+  `_probe_unroll` to scratch.  Not run on hardware yet.
+
 ### Carried forward from endeavour 143
 
 - **"What should max occupancy mean?"** (143's deferred #3).  For grid-stride kernels the optimum

@@ -52,11 +52,14 @@ from matmul import _resolve_cxx_and_l0_link, crisp_compiler_path      # noqa: E4
 from metacrisp import build_plan, read_metacrisp, write_plan    # noqa: E402
 
 BENCH_DIR = REPO / "benchmarks" / "reduction"
-FIXTURE_SRC = BENCH_DIR / "fixture" / "reduce_fixture_l0.cpp"
+FIXTURE_SRC = {"intel": BENCH_DIR / "fixture" / "reduce_fixture_l0.cpp",
+               "nvidia": BENCH_DIR / "fixture" / "reduce_fixture_cuda.cpp"}
+IR_TARGET = {"intel": "spv", "nvidia": "ptx"}
 RESULTS_DIR = REPO / "benchmarks" / "results"
 
 HW_BY_PLATFORM = {
     "intel": {"gpu_model": "Intel BMG", "arch_target": "bmg", "environment": "docker"},
+    "nvidia": {"gpu_model": "NVIDIA H100", "arch_target": "sm_90", "environment": "runpod"},
 }
 
 # Relative tolerance for floating-point reductions.  It exists to catch WRONG results -- a stale,
@@ -133,7 +136,7 @@ def resolve_groups(spec: str, n_elements: int, local: List[int]) -> str:
 # --------------------------------------------------------------------------------------------
 
 def compile_kernel(src: Path, work: Path, compiler: str, profile_flags: List[str],
-                   precision: str, denormal: str) -> Tuple[Path, Path, float]:
+                   precision: str, denormal: str, ir_target: str = "spv") -> Tuple[Path, Path, float]:
     """crisp-compile SRC (copied into its own directory under WORK, so build products never land
     in the repo and one kernel's metacrisp cannot be globbed as another's -- `sum_*.metacrisp`
     also matches `sum_atomic_*`).  Returns (spv, metacrisp, wall ms)."""
@@ -142,24 +145,42 @@ def compile_kernel(src: Path, work: Path, compiler: str, profile_flags: List[str
     work = kdir
     dst = work / src.name
     shutil.copy2(src, dst)
-    cmd = [compiler, *profile_flags, str(dst), "--ir-target=spv", "--metadata",
+    cmd = [compiler, *profile_flags, str(dst), f"--ir-target={ir_target}", "--metadata",
            f"--math-precision={precision}", f"--denormal-handling={denormal}", "--log-level=off"]
     t0 = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
     ms = (time.time() - t0) * 1000.0
     if r.returncode != 0:
         raise RuntimeError(f"crisp-compile failed for {src}:\n{(r.stdout or '')[-1500:]}{(r.stderr or '')[-1500:]}")
-    spv = dst.with_suffix(".spv")
+    spv = dst.with_suffix("." + ir_target)          # the module: .spv (L0) or .ptx (CUDA)
     metas = sorted(work.glob(f"{dst.stem}_*.metacrisp"))
     if not spv.exists() or not metas:
         raise RuntimeError(f"crisp-compile produced no .spv/.metacrisp for {src}")
     return spv, metas[0], ms
 
 
-def build_fixture(out_dir: Path) -> Path:
-    cxx, link_pre, link_post = _resolve_cxx_and_l0_link()
-    exe = out_dir / ("reduce_fixture_l0" + (".exe" if _platform.system() == "Windows" else ""))
-    cmd = [cxx, "-O2", "-std=c++17", str(FIXTURE_SRC), *link_pre, "-o", str(exe), *link_post]
+def _cuda_home() -> str:
+    import os
+    if os.environ.get("CUDA_HOME"):
+        return os.environ["CUDA_HOME"]
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        return str(Path(nvcc).resolve().parent.parent)
+    return "/usr/local/cuda"
+
+
+def build_fixture(out_dir: Path, platform: str = "intel") -> Path:
+    src = FIXTURE_SRC[platform]
+    exe = out_dir / (src.stem + (".exe" if _platform.system() == "Windows" else ""))
+    if platform == "nvidia":
+        # Driver API only: any C++17 compiler plus libcuda (the stub at link time, the driver at run).
+        home = _cuda_home()
+        cxx = shutil.which("g++") or shutil.which("clang++") or "c++"
+        cmd = [cxx, "-O2", "-std=c++17", str(src), f"-I{home}/include", f"-L{home}/lib64/stubs",
+               f"-L{home}/lib64", "-lcuda", "-o", str(exe)]
+    else:
+        cxx, link_pre, link_post = _resolve_cxx_and_l0_link()
+        cmd = [cxx, "-O2", "-std=c++17", str(src), *link_pre, "-o", str(exe), *link_post]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("fixture build failed:\n" + (r.stderr or r.stdout or "")[-2000:])
@@ -259,7 +280,7 @@ def latest_ceiling(platform: str) -> Optional[Dict[str, Any]]:
 # --------------------------------------------------------------------------------------------
 
 def stale_demo(exe: Path, work: Path, compiler: str, profile_flags: List[str],
-               precision: str, denormal: str) -> int:
+               precision: str, denormal: str, ir_target: str = "spv") -> int:
     """Prove the harness catches stale state.  Both runs MUST fail verification."""
     cases = [("step4_grid_reduce/sum_atomic", ["--skip-each-fill"],
               "atomic output not re-initialised between launches"),
@@ -268,7 +289,7 @@ def stale_demo(exe: Path, work: Path, compiler: str, profile_flags: List[str],
     caught_all = True
     for sel, flags, what in cases:
         src = BENCH_DIR / (sel + ".crisp")
-        spv, meta, _ = compile_kernel(src, work, compiler, profile_flags, precision, denormal)
+        spv, meta, _ = compile_kernel(src, work, compiler, profile_flags, precision, denormal, ir_target)
         rec = read_metacrisp(meta)[0]
         plan = write_plan(build_plan(rec, 1 << 20, min(rec.local_size[0], 160)), spv,
                           work / f"{rec.name}.stale.plan", warmup=3, iters=10)
@@ -322,9 +343,10 @@ def main() -> int:
 
     work = Path(tempfile.mkdtemp(prefix="crisp-reduction-"))
     try:
-        exe = build_fixture(work)
+        ir_target = IR_TARGET[a.platform]
+        exe = build_fixture(work, a.platform)
         if a.stale_demo:
-            return stale_demo(exe, work, compiler, profile_flags, a.precision, denormal)
+            return stale_demo(exe, work, compiler, profile_flags, a.precision, denormal, ir_target)
 
         ceiling = latest_ceiling(a.platform)
         peak = ceiling["peak_read_gbs"] if ceiling else None
@@ -338,10 +360,16 @@ def main() -> int:
         for src in discover(a.kernels):
             d = directives(src)
             step = src.parent.name
-            spv, meta, compile_ms = compile_kernel(src, work, compiler, profile_flags, a.precision, denormal)
+            spv, meta, compile_ms = compile_kernel(src, work, compiler, profile_flags, a.precision, denormal,
+                                                   ir_target)
             rec = read_metacrisp(meta)[0]
             init_from_directive = apply_launch_init_directives(rec, d)
             groups_spec = a.groups or d["groups"] or "eu"
+            # Sizes are BYTES per input; the element count follows from the input's element type, so an
+            # fp64 kernel at "256 MiB" reads the same bytes as an fp32 one.
+            in_params = [p for p in rec.params if not p.implicit and p.direction == "in" and p.stype
+                         and p.stype.kind == "tensor"]
+            elem_bytes = in_params[0].stype.elem_bytes if in_params else 4
             last_man = any(p.implicit and p.stype and p.stype.kind == "cell" and p.stype.address_space == "GLOBAL"
                            for p in rec.params)
             meta_run = create_metadata(gpu_model=hw["gpu_model"], arch_target=hw["arch_target"],
@@ -359,7 +387,7 @@ def main() -> int:
                     # must be distinguishable from one never configured).
                     print(f"  {mb:>5} MiB  skipped (BENCH-MAX-MB {d['max_mb']})")
                     sweep.results.append(SweepPoint(
-                        configuration={"size_mb": mb, "elements": (mb << 20) // 4,
+                        configuration={"size_mb": mb, "elements": (mb << 20) // elem_bytes,
                                        "skipped": f"BENCH-MAX-MB {d['max_mb']}",
                                        "workload": d["workload"], "step": step, "kernel": rec.name},
                         metrics=BenchmarkMetrics(
@@ -368,9 +396,8 @@ def main() -> int:
                             throughput=ThroughputMetrics(bandwidth_gbps=None),
                             verification=VerificationMetrics(verified=False, mode="none"))))
                     continue
-                n = (mb << 20) // 4
-                in_bytes = n * 4 * sum(1 for p in rec.params if not p.implicit and p.direction == "in" and p.stype
-                                       and p.stype.kind == "tensor")
+                n = (mb << 20) // elem_bytes
+                in_bytes = n * elem_bytes * len(in_params)
                 plan = write_plan(build_plan(rec, n, resolve_groups(groups_spec, n, rec.local_size)), spv, work / f"{rec.name}_{mb}.plan",
                                   warmup=a.warmup, iters=a.iters)
                 try:

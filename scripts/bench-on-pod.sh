@@ -80,7 +80,8 @@ SSH_KEY="${4:-$HOME/.ssh/id_ed25519}"
 ## large-N story was missing.  Nothing said so; the run looked successful.  `canonical` is
 ## resolved inside matmul.py (256..16384, plus 32768 on NVIDIA), so the definition lives in one
 ## place and the pod gets the same sweep a local run would.
-if [ "$BENCH" = "matmul" ]; then DEFAULT_SIZES="canonical"; else DEFAULT_SIZES="1K,100K,1M"; fi
+## reduction sizes are MiB of input (scripts/crisp_bench/reduction.py --sizes-mb).
+if [ "$BENCH" = "matmul" ]; then DEFAULT_SIZES="canonical"; else DEFAULT_SIZES="1,16,64,256,1024,4096"; fi
 SIZES="${5:-$DEFAULT_SIZES}"
 ITERS="${6:-100}"
 ## crisp-tree occupancy (reduction only): when empty, run.py reads :occupancy from the .crisp
@@ -250,11 +251,22 @@ export CRISP_USE_SYSTEM_TOOLS=true
 
 case "${BENCH}" in
   reduction)
-    ## The old benchmarks/reduction/run.py was retired 2026-10-03.  The reduction suite is
-    ## being rebuilt as scripts/crisp_bench/reduction.py (plan/benchmark-reductions.md);
-    ## its NVIDIA side lands in phase 5.  Fail loudly rather than rent a pod for nothing.
-    echo "bench-on-pod: the reduction suite is being rebuilt (plan/benchmark-reductions.md, phase 5 for NVIDIA)." >&2
-    exit 2
+    ## plan/benchmark-reductions.md.  One batched session, in order:
+    ##   1. the measured READ ceiling (benchmarks/reduction/ceiling/read_bw.cu) -- the denominator of
+    ##      every "% of peak", measured on THIS part, never a spec sheet;
+    ##   2. the stale-state demo -- the harness must catch both cases or nothing after it is trusted;
+    ##   3. the ladder + strategy rollup (reduction.py, PTX + the CUDA fixture);
+    ##   4. endeavour 180's unroll probes (_probe_unroll), always to scratch.
+    ## --chapters= (optional) becomes reduction.py --kernels= for step 3.
+    nvcc -O3 -o /tmp/read_bw benchmarks/reduction/ceiling/read_bw.cu
+    /tmp/read_bw --sizes-mb=64,256,1024,4096 --iters=20 --pattern=hash \
+        --json=benchmarks/results/ceiling_nvidia_hash_\$(date +%s).json
+    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --stale-demo
+    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --sizes-mb=${SIZES} \
+        --iters=${ITERS} ${CHAPTERS:+--kernels=${CHAPTERS}} ${SCRATCH_ARG} \
+        || echo "bench-on-pod: the reduction sweep reported a verification failure (its JSON is saved; see the log)"
+    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --sizes-mb=64,256,1024,4096 \
+        --iters=${ITERS} --kernels=_probe_unroll --scratch
     ;;
   matmul)
     ## MATH-FLAG POLICY: this sweep NEVER relies on a compiler's default precision or denormal
