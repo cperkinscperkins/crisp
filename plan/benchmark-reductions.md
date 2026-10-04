@@ -169,7 +169,7 @@ waste.
 |---|---|---|
 | **0** ✅ 2026-10-03 (deletions await Chris) | Housekeeping.  Check `plan/intel-bench-modernize.md`, `plan/benchmark-data-audit.md`, `plan/dummy-report.md` for open items (findings to `put_temp_files_here/`); Chris decides delete or archive.  Retire `benchmarks/reduction/run.py`; keep the hand-written kernel and the CUB/SYCL sources as starting points.  Measured read-bandwidth kernel on BMG. | a measured BMG peak in GB/s |
 | **1** | **Endeavour 179**: kernel state across re-launches (self-reset and/or metacrisp init annotations). | its own spec dir |
-| **2** | Argument-plan writer + generic L0 fixture + `reduction.py`; sum f32 on BMG, verified; reproducibility check; the change-the-input probe. | a sum number we trust, plus a demonstrated catch of a stale-state run |
+| **2** ✅ 2026-10-03 | Argument-plan writer + generic L0 fixture + `reduction.py`; sum f32 on BMG, verified; reproducibility check; the change-the-input probe. | a sum number we trust, plus a demonstrated catch of a stale-state run |
 | **3** | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
 | **4** | Workloads + contenders (§2) on BMG: sum+sumsq, argmax, Welford (LSE, dot if they fit), SYCL/oneDPL/oneMKL, compile times. | §2 for BMG |
 | **5** | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
@@ -206,6 +206,38 @@ today's result files.  Still open, and things the reduction suite cannot do with
 - 4 GB was skipped (over a third of the 12.5 GB device); 3 GB is the largest size measured.
 - Probe: `benchmarks/reduction/ceiling/read_bw.cpp`; runner: `scripts/bench-ceiling-intel.sh`.
   H100 needs a CUDA twin in phase 5.
+
+### Phase 2 as built (2026-10-03)
+
+| piece | file |
+|---|---|
+| metacrisp reader + argument-plan writer | `scripts/crisp_bench/metacrisp.py` |
+| generic L0 fixture | `benchmarks/reduction/fixture/reduce_fixture_l0.cpp` |
+| driver | `scripts/crisp_bench/reduction.py` (via `bench.py --suite=reduction`, or `CRISP_BENCH_SUITE=reduction scripts/bench-intel.sh`) |
+| kernels | `benchmarks/reduction/step4_grid_reduce/{sum,sum_atomic}.crisp`, declaring `BENCH-WORKLOAD` / `BENCH-EXPECT` |
+
+Decisions made while building it:
+- **The plan is text, not JSON**, so the C++ fixture needs no parser beyond `istringstream`.
+- **The ABI comes from the parameter TYPE**, not the `:physical-signature` labels.  The labels
+  for implicit cells read `(ULONG VOIDP ULONG)` where the runtime binds `(ptr, byte_size, offset)`.
+  That's probably a metadata bug; not fixed.
+- **Outputs are POISONED (NaN) before every launch** unless their `:launch-init` names an
+  identity.  A last-man output the kernel never wrote is then NaN, not a stale-but-plausible
+  number.
+- **Every run verifies TWICE**: the last timed launch (input A), then a relaunch on different
+  data (input B).  The reference comes from the fixture's own double-precision input statistics,
+  so the Docker image doesn't need numpy.
+- **Device compile time = `crisp-compile` → SPIR-V**, matching what the SYCL contenders' device-only
+  compile measures; the driver JIT is recorded separately (`jit_ms`).
+- `--stale-demo` proves the harness catches stale state.  Both cases are CAUGHT: `:atomic`
+  without its per-launch identity gives ~13× the sum; last-man with a dirtied counter gives NaN.
+
+First numbers (BMG, Docker, `fast`, 160 groups × 256, scratch): both strategies plateau at
+**~261 GB/s = 57% of the measured peak** from 64 MiB up.  The SYCL ceiling probe with the same
+scalar loads and geometry reaches 437 GB/s, so the gap is in the per-thread loop, not Phase 2.
+Leading theory: no unrolling, so too few loads in flight at 1/8 occupancy.  That's ladder step 3's
+question; test it in phase 3.  At 1 MiB the strategies differ: `:atomic` 5.6 µs vs last-man 13.6 µs.
+Native Windows runs are ~1.5× slower (175 GB/s); use them for correctness only.
 
 ### Carried forward from endeavour 143
 

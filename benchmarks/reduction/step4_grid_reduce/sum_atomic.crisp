@@ -1,0 +1,21 @@
+;; Ladder step 4, :atomic Phase 2 -- one hardware atomic per work-group into the result cell.
+;;
+;; The result cell is combined INTO, so it must hold the identity before every launch; the compiler
+;; records that in the metacrisp as :launch-init (:identity 0.0) and the fixture honours it.  Run
+;; with --stale-demo, the driver deliberately skips that re-initialisation to prove the harness
+;; catches the stale result.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_grid_reduce_atomic (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (grid-reduce! #'+ acc 0.0 result :strategy :atomic)))

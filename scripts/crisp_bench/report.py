@@ -4,7 +4,8 @@ Crisp Benchmark Report Generator
 
 Aggregates all JSON sweeps in `benchmarks/results/` and generates the comprehensive
 Markdown report matching the 5-section Question-based Ladder schema defined in
-`plan/mma-chapter-ladder.md`, `plan/benchmark-harness.md`, and `plan/dummy-report.md`.
+`plan/mma-chapter-ladder.md` and `plan/benchmark-harness.md`; the reduction suite's shape is in
+`plan/benchmark-reductions.md`.
 
 Usage:
   # Output to terminal

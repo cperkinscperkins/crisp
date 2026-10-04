@@ -250,13 +250,11 @@ export CRISP_USE_SYSTEM_TOOLS=true
 
 case "${BENCH}" in
   reduction)
-    ## Only pass --crisp-tree-occupancy when overriding; empty -> run.py reads it from
-    ## the .crisp file (avoids stale defaults).
-    PY_ARGS="--sizes=${SIZES} --iters=${ITERS}"
-    if [ -n "${CRISP_TREE_OCCUPANCY}" ]; then
-        PY_ARGS="\${PY_ARGS} --crisp-tree-occupancy=${CRISP_TREE_OCCUPANCY}"
-    fi
-    python3 benchmarks/reduction/run.py \${PY_ARGS}
+    ## The old benchmarks/reduction/run.py was retired 2026-10-03.  The reduction suite is
+    ## being rebuilt as scripts/crisp_bench/reduction.py (plan/benchmark-reductions.md);
+    ## its NVIDIA side lands in phase 5.  Fail loudly rather than rent a pod for nothing.
+    echo "bench-on-pod: the reduction suite is being rebuilt (plan/benchmark-reductions.md, phase 5 for NVIDIA)." >&2
+    exit 2
     ;;
   matmul)
     ## MATH-FLAG POLICY: this sweep NEVER relies on a compiler's default precision or denormal

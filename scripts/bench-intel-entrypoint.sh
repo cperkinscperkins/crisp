@@ -23,6 +23,12 @@
 
 set -e
 
+# Which suite.  matmul (the default, unchanged) or reduction (plan/benchmark-reductions.md), set by
+# the host wrapper as CRISP_BENCH_SUITE.  For reduction the positionals keep their meaning: sizes
+# (in MiB), iters, precision, and the chapter filter becomes reduction.py's --kernels filter.
+SUITE="${CRISP_BENCH_SUITE:-matmul}"
+RAW_SIZES="${1:-}"
+
 # DEFAULT stops at 1024: the BMG is the Windows display GPU here, and a large GEMM pins it long enough
 # to freeze the desktop (see bench-intel.sh).  2048/4096 are an explicit opt-in.
 SIZES="${1:-256,512,1024}"
@@ -60,6 +66,19 @@ sbcl --non-interactive --load build/build.lisp
 # crashes with "is not a valid Win32 application".
 trap 'rm -f bin/crisp-compile bin/crisp-hoist-l0 bin/crisp-hoist-cuda 2>/dev/null' EXIT
 echo ''
+
+if [ "${SUITE}" = "reduction" ]; then
+    echo "=== Running reduction.py (Intel/BMG) ==="
+    R_ARGS="--platform=intel"
+    # "canonical" is the matmul size preset bench-intel.sh defaults to; reduction.py has its own.
+    [ -n "${RAW_SIZES}" ] && [ "${RAW_SIZES}" != "canonical" ] && R_ARGS="${R_ARGS} --sizes-mb=${RAW_SIZES}"
+    [ -n "${2:-}" ] && R_ARGS="${R_ARGS} --iters=${2}"
+    # "all" is matmul's precision sweep; the reduction suite runs one precision per call for now.
+    [ -n "${3:-}" ] && [ "${3}" != "all" ] && R_ARGS="${R_ARGS} --precision=${3}"
+    [ -n "${CHAPTERS}" ] && R_ARGS="${R_ARGS} --kernels=${CHAPTERS}"
+    python3 scripts/crisp_bench/reduction.py ${R_ARGS} ${EXTRA}
+    exit $?
+fi
 
 # Provision the PEER library (SYCL-TLA).  third_party/ lives in the bind-mounted repo, so this
 # persists on the host across container runs and costs nothing after the first.  Without it the

@@ -36,21 +36,45 @@ def run_local(suite: str, extra_args: list, scratch: bool = False, dry_run: bool
         if not dry_run:
             subprocess.run(cmd, cwd=REPO_ROOT, check=True)
     elif suite == "reduction":
-        cmd = [sys.executable, str(REPO_ROOT / "benchmarks" / "reduction" / "run.py"), *extra_args]
+        cmd = [sys.executable, str(REPO_ROOT / "scripts" / "crisp_bench" / "reduction.py"),
+               *_reduction_args(extra_args)]
+        if scratch:
+            cmd.append("--scratch")
         print(f"Executing: {' '.join(cmd)}")
         if not dry_run:
             subprocess.run(cmd, cwd=REPO_ROOT, check=True)
     else:
         sys.exit(f"Unknown suite: {suite}")
 
+def _reduction_args(extra_args: list) -> list:
+    """bench.py's generic flags in reduction.py's spelling: --sizes is MiB there (--sizes-mb) and
+    --chapters selects kernels (--kernels)."""
+    out = []
+    for a in extra_args:
+        if a.startswith("--sizes="):
+            out.append("--sizes-mb=" + a.split("=", 1)[1])
+        elif a.startswith("--chapters="):
+            out.append("--kernels=" + a.split("=", 1)[1])
+        else:
+            out.append(a)
+    return out
+
 def run_docker(suite: str, extra_args: list, scratch: bool = False, dry_run: bool = False):
     print(f"=== Running suite '{suite}' in Docker (Intel BMG) ===")
     # bench-intel.sh handles container lifecycle and binds
     script = REPO_ROOT / "scripts" / "bench-intel.sh"
-    cmd = ["bash", str(script), *extra_args]
+    if suite == "reduction":
+        # bench-intel.sh takes positionals (sizes iters precision chapters extra); the suite rides in
+        # CRISP_BENCH_SUITE and every flag goes through as reduction.py's own, in the EXTRA slot.
+        flags = _reduction_args(extra_args) + (["--scratch"] if scratch else [])
+        cmd = ["bash", str(script), "", "", "", "", " ".join(flags)]
+        env = dict(os.environ, CRISP_BENCH_SUITE="reduction")
+    else:
+        cmd = ["bash", str(script), *extra_args]
+        env = None
     print(f"Executing: {' '.join(cmd)}")
     if not dry_run:
-        subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True, env=env)
 
 def run_pod(host: str, port: str, branch: str, ssh_key: str, suite: str, extra_args: list, scratch: bool = False, dry_run: bool = False):
     print(f"=== Running suite '{suite}' on RunPod ({host}:{port}) ===")

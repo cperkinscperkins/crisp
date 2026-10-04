@@ -1,0 +1,23 @@
+;; Ladder step 4 -- grid-reduce! does Phase 1 and Phase 2 (default :last-man-standing).
+;;
+;; Each thread first folds its grid-stride slice of the input into one register (Phase 0, which
+;; the earlier ladder steps write by hand); grid-reduce! then reduces those across the workgroup
+;; and, through the last-man election, across the grid -- one launch, one pass over memory.
+;;
+;; The fixture chooses the number of work-groups; last-man's final sweep needs
+;; groups <= local size (256 here), which the driver enforces.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_grid_reduce (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (grid-reduce! #'+ acc 0.0 result)))

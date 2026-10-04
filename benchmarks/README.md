@@ -271,7 +271,7 @@ its rule allows.  The harness prints the rule at the top of each pass.
 | matmul | 32-bit (tf32 / fp32) | `fast` only | **Enforced** |
 | matmul | 64-bit (fp64 — NVIDIA only; BMG has no fp64 MMA) | `ieee` + preserve only | **Enforced** |
 | matmul | — | `ieee` + FTZ | runs **nothing** — that pass exists for scalar suites |
-| reduction | — | `fast`, `ieee`, `ieee` + FTZ | **NOT IMPLEMENTED.** `benchmarks/reduction/run.py` passes no precision or denormal flags at all. |
+| reduction | — | `fast`, `ieee`, `ieee` + FTZ | **Being rebuilt** (`plan/benchmark-reductions.md`); the old `run.py` was retired 2026-10-03. |
 
 `report.py` reads the same rule back: `fast` for 16/32-bit, `ieee` (falling back to `fast`) for fp64.
 
