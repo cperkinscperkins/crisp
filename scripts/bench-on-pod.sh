@@ -273,7 +273,7 @@ case "${BENCH}" in
     ## behavior.  nvcc / icpx / crisp-compile have different (and inconsistently documented)
     ## defaults, so matmul.py passes a COMPLETE, explicit set of precision + denormal flags to
     ## every compiler on every precision pass (see nvcc_math_flags / icpx_math_flags and the
-    ## MATH-FLAG POLICY block in scripts/crisp_bench/matmul.py).  A bare `nvcc -O3` is never emitted.
+    ## MATH-FLAG POLICY block in scripts/crisp_bench/matmul.py).  A bare "nvcc -O3" is never emitted (no backticks: this heredoc is unquoted, so they would RUN locally).
     ## --chapters= (optional) restricts the ladder.  A fused-epilogue session does not need
     ## chap0/chap1/chap1.5/chap2 re-measured at 8192 — those are slow, known, and dominate
     ## the wall time.  Empty means the whole ladder, as before.
