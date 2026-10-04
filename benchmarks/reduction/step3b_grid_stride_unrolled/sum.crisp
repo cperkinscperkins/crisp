@@ -1,0 +1,50 @@
+;; Ladder step 3b -- grid-stride, unrolled by hand: four independent loads per trip.
+;;
+;; Step 3 with its per-work-item loop unrolled four ways into four accumulators, then the same SLM
+;; tree and one atomic per work-group.  At 160 x 256 the BMG's hardware threads are already full,
+;; so more work-groups cannot add loads in flight (measured: 640 and 1280 groups are no faster);
+;; what can is more independent loads PER THREAD.  Crisp's -O3 does not unroll the stride loop
+;; for SPIR-V (the shipped module has one load per trip), so this is written by hand.  The index
+;; walks by addition, avoiding the 64-bit multiply in loop-vector-stride's gid + k*gsize.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+;; BENCH-GROUPS: eu
+;; BENCH-LAUNCH-INIT: result = 0.0
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_grid_stride_unrolled (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((a0 0.0) (a1 0.0) (a2 0.0) (a3 0.0)
+        (gid (get-global-id 0))
+        (gs  (get-global-work-size 0))
+        (n   (length~ input))
+        (lid (to-ulong (get-local-id 0))))
+    (declare (grid-level))
+    (let ((iters (if (>= gid n) 0ul (+ 1ul (/ (- (- n 1ul) gid) gs))))
+          (i gid))
+      (let ((quads (/ iters 4ul)))
+        (let ((rest (- iters (* quads 4ul))))
+          (dotimes (k quads)
+            (set! a0 (+ a0 (~ input i)))
+            (set! a1 (+ a1 (~ input (+ i gs))))
+            (set! a2 (+ a2 (~ input (+ i (* 2ul gs)))))
+            (set! a3 (+ a3 (~ input (+ i (* 3ul gs)))))
+            (set! i (+ i (* 4ul gs))))
+          (dotimes (k rest)
+            (set! a0 (+ a0 (~ input i)))
+            (set! i (+ i gs))))))
+    (let ((slm    (make-scratch-vector float :match-workgroup-size))
+          (stride 128ul))
+      (set! (~ slm lid) (+ (+ a0 a1) (+ a2 a3)))
+      (dotimes (round 8ul)
+        (sync-workgroup)
+        (when (< lid stride)
+          (set! (~ slm lid) (+ (~ slm lid) (~ slm (+ lid stride)))))
+        (set! stride (/ stride 2ul)))
+      (when (= lid 0ul)
+        (atomic-add! (~ result) (~ slm 0ul))))))

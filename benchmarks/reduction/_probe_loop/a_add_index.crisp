@@ -1,0 +1,28 @@
+;; PROBE (phase 3, plan/benchmark-reductions.md) -- deliberately a variant, not a ladder step.
+;;
+;; Step 4's loop-vector-stride computes each index as gid + k*gsize: a 64-bit multiply per element,
+;; which Intel GPUs emulate.  This variant walks the index by ADDITION instead (i += gsize), with
+;; the same single accumulator, so the only difference from step4_grid_reduce/sum_atomic is the
+;; index arithmetic.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_probe_add_index (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0)
+        (gid (get-global-id 0))
+        (gs  (get-global-work-size 0))
+        (n   (length~ input)))
+    (declare (grid-level))
+    (let ((iters (if (>= gid n) 0ul (+ 1ul (/ (- (- n 1ul) gid) gs))))
+          (i gid))
+      (dotimes (k iters)
+        (set! acc (+ acc (~ input i)))
+        (set! i (+ i gs))))
+    (grid-reduce! #'+ acc 0.0 result :strategy :atomic)))

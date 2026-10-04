@@ -1,0 +1,19 @@
+;; Strategy rollup (plan/benchmark-reductions.md section 1b): Phase 1 = reduce-workgroup, Phase 2 = :last-man-standing.
+;; Phase 0 is the stock loop-vector-stride fold in every rollup kernel, so rows differ ONLY in how the
+;; per-thread partials are combined.  Partials to global memory; the last work-group to arrive sweeps them.  No contention on the result.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+;; BENCH-GROUPS: eu
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_rollup_wg_last_man (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (grid-reduce! #'+ acc 0.0 result)))

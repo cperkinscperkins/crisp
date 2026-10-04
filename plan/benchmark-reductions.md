@@ -170,7 +170,7 @@ waste.
 | **0** ✅ 2026-10-03 (deletions await Chris) | Housekeeping.  Check `plan/intel-bench-modernize.md`, `plan/benchmark-data-audit.md`, `plan/dummy-report.md` for open items (findings to `put_temp_files_here/`); Chris decides delete or archive.  Retire `benchmarks/reduction/run.py`; keep the hand-written kernel and the CUB/SYCL sources as starting points.  Measured read-bandwidth kernel on BMG. | a measured BMG peak in GB/s |
 | **1** | **Endeavour 179**: kernel state across re-launches (self-reset and/or metacrisp init annotations). | its own spec dir |
 | **2** ✅ 2026-10-03 | Argument-plan writer + generic L0 fixture + `reduction.py`; sum f32 on BMG, verified; reproducibility check; the change-the-input probe. | a sum number we trust, plus a demonstrated catch of a stale-state run |
-| **3** | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
+| **3** ✅ 2026-10-03 (BMG; second-stage pending a 2-kernel plan) | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
 | **4** | Workloads + contenders (§2) on BMG: sum+sumsq, argmax, Welford (LSE, dot if they fit), SYCL/oneDPL/oneMKL, compile times. | §2 for BMG |
 | **5** | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
 | **6** | Report split: index + `REPORT-matmul.md` + `REPORT-reduction.md`.  Can be done any time after phase 3. | — |
@@ -238,6 +238,50 @@ scalar loads and geometry reaches 437 GB/s, so the gap is in the per-thread loop
 Leading theory: no unrolling, so too few loads in flight at 1/8 occupancy.  That's ladder step 3's
 question; test it in phase 3.  At 1 MiB the strategies differ: `:atomic` 5.6 µs vs last-man 13.6 µs.
 Native Windows runs are ~1.5× slower (175 GB/s); use them for correctness only.
+
+### Phase 3 results (2026-10-03, BMG, Docker, `fast`) -- `benchmarks/REPORT-reduction.md`
+
+Ladder (GB/s at 1 GiB, % of 454.5 measured peak; max relative error):
+
+| step | | 1 GiB | rel err |
+|---|---|---|---|
+| 0 | one atomic per element | 2.3 (0.5%) at ≤64 MiB, larger skipped | 3e-3 |
+| 1 | SLM tree, 1 atomic/group (per element) | 44 (10%) | 5e-4 |
+| 2 | warp shuffles, 1 atomic/group (per element) | 54 (12%) | 4e-4 |
+| 3 | + grid-stride | 262 (58%) | 3e-7 |
+| 3b | + unrolled ×4 (hand) | **453 (100%)** | 4e-7 |
+| 4 | `grid-reduce!` (last-man / atomic) | 260 / 262 (57-58%) | 2e-8 / 3e-7 |
+| 5 | `reduce-vec` | 261 (57%), = step 4 | 2e-8 |
+
+**The finding: the stride loop needs loads in flight, and Crisp's stride loop has one.**
+- The shipped SPIR-V (`llvm-spirv -r`) has ONE global load per `loop-vector-stride` trip: `default<O3>`
+  does not unroll it for the SPIR-V target.
+- More work-groups do not help (640 and 1280 groups are no faster than 160).  160 × 256 already
+  fills the hardware threads: SYCL's 160 "compute units" are EUs, not Xe-cores (an earlier "1/8
+  occupied" guess was wrong).  The only lever left is loads in flight PER THREAD.
+- Unrolling ×4 into ONE accumulator, additions in the original order
+  (`_probe_loop/c_unroll_one_acc`), is exactly as fast as four accumulators: 452.4 vs 452.5 GB/s.
+  **So the fix needs no reassociation and gives bit-identical results.**
+- Walking the index by addition instead of `gid + k*gsize` (a 64-bit multiply) is worth ~6% alone
+  (`_probe_loop/a_add_index`).
+- This caps every `loop-vector-stride` / `reduce-vec` / `grid-reduce!`-after-a-stride-fold kernel
+  at ~57% of peak on BMG.  **Compiler decision for Chris** (options in the session notes:
+  `llvm.loop.unroll.count` on the stride loop, runtime unrolling in the SPIR-V opt pipeline, or
+  unrolling in the expansion itself).
+
+Strategy rollup (median µs; `:atomic` is fastest at every size):
+- `:last-man-standing` costs a fixed ~8 µs more than `:atomic` (13.6 vs 5.7 µs at 1 MiB), lost in
+  the noise from 64 MiB up.  It is ~15× more accurate (rel err 2e-8 vs 3e-7): partials are summed
+  in one tree, not by 160 atomic adds in arbitrary order.
+- **`:cas` has a ~2.2 ms floor** (2237 µs at 1 MiB, for 160 CAS operations ≈ 14 µs each, serialised);
+  per-warp CAS (2560 operations) ~8.2 ms.  Far beyond normal contention; suspect the
+  `atomic-binop!` lowering on BMG.  Not investigated yet.
+- Per-warp atomics (no work-group barrier) are slower than per-group: 21 vs 5.7 µs at 1 MiB.
+
+Accuracy is a reduction result in its own right: an fp32 cell taking millions of atomic adds is off
+by up to 3e-3.  Verification tolerance is therefore 1e-4 by default (catches one missing
+contribution in 2560), with an explicit, commented `BENCH-RTOL: 1e-2` on the per-element steps;
+the measured error is always reported.
 
 ### Carried forward from endeavour 143
 

@@ -257,7 +257,10 @@ def format_ratio(val: Optional[float], base: Optional[float], as_pct: bool = Fal
     text = f"{ratio:.2f}×"
     return f"**{text}**" if ratio >= bold_threshold else text
 
-def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH_DIR) -> str:
+def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH_DIR,
+                    suites: Optional[List[str]] = None) -> str:
+    """The Markdown report.  SUITES limits it to those suites (e.g. ['reduction'] for
+    benchmarks/REPORT-reduction.md); None renders every suite present."""
     sweeps = load_all_sweeps(results_dir)
     scratch_sweeps = load_scratch_runs(scratch_dir)
 
@@ -265,6 +268,9 @@ def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))))
     provenance = {}
 
+    if suites:
+        sweeps = [s for s in sweeps if s.get("benchmark_suite", "matmul") in suites]
+        scratch_sweeps = [s for s in scratch_sweeps if s.get("benchmark_suite", "matmul") in suites]
     for s in sweeps:
         suite = s.get("benchmark_suite", "matmul")
         meta = s.get("run_metadata", {})
@@ -338,7 +344,7 @@ def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH
     lines.append("\n---\n")
 
     # Matmul Suite
-    if "matmul" in data or not data:
+    if "matmul" in data or (not data and not suites):
         lines.extend(render_matmul_suite(data["matmul"], provenance))
 
     # Reduction Suite (if present)
@@ -356,7 +362,9 @@ def generate_report(results_dir: Path = RESULTS_DIR, scratch_dir: Path = SCRATCH
             su = sc.get("benchmark_suite", "—")
             ch = sc.get("chapter", "—")
             comp = sc.get("competitor", "—")
-            sizes = ",".join(str(p.get("configuration", {}).get("n", "")) for p in sc.get("results", []))
+            sizes = ",".join(str(p.get("configuration", {}).get("n") or
+                                 (f"{p['configuration']['size_mb']}MiB" if "size_mb" in p.get("configuration", {}) else ""))
+                             for p in sc.get("results", []))
             lines.append(f"| {ts} | {su} | {ch} | {comp} | `{sizes}` |")
     else:
         lines.append("*No scratch runs present.*")
@@ -1417,9 +1425,133 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
 
     return lines
 
+# Ladder steps, in order, with the one-line question each answers (plan/benchmark-reductions.md §3).
+# A chapter is "<step-dir>__<kernel-file>"; rollup chapters are "rollup__<phase1>_<phase2>".
+REDUCTION_STEPS = [
+    ("step0_atomic_per_element",    "0",  "one atomic per element"),
+    ("step1_slm_tree",              "1",  "work-group tree in SLM, one atomic per group (hand)"),
+    ("step2_warp_shuffle",          "2",  "warp shuffles, one atomic per group (hand)"),
+    ("step3_grid_stride",           "3",  "+ grid-stride: fixed grid, many elements per thread (hand)"),
+    ("step3b_grid_stride_unrolled", "3b", "+ unrolled x4: four loads in flight per thread (hand)"),
+    ("step4_grid_reduce",           "4",  "`grid-reduce!` -- the language does Phase 1 + 2"),
+    ("step5_reduce_vec",            "5",  "`reduce-vec` -- the one-liner"),
+]
+ROLLUP_ROWS = [
+    ("wg_atomic",   "`reduce-workgroup`", "`:atomic`"),
+    ("wg_cas",      "`reduce-workgroup`", "`:cas`"),
+    ("wg_last_man", "`reduce-workgroup`", "`:last-man-standing`"),
+    ("warp_atomic", "`reduce-warp`",      "atomic per warp"),
+    ("warp_cas",    "`reduce-warp`",      "CAS per warp"),
+]
+
+
+def _reduction_ceiling(points) -> Optional[dict]:
+    """The ceiling file the sweep's points name (all points of one run name the same one)."""
+    for pt in points:
+        f = pt.get("configuration", {}).get("ceiling_file")
+        if f and (RESULTS_DIR / f).exists():
+            try:
+                return json.loads((RESULTS_DIR / f).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+    return None
+
+
+def _mib(elements: int) -> str:
+    mib = elements * 4 / (1 << 20)
+    return f"{mib / 1024:g} GiB" if mib >= 1024 else f"{mib:g} MiB"
+
+
 def render_reduction_suite(reduction_data: dict, provenance: dict) -> List[str]:
     lines = ["# Suite: reduction\n"]
-    lines.append("Row variable: **element count**. Headline metric is **GB/s**.\n")
+    lines.append("Row variable: **input size** (fp32 elements, shown in bytes). Headline metric is **GB/s "
+                 "of input read**, and **% of the device's MEASURED read peak** "
+                 "(`benchmarks/reduction/ceiling/read_bw.cpp`, never a spec sheet). Every point is verified "
+                 "twice: on the last timed launch, and on a relaunch over different data.\n")
+    for gpu, chapters in reduction_data.items():
+        precs = sorted({p for ch in chapters.values() for p in ch})
+        for prec in precs:
+            pts_all = [pt for ch in chapters.values() for comp in ch.get(prec, {}).values()
+                       for pt in comp.values()]
+            ceiling = _reduction_ceiling(pts_all)
+            peak = ceiling.get("peak_read_gbs") if ceiling else None
+            cache = ceiling.get("cache_bytes") if ceiling else None
+            sizes = sorted({sz for ch in chapters.values() for sz in ch.get(prec, {}).keys() if sz})
+            heads = [_mib(s) + ("†" if cache and s * 4 <= cache else "") for s in sizes]
+
+            lines.append(f"## § 1 — Reduction Ladder · {gpu} · sum fp32 · `{prec}`\n")
+            if peak:
+                lines.append(f"Measured read peak **{peak:.1f} GB/s** (`{ceiling.get('device', '?')}`, "
+                             f"{ceiling.get('pattern', '?')} data). † fits in the "
+                             f"{(cache or 0) / 1e6:.1f} MB cache: that column measures cache, not memory, "
+                             f"and can exceed 100%.\n")
+            lines.append("| # | step | device compile | " + " | ".join(f"**{h}**" for h in heads) + " | max rel err |")
+            lines.append("|---|---|---:|" + "---:|" * len(heads) + "---:|")
+            for step_dir, num, desc in REDUCTION_STEPS:
+                for chap in sorted(c for c in chapters if c.startswith(step_dir + "__")):
+                    row = chapters[chap].get(prec, {})
+                    if not row:
+                        continue
+                    kernel_file = chap.split("__", 1)[1]
+                    label = desc + ("" if kernel_file == "sum" else f" — `{kernel_file}`")
+                    compile_ms = None
+                    worst_err = None
+                    cells = []
+                    for s in sizes:
+                        pt = row.get(s, {}).get("Crisp")
+                        if pt is None:
+                            cells.append("—")
+                            continue
+                        cfg, m = pt.get("configuration", {}), pt.get("metrics", {})
+                        compile_ms = compile_ms or m.get("compile_time", {}).get("device_compile_ms")
+                        if cfg.get("skipped"):
+                            cells.append("*skipped*")
+                        elif not cfg.get("verified"):
+                            cells.append("✗ **unverified**")
+                        else:
+                            g = m.get("throughput", {}).get("bandwidth_gbps")
+                            pct = cfg.get("percent_of_peak")
+                            e = (m.get("verification") or {}).get("relative_error")
+                            if e is not None:
+                                worst_err = e if worst_err is None else max(worst_err, e)
+                            cells.append(f"{g:.0f}" + (f" ({pct:.0f}%)" if pct is not None else ""))
+                    lines.append(f"| {num} | {label} | {compile_ms:.0f} ms | " if compile_ms else f"| {num} | {label} | — | ")
+                    lines[-1] += " | ".join(cells) + f" | {worst_err:.1e} |" if worst_err is not None else " | ".join(cells) + " | — |"
+            lines.append("")
+
+            rollup = {c.split("__", 1)[1]: chapters[c].get(prec, {}) for c in chapters if c.startswith("rollup__")}
+            if rollup:
+                lines.append(f"## § 1b — Strategy Rollup · {gpu} · sum fp32 · `{prec}`\n")
+                lines.append("Every row has the same Phase 0 (`loop-vector-stride` fold, one work-item per "
+                             "EU-sized grid); rows differ only in how the per-thread partials are combined. "
+                             "Cells are **median kernel µs**; the fastest per size is bold.\n")
+                lines.append("| Phase 1 | Phase 2 | " + " | ".join(f"**{h}**" for h in heads) + " |")
+                lines.append("|---|---|" + "---:|" * len(heads))
+                best = {}
+                for s in sizes:
+                    ts = [r.get(s, {}).get("Crisp", {}).get("metrics", {}).get("runtime", {}).get("kernel_execution_ms")
+                          for r in rollup.values()]
+                    ts = [t for t in ts if t]
+                    best[s] = min(ts) if ts else None
+                for key, p1, p2 in ROLLUP_ROWS:
+                    row = rollup.get(key)
+                    if not row:
+                        continue
+                    cells = []
+                    for s in sizes:
+                        pt = row.get(s, {}).get("Crisp")
+                        if not pt:
+                            cells.append("—")
+                            continue
+                        if not pt.get("configuration", {}).get("verified"):
+                            cells.append("✗ **unverified**")
+                            continue
+                        ms = pt["metrics"]["runtime"]["kernel_execution_ms"]
+                        cell = f"{ms * 1000:.1f}"
+                        cells.append(f"**{cell}**" if best.get(s) == ms else cell)
+                    lines.append(f"| {p1} | {p2} | " + " | ".join(cells) + " |")
+                lines.append("\n*second-stage* is not in the rollup yet: it needs two kernel launches, "
+                             "which the fixture's single-kernel plan cannot express.\n")
     return lines
 
 def main():
@@ -1427,9 +1559,11 @@ def main():
     parser.add_argument("--results-dir", default=str(RESULTS_DIR), help="Directory containing JSON sweep results")
     parser.add_argument("--scratch-dir", default=str(SCRATCH_DIR), help="Directory containing excluded scratch runs")
     parser.add_argument("--output", default=None, help="Path to write Markdown report (default: stdout)")
+    parser.add_argument("--suite", action="append", default=None,
+                        help="Render only this suite (repeatable), e.g. --suite=reduction")
     args = parser.parse_args()
 
-    report_md = generate_report(Path(args.results_dir), Path(args.scratch_dir))
+    report_md = generate_report(Path(args.results_dir), Path(args.scratch_dir), suites=args.suite)
     if args.output:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)

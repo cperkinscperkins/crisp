@@ -59,9 +59,14 @@ HW_BY_PLATFORM = {
     "intel": {"gpu_model": "Intel BMG", "arch_target": "bmg", "environment": "docker"},
 }
 
-# Relative tolerance for floating-point reductions.  Generated inputs are small integers, so every
-# per-thread partial is exact; only the cross-thread tree rounds, by roughly log2(threads) ulps.
-RTOL = {"f32": 1e-5, "f64": 1e-12, "bf16": 1e-2, "f16": 1e-2}
+# Relative tolerance for floating-point reductions.  It exists to catch WRONG results -- a stale,
+# missing or doubled contribution (>= 1/2560 of the total at the grids used here) or a NaN -- not
+# to grade accuracy, which is reported separately (relative_error).  Generated inputs are small
+# integers, so every per-thread partial is exact; error comes only from combining partials in fp32.
+# Measured on BMG (2026-10-03): tree / last-man sweeps stay under 1e-5; ~2560 per-warp atomics into
+# one fp32 cell holding 2.8e9 reach 2e-5.  A kernel that atomically adds MILLIONS of terms into one
+# cell (one per element or per work-group) rounds far more and must say so with BENCH-RTOL.
+RTOL = {"f32": 1e-4, "f64": 1e-12, "bf16": 1e-2, "f16": 1e-2}
 
 
 # --------------------------------------------------------------------------------------------
@@ -74,7 +79,8 @@ def discover(selection: Optional[str]) -> List[Path]:
     all_srcs = sorted(p for p in BENCH_DIR.glob("*/*.crisp")
                       if p.parent.name not in ("fixture", "ceiling", "crisp"))
     if not selection:
-        return all_srcs
+        # Underscore directories are probes -- deliberately not ladder steps -- and run only when named.
+        return [p for p in all_srcs if not p.parent.name.startswith("_")]
     wanted = [s.strip() for s in selection.split(",") if s.strip()]
     rel = lambda p: f"{p.parent.name}/{p.stem}"
     return [p for p in all_srcs if any(rel(p) == w or rel(p).startswith(w + "/") or p.parent.name == w
@@ -87,8 +93,39 @@ def directives(src: Path) -> Dict[str, Any]:
     expects = re.findall(r";+\s*BENCH-EXPECT:\s*(\S+)\s*=\s*(\w+)\((\w+)\)", text)
     if not expects:
         raise SystemExit(f"{src}: no ';; BENCH-EXPECT: <output> = <fn>(<input>)' line")
+    groups = re.search(r";+\s*BENCH-GROUPS:\s*(\S+)", text)
+    inits = re.findall(r";+\s*BENCH-LAUNCH-INIT:\s*(\S+)\s*=\s*(\S+)", text)
+    max_mb = re.search(r";+\s*BENCH-MAX-MB:\s*(\d+)", text)
+    rtol = re.search(r";+\s*BENCH-RTOL:\s*(\S+)", text)
     return {"workload": workload.group(1) if workload else src.stem,
-            "expect": [(o, f, i) for o, f, i in expects]}
+            "expect": [(o, f, i) for o, f, i in expects],
+            "groups": groups.group(1) if groups else None,
+            "launch_init": {o: float(v) for o, v in inits},
+            "max_mb": int(max_mb.group(1)) if max_mb else None,
+            "rtol": float(rtol.group(1)) if rtol else None}
+
+
+def apply_launch_init_directives(rec, d: Dict[str, Any]) -> List[str]:
+    """A hand-written atomic into an output gets no :launch-init from the compiler -- only its own
+    reduction constructs record one -- so the kernel's BENCH-LAUNCH-INIT supplies it.  A directive
+    never overrides what the compiler recorded.  Returns the outputs it applied to."""
+    applied = []
+    for p in rec.params:
+        if not p.implicit and p.direction == "out" and p.name in d["launch_init"]:
+            if p.launch_init:
+                continue
+            p.launch_init = {"IDENTITY": d["launch_init"][p.name]}
+            applied.append(p.name)
+    return applied
+
+
+def resolve_groups(spec: str, n_elements: int, local: List[int]) -> str:
+    """per-element -> one work-item per element (rounded up to whole work-groups); anything else is
+    passed to the fixture as is (a number, 'eu', 'eu*K')."""
+    if spec == "per-element":
+        wg = local[0] * local[1] * local[2]
+        return str((n_elements + wg - 1) // wg)
+    return spec
 
 
 # --------------------------------------------------------------------------------------------
@@ -172,7 +209,7 @@ def expected_value(fn: str, st: Dict[str, float]) -> float:
     }[fn]
 
 
-def verify(res: Dict[str, Any], expects) -> Tuple[bool, float, List[str]]:
+def verify(res: Dict[str, Any], expects, rtol: Optional[float] = None) -> Tuple[bool, float, List[str]]:
     """Both the last timed launch (A) and the relaunch (B) must match.  Returns
     (ok, worst relative error, human-readable failures)."""
     ok, worst, why = True, 0.0, []
@@ -195,7 +232,7 @@ def verify(res: Dict[str, Any], expects) -> Tuple[bool, float, List[str]]:
                 good, rel = (have == want), (0.0 if have == want else math.inf)
             else:
                 rel = abs(have - want) / max(abs(want), 1e-30)
-                good = rel <= RTOL.get(elem, 1e-5)
+                good = rel <= (rtol if rtol is not None else RTOL.get(elem, 1e-4))
             worst = max(worst, rel)
             if not good:
                 ok = False
@@ -251,7 +288,9 @@ def main() -> int:
     ap.add_argument("--kernels", default=None, help="comma-separated <step>/<name> or <step> filters")
     ap.add_argument("--sizes-mb", default="1,16,64,256,1024,3072",
                     help="input sizes in MiB (per input), clamped to a third of device memory")
-    ap.add_argument("--groups", default="eu", help="work-groups: a number, 'eu', or 'eu*K'")
+    ap.add_argument("--groups", default=None,
+                    help="work-groups: a number, 'eu', 'eu*K' or 'per-element'.  Default: the kernel's "
+                         "BENCH-GROUPS directive, else 'eu'")
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--iters", type=int, default=50)
     ap.add_argument("--precision", default="fast", choices=["fast", "ieee"])
@@ -301,6 +340,8 @@ def main() -> int:
             step = src.parent.name
             spv, meta, compile_ms = compile_kernel(src, work, compiler, profile_flags, a.precision, denormal)
             rec = read_metacrisp(meta)[0]
+            init_from_directive = apply_launch_init_directives(rec, d)
+            groups_spec = a.groups or d["groups"] or "eu"
             last_man = any(p.implicit and p.stype and p.stype.kind == "cell" and p.stype.address_space == "GLOBAL"
                            for p in rec.params)
             meta_run = create_metadata(gpu_model=hw["gpu_model"], arch_target=hw["arch_target"],
@@ -313,10 +354,24 @@ def main() -> int:
                                    is_canonical=not a.scratch, contender_class="Crisp")
             print(f"\n== {step}/{src.stem}  ({rec.name}, workload={d['workload']}, crisp-compile {compile_ms:.0f} ms)")
             for mb in sizes:
+                if d["max_mb"] and mb > d["max_mb"]:
+                    # Recorded as SKIPPED, not silently absent (the data-audit gap: a missing size
+                    # must be distinguishable from one never configured).
+                    print(f"  {mb:>5} MiB  skipped (BENCH-MAX-MB {d['max_mb']})")
+                    sweep.results.append(SweepPoint(
+                        configuration={"size_mb": mb, "elements": (mb << 20) // 4,
+                                       "skipped": f"BENCH-MAX-MB {d['max_mb']}",
+                                       "workload": d["workload"], "step": step, "kernel": rec.name},
+                        metrics=BenchmarkMetrics(
+                            compile_time=CompileTimeMetrics(device_compile_ms=compile_ms, all_compile_ms=compile_ms),
+                            runtime=RuntimeMetrics(wall_time_ms=0.0, kernel_execution_ms=0.0),
+                            throughput=ThroughputMetrics(bandwidth_gbps=None),
+                            verification=VerificationMetrics(verified=False, mode="none"))))
+                    continue
                 n = (mb << 20) // 4
                 in_bytes = n * 4 * sum(1 for p in rec.params if not p.implicit and p.direction == "in" and p.stype
                                        and p.stype.kind == "tensor")
-                plan = write_plan(build_plan(rec, n, a.groups), spv, work / f"{rec.name}_{mb}.plan",
+                plan = write_plan(build_plan(rec, n, resolve_groups(groups_spec, n, rec.local_size)), spv, work / f"{rec.name}_{mb}.plan",
                                   warmup=a.warmup, iters=a.iters)
                 try:
                     res = run_fixture(exe, plan, work / f"{rec.name}_{mb}.res", [])
@@ -325,7 +380,7 @@ def main() -> int:
                     rc = 1
                     continue
                 groups = res.get("groups")
-                ok, worst, why = verify(res, d["expect"])
+                ok, worst, why = verify(res, d["expect"], d["rtol"])
                 if last_man and groups and groups > rec.local_size[0]:
                     ok = False
                     why.append(f"{groups} work-groups exceed the local size {rec.local_size[0]}: "
@@ -347,7 +402,10 @@ def main() -> int:
                        "kernel_best_us": min(times), "jit_ms": res.get("jit_ms"),
                        "device_reported": res.get("device"),
                        "peak_read_gbps": peak, "percent_of_peak": pct,
-                       "ceiling_file": ceiling["_file"] if ceiling else None}
+                       "ceiling_file": ceiling["_file"] if ceiling else None,
+                       "groups_spec": groups_spec,
+                       "launch_init_from_directive": init_from_directive,
+                       "rtol": d["rtol"] if d["rtol"] is not None else RTOL.get("f32")}
                 sweep.results.append(SweepPoint(
                     configuration=cfg,
                     metrics=BenchmarkMetrics(

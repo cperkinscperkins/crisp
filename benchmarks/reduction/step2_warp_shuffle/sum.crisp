@@ -1,0 +1,43 @@
+;; Ladder step 2 -- one work-item per element, combined with warp shuffles.
+;;
+;; Each warp reduces its lanes in registers (shuffle-xor, log2(warp) rounds, no barrier), the warp
+;; leaders meet in a tiny SLM vector (one slot per warp), and a second shuffle pass reduces those.
+;; One atomic per work-group, as in step 1.  Written by hand.
+;;
+;; Every warp runs the second pass (only warp 0's lane 0 stores), so the shuffles stay
+;; unconditional: a warp collective under a divergent condition is the thing to avoid.
+;; Needs (local size / warp size) <= warp size: 256/16 = 16 on BMG, 256/32 = 8 on NVIDIA.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+;; BENCH-GROUPS: per-element
+;; BENCH-LAUNCH-INIT: result = 0.0
+;; BENCH-RTOL: 1e-2
+;;   One fp32 cell takes an atomic add per element (or per work-group): millions of roundings at
+;;   ulp(total).  Measured 0.3% at 64 MiB for step 0, 4e-4 at 3 GiB for steps 1-2.  1e-2 still
+;;   catches a stale or doubled result; the measured error is reported.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_warp_shuffle (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (local-size :set-to (256)))
+  (let ((gid    (get-global-id 0))
+        (n      (length~ input))
+        (lane   (to-ulong (warp-lane)))
+        (wid    (to-ulong (warp-id)))
+        (nwarps (/ (to-ulong (get-local-linear-size)) (to-ulong (warp-size)))))
+    (declare (grid-level))
+    (let ((v (if (< gid n) (~ input gid) 0.0)))
+      (dec-times-by-half+ (m (/ (to-ulong (warp-size)) 2ul))
+        (set! v (+ v (shuffle-xor v m))))
+      (let ((wsums (make-scratch-vector float :match-num-warps-per-workgroup)))
+        (when (= lane 0ul)
+          (set! (~ wsums wid) v))
+        (sync-workgroup)
+        (let ((w (if (< lane nwarps) (~ wsums lane) 0.0)))
+          (dec-times-by-half+ (m (/ (to-ulong (warp-size)) 2ul))
+            (set! w (+ w (shuffle-xor w m))))
+          (when (and (= wid 0ul) (= lane 0ul))
+            (atomic-add! (~ result) w)))))))

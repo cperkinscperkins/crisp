@@ -1,0 +1,33 @@
+;; Ladder step 3 -- grid-stride: a fixed grid, each work-item folds many elements first.
+;;
+;; The grid no longer grows with the input: each work-item accumulates its grid-stride slice into
+;; one register (loop-vector-stride), then the step-1 SLM tree and one atomic per work-group.
+;; Few work-groups means few atomics and few barriers, whatever the size.  Written by hand except
+;; for the stride loop.  (This is the shape of the retired benchmarks/reduction/crisp/sum-reduce.crisp.)
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+;; BENCH-GROUPS: eu
+;; BENCH-LAUNCH-INIT: result = 0.0
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_grid_stride (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0)
+        (lid (to-ulong (get-local-id 0))))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (let ((slm    (make-scratch-vector float :match-workgroup-size))
+          (stride 128ul))
+      (set! (~ slm lid) acc)
+      (dotimes (round 8ul)
+        (sync-workgroup)
+        (when (< lid stride)
+          (set! (~ slm lid) (+ (~ slm lid) (~ slm (+ lid stride)))))
+        (set! stride (/ stride 2ul)))
+      (when (= lid 0ul)
+        (atomic-add! (~ result) (~ slm 0ul))))))

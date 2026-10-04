@@ -1,0 +1,38 @@
+;; PROBE (phase 3, plan/benchmark-reductions.md) -- deliberately a variant, not a ladder step.
+;;
+;; The unrolling theory: at 160 groups x 256 the BMG is ~1/8 occupied, so bandwidth depends on each
+;; thread keeping several loads in flight -- which a single accumulator's dependence chain may not
+;; allow unless something unrolls the loop.  This variant unrolls by hand: four independent
+;; accumulators, four loads per trip, then a remainder loop.  Same additive index as
+;; a_add_index.crisp, so the only difference from it is the number of loads in flight.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_probe_four_acc (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((a0 0.0) (a1 0.0) (a2 0.0) (a3 0.0)
+        (gid (get-global-id 0))
+        (gs  (get-global-work-size 0))
+        (n   (length~ input)))
+    (declare (grid-level))
+    (let ((iters (if (>= gid n) 0ul (+ 1ul (/ (- (- n 1ul) gid) gs))))
+          (i gid))
+      (let ((quads (/ iters 4ul)))
+        (let ((rest (- iters (* quads 4ul))))
+          (dotimes (k quads)
+            (set! a0 (+ a0 (~ input i)))
+            (set! a1 (+ a1 (~ input (+ i gs))))
+            (set! a2 (+ a2 (~ input (+ i (* 2ul gs)))))
+            (set! a3 (+ a3 (~ input (+ i (* 3ul gs)))))
+            (set! i (+ i (* 4ul gs))))
+          (dotimes (k rest)
+            (set! a0 (+ a0 (~ input i)))
+            (set! i (+ i gs))))))
+    (let ((acc (+ (+ a0 a1) (+ a2 a3))))
+      (grid-reduce! #'+ acc 0.0 result :strategy :atomic))))

@@ -1,0 +1,334 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-04T01:36:35.866977Z",
+    "hardware": {
+      "gpu_model": "Intel(R) Graphics [0xe20b]",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null,
+      "hardware_profile": "bmg",
+      "profile_matched": true,
+      "profile_provenance": "builtin",
+      "profile_source": null
+    },
+    "crisp_commit": "0587fa4e",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "rollup__warp_cas",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 262144,
+        "bytes": 1048576,
+        "size_mb": 1,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_warp_cas",
+        "step": "rollup",
+        "kernel_best_us": 7949.66,
+        "jit_ms": 57.1925,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 0.028091171261908642,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [
+          "result"
+        ],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 576.6026973724365,
+          "all_compile_ms": 576.6026973724365
+        },
+        "runtime": {
+          "wall_time_ms": 9.43335,
+          "kernel_execution_ms": 8.213239999999999
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 0.12766898325143305
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 4194304,
+        "bytes": 16777216,
+        "size_mb": 16,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_warp_cas",
+        "step": "rollup",
+        "kernel_best_us": 8053.24,
+        "jit_ms": 1.15712,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 0.4451993052529525,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [
+          "result"
+        ],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 576.6026973724365,
+          "all_compile_ms": 576.6026973724365
+        },
+        "runtime": {
+          "wall_time_ms": 9.51454,
+          "kernel_execution_ms": 8.29182
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2.0233454175319774
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 16777216,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_warp_cas",
+        "step": "rollup",
+        "kernel_best_us": 8718.11,
+        "jit_ms": 1.21403,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 1.6327190676891838,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [
+          "result"
+        ],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 576.6026973724365,
+          "all_compile_ms": 576.6026973724365
+        },
+        "runtime": {
+          "wall_time_ms": 10.0901,
+          "kernel_execution_ms": 9.04384
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 7.420394876512632
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 8.344651263314636e-07,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 67108864,
+        "bytes": 268435456,
+        "size_mb": 256,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_warp_cas",
+        "step": "rollup",
+        "kernel_best_us": 9632.06,
+        "jit_ms": 1.13363,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 6.001690845737293,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [
+          "result"
+        ],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 576.6026973724365,
+          "all_compile_ms": 576.6026973724365
+        },
+        "runtime": {
+          "wall_time_ms": 11.1211,
+          "kernel_execution_ms": 9.84126
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 27.276533289436514
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 1.3027872468981338e-06,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 268435456,
+        "bytes": 1073741824,
+        "size_mb": 1024,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_warp_cas",
+        "step": "rollup",
+        "kernel_best_us": 12761.2,
+        "jit_ms": 1.1669,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 18.214372187749685,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [
+          "result"
+        ],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 576.6026973724365,
+          "all_compile_ms": 576.6026973724365
+        },
+        "runtime": {
+          "wall_time_ms": 14.671299999999999,
+          "kernel_execution_ms": 12.9709
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 82.78082661958693
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 1.8456152625101928e-06,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 805306368,
+        "bytes": 3221225472,
+        "size_mb": 3072,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_warp_cas",
+        "step": "rollup",
+        "kernel_best_us": 20721.4,
+        "jit_ms": 1.16036,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 33.685525295152615,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [
+          "result"
+        ],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 576.6026973724365,
+          "all_compile_ms": 576.6026973724365
+        },
+        "runtime": {
+          "wall_time_ms": 23.2118,
+          "kernel_execution_ms": 21.0408
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 153.094248887875
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 2.0438361771827586e-05,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": true,
+  "contender_class": "Crisp"
+}

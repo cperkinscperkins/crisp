@@ -1,0 +1,29 @@
+;; Ladder step 0 -- does it run at all?  One work-item per element, one global atomic each.
+;;
+;; Every element contends for the same cell, so this measures atomic throughput, not memory
+;; bandwidth.  It is the baseline the rest of the ladder improves on.
+;;
+;; The result is accumulated INTO, so it must be 0 before every launch.  The compiler records that
+;; (:launch-init) only for its own reduction constructs; a hand-written atomic needs the directive.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+;; BENCH-GROUPS: per-element
+;; BENCH-LAUNCH-INIT: result = 0.0
+;; BENCH-RTOL: 1e-2
+;;   One fp32 cell takes an atomic add per element (or per work-group): millions of roundings at
+;;   ulp(total).  Measured 0.3% at 64 MiB for step 0, 4e-4 at 3 GiB for steps 1-2.  1e-2 still
+;;   catches a stale or doubled result; the measured error is reported.
+;; BENCH-MAX-MB: 64
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_atomic_per_element (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (local-size :set-to (256)))
+  (let ((gid (get-global-id 0))
+        (n   (length~ input)))
+    (declare (grid-level))
+    (when (< gid n)
+      (atomic-add! (~ result) (~ input gid)))))
