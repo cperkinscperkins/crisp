@@ -134,8 +134,46 @@ Plan
 - [x] VERIFY-AUTODIFF runner zeroes global scratch once at bind (`tests/verify-autodiff-runner.lisp`)
       + `docs/tests.md`
 - [x] bump `tests/ci-stop.txt` to `179-reduction-launch-state`
-- [ ] implement (overlays)
-- [ ] on-metal BMG; CUDA spec for last-man self-reset (pending a pod; one spec)
-- [ ] update `reductions-excerpt.md` + `ideal_001.md`: relaunch semantics per strategy
+- [x] implement (overlays) -- see "Implementation" below
+- [x] on-metal BMG: 175/26, 176/08, 176/14, 178/10 green (analytical=1.0 numerical=1.0); controls
+      175/31, 175/40, 178/11, 178/12 still green
+- [ ] CUDA: last-man self-reset on NVIDIA (next pod; 176/07 forward + a [CUDA] VAD spec if one fits)
+- [x] update `reductions-excerpt.md` + `ideal_001.md`: "Launching the Kernel Again" after the
+      Phase 2 trade-off matrix (chapters regenerate at fold)
 - [ ] decide whether BUG 084's harness re-zero stays (belt and braces) or goes
 - [ ] fold into src/, regenerate reference / call graph, suites
+
+
+Implementation (overlay, 2026-10-03)
+====================================
+
+Appended to `overlays/crisp-compiler-overlay.lisp`, one block, each form tagged with its target
+file.  The seven replaced functions were **script-extracted** from src/
+(`put_temp_files_here/179/extract.py` + `transform.py`), so each differs from src/ only by the
+lines marked `179`, and the fold-back diff will show exactly that.
+
+| form | target | change |
+|---|---|---|
+| `*reduction-launch-init*` (defvar) | src/compiler.lisp | NEW: `(kernel . param)` → `:launch-init` plist |
+| `%reduction-identity-value` | src/analysis/ops.lisp | NEW: identity → number / `:infinity` / NIL (literals, suffixed literals, `type-min/max/infinity`, `(- x)`) |
+| `%note-reduction-launch-init` | src/analysis/ops.lisp | NEW: records against `compiler-context-current-compiling-function`; warns if the return cell is not a kernel's own parameter |
+| `%reduction-launch-init-for` | src/metadata.lisp | NEW: lookup |
+| `%grid-reduce-last-man-expand` | src/analysis/ops.lisp | D1: `(set! (~ ,ctr) 0u)` after the final sweep, thread 0 of the elected workgroup |
+| `%fused-grid-reduce-form` | src/analysis/ops.lisp | D1 same, in the last-man branch; D2 note per clause in the `:atomic`/`:cas` branch |
+| `%fused-grid-reduce-dependent-form` | src/analysis/ops.lisp | D1 same |
+| `%grid-reduce-atomic-expand` | src/analysis/ops.lisp | D2 note |
+| `%grid-reduce-cas-expand` | src/analysis/ops.lisp | D2 note |
+| `generate-declared-signature` | src/metadata.lisp | D2: `:launch-init` on the entry |
+| `initialize-compiler` | src/compiler.lisp | `(clrhash *reduction-launch-init*)` |
+
+Checked by hand, not only by the tests:
+- IR (single last-man): the `store i32 0, ptr addrspace(1)` is in the block that stores the result,
+  after the final-sweep loop exits, inside the `when+` election branch.
+- metacrisp: `:cas` min with `(type-max float)` → `(:identity 3.4028235e38)`; `:atomic` max with
+  `(- (type-max float))` → `(:identity -3.4028235e38)`; a last-man `+` output carries nothing.
+
+Suites on the overlay build (2026-10-03, BMG): unit 341/341, E2E 1376/1376 (includes
+`launch-state.unit.lisp`), negative 311/311.  `--differentiate` was run only for the 8
+VERIFY-AUTODIFF specs above; the full `--differentiate` pass is left to CI.
+
+Still open: the non-parameter return cell is a **warning**, not an error (D2's "refuse or note").
