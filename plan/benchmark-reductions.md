@@ -167,7 +167,7 @@ waste.
 
 | phase | work | exit check |
 |---|---|---|
-| **0** | Housekeeping.  Check `plan/intel-bench-modernize.md`, `plan/benchmark-data-audit.md`, `plan/dummy-report.md` for open items (findings to `put_temp_files_here/`); Chris decides delete or archive.  Retire `benchmarks/reduction/run.py`; keep the hand-written kernel and the CUB/SYCL sources as starting points.  Measured read-bandwidth kernel on BMG. | a measured BMG peak in GB/s |
+| **0** ✅ 2026-10-03 (deletions await Chris) | Housekeeping.  Check `plan/intel-bench-modernize.md`, `plan/benchmark-data-audit.md`, `plan/dummy-report.md` for open items (findings to `put_temp_files_here/`); Chris decides delete or archive.  Retire `benchmarks/reduction/run.py`; keep the hand-written kernel and the CUB/SYCL sources as starting points.  Measured read-bandwidth kernel on BMG. | a measured BMG peak in GB/s |
 | **1** | **Endeavour 179**: kernel state across re-launches (self-reset and/or metacrisp init annotations). | its own spec dir |
 | **2** | Argument-plan writer + generic L0 fixture + `reduction.py`; sum f32 on BMG, verified; reproducibility check; the change-the-input probe. | a sum number we trust, plus a demonstrated catch of a stale-state run |
 | **3** | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
@@ -178,6 +178,43 @@ waste.
 Phases 2–4 are local (BMG in Docker), so nothing waits for a pod until phase 5.
 
 ---
+
+### Result schema: what reduction JSON must record (from the phase 0 audit)
+
+`put_temp_files_here/bench-phase0/plan-audit.md` checked `plan/benchmark-data-audit.md` against
+today's result files.  Still open, and things the reduction suite cannot do without:
+
+- **`bandwidth_gbps` filled in** (NULL in every matmul row; it is the reduction headline).
+- **Contender class as a field** (crisp / control / peer / top), not inferred from name prefixes.
+- **Dispatch recorded**: groups, local size, the `:occupancy` factor; these are the reduction's
+  own variables.
+- **A missing size recorded as missing** (clamped by VRAM), not silently absent.
+
+### Measured ceilings
+
+| device | env | peak read (median) | best config | source |
+|---|---|---|---|---|
+| BMG (Arc B580, `0xe20b`), driver 1.15.39122 | Docker | **454.5 GB/s** (3 GB); 453.6 (1 GB), 449.9 (256 MB) | `float4`, wg 256, 160 groups (= SYCL's 160 compute units) | `benchmarks/results/ceiling_intel_hash_1791074983.json`, 2026-10-03 |
+
+- Spec sheet is 456 GB/s, so the measured read peak is 99.7% of it.  It is verified, not
+  assumed: every timed launch's partials must sum to the host's total of the input.
+- **The data pattern does not matter on BMG.**  All-1.0f (compressible) and scattered small
+  integers (`--pattern=hash`) gave the same medians.  Hash is the default anyway, so a future
+  device with compression can't flatter the ceiling.
+- 16 MB (fits in the 18.9 MB L2) reads at ~860 GB/s: the latency/cache group really is a
+  different regime.
+- 4 GB was skipped (over a third of the 12.5 GB device); 3 GB is the largest size measured.
+- Probe: `benchmarks/reduction/ceiling/read_bw.cpp`; runner: `scripts/bench-ceiling-intel.sh`.
+  H100 needs a CUDA twin in phase 5.
+
+### Carried forward from endeavour 143
+
+- **"What should max occupancy mean?"** (143's deferred #3).  For grid-stride kernels the optimum
+  kept landing at or beyond the largest grid the API can express.  The ladder's grid-stride step
+  should sweep the grid size rather than trust one occupancy formula.  The phase 0 ceiling probe
+  sweeps it too (multiples of the compute units, plus one work-item per element).
+- 143's deferred #2: `bench_harness_l0.cpp` sizes its grid as `totalEUs`, ~2x off the hoist's
+  formula.  Don't copy that sizing into the reduction fixture.
 
 ## 7. Open questions
 
