@@ -1,0 +1,224 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-04T23:31:22.031743Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H100 80GB HBM3",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 85520809984,
+      "sm_count": null,
+      "hardware_profile": "h100-80gb-hbm3",
+      "profile_matched": false,
+      "profile_provenance": "auto",
+      "profile_source": "/root/crisp/benchmarks/profiles/h100-80gb-hbm3.crisp"
+    },
+    "crisp_commit": "9fc7479f",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "_probe_unroll__f64_x8",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 8388608,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "sum",
+        "groups": 132,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 100,
+        "verified": true,
+        "kernel": "sum_probe_f64_x8",
+        "step": "_probe_unroll",
+        "kernel_best_us": 42.176,
+        "jit_ms": 62.1992,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3103.084767,
+        "percent_of_peak": 50.06134355226675,
+        "ceiling_file": "ceiling_nvidia_hash_1791156465.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 117.48623847961426,
+          "all_compile_ms": 117.48623847961426
+        },
+        "runtime": {
+          "wall_time_ms": 0.0567865,
+          "kernel_execution_ms": 0.0432
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 1553.445925925926
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 33554432,
+        "bytes": 268435456,
+        "size_mb": 256,
+        "workload": "sum",
+        "groups": 132,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 100,
+        "verified": true,
+        "kernel": "sum_probe_f64_x8",
+        "step": "_probe_unroll",
+        "kernel_best_us": 138.848,
+        "jit_ms": 0.24861,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3103.084767,
+        "percent_of_peak": 61.592903892057514,
+        "ceiling_file": "ceiling_nvidia_hash_1791156465.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 117.48623847961426,
+          "all_compile_ms": 117.48623847961426
+        },
+        "runtime": {
+          "wall_time_ms": 0.15298699999999998,
+          "kernel_execution_ms": 0.14044800000000002
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 1911.2800182273868
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 134217728,
+        "bytes": 1073741824,
+        "size_mb": 1024,
+        "workload": "sum",
+        "groups": 132,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 100,
+        "verified": true,
+        "kernel": "sum_probe_f64_x8",
+        "step": "_probe_unroll",
+        "kernel_best_us": 524.128,
+        "jit_ms": 0.23778,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3103.084767,
+        "percent_of_peak": 65.63429564363956,
+        "ceiling_file": "ceiling_nvidia_hash_1791156465.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 117.48623847961426,
+          "all_compile_ms": 117.48623847961426
+        },
+        "runtime": {
+          "wall_time_ms": 0.539806,
+          "kernel_execution_ms": 0.5272
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2036.6878300455235
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 536870912,
+        "bytes": 4294967296,
+        "size_mb": 4096,
+        "workload": "sum",
+        "groups": 132,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 100,
+        "verified": true,
+        "kernel": "sum_probe_f64_x8",
+        "step": "_probe_unroll",
+        "kernel_best_us": 2064.16,
+        "jit_ms": 0.232156,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3103.084767,
+        "percent_of_peak": 66.85259284732058,
+        "ceiling_file": "ceiling_nvidia_hash_1791156465.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 117.48623847961426,
+          "all_compile_ms": 117.48623847961426
+        },
+        "runtime": {
+          "wall_time_ms": 2.0830900000000003,
+          "kernel_execution_ms": 2.07037
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2074.492624989736
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": false,
+  "contender_class": "Crisp"
+}

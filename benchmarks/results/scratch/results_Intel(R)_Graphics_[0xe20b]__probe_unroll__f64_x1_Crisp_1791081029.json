@@ -1,0 +1,224 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-04T02:30:23.612703Z",
+    "hardware": {
+      "gpu_model": "Intel(R) Graphics [0xe20b]",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null,
+      "hardware_profile": "bmg",
+      "profile_matched": true,
+      "profile_provenance": "builtin",
+      "profile_source": null
+    },
+    "crisp_commit": "8f3acc92",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "_probe_unroll__f64_x1",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 8388608,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_probe_f64_x1",
+        "step": "_probe_unroll",
+        "kernel_best_us": 170.456,
+        "jit_ms": 80.7846,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 83.78946599365676,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 579.2114734649658,
+          "all_compile_ms": 579.2114734649658
+        },
+        "runtime": {
+          "wall_time_ms": 0.325438,
+          "kernel_execution_ms": 0.176228
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 380.80704541843517
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 33554432,
+        "bytes": 268435456,
+        "size_mb": 256,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_probe_f64_x1",
+        "step": "_probe_unroll",
+        "kernel_best_us": 634.92,
+        "jit_ms": 1.20013,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 92.293004063542,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 579.2114734649658,
+          "all_compile_ms": 579.2114734649658
+        },
+        "runtime": {
+          "wall_time_ms": 0.8763869999999999,
+          "kernel_execution_ms": 0.639964
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 419.4539942871787
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 134217728,
+        "bytes": 1073741824,
+        "size_mb": 1024,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_probe_f64_x1",
+        "step": "_probe_unroll",
+        "kernel_best_us": 2470.21,
+        "jit_ms": 1.20114,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 95.20763743157633,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 579.2114734649658,
+          "all_compile_ms": 579.2114734649658
+        },
+        "runtime": {
+          "wall_time_ms": 2.82117,
+          "kernel_execution_ms": 2.48149
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 432.7004436850441
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 402653184,
+        "bytes": 3221225472,
+        "size_mb": 3072,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_probe_f64_x1",
+        "step": "_probe_unroll",
+        "kernel_best_us": 7425.18,
+        "jit_ms": 1.23932,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 95.10128758811251,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 579.2114734649658,
+          "all_compile_ms": 579.2114734649658
+        },
+        "runtime": {
+          "wall_time_ms": 7.8103299999999996,
+          "kernel_execution_ms": 7.452795
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 432.217104052909
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": false,
+  "contender_class": "Crisp"
+}

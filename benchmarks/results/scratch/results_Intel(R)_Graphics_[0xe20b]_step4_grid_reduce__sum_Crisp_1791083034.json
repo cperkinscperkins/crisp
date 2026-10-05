@@ -1,0 +1,77 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-04T03:03:53.880946Z",
+    "hardware": {
+      "gpu_model": "Intel(R) Graphics [0xe20b]",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null,
+      "hardware_profile": "bmg",
+      "profile_matched": true,
+      "profile_provenance": "builtin",
+      "profile_source": null
+    },
+    "crisp_commit": "8f3acc92",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "step4_grid_reduce__sum",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 4194304,
+        "bytes": 16777216,
+        "size_mb": 16,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 5,
+        "verified": true,
+        "kernel": "sum_grid_reduce",
+        "step": "step4_grid_reduce",
+        "kernel_best_us": 55.328,
+        "jit_ms": 1.7128,
+        "device_reported": "Intel(R) Arc(TM) B580 Graphics",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 64.7724681232899,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json",
+        "groups_spec": "eu",
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 313.5979175567627,
+          "all_compile_ms": 313.5979175567627
+        },
+        "runtime": {
+          "wall_time_ms": 0.06974,
+          "kernel_execution_ms": 0.056991999999999994
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 294.3784390791691
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": false,
+  "contender_class": "Crisp"
+}
