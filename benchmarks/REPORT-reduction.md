@@ -5,6 +5,9 @@
 | device | data captured | source | hardware profile |
 |---|---|---|---|
 | Intel(R) Graphics [0xe20b] | 2026-10-06 | Crisp `56cb083b` (docker) | `bmg` (validated) |
+| NVIDIA H100 NVL | 2026-10-06 | Crisp `dd7edf5e` (runpod) | `h100-nvl` (queried*) |
+
+> \* **queried / supplied**: the profile's QUERIED keys were read off the device, but its MEASURED keys (`:tile-visit-strip-width` above all) were never swept for this part and are absent, which selects safe defaults rather than tuned ones. Such a row is honest about the hardware it ran on and fair to compare *within* the device; it may understate Crisp against a row whose profile was fully tuned. A **NONE** row was compiled with no profile at all and is not comparable to published figures.
 
 ---
 
@@ -43,7 +46,7 @@ Every row has the same Phase 0 (`loop-vector-stride` fold) and the same grid (th
 
 ## § 2 — Workloads and Contenders · Intel(R) Graphics [0xe20b] · fp32 · `fast`
 
-Crisp's row is its language form (`reduce-vec` / `grid-reduce!` after a `loop-vector-stride` fold, grid from the occupancy policy). Contenders are timed by the HOST CLOCK around call-and-wait (a library call may launch several kernels), so at small sizes their numbers include the submission overhead shown; Crisp is timed by its kernel timestamp. **Device compile** = source to SPIR-V (`crisp-compile`; `icpx -fsycl-device-only`). Cells: GB/s of input read (% of measured peak).
+Crisp's row is its language form (`reduce-vec` / `grid-reduce!` after a `loop-vector-stride` fold, grid from the occupancy policy). Contenders are timed by the HOST CLOCK around call-and-wait (a library call may launch several kernels and return no single event), so at small sizes their numbers include the submission overhead shown; Crisp is timed by its kernel timestamp -- small sizes are NOT a like-for-like comparison. **Device compile** = source to device IR (`crisp-compile`; `icpx -fsycl-device-only` / `nvcc -ptx`). Cells: GB/s of input read (% of measured peak).
 
 ### `argmax`
 
@@ -79,6 +82,74 @@ Crisp's row is its language form (`reduce-vec` / `grid-reduce!` after a `loop-ve
 | **Crisp** | 618 ms | 108 (24%) | 462 (102%) | 250 (55%) | 254 (56%) | 255 (56%) | 255 (56%) | — |
 | SYCL_Reduction | 1850 ms | 7 (2%) | 108 (24%) | 225 (50%) | 340 (75%) | 348 (77%) | 419 (92%) | 133 µs |
 | oneDPL | 2987 ms | 7 (2%) | 206 (45%) | 291 (64%) | 362 (80%) | 396 (87%) | 436 (96%) | 138 µs |
+
+## § 1 — Reduction Ladder · NVIDIA H100 NVL · sum fp32 · `fast`
+
+Measured read peak **3702.3 GB/s** (`NVIDIA H100 NVL`, hash data). † fits in the 62.9 MB cache: that column measures cache, not memory, and can exceed 100%.
+
+| # | step | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **4 GiB** | max rel err |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | one atomic per element | 141 ms | 2 (0%) | 2 (0%) | 2 (0%) | *skipped* | *skipped* | *skipped* | 8.6e-05 |
+| 1 | work-group tree in SLM, one atomic per group (hand) | 157 ms | 144 (4%) | 447 (12%) | 508 (14%) | 497 (13%) | 512 (14%) | 514 (14%) | 8.7e-04 |
+| 2 | warp shuffles, one atomic per group (hand) | 167 ms | 148 (4%) | 454 (12%) | 509 (14%) | 497 (13%) | 512 (14%) | 514 (14%) | 8.7e-04 |
+| 3 | + grid-stride: fixed grid, many elements per thread (hand) | 182 ms | 111 (3%) | 1432 (39%) | 1893 (51%) | 2248 (61%) | 2373 (64%) | 2428 (66%) | 1.0e-06 |
+| 3b | + unrolled x4: four loads in flight per thread (hand) | 186 ms | 139 (4%) | 1513 (41%) | 2404 (65%) | 3223 (87%) | 3512 (95%) | 3536 (96%) | 5.3e-07 |
+| 4 | `grid-reduce!` -- the language does Phase 1 + 2 | 192 ms | 99 (3%) | 1193 (32%) | 1161 (31%) | 1427 (39%) | 1515 (41%) | 1541 (42%) | 1.7e-08 |
+| 4 | `grid-reduce!` -- the language does Phase 1 + 2 — `sum_atomic` | 210 ms | 114 (3%) | 1664 (45%) | 2394 (65%) | 3113 (84%) | 3360 (91%) | 3353 (91%) | 8.2e-07 |
+| 5 | `reduce-vec` -- the one-liner | 188 ms | 89 (2%) | 1028 (28%) | 1135 (31%) | 1413 (38%) | 1516 (41%) | 1541 (42%) | 1.7e-08 |
+
+## § 1b — Strategy Rollup · NVIDIA H100 NVL · sum fp32 · `fast`
+
+Every row has the same Phase 0 (`loop-vector-stride` fold) and the same grid (the hoist's occupancy formula, R=1 unless the kernel declares otherwise); rows differ only in how the per-thread partials are combined. Cells are **median kernel µs**; the fastest per size is bold.
+
+| Phase 1 | Phase 2 | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **4 GiB** |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `reduce-workgroup` | `:atomic` | **7.5** | **9.6** | **26.8** | **84.9** | **319.2** | **1278.9** |
+| `reduce-workgroup` | `:cas` | 11400.0 | 11426.3 | 11380.2 | 11525.8 | 11680.2 | 12608.4 |
+| `reduce-workgroup` | `:last-man-standing` | 10.5 | 14.6 | 57.7 | 187.6 | 707.9 | 2785.0 |
+| `reduce-warp` | atomic per warp | 16.7 | 18.7 | 35.8 | 92.8 | 328.0 | 1336.0 |
+| `reduce-warp` | CAS per warp | 25282.1 | 24987.8 | 24977.8 | 25034.9 | 25533.3 | 26350.6 |
+
+*second-stage* is not in the rollup yet: it needs two kernel launches, which the fixture's single-kernel plan cannot express.
+
+## § 2 — Workloads and Contenders · NVIDIA H100 NVL · fp32 · `fast`
+
+Crisp's row is its language form (`reduce-vec` / `grid-reduce!` after a `loop-vector-stride` fold, grid from the occupancy policy). Contenders are timed by cuda-events on the stream (Thrust: + its small host copy-back): stream-ordered events bracket every kernel a library launches, as Crisp's kernel is timed. **Device compile** = source to device IR (`crisp-compile`; `icpx -fsycl-device-only` / `nvcc -ptx`). Cells: GB/s of input read (% of measured peak).
+
+### `argmax`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **4 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 237 ms | 88 (2%) | 1025 (28%) | 1270 (34%) | 1697 (46%) | 1861 (50%) | 1910 (52%) | — |
+| CUB | 3653 ms | 106 (3%) | 1317 (36%) | 2301 (62%) | 3221 (87%) | 3577 (97%) | 3642 (98%) | 5 µs |
+| Thrust | 3924 ms | 32 (1%) | 59 (2%) | 302 (8%) | 567 (15%) | 1521 (41%) | 2128 (57%) | 5 µs |
+| cuBLAS | 1047 ms | 93 (3%) | 1031 (28%) | 1780 (48%) | 2360 (64%) | 2551 (69%) | 2574 (70%) | 4 µs |
+
+### `sum`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **4 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 190 ms | 99 (3%) | 1124 (30%) | 1158 (31%) | 1428 (39%) | 1516 (41%) | 1540 (42%) | — |
+| CUB | 2611 ms | 126 (3%) | 1301 (35%) | 2313 (62%) | 3338 (90%) | 3663 (99%) | 3745 (101%) | 5 µs |
+| Thrust | 3518 ms | 38 (1%) | 87 (2%) | 323 (9%) | 1024 (28%) | 2257 (61%) | 3232 (87%) | 5 µs |
+| cuBLAS | 1157 ms | 98 (3%) | 990 (27%) | 1715 (46%) | 2085 (56%) | 2308 (62%) | 2357 (64%) | 4 µs |
+
+### `sum_sumsq`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **4 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 233 ms | 73 (2%) | 807 (22%) | 890 (24%) | 1114 (30%) | 1195 (32%) | 1217 (33%) | — |
+| CUB | 2303 ms | 128 (3%) | 1369 (37%) | 2199 (59%) | 3279 (89%) | 3622 (98%) | 3684 (100%) | 5 µs |
+| Thrust | 2337 ms | 25 (1%) | 45 (1%) | 173 (5%) | 1018 (27%) | 2251 (61%) | 3226 (87%) | 10 µs |
+| cuBLAS | 1024 ms | 54 (1%) | 677 (18%) | 956 (26%) | 1251 (34%) | 1330 (36%) | 1306 (35%) | 4 µs |
+
+### `welford`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **4 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 256 ms | 64 (2%) | 637 (17%) | 969 (26%) | 1308 (35%) | 1431 (39%) | 1464 (40%) | — |
+| CUB | 2180 ms | 108 (3%) | 665 (18%) | 1613 (44%) | 2818 (76%) | 3251 (88%) | 2566 (69%) | 5 µs |
+| Thrust | 2793 ms | 30 (1%) | 44 (1%) | 252 (7%) | 944 (26%) | 2118 (57%) | 2590 (70%) | 7 µs |
 
 
 # Appendix — runs excluded from canonical tables

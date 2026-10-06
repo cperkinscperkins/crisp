@@ -172,7 +172,7 @@ waste.
 | **2** ✅ 2026-10-03 | Argument-plan writer + generic L0 fixture + `reduction.py`; sum f32 on BMG, verified; reproducibility check; the change-the-input probe. | a sum number we trust, plus a demonstrated catch of a stale-state run |
 | **3** ✅ 2026-10-03 (BMG; second-stage pending a 2-kernel plan) | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
 | **4** ✅ 2026-10-05 (BMG; small-size timing parity open; LSE/dot not done) | Workloads + contenders (§2) on BMG: sum+sumsq, argmax, Welford (LSE, dot if they fit), SYCL/oneDPL/oneMKL, compile times. | §2 for BMG |
-| **5** ◐ 2026-10-04 (fixture, ceiling, ladder + rollup measured; dispatch policy and CUB/cuBLAS still to do) | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
+| **5** ✅ 2026-10-06 (H100 NVL; ladder, rollup, workloads, CUB/Thrust/cuBLAS) | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
 | **6** | Report split: index + `REPORT-matmul.md` + `REPORT-reduction.md`.  Can be done any time after phase 3. | — |
 
 Phases 2–4 are local (BMG in Docker), so nothing waits for a pod until phase 5.
@@ -322,6 +322,33 @@ not read them as Crisp's H100 performance.  The follow-up (scratch, 4 GiB):
   step 4 (50.8%) vs the hand x4 probe (86.5%) at the same 256 groups.
 - `:cas` floor ~1.4 ms per work-group / ~4 ms per warp on H100 too: slow on BOTH vendors, so
   suspect Crisp's `atomic-binop!` lowering, not the hardware.
+
+### Phase 5 results -- H100 NVL (2026-10-06, RunPod) -- `REPORT-reduction.md`
+
+Ceiling **3702.3 GB/s** measured.  Stale demo CAUGHT both; 165 points, all verified.  Grid from
+the occupancy policy (132 SMs x 8 = 1056 resident at local 256).  % of peak at 4 GiB; device
+compile (source -> PTX):
+
+| workload | Crisp | CUB | Thrust | cuBLAS |
+|---|---|---|---|---|
+| sum | 42% · 0.19 s | 101% · 2.6 s | 87% · 3.5 s | 64% (asum) · 1.2 s |
+| sum + sumsq | 33% · 0.23 s | 100% · 2.3 s | 87% · 2.3 s | 35% (2 passes) · 1.0 s |
+| argmax | 52% · 0.24 s | 98% · 3.7 s | 57% · 3.9 s | 70% (isamax) · 1.0 s |
+| Welford | 40% · 0.26 s | 69% · 2.2 s | 70% · 2.8 s | -- |
+
+- **Crisp's language forms here are all last-man** (the `grid-reduce!`/`reduce-vec` default, and
+  the ONLY strategy for dependent reductions), and last-man is capped at groups <= local size (256)
+  -- a quarter of the 1056 resident groups.  That cap is the whole gap: the same sum with
+  `:strategy :atomic` reaches **91%** (ladder step 4 atomic), hand-unrolled step 3b 96%.
+- **Fix candidate (compiler):** let last-man's final sweep loop over the partials in chunks of the
+  local size (a strided sweep in the elected work-group) instead of requiring one partial per
+  thread.  That removes the cap, so last-man can use the full occupancy grid.
+- **Compile: Crisp 0.19-0.26 s vs CUB 2.2-3.7 s and Thrust 2.3-3.9 s (10-15x); cuBLAS 1.0-1.2 s**
+  (its calls are thin API calls over a precompiled library).
+- Small sizes ARE comparable on NVIDIA (event-timed both sides): at 1 MiB everyone is launch-bound
+  (Crisp 99, CUB 126, cuBLAS 98 GB/s for sum).
+- One-pass multi-variable: Crisp's sum+sumsq is level with cuBLAS's two calls today (33% vs 35%);
+  CUB's one-pass `TransformInputIterator` reaches 100%.  The last-man fix is the lever.
 
 ### Phase 5 completion -- prepared 2026-10-06, needs one pod session
 
