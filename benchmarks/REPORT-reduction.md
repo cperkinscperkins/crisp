@@ -4,7 +4,7 @@
 
 | device | data captured | source | hardware profile |
 |---|---|---|---|
-| Intel(R) Graphics [0xe20b] | 2026-10-06 | Crisp `57b66028` (docker) | `bmg` (validated) |
+| Intel(R) Graphics [0xe20b] | 2026-10-06 | Crisp `56cb083b` (docker) | `bmg` (validated) |
 
 ---
 
@@ -40,6 +40,45 @@ Every row has the same Phase 0 (`loop-vector-stride` fold) and the same grid (th
 | `reduce-warp` | CAS per warp | 5321.9 | 5437.0 | 5596.3 | 6346.2 | 9351.2 | 17241.2 |
 
 *second-stage* is not in the rollup yet: it needs two kernel launches, which the fixture's single-kernel plan cannot express.
+
+## § 2 — Workloads and Contenders · Intel(R) Graphics [0xe20b] · fp32 · `fast`
+
+Crisp's row is its language form (`reduce-vec` / `grid-reduce!` after a `loop-vector-stride` fold, grid from the occupancy policy). Contenders are timed by the HOST CLOCK around call-and-wait (a library call may launch several kernels), so at small sizes their numbers include the submission overhead shown; Crisp is timed by its kernel timestamp. **Device compile** = source to SPIR-V (`crisp-compile`; `icpx -fsycl-device-only`). Cells: GB/s of input read (% of measured peak).
+
+### `argmax`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **3 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 620 ms | 87 (19%) | 391 (86%) | 252 (55%) | 259 (57%) | 260 (57%) | 260 (57%) | — |
+| SYCL_Reduction | 1869 ms | 5 (1%) | 95 (21%) | 221 (49%) | 323 (71%) | 342 (75%) | 404 (89%) | 166 µs |
+| oneDPL | 3277 ms | 14 (3%) | 192 (42%) | 291 (64%) | 330 (73%) | 402 (88%) | 433 (95%) | 82 µs |
+| oneMKL | 2534 ms | 9 (2%) | 128 (28%) | 126 (28%) | 144 (32%) | 170 (37%) | 174 (38%) | 65 µs |
+
+### `sum`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **3 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 574 ms | 126 (28%) | 514 (113%) | 259 (57%) | 263 (58%) | 264 (58%) | 264 (58%) | — |
+| SYCL_Reduction | 1909 ms | 9 (2%) | 134 (30%) | 242 (53%) | 330 (73%) | 406 (89%) | 426 (94%) | 66 µs |
+| oneDPL | 2903 ms | 12 (3%) | 237 (52%) | 298 (66%) | 331 (73%) | 417 (92%) | 438 (96%) | 73 µs |
+| oneMKL | 2605 ms | 5 (1%) | 143 (31%) | 253 (56%) | 317 (70%) | 407 (90%) | 426 (94%) | 63 µs |
+
+### `sum_sumsq`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **3 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 575 ms | 110 (24%) | 492 (108%) | 257 (57%) | 264 (58%) | 265 (58%) | 265 (58%) | — |
+| SYCL_Reduction | 2006 ms | 14 (3%) | 203 (45%) | 277 (61%) | 321 (71%) | 396 (87%) | 429 (94%) | 65 µs |
+| oneDPL | 2975 ms | 15 (3%) | 194 (43%) | 298 (66%) | 315 (69%) | 401 (88%) | 433 (95%) | 69 µs |
+| oneMKL | 2699 ms | 6 (1%) | 93 (20%) | 155 (34%) | 179 (39%) | 211 (46%) | 219 (48%) | 67 µs |
+
+### `welford`
+
+| contender | device compile | **1 MiB†** | **16 MiB†** | **64 MiB** | **256 MiB** | **1 GiB** | **3 GiB** | launch overhead |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Crisp** | 618 ms | 108 (24%) | 462 (102%) | 250 (55%) | 254 (56%) | 255 (56%) | 255 (56%) | — |
+| SYCL_Reduction | 1850 ms | 7 (2%) | 108 (24%) | 225 (50%) | 340 (75%) | 348 (77%) | 419 (92%) | 133 µs |
+| oneDPL | 2987 ms | 7 (2%) | 206 (45%) | 291 (64%) | 362 (80%) | 396 (87%) | 436 (96%) | 138 µs |
 
 
 # Appendix — runs excluded from canonical tables
@@ -142,3 +181,6 @@ Debug and exploratory runs are written to `benchmarks/results/scratch/`, which t
 | 2026-10-06 04:33 | reduction | step3b_grid_stride_unrolled__sum | Crisp | `1MiB,16MiB,256MiB,1024MiB` |
 | 2026-10-06 04:33 | reduction | step4_grid_reduce__sum | Crisp | `1MiB,16MiB,256MiB,1024MiB` |
 | 2026-10-06 04:33 | reduction | step4_grid_reduce__sum_atomic | Crisp | `1MiB,16MiB,256MiB,1024MiB` |
+| 2026-10-06 04:42 | reduction | workloads__argmax | Crisp | `1MiB,64MiB` |
+| 2026-10-06 04:42 | reduction | workloads__sum_sumsq | Crisp | `1MiB,64MiB` |
+| 2026-10-06 04:42 | reduction | workloads__welford | Crisp | `1MiB,64MiB` |

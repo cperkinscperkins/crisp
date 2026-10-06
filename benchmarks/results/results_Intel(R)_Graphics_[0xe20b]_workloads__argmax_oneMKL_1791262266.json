@@ -1,0 +1,268 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-06T04:50:57.100676Z",
+    "hardware": {
+      "gpu_model": "Intel(R) Graphics [0xe20b]",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null,
+      "hardware_profile": "bmg",
+      "profile_matched": true,
+      "profile_provenance": "builtin",
+      "profile_source": null
+    },
+    "crisp_commit": "56cb083b",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "workloads__argmax",
+  "competitor": "oneMKL",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 262144,
+        "bytes": 1048576,
+        "size_mb": 1,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "onemkl__argmax",
+        "library": "onemkl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 64.672,
+        "kernel_best_us": 65.234,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 1.8816813112353745,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2534.1317653656006,
+          "all_compile_ms": 6543.560743331909
+        },
+        "runtime": {
+          "wall_time_ms": 0.12867099999999998,
+          "kernel_execution_ms": 0.1226135
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 8.551880502554777
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 4194304,
+        "bytes": 16777216,
+        "size_mb": 16,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "onemkl__argmax",
+        "library": "onemkl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 77.16,
+        "kernel_best_us": 126.008,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 28.10022496304345,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2534.1317653656006,
+          "all_compile_ms": 6543.560743331909
+        },
+        "runtime": {
+          "wall_time_ms": 0.13625800000000002,
+          "kernel_execution_ms": 0.13136950000000003
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 127.71013058586658
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 16777216,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "onemkl__argmax",
+        "library": "onemkl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 105.607,
+        "kernel_best_us": 475.58,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 27.812586844593312,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2534.1317653656006,
+          "all_compile_ms": 6543.560743331909
+        },
+        "runtime": {
+          "wall_time_ms": 0.5455270000000001,
+          "kernel_execution_ms": 0.5309125
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 126.40287052951288
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 67108864,
+        "bytes": 268435456,
+        "size_mb": 256,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "onemkl__argmax",
+        "library": "onemkl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 146.875,
+        "kernel_best_us": 1650.56,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 31.70117357521011,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2534.1317653656006,
+          "all_compile_ms": 6543.560743331909
+        },
+        "runtime": {
+          "wall_time_ms": 1.8348499999999999,
+          "kernel_execution_ms": 1.863155
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 144.07575107814435
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 268435456,
+        "bytes": 1073741824,
+        "size_mb": 1024,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "onemkl__argmax",
+        "library": "onemkl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 133.28,
+        "kernel_best_us": 6033.73,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 37.35090504528338,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2534.1317653656006,
+          "all_compile_ms": 6543.560743331909
+        },
+        "runtime": {
+          "wall_time_ms": 6.302560000000001,
+          "kernel_execution_ms": 6.32533
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 169.75269653915288
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 805306368,
+        "bytes": 3221225472,
+        "size_mb": 3072,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "onemkl__argmax",
+        "library": "onemkl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 172.89,
+        "kernel_best_us": 17808.5,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 38.296905300908946,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 2534.1317653656006,
+          "all_compile_ms": 6543.560743331909
+        },
+        "runtime": {
+          "wall_time_ms": 18.3872,
+          "kernel_execution_ms": 18.50725
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 174.05208618244203
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": true,
+  "contender_class": "Ceiling"
+}

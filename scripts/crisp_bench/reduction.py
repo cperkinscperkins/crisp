@@ -13,7 +13,7 @@ For every reduction kernel under benchmarks/reduction/<step>/*.crisp:
 A kernel says what it computes in header comments the driver reads:
     ;; BENCH-WORKLOAD: sum
     ;; BENCH-EXPECT: result = sum(input)
-BENCH-EXPECT functions: sum sumsq min max argmin argmax count mean var (population).
+BENCH-EXPECT functions: sum sumsq min max argmin argmax count mean var (population) m2 (= n * var).
 
 Stale-state demonstration (--stale-demo): runs an :atomic kernel without its per-launch identity
 fill, and a last-man kernel with its zero-once counter dirtied before the relaunch.  Both MUST
@@ -48,7 +48,7 @@ sys.path.insert(0, str(HERE))
 import hwprofile                                                # noqa: E402
 from harness import (BenchmarkMetrics, BenchmarkSweep, CompileTimeMetrics, RuntimeMetrics,  # noqa: E402
                      SweepPoint, ThroughputMetrics, VerificationMetrics, create_metadata)
-from matmul import _resolve_cxx_and_l0_link, crisp_compiler_path      # noqa: E402
+from matmul import _resolve_cxx_and_l0_link, crisp_compiler_path, icpx_math_flags  # noqa: E402
 from metacrisp import build_plan, read_metacrisp, write_plan    # noqa: E402
 
 BENCH_DIR = REPO / "benchmarks" / "reduction"
@@ -227,7 +227,7 @@ def parse_results(text: str) -> Dict[str, Any]:
             out["device"] = rest.strip()
         elif word in ("eus", "groups", "max_resident"):
             out[word] = int(rest)
-        elif word in ("jit_ms", "wall_us"):
+        elif word in ("jit_ms", "wall_us", "launch_overhead_us"):
             out[word] = float(rest)
         elif word == "time_us":
             out["time_us"] = [float(x) for x in rest.split()]
@@ -250,6 +250,7 @@ def expected_value(fn: str, st: Dict[str, float]) -> float:
         "sum": st["sum"], "sumsq": st["sumsq"], "min": st["min"], "max": st["max"],
         "argmin": st["argmin"], "argmax": st["argmax"], "count": n,
         "mean": st["sum"] / n, "var": st["sumsq"] / n - (st["sum"] / n) ** 2,
+        "m2": st["sumsq"] - st["sum"] ** 2 / n,          # sum of squared deviations (Welford's M2)
     }[fn]
 
 
@@ -302,6 +303,122 @@ def latest_ceiling(platform: str) -> Optional[Dict[str, Any]]:
 # main
 # --------------------------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------------------------
+# contenders (plan/benchmark-reductions.md section 2)
+# --------------------------------------------------------------------------------------------
+
+CONTENDER_DIR = BENCH_DIR / "contenders"
+# library -> (competitor name, contender class).  The class is RECORDED, not inferred from the name.
+CONTENDERS = {
+    "sycl":   ("SYCL_Reduction", "Peer"),
+    "onedpl": ("oneDPL",         "Peer"),
+    "onemkl": ("oneMKL",         "Ceiling"),
+}
+
+
+def contender_sources(platform: str, selection: Optional[str]) -> List[Path]:
+    """benchmarks/reduction/contenders/<platform>/<library>__<workload>.cpp, optionally filtered by
+    comma-separated workload or library__workload names."""
+    srcs = sorted((CONTENDER_DIR / platform).glob("*__*.cpp"))
+    if not selection:
+        return srcs
+    wanted = [w.strip() for w in selection.split(",") if w.strip()]
+    return [p for p in srcs if p.stem in wanted or p.stem.split("__", 1)[1] in wanted]
+
+
+def build_contender(src: Path, out_dir: Path, precision: str, denormal: str) -> Tuple[Path, float, Optional[float]]:
+    """icpx -fsycl with the matmul suite's explicit math flags (never a compiler default).  Returns
+    (exe, full build ms, device-only compile ms).  Device-only is the number set beside crisp-compile:
+    source -> SPIR-V, no host code, no link."""
+    lib = src.stem.split("__", 1)[0]
+    flags = ["-O3", *icpx_math_flags(precision, denormal == "ftz")]
+    exe = out_dir / src.stem
+    cmd = ["icpx", "-fsycl", *flags, str(src), "-o", str(exe)] + (["-qmkl"] if lib == "onemkl" else [])
+    t0 = time.time()
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    full_ms = (time.time() - t0) * 1000.0
+    if r.returncode != 0:
+        raise RuntimeError(f"contender build failed for {src.name}:\n{(r.stderr or r.stdout or '')[-1500:]}")
+    dev_cmd = ["icpx", "-fsycl", "-fsycl-device-only", "-fsycl-targets=spir64", *flags, str(src),
+               "-o", str(out_dir / (src.stem + ".devbc"))]
+    t0 = time.time()
+    r = subprocess.run(dev_cmd, capture_output=True, text=True)
+    dev_ms = (time.time() - t0) * 1000.0 if r.returncode == 0 else None
+    return exe, full_ms, dev_ms
+
+
+def workload_expectations(workload: str) -> Dict[str, Any]:
+    """A contender is verified against the SAME BENCH-EXPECT lines as Crisp's kernel for the workload."""
+    return directives(BENCH_DIR / "workloads" / f"{workload}.crisp")
+
+
+def run_contenders(a, platform: str, work: Path, sizes: List[int], hw: Dict[str, Any],
+                   profile, matched, provenance, profile_src, peak) -> int:
+    rc = 0
+    for src in contender_sources(platform, a.kernels):
+        lib, workload = src.stem.split("__", 1)
+        name, klass = CONTENDERS[lib]
+        try:
+            exe, full_ms, dev_ms = build_contender(src, work, a.precision,
+                                                   a.denormal or ("ftz" if a.precision == "fast" else "preserve"))
+        except RuntimeError as e:
+            print(f"\n== contender {src.stem}: BUILD FAILED\n{e}")
+            rc = 1
+            continue
+        d = workload_expectations(workload)
+        meta_run = create_metadata(gpu_model=hw["gpu_model"], arch_target=hw["arch_target"],
+                                   environment=hw["environment"], hardware_profile=profile,
+                                   profile_matched=matched, profile_provenance=provenance,
+                                   profile_source=profile_src)
+        sweep = BenchmarkSweep(run_metadata=meta_run, benchmark_suite="reduction",
+                               chapter=f"workloads__{workload}", competitor=name,
+                               precision=a.precision, denormal_handling=a.denormal or "ftz",
+                               is_canonical=not a.scratch, contender_class=klass)
+        print(f"\n== contender {name} / {workload}  (device compile "
+              + (f"{dev_ms:.0f} ms" if dev_ms is not None else "n/a") + f", full build {full_ms:.0f} ms)")
+        for mb in sizes:
+            n = (mb << 20) // 4
+            resf = work / f"{src.stem}_{mb}.res"
+            r = subprocess.run([str(exe), f"--mb={mb}", f"--warmup={a.warmup}", f"--iters={a.iters}",
+                                f"--results={resf}"], capture_output=True, text=True, timeout=1800)
+            if r.returncode != 0:
+                print(f"  {mb:>5} MiB  RUN FAILED: {(r.stderr or '')[-500:]}")
+                rc = 1
+                continue
+            res = parse_results(resf.read_text(encoding="utf-8"))
+            ok, worst, why = verify(res, d["expect"], d["rtol"])
+            med_us = statistics.median(res["time_us"])
+            gbps = n * 4 / (med_us * 1e-6) / 1e9
+            pct = (100.0 * gbps / peak) if peak else None
+            ov = res.get("launch_overhead_us")
+            print(f"  {mb:>5} MiB  {med_us:10.1f} us  {gbps:8.1f} GB/s"
+                  + (f"  {pct:5.1f}% of peak" if pct is not None else "")
+                  + (f"  (launch overhead {ov:.1f} us)" if ov is not None else "")
+                  + f"  {'verified' if ok else 'FAILED'}")
+            for w in why:
+                print(f"      {w}")
+            if not ok:
+                rc = 1
+            cfg = {"elements": n, "bytes": n * 4, "size_mb": mb, "workload": workload, "verified": ok,
+                   "kernel": src.stem, "library": lib, "timing": "host-clock (submit + wait)",
+                   "launch_overhead_us": ov, "kernel_best_us": min(res["time_us"]),
+                   "device_reported": res.get("device"), "peak_read_gbps": peak, "percent_of_peak": pct,
+                   "warmup": a.warmup, "iters": a.iters}
+            sweep.results.append(SweepPoint(
+                configuration=cfg,
+                metrics=BenchmarkMetrics(
+                    compile_time=CompileTimeMetrics(device_compile_ms=dev_ms if dev_ms is not None else 0.0,
+                                                    all_compile_ms=full_ms),
+                    runtime=RuntimeMetrics(wall_time_ms=res.get("wall_us", 0.0) / 1000.0,
+                                           kernel_execution_ms=med_us / 1000.0),
+                    throughput=ThroughputMetrics(bandwidth_gbps=gbps),
+                    verification=VerificationMetrics(verified=ok, mode="full", relative_error=worst, samples=2))))
+        if sweep.results:
+            path = sweep.save(force_scratch=a.scratch)
+            print(f"  -> {path.relative_to(REPO)}")
+    return rc
+
+
 def stale_demo(exe: Path, work: Path, compiler: str, profile_flags: List[str],
                precision: str, denormal: str, ir_target: str = "spv") -> int:
     """Prove the harness catches stale state.  Both runs MUST fail verification."""
@@ -345,6 +462,9 @@ def main() -> int:
                     help="default: ftz under fast (fast implies flush), preserve under ieee")
     ap.add_argument("--scratch", action="store_true", help="write results to benchmarks/results/scratch/")
     ap.add_argument("--stale-demo", action="store_true", help="prove the harness catches stale state, then exit")
+    ap.add_argument("--contenders", action="store_true",
+                    help="run the library contenders (benchmarks/reduction/contenders/<platform>/) INSTEAD of "
+                         "the Crisp kernels; --kernels then filters by workload or library__workload")
     ap.add_argument("--keep-work", action="store_true")
     ap.add_argument("--pretend-device", default=None)
     ap.add_argument("--allow-unprofiled", action="store_true")
@@ -382,6 +502,8 @@ def main() -> int:
             print("Ceiling: none measured for this platform -- run scripts/bench-ceiling-intel.sh")
 
         sizes = [int(s) for s in a.sizes_mb.split(",") if s.strip()]
+        if a.contenders:
+            return run_contenders(a, a.platform, work, sizes, hw, profile, matched, provenance, profile_src, peak)
         rc = 0
         for src in discover(a.kernels):
             d = directives(src)

@@ -171,7 +171,7 @@ waste.
 | **1** | **Endeavour 179**: kernel state across re-launches (self-reset and/or metacrisp init annotations). | its own spec dir |
 | **2** ✅ 2026-10-03 | Argument-plan writer + generic L0 fixture + `reduction.py`; sum f32 on BMG, verified; reproducibility check; the change-the-input probe. | a sum number we trust, plus a demonstrated catch of a stale-state run |
 | **3** ✅ 2026-10-03 (BMG; second-stage pending a 2-kernel plan) | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
-| **4** | Workloads + contenders (§2) on BMG: sum+sumsq, argmax, Welford (LSE, dot if they fit), SYCL/oneDPL/oneMKL, compile times. | §2 for BMG |
+| **4** ✅ 2026-10-05 (BMG; small-size timing parity open; LSE/dot not done) | Workloads + contenders (§2) on BMG: sum+sumsq, argmax, Welford (LSE, dot if they fit), SYCL/oneDPL/oneMKL, compile times. | §2 for BMG |
 | **5** ◐ 2026-10-04 (fixture, ceiling, ladder + rollup measured; dispatch policy and CUB/cuBLAS still to do) | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
 | **6** | Report split: index + `REPORT-matmul.md` + `REPORT-reduction.md`.  Can be done any time after phase 3. | — |
 
@@ -322,6 +322,34 @@ not read them as Crisp's H100 performance.  The follow-up (scratch, 4 GiB):
   step 4 (50.8%) vs the hand x4 probe (86.5%) at the same 256 groups.
 - `:cas` floor ~1.4 ms per work-group / ~4 ms per warp on H100 too: slow on BOTH vendors, so
   suspect Crisp's `atomic-binop!` lowering, not the hardware.
+
+### Phase 4 results -- BMG, Docker, `fast` (2026-10-05) -- `REPORT-reduction.md` §2
+
+Kernels: `benchmarks/reduction/workloads/{sum,sum_sumsq,argmax,welford}.crisp` (language forms).
+Contenders: `benchmarks/reduction/contenders/intel/<lib>__<workload>.cpp` + `common.hpp` (same
+data, same A/B verification, same results format), via `reduction.py --contenders`.  All verified.
+
+% of the 454.5 GB/s measured peak at 3 GiB; device compile (source -> SPIR-V):
+
+| workload | Crisp | SYCL reduction | oneDPL | oneMKL |
+|---|---|---|---|---|
+| sum | 58% · 0.57 s | 94% · 1.9 s | 96% · 2.9 s | 94% (asum) · 2.6 s |
+| sum + sumsq | 58% · 0.58 s | 94% (2 reducers, 1 pass) · 2.0 s | 95% (1 pass) · 3.0 s | **48% (2 passes)** · 2.7 s |
+| argmax | 57% · 0.62 s | 89% · 1.9 s | 95% · 3.3 s | **38% (iamax)** · 2.5 s |
+| Welford | 56% · 0.62 s | 92% · 1.9 s | 96% · 3.0 s | -- |
+
+- **At large sizes every peer is at 89-96% and Crisp at 56-58%: the SPIR-V stride-loop gap
+  (endeavour 180) is the whole difference.**  Probe 2 measured `reduce-vec` at 98.4% with the unroll
+  hint, so after 180 Crisp should be on par with the peers, at 3-5x less compile time.
+- **Compile time: Crisp 0.57-0.62 s vs 1.85-3.3 s device-only for the contenders (3-5.5x).**
+- One-pass multi-variable vs a two-call BLAS: Crisp's sum+sumsq beats oneMKL's asum+dot today (58%
+  vs 48%), and would be ~2x after 180.  SYCL and oneDPL also do it in one pass -- the claim against
+  them is compile time and expression, not bandwidth.
+- oneMKL `iamax` is slow on BMG (38%): a one-pass argmax in any of the others beats it 1.5-2.5x.
+- **Small sizes are not comparable yet**: contenders are host-clock timed and the WSL L0 submission
+  overhead (an empty `single_task`) measured 63-296 µs and noisy -- it swamps 1-64 MiB.  Crisp's
+  1 MiB times (8-12 µs kernel) are not a fair win.  Fix candidates: event-profiled timing where a
+  library returns one event (SYCL reduction, oneMKL), or host-clock timing of Crisp too.
 
 ### Dispatch policy (2026-10-05): the hoist's own formula, queried, not a table
 

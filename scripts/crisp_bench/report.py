@@ -1555,6 +1555,46 @@ def render_reduction_suite(reduction_data: dict, provenance: dict) -> List[str]:
                     lines.append(f"| {p1} | {p2} | " + " | ".join(cells) + " |")
                 lines.append("\n*second-stage* is not in the rollup yet: it needs two kernel launches, "
                              "which the fixture's single-kernel plan cannot express.\n")
+
+            workloads = sorted(c for c in chapters if c.startswith("workloads__"))
+            if workloads:
+                lines.append(f"## § 2 — Workloads and Contenders · {gpu} · fp32 · `{prec}`\n")
+                lines.append("Crisp's row is its language form (`reduce-vec` / `grid-reduce!` after a "
+                             "`loop-vector-stride` fold, grid from the occupancy policy). Contenders are "
+                             "timed by the HOST CLOCK around call-and-wait (a library call may launch several "
+                             "kernels), so at small sizes their numbers include the submission overhead shown; "
+                             "Crisp is timed by its kernel timestamp. **Device compile** = source to SPIR-V "
+                             "(`crisp-compile`; `icpx -fsycl-device-only`). Cells: GB/s of input read "
+                             "(% of measured peak).\n")
+                order = {"Crisp": 0, "SYCL_Reduction": 1, "oneDPL": 2, "oneMKL": 3}
+                for chap in workloads:
+                    rows = chapters[chap].get(prec, {})
+                    wl = chap.split("__", 1)[1]
+                    comps = sorted({c for pts in rows.values() for c in pts}, key=lambda c: (order.get(c, 9), c))
+                    lines.append(f"### `{wl}`\n")
+                    lines.append("| contender | device compile | " + " | ".join(f"**{h}**" for h in heads)
+                                 + " | launch overhead |")
+                    lines.append("|---|---:|" + "---:|" * len(heads) + "---:|")
+                    for comp in comps:
+                        cells, cms, ov = [], None, None
+                        for s in sizes:
+                            pt = rows.get(s, {}).get(comp)
+                            if not pt:
+                                cells.append("—")
+                                continue
+                            cfg, m = pt.get("configuration", {}), pt.get("metrics", {})
+                            cms = cms or m.get("compile_time", {}).get("device_compile_ms")
+                            ov = ov if ov is not None else cfg.get("launch_overhead_us")
+                            if not cfg.get("verified"):
+                                cells.append("✗ **unverified**")
+                                continue
+                            g = m.get("throughput", {}).get("bandwidth_gbps")
+                            pct = cfg.get("percent_of_peak")
+                            cells.append(f"{g:.0f}" + (f" ({pct:.0f}%)" if pct is not None else ""))
+                        label = f"**{comp}**" if comp == "Crisp" else comp
+                        lines.append(f"| {label} | " + (f"{cms:.0f} ms" if cms else "—") + " | "
+                                     + " | ".join(cells) + " | " + (f"{ov:.0f} µs" if ov is not None else "—") + " |")
+                    lines.append("")
     return lines
 
 def main():
