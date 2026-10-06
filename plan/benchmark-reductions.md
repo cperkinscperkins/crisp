@@ -323,6 +323,19 @@ not read them as Crisp's H100 performance.  The follow-up (scratch, 4 GiB):
 - `:cas` floor ~1.4 ms per work-group / ~4 ms per warp on H100 too: slow on BOTH vendors, so
   suspect Crisp's `atomic-binop!` lowering, not the hardware.
 
+### Phase 5 completion -- prepared 2026-10-06, needs one pod session
+
+- NVIDIA contenders: `benchmarks/reduction/contenders/nvidia/<lib>__<workload>.cu` + `common.cuh`
+  -- CUB (`DeviceReduce::Sum`, `Reduce` over a `TransformInputIterator` for sum+sumsq and Welford,
+  `ArgMax`), Thrust (`reduce`, `transform_reduce`, `max_element`), cuBLAS (`Sasum`, `Sasum`+`Sdot`,
+  `Isamax` 1-based -> 0-based; device pointer mode so calls stay async).
+- **Timed by CUDA events on the stream**, which bracket every kernel a library launches: like for
+  like with Crisp's CUDA fixture, so NVIDIA small sizes ARE comparable (Thrust adds its small host
+  copy-back; recorded per point).  Device compile = `nvcc -ptx`.  Built with `-arch=native`.
+- All 11 build and the 4 workload kernels' PTX assembles (`ptxas -arch=sm_90`) in the local
+  `nvidia/cuda:12.4.1-devel` image.  `bench-on-pod.sh --bench=reduction` now runs ceiling ->
+  stale demo -> ladder/rollup/workloads (occupancy policy) -> contenders.
+
 ### Phase 4 results -- BMG, Docker, `fast` (2026-10-05) -- `REPORT-reduction.md` §2
 
 Kernels: `benchmarks/reduction/workloads/{sum,sum_sumsq,argmax,welford}.crisp` (language forms).

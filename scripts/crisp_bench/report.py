@@ -1559,14 +1559,25 @@ def render_reduction_suite(reduction_data: dict, provenance: dict) -> List[str]:
             workloads = sorted(c for c in chapters if c.startswith("workloads__"))
             if workloads:
                 lines.append(f"## § 2 — Workloads and Contenders · {gpu} · fp32 · `{prec}`\n")
+                # How the contenders were timed is recorded per point; say what THIS device's were.
+                timing = next((pt.get("configuration", {}).get("timing")
+                               for c in workloads for pts in chapters[c].get(prec, {}).values()
+                               for comp, pt in pts.items() if comp != "Crisp"
+                               and pt.get("configuration", {}).get("timing")), None)
+                if timing and timing.startswith("host-clock"):
+                    timing_note = ("Contenders are timed by the HOST CLOCK around call-and-wait (a library "
+                                   "call may launch several kernels and return no single event), so at small "
+                                   "sizes their numbers include the submission overhead shown; Crisp is timed "
+                                   "by its kernel timestamp -- small sizes are NOT a like-for-like comparison.")
+                else:
+                    timing_note = (f"Contenders are timed by {timing or 'events'}: stream-ordered events "
+                                   "bracket every kernel a library launches, as Crisp's kernel is timed.")
                 lines.append("Crisp's row is its language form (`reduce-vec` / `grid-reduce!` after a "
-                             "`loop-vector-stride` fold, grid from the occupancy policy). Contenders are "
-                             "timed by the HOST CLOCK around call-and-wait (a library call may launch several "
-                             "kernels), so at small sizes their numbers include the submission overhead shown; "
-                             "Crisp is timed by its kernel timestamp. **Device compile** = source to SPIR-V "
-                             "(`crisp-compile`; `icpx -fsycl-device-only`). Cells: GB/s of input read "
+                             "`loop-vector-stride` fold, grid from the occupancy policy). " + timing_note +
+                             " **Device compile** = source to device IR (`crisp-compile`; "
+                             "`icpx -fsycl-device-only` / `nvcc -ptx`). Cells: GB/s of input read "
                              "(% of measured peak).\n")
-                order = {"Crisp": 0, "SYCL_Reduction": 1, "oneDPL": 2, "oneMKL": 3}
+                order = {"Crisp": 0, "SYCL_Reduction": 1, "CUB": 1, "oneDPL": 2, "Thrust": 2, "oneMKL": 3, "cuBLAS": 3}
                 for chap in workloads:
                     rows = chapters[chap].get(prec, {})
                     wl = chap.split("__", 1)[1]

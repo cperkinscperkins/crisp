@@ -48,7 +48,7 @@ sys.path.insert(0, str(HERE))
 import hwprofile                                                # noqa: E402
 from harness import (BenchmarkMetrics, BenchmarkSweep, CompileTimeMetrics, RuntimeMetrics,  # noqa: E402
                      SweepPoint, ThroughputMetrics, VerificationMetrics, create_metadata)
-from matmul import _resolve_cxx_and_l0_link, crisp_compiler_path, icpx_math_flags  # noqa: E402
+from matmul import _resolve_cxx_and_l0_link, crisp_compiler_path, icpx_math_flags, nvcc_math_flags  # noqa: E402
 from metacrisp import build_plan, read_metacrisp, write_plan    # noqa: E402
 
 BENCH_DIR = REPO / "benchmarks" / "reduction"
@@ -313,26 +313,50 @@ CONTENDERS = {
     "sycl":   ("SYCL_Reduction", "Peer"),
     "onedpl": ("oneDPL",         "Peer"),
     "onemkl": ("oneMKL",         "Ceiling"),
+    "cub":    ("CUB",            "Peer"),
+    "thrust": ("Thrust",         "Peer"),
+    "cublas": ("cuBLAS",         "Ceiling"),
+}
+CONTENDER_SUFFIX = {"intel": ".cpp", "nvidia": ".cu"}
+CONTENDER_TIMING = {
+    "intel": "host-clock (submit + wait)",
+    "nvidia": "cuda-events on the stream (Thrust: + its small host copy-back)",
 }
 
 
 def contender_sources(platform: str, selection: Optional[str]) -> List[Path]:
     """benchmarks/reduction/contenders/<platform>/<library>__<workload>.cpp, optionally filtered by
     comma-separated workload or library__workload names."""
-    srcs = sorted((CONTENDER_DIR / platform).glob("*__*.cpp"))
+    srcs = sorted((CONTENDER_DIR / platform).glob("*__*" + CONTENDER_SUFFIX[platform]))
     if not selection:
         return srcs
     wanted = [w.strip() for w in selection.split(",") if w.strip()]
     return [p for p in srcs if p.stem in wanted or p.stem.split("__", 1)[1] in wanted]
 
 
-def build_contender(src: Path, out_dir: Path, precision: str, denormal: str) -> Tuple[Path, float, Optional[float]]:
+def build_contender(src: Path, out_dir: Path, precision: str, denormal: str,
+                    platform: str = "intel") -> Tuple[Path, float, Optional[float]]:
     """icpx -fsycl with the matmul suite's explicit math flags (never a compiler default).  Returns
     (exe, full build ms, device-only compile ms).  Device-only is the number set beside crisp-compile:
     source -> SPIR-V, no host code, no link."""
     lib = src.stem.split("__", 1)[0]
-    flags = ["-O3", *icpx_math_flags(precision, denormal == "ftz")]
     exe = out_dir / src.stem
+    if platform == "nvidia":
+        # -arch=native: compile for whatever part the pod has (RunPod rarely offers the same twice).
+        flags = ["-O3", "-arch=native", *nvcc_math_flags(precision, denormal == "ftz")]
+        cmd = ["nvcc", *flags, str(src), "-o", str(exe)] + (["-lcublas"] if lib == "cublas" else [])
+        t0 = time.time()
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        full_ms = (time.time() - t0) * 1000.0
+        if r.returncode != 0:
+            raise RuntimeError(f"contender build failed for {src.name}:\n{(r.stderr or r.stdout or '')[-1500:]}")
+        # Device-only: source -> PTX, the counterpart of crisp-compile --ir-target=ptx.
+        t0 = time.time()
+        r = subprocess.run(["nvcc", *flags, "-ptx", str(src), "-o", str(out_dir / (src.stem + ".ptx"))],
+                           capture_output=True, text=True)
+        dev_ms = (time.time() - t0) * 1000.0 if r.returncode == 0 else None
+        return exe, full_ms, dev_ms
+    flags = ["-O3", *icpx_math_flags(precision, denormal == "ftz")]
     cmd = ["icpx", "-fsycl", *flags, str(src), "-o", str(exe)] + (["-qmkl"] if lib == "onemkl" else [])
     t0 = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -360,7 +384,8 @@ def run_contenders(a, platform: str, work: Path, sizes: List[int], hw: Dict[str,
         name, klass = CONTENDERS[lib]
         try:
             exe, full_ms, dev_ms = build_contender(src, work, a.precision,
-                                                   a.denormal or ("ftz" if a.precision == "fast" else "preserve"))
+                                                   a.denormal or ("ftz" if a.precision == "fast" else "preserve"),
+                                                   platform)
         except RuntimeError as e:
             print(f"\n== contender {src.stem}: BUILD FAILED\n{e}")
             rc = 1
@@ -400,7 +425,7 @@ def run_contenders(a, platform: str, work: Path, sizes: List[int], hw: Dict[str,
             if not ok:
                 rc = 1
             cfg = {"elements": n, "bytes": n * 4, "size_mb": mb, "workload": workload, "verified": ok,
-                   "kernel": src.stem, "library": lib, "timing": "host-clock (submit + wait)",
+                   "kernel": src.stem, "library": lib, "timing": CONTENDER_TIMING[platform],
                    "launch_overhead_us": ov, "kernel_best_us": min(res["time_us"]),
                    "device_reported": res.get("device"), "peak_read_gbps": peak, "percent_of_peak": pct,
                    "warmup": a.warmup, "iters": a.iters}

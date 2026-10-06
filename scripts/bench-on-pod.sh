@@ -255,9 +255,11 @@ case "${BENCH}" in
     ##   1. the measured READ ceiling (benchmarks/reduction/ceiling/read_bw.cu) -- the denominator of
     ##      every "% of peak", measured on THIS part, never a spec sheet;
     ##   2. the stale-state demo -- the harness must catch both cases or nothing after it is trusted;
-    ##   3. the ladder + strategy rollup (reduction.py, PTX + the CUDA fixture);
-    ##   4. endeavour 180's unroll probes (_probe_unroll), always to scratch.
-    ## --chapters= (optional) becomes reduction.py --kernels= for step 3.
+    ##   3. the ladder, strategy rollup and workloads (reduction.py, PTX + the CUDA fixture; grid
+    ##      from the hoist's occupancy formula -- plan section "Dispatch policy");
+    ##   4. the library contenders (CUB, Thrust, cuBLAS: benchmarks/reduction/contenders/nvidia).
+    ## --chapters= (optional) becomes reduction.py --kernels= for steps 3 and 4.
+    ## (Endeavour 180's _probe_unroll ran on H100 2026-10-04; run it by hand with --kernels if needed.)
     nvcc -O3 -o /tmp/read_bw benchmarks/reduction/ceiling/read_bw.cu
     /tmp/read_bw --sizes-mb=64,256,1024,4096 --iters=20 --pattern=hash \
         --json=benchmarks/results/ceiling_nvidia_hash_\$(date +%s).json
@@ -265,8 +267,9 @@ case "${BENCH}" in
     python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --sizes-mb=${SIZES} \
         --iters=${ITERS} ${CHAPTERS:+--kernels=${CHAPTERS}} ${SCRATCH_ARG} \
         || echo "bench-on-pod: the reduction sweep reported a verification failure (its JSON is saved; see the log)"
-    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --sizes-mb=64,256,1024,4096 \
-        --iters=${ITERS} --kernels=_probe_unroll --scratch
+    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --contenders --sizes-mb=${SIZES} \
+        --iters=${ITERS} ${CHAPTERS:+--kernels=${CHAPTERS}} ${SCRATCH_ARG} \
+        || echo "bench-on-pod: a contender reported a build or verification failure (see the log)"
     ;;
   matmul)
     ## MATH-FLAG POLICY: this sweep NEVER relies on a compiler's default precision or denormal

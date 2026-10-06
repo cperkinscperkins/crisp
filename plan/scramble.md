@@ -877,6 +877,9 @@ Reductions
 - - [ ] grid-level dependent AD (BUG 102) -- needs VERIFY-AUTODIFF to take more than one &out output
 - [x] reduce-vec
 - [ ] benchmark
+- - [ ] 180 loop unrolling
+- - [ ] last man occupancy cap on NVidia
+- - [ ] CAS lowering (slow on both vendors)
 - [ ] out of core.  ( def-orchestration ? )
 - [x] doc update: there are still old 'reduce-vec-1-cont' calls in the code base. 
 - - [x] plus lots of reduce-vec-warp instead of (reduce-vec :reduction-strategy :warp)

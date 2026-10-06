@@ -1,0 +1,15 @@
+;; Workload: sum -- Crisp's row in the contenders table is the easy button, reduce-vec.
+;; (The ladder's step5_reduce_vec/sum.crisp is the same kernel; this copy puts Crisp in the
+;; workloads__sum chapter beside SYCL, oneDPL and oneMKL.)
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_reduce_vec_wl (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (reduce-vec #'+ input 0.0 result))
