@@ -202,6 +202,9 @@ class KernelRecord:
     local_size: List[int]
     simd_width: Optional[int]
     params: List[Param] = field(default_factory=list)
+    strategy: Optional[str] = None            # :global-size :strategy, e.g. 'STRIDED'
+    occupancy: Optional[float] = None         # :global-size :occupancy as DECLARED (None = undeclared)
+    compute_units: Optional[int] = None       # the hardware profile's :compute-units
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -217,9 +220,11 @@ def read_metacrisp(path: Path) -> List[KernelRecord]:
         if isinstance(d, list) and len(d) >= 3 and d[0] == 'DEF-TYPE':
             aliases[str(d[1])] = d[2]
     simd = None
+    compute_units = None
     hp = sections.get(':HARDWARE-PROFILE')
     if hp and isinstance(hp[0], list):
         simd = plist(hp[0]).get('SIMD-WIDTH')
+        compute_units = plist(hp[0]).get('COMPUTE-UNITS')
 
     kernels = []
     for k in sections.get(':KERNELS', []):
@@ -230,7 +235,14 @@ def read_metacrisp(path: Path) -> List[KernelRecord]:
             nums = _ints_in(ls)
             if nums:
                 local = (nums + [1, 1])[:3]
-        rec = KernelRecord(name=str(kp['NAME']), local_size=local, simd_width=simd, raw=kp)
+        rec = KernelRecord(name=str(kp['NAME']), local_size=local, simd_width=simd, raw=kp,
+                           compute_units=compute_units if isinstance(compute_units, int) else None)
+        gsz = kp.get('GLOBAL-SIZE')
+        if isinstance(gsz, list):
+            g = plist(gsz[1:])
+            rec.strategy = str(g['STRATEGY']).lstrip(':') if g.get('STRATEGY') else None
+            occ = g.get('OCCUPANCY')
+            rec.occupancy = float(occ) if isinstance(occ, (int, float)) and not isinstance(occ, bool) else None
         for e in kp.get('IMPLICIT-PARAMS') or []:
             ep = plist(e)
             st = parse_storage_type(ep.get('TYPE'), aliases)

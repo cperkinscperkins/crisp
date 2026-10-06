@@ -14,6 +14,8 @@
 //     start event), so a microsecond kernel is not swamped by launch overhead.  The matmul CUDA
 //     fixture uses the host clock, which is fine for millisecond GEMMs and not for this.
 //   * `groups eu` means the SM count (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT).
+//   * `groups occupancy R [cap=N] [cu=N]` follows crisp-hoist-cuda's :strided formula:
+//     cuOccupancyMaxActiveBlocksPerMultiprocessor x SMs (or cu=) x R, capped at cap=.
 //   * `jit_ms` times cuModuleLoadData: the driver's PTX -> SASS compile.
 //
 // USAGE  reduce_fixture_cuda <plan> <results> [--skip-each-fill] [--dirty-once-before-relaunch]
@@ -156,7 +158,7 @@ int main(int argc, char **argv) {
             if (word == "module" || word == "spv") { std::getline(in >> std::ws, module_path); }
             else if (word == "kernel") in >> kname;
             else if (word == "local") in >> local[0] >> local[1] >> local[2];
-            else if (word == "groups") in >> groups_spec;
+            else if (word == "groups") std::getline(in >> std::ws, groups_spec);
             else if (word == "warmup") in >> warmup;
             else if (word == "iters") in >> iters;
             else if (word == "buildflags") { std::string ignored; std::getline(in, ignored); }
@@ -210,12 +212,6 @@ int main(int argc, char **argv) {
     int sms = 0;
     CU_OK(cuDeviceGetAttribute(&sms, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, dev), "SM count");
     res << "device " << dname << "\n" << "eus " << sms << "\n";
-
-    uint32_t groups = 0;
-    if (groups_spec == "eu") groups = (uint32_t)sms;
-    else if (groups_spec.rfind("eu*", 0) == 0) groups = (uint32_t)sms * (uint32_t)std::stoul(groups_spec.substr(3));
-    else groups = (uint32_t)std::stoul(groups_spec);
-    res << "groups " << groups << "\n";
 
     CUcontext ctx; CU_OK(cuDevicePrimaryCtxRetain(&ctx, dev), "cuDevicePrimaryCtxRetain");
     CU_OK(cuCtxSetCurrent(ctx), "cuCtxSetCurrent");
@@ -299,6 +295,32 @@ int main(int argc, char **argv) {
     if (shared_bytes > 48 * 1024)
         CU_OK(cuFuncSetAttribute(kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared_bytes),
               "dynamic shared size");
+
+    // ---- grid size: a fixed count, SM-relative, or the CUDA hoist's occupancy formula --------
+    // occupancy R: cuOccupancyMaxActiveBlocksPerMultiprocessor (this kernel, this block size, this
+    // dynamic shared size) x SMs (or the profile's :compute-units, cu=) x R; then capped at cap=.
+    uint32_t groups = 0, max_resident = 0;
+    {
+        std::istringstream gs(groups_spec);
+        std::string mode;
+        gs >> mode;
+        if (mode == "occupancy") {
+            double ratio = 1.0;
+            gs >> ratio;
+            auto m = kv(gs);
+            int per_sm = 0;
+            CU_OK(cuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel,
+                      (int)(local[0] * local[1] * local[2]), shared_bytes), "occupancy query");
+            const uint64_t units = m.count("cu") ? std::stoull(m["cu"]) : (uint64_t)sms;
+            max_resident = (uint32_t)(per_sm * units);
+            double g = (double)max_resident * ratio;
+            groups = g < 1.0 ? 1u : (uint32_t)g;
+            if (m.count("cap") && groups > std::stoul(m["cap"])) groups = (uint32_t)std::stoul(m["cap"]);
+        } else if (mode == "eu") groups = (uint32_t)sms;
+        else if (mode.rfind("eu*", 0) == 0) groups = (uint32_t)sms * (uint32_t)std::stoul(mode.substr(3));
+        else groups = (uint32_t)std::stoul(mode);
+    }
+    res << "groups " << groups << "\n" << "max_resident " << max_resident << "\n";
 
     CUevent ev0, ev1;
     CU_OK(cuEventCreate(&ev0, CU_EVENT_DEFAULT), "eventCreate");

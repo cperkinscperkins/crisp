@@ -210,4 +210,22 @@ With x4 at 98.4% the multiply costs at most ~1.5%: demote to "nice to have".
 -- `llvm-as` rejects the debug-info IR in `.temp.ll` (and the in-process opt fails on it too).
 Worth a bug entry.
 
-**Probe 4 (NVIDIA) -- pending**: needs the CUDA twin of the reduction fixture (benchmark phase 5).
+**Probe 4 -- NVIDIA H100 (2026-10-04).**  The PTX path already unrolls `loop-vector-stride` (LLVM's
+NVPTX target runtime-unrolls x4 and `llc` strength-reduces the index; ptxas unrolls again, to 16
+loads per trip in SASS).  So the 57% problem is SPIR-V-only.  On H100 grid size dominates: at 1
+block/SM every variant plateaus near 65%.  Hand probes at 256 work-groups (last-man's cap), % of
+the 3103 GB/s measured peak at 4 GiB:
+
+| | x1 | x2 | x4 | x8 |
+|---|---|---|---|---|
+| fp32 | 43.2 | 80.3 | 86.5 | 85.5 |
+| fp64 | 56.3 | 90.2 | 90.3 | 90.5 |
+
+Unlike BMG, bytes in flight does not line up exactly (fp32 x2 and fp64 x1 move 8 bytes each: 80% vs
+56%), so the NVIDIA default may be "at least x2-x4 independent loads" rather than a byte budget.
+Open: why last-man `reduce-vec` (already unrolled by LLVM) reaches only 50.8% at the same 256
+groups where the hand x4 probe reaches 86.5% -- compare their SASS.
+
+**Implication for the defaults**: per-vendor.  BMG wants an unroll (16 bytes in flight); NVIDIA
+wants occupancy first (dispatch policy, and last-man's groups <= local-size cap) and is already
+unrolled by the backend.

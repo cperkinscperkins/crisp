@@ -124,11 +124,34 @@ def apply_launch_init_directives(rec, d: Dict[str, Any]) -> List[str]:
 
 def resolve_groups(spec: str, n_elements: int, local: List[int]) -> str:
     """per-element -> one work-item per element (rounded up to whole work-groups); anything else is
-    passed to the fixture as is (a number, 'eu', 'eu*K')."""
+    passed to the fixture as is (a number, 'eu', 'eu*K', 'occupancy R ...')."""
     if spec == "per-element":
         wg = local[0] * local[1] * local[2]
         return str((n_elements + wg - 1) // wg)
     return spec
+
+
+def groups_policy(rec, d: Dict[str, Any], cli_groups: Optional[str], cli_occupancy: Optional[float],
+                  last_man: bool) -> Tuple[str, Optional[float]]:
+    """The grid a REAL Crisp host would launch, unless overridden.  Order:
+         --groups (explicit)  >  BENCH-GROUPS (the kernel's own fixed choice)  >
+         :strided -> the hoist's occupancy formula with R = --occupancy, else the kernel's
+         declared :occupancy, else 1.0 (the hoist's default)  >  'eu'.
+    A last-man kernel is capped at its local size: its final sweep reduces every partial in one
+    work-group.  Returns (fixture groups spec, the R used or None)."""
+    if cli_groups:
+        return cli_groups, None
+    if d["groups"]:
+        return d["groups"], None
+    if (rec.strategy or "").upper() == "STRIDED":
+        r = cli_occupancy if cli_occupancy is not None else (rec.occupancy if rec.occupancy is not None else 1.0)
+        spec = f"occupancy {r}"
+        if last_man:
+            spec += f" cap={rec.local_size[0] * rec.local_size[1] * rec.local_size[2]}"
+        if rec.compute_units:
+            spec += f" cu={rec.compute_units}"
+        return spec, r
+    return "eu", None
 
 
 # --------------------------------------------------------------------------------------------
@@ -202,7 +225,7 @@ def parse_results(text: str) -> Dict[str, Any]:
         word, _, rest = line.partition(" ")
         if word == "device":
             out["device"] = rest.strip()
-        elif word in ("eus", "groups"):
+        elif word in ("eus", "groups", "max_resident"):
             out[word] = int(rest)
         elif word in ("jit_ms", "wall_us"):
             out[word] = float(rest)
@@ -312,6 +335,9 @@ def main() -> int:
     ap.add_argument("--groups", default=None,
                     help="work-groups: a number, 'eu', 'eu*K' or 'per-element'.  Default: the kernel's "
                          "BENCH-GROUPS directive, else 'eu'")
+    ap.add_argument("--occupancy", type=float, default=None,
+                    help="override every :strided kernel's :occupancy R (groups = R x max resident "
+                         "work-groups, the hoist's formula); for sweeping the trade-off")
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--iters", type=int, default=50)
     ap.add_argument("--precision", default="fast", choices=["fast", "ieee"])
@@ -364,7 +390,6 @@ def main() -> int:
                                                    ir_target)
             rec = read_metacrisp(meta)[0]
             init_from_directive = apply_launch_init_directives(rec, d)
-            groups_spec = a.groups or d["groups"] or "eu"
             # Sizes are BYTES per input; the element count follows from the input's element type, so an
             # fp64 kernel at "256 MiB" reads the same bytes as an fp32 one.
             in_params = [p for p in rec.params if not p.implicit and p.direction == "in" and p.stype
@@ -372,6 +397,7 @@ def main() -> int:
             elem_bytes = in_params[0].stype.elem_bytes if in_params else 4
             last_man = any(p.implicit and p.stype and p.stype.kind == "cell" and p.stype.address_space == "GLOBAL"
                            for p in rec.params)
+            groups_spec, occ_used = groups_policy(rec, d, a.groups, a.occupancy, last_man)
             meta_run = create_metadata(gpu_model=hw["gpu_model"], arch_target=hw["arch_target"],
                                        environment=hw["environment"], hardware_profile=profile,
                                        profile_matched=matched, profile_provenance=provenance,
@@ -418,7 +444,9 @@ def main() -> int:
                 pct = (100.0 * gbps / peak) if peak else None
                 print(f"  {mb:>5} MiB  {med_us:10.1f} us  {gbps:8.1f} GB/s"
                       + (f"  {pct:5.1f}% of peak" if pct is not None else "")
-                      + f"  groups={groups}  {'verified' if ok else 'FAILED'}")
+                      + f"  groups={groups}"
+                      + (f" (R={occ_used:g} of {res.get('max_resident')})" if occ_used is not None else "")
+                      + f"  {'verified' if ok else 'FAILED'}")
                 for w in why:
                     print(f"      {w}")
                 if not ok:
@@ -430,7 +458,8 @@ def main() -> int:
                        "device_reported": res.get("device"),
                        "peak_read_gbps": peak, "percent_of_peak": pct,
                        "ceiling_file": ceiling["_file"] if ceiling else None,
-                       "groups_spec": groups_spec,
+                       "groups_spec": groups_spec, "occupancy": occ_used,
+                       "max_resident": res.get("max_resident"),
                        "launch_init_from_directive": init_from_directive,
                        "rtol": d["rtol"] if d["rtol"] is not None else RTOL.get("f32")}
                 sweep.results.append(SweepPoint(

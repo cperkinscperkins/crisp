@@ -4,7 +4,6 @@
 ;;
 ;; BENCH-WORKLOAD: sum
 ;; BENCH-EXPECT: result = sum(input)
-;; BENCH-GROUPS: eu
 
 (def-type in-vec (vector float :address-space :global :align :compact))
 (def-type out-c  (cell float :address-space :global))

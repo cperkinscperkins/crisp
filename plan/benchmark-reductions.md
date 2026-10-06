@@ -172,7 +172,7 @@ waste.
 | **2** ✅ 2026-10-03 | Argument-plan writer + generic L0 fixture + `reduction.py`; sum f32 on BMG, verified; reproducibility check; the change-the-input probe. | a sum number we trust, plus a demonstrated catch of a stale-state run |
 | **3** ✅ 2026-10-03 (BMG; second-stage pending a 2-kernel plan) | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
 | **4** | Workloads + contenders (§2) on BMG: sum+sumsq, argmax, Welford (LSE, dot if they fit), SYCL/oneDPL/oneMKL, compile times. | §2 for BMG |
-| **5** | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
+| **5** ◐ 2026-10-04 (fixture, ceiling, ladder + rollup measured; dispatch policy and CUB/cuBLAS still to do) | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
 | **6** | Report split: index + `REPORT-matmul.md` + `REPORT-reduction.md`.  Can be done any time after phase 3. | — |
 
 Phases 2–4 are local (BMG in Docker), so nothing waits for a pod until phase 5.
@@ -295,6 +295,61 @@ the measured error is always reported.
   clean); all 21 reduction kernels compile to PTX and assemble with `ptxas -arch=sm_90`.
 - `bench-on-pod.sh --bench=reduction`: ceiling -> stale demo (fatal if not caught) -> sweep ->
   `_probe_unroll` to scratch.  Not run on hardware yet.
+
+### Phase 5 first run -- H100 80GB HBM3 (2026-10-04, RunPod)
+
+All points verified; the stale demo CAUGHT both cases on CUDA.  Ceiling **3103.1 GB/s** measured
+(92.6% of the 3350 spec; `ceiling_nvidia_hash_1791156465.json`).
+
+**On NVIDIA the first lever is GRID SIZE, not unrolling.**  `groups eu` = 1 block per SM =
+1/8 occupancy on H100 (on BMG, 160 "compute units" x 256 already filled the device).  The canonical
+H100 results (`results_NVIDIA_H100_*`) were taken at 132 groups and are occupancy-starved -- do
+not read them as Crisp's H100 performance.  The follow-up (scratch, 4 GiB):
+
+| kernel | 132 groups | follow-up |
+|---|---|---|
+| `grid-reduce! :atomic` | 24% | **92.9%** at 1056 (8 blocks/SM) |
+| step 3b (hand unroll) | 49% | **95.0%** at 1056 |
+| step 3 (hand SLM tree) | 12% | 76% at 1056 |
+| per-warp atomics | 28% | 79% at 1056 |
+| last-man / `reduce-vec` | 28% | **50.8%** at 256 (its cap) |
+
+- **Last-man is structurally capped on NVIDIA**: groups <= local size (256) means at most ~2
+  blocks/SM.  A 1024-wide local size would allow 1024 groups.  Design question.
+- The PTX path ALREADY unrolls the stride loop (LLVM NVPTX x4, then ptxas -> 16 loads/trip) and
+  strength-reduces the index: endeavour 180's unroll gap is SPIR-V-specific.
+- Open puzzles: step 3 vs step 4 (identical Phase-0 SASS, 76% vs 93% at full occupancy); last-man
+  step 4 (50.8%) vs the hand x4 probe (86.5%) at the same 256 groups.
+- `:cas` floor ~1.4 ms per work-group / ~4 ms per warp on H100 too: slow on BOTH vendors, so
+  suspect Crisp's `atomic-binop!` lowering, not the hardware.
+
+### Dispatch policy (2026-10-05): the hoist's own formula, queried, not a table
+
+The fixtures now launch what a real Crisp host would: for a `:strided` kernel,
+`groups = R x max_resident_workgroups`, with the denominator QUERIED exactly as the hoists do
+(CUDA `cuOccupancyMaxActiveBlocksPerMultiprocessor` x SMs; L0 hardware threads, halved on spill,
+divided by `ceil(local / SIMD width)`; the profile's `:compute-units` replaces the device's own
+count when present).  R is the kernel's declared `:occupancy` (default 1.0, as in the hoist), or
+`reduction.py --occupancy` for sweeps.  Last-man kernels are capped at their local size.  Order:
+`--groups` > `BENCH-GROUPS` > occupancy > `eu`.  Plan syntax: `groups occupancy R [cap=N] [cu=N]`.
+
+Why no per-vendor or per-platform table: the BMG's "160 = one group per EU" was R=2 x 80 by
+coincidence, and the H100's 1056 is R=1 x (8 per SM x 132).  A queried denominator is right on day
+one for any RunPod part, or for Crescent Island.
+
+**R sweep on BMG** (Docker, scratch; max_resident = 80 at local size 256):
+- 1 GiB: R=0.5 collapses to 28% for every non-unrolled kernel; R >= 1 all ~58% (Phase 0 bound);
+  step 3b ~99% for R >= 1.
+- 1 MiB: atomic-heavy kernels prefer FEWER groups -- per-warp atomics 8.1 µs at R=0.5 vs 43 µs at
+  R=4; `:atomic` is best at R=1 (4.3 µs).
+- **R=1 is the best or tied single value at every size** (and is what gave 93% on H100).  A small-size
+  refinement would have to depend on the size; a constant can't do it.
+- Last-man DEGRADES with more groups (46% at 256 vs 58% at 80) where `:atomic` at 320 does not.
+- Endeavour 143's "R=2 optimal for sum_reduce" does not reproduce for these kernels (R=2 ties large,
+  loses small): consistent with its own note that the optimum is per kernel.
+
+The canonical H100 rows (`results_NVIDIA_H100_*`, 132 groups) predate this policy and are STALE:
+re-run at the next pod session.
 
 ### Carried forward from endeavour 143
 

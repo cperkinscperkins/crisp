@@ -1524,8 +1524,9 @@ def render_reduction_suite(reduction_data: dict, provenance: dict) -> List[str]:
             rollup = {c.split("__", 1)[1]: chapters[c].get(prec, {}) for c in chapters if c.startswith("rollup__")}
             if rollup:
                 lines.append(f"## § 1b — Strategy Rollup · {gpu} · sum fp32 · `{prec}`\n")
-                lines.append("Every row has the same Phase 0 (`loop-vector-stride` fold, one work-item per "
-                             "EU-sized grid); rows differ only in how the per-thread partials are combined. "
+                lines.append("Every row has the same Phase 0 (`loop-vector-stride` fold) and the same grid "
+                             "(the hoist's occupancy formula, R=1 unless the kernel declares otherwise); rows "
+                             "differ only in how the per-thread partials are combined. "
                              "Cells are **median kernel µs**; the fastest per size is bold.\n")
                 lines.append("| Phase 1 | Phase 2 | " + " | ".join(f"**{h}**" for h in heads) + " |")
                 lines.append("|---|---|" + "---:|" * len(heads))
