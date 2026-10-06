@@ -173,7 +173,7 @@ waste.
 | **3** ✅ 2026-10-03 (BMG; second-stage pending a 2-kernel plan) | Ladder (§1) + strategy rollup (§1b) on BMG; `report.py` renders them. | `REPORT-reduction.md` §1/§1b for BMG |
 | **4** ✅ 2026-10-05 (BMG; small-size timing parity open; LSE/dot not done) | Workloads + contenders (§2) on BMG: sum+sumsq, argmax, Welford (LSE, dot if they fit), SYCL/oneDPL/oneMKL, compile times. | §2 for BMG |
 | **5** ✅ 2026-10-06 (H100 NVL; ladder, rollup, workloads, CUB/Thrust/cuBLAS) | CUDA fixture; H100 ladder, rollup and contenders (CUB, cuBLAS) in one batched pod session. | §1/§1b/§2 for H100 |
-| **6** | Report split: index + `REPORT-matmul.md` + `REPORT-reduction.md`.  Can be done any time after phase 3. | — |
+| **6** ✅ 2026-10-06 | Report split: index + `REPORT-matmul.md` + `REPORT-reduction.md`.  `report.py --all` writes all three; `REPORT-matmul.md` is the old `REPORT.md` moved, byte-identical on regeneration; the pre-split `--output benchmarks/REPORT.md` now writes all three. | `benchmarks/REPORT.md` is the index |
 
 Phases 2–4 are local (BMG in Docker), so nothing waits for a pod until phase 5.
 

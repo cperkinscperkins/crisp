@@ -36,7 +36,7 @@
 #
 # Results are JSON in benchmarks/results/ (bind-mounted, so they appear on the
 # host).  Render the report with:
-#     python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
+#     python scripts/crisp_bench/report.py --all     (REPORT.md index + REPORT-matmul.md + REPORT-reduction.md)
 # report.py auto-adds a `## Hardware: Intel BMG` section from the JSON.
 
 set -euo pipefail

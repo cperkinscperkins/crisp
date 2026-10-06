@@ -88,7 +88,7 @@ scripts/
     harness.py                  # Reusable JSON sweep definitions & dataclasses
     hwprofile.py                # Hardware-profile gate: device -> validated profile
     matmul.py                   # Driver to execute matmul sweeps
-    report.py                   # Markdown report generator (produces REPORT.md)
+    report.py                   # Markdown reports: REPORT.md (index), REPORT-matmul.md, REPORT-reduction.md
 ```
 
 ## How to Run & Generate Reports
@@ -225,16 +225,25 @@ The results are mapped back directly into `benchmarks/results/` just like native
 ### 2. Generate the Markdown Report
 The `.json` files are machine-readable but hard to digest. To build the comparison tables:
 ```bash
-# Regenerate the checked-in report (this is the one you usually want)
-python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
+# Regenerate the checked-in reports (this is the one you usually want):
+#   benchmarks/REPORT.md            -- the index: devices, headlines, links
+#   benchmarks/REPORT-matmul.md     -- the matmul suite
+#   benchmarks/REPORT-reduction.md  -- the reduction suite
+python scripts/crisp_bench/report.py --all
 
-# Without --output it prints to stdout and writes NOTHING
+# One suite, or the index alone
+python scripts/crisp_bench/report.py --suite=reduction --output benchmarks/REPORT-reduction.md
+python scripts/crisp_bench/report.py --index
+
+# Without --output / --all it prints to stdout and writes NOTHING
 python scripts/crisp_bench/report.py | less
 ```
 
-> ⚠️  **`--output` is not optional if you mean to update `REPORT.md`.**  Bare `report.py`
-> prints to stdout and leaves the file untouched, so a "regeneration" that scrolled past can
-> look successful while the report on disk is unchanged.
+> ⚠️  **`--all` (or `--output`) is not optional if you mean to update the reports.**  Bare
+> `report.py` prints to stdout and leaves the files untouched, so a "regeneration" that scrolled
+> past can look successful while the reports on disk are unchanged.  The pre-split command,
+> `--output benchmarks/REPORT.md`, still works: it now writes all three files rather than
+> overwriting the index.
 
 The report reads only `results/`, never `results/scratch/`, and separates the ladders by the
 chapter-key suffix — so a `_f64` run lands in §1c/§2c automatically, with no flag to remember.
