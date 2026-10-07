@@ -1225,6 +1225,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
 - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - (%REDUCTION-LAUNCH-INIT-FOR KERNEL-NAME PARAM-NAME)  metadata.lisp
 - - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp [See above]
 - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp [See above]
 - - - - - (%MODULE-USES-CLUSTER-REACH-P)  metadata.lisp
@@ -1421,14 +1422,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%ANALYZE-TYPE-INFINITY EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-
-- (%ANALYZE-TYPE-MAX EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
-- - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp [See above]
-- - (%FLOAT-TYPE-EXTREME TYPE-SYM BITS)  analysis/ops.lisp
-
-- (%ANALYZE-TYPE-MIN EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
-- - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp [See above]
-- - (%FLOAT-TYPE-EXTREME TYPE-SYM BITS)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-WARP-COLLECTIVE-CHECK EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%SHUFFLE-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
@@ -1760,11 +1753,23 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%GRID-REDUCE-ATOMIC-EXPAND EXPR)  analysis/ops.lisp
 - - (%GRID-REDUCE-ATOMIC-PARTS EXPR)  analysis/ops.lisp [See above]
 - - (%GRID-ATOMIC-OP-NAME FN)  analysis/ops.lisp [See above]
+- - (%NOTE-REDUCTION-LAUNCH-INIT OP RETURN-CELL IDENTITY)  analysis/ops.lisp
+- - - (%REDUCTION-IDENTITY-VALUE FORM)  analysis/ops.lisp
+- - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp [See above]
+- - - - (%REDUCTION-IDENTITY-VALUE FORM)  analysis/ops.lisp [RECURSION]
+- - - - (%ANALYZE-TYPE-MIN EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - - - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp [See above]
+- - - - - (%FLOAT-TYPE-EXTREME TYPE-SYM BITS)  analysis/ops.lisp
+- - - - (%ANALYZE-TYPE-MAX EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - - - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp [See above]
+- - - - - (%FLOAT-TYPE-EXTREME TYPE-SYM BITS)  analysis/ops.lisp [See above]
+- - - - (%TYPE-EXTREME-SCALAR-INFO EXPR LOCATION)  analysis/ops.lisp [See above]
 - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp
 - - (COMPILER-NO-OP)  macros.lisp [See above]
 
 - (%GRID-REDUCE-CAS-EXPAND EXPR)  analysis/ops.lisp
 - - (%GRID-REDUCE-CAS-PARTS EXPR)  analysis/ops.lisp [See above]
+- - (%NOTE-REDUCTION-LAUNCH-INIT OP RETURN-CELL IDENTITY)  analysis/ops.lisp [See above]
 - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
 - - (COMPILER-NO-OP)  macros.lisp [See above]
 
@@ -2919,6 +2924,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%FUSED-GRID-REDUCE-FORM FORM)  analysis/ops.lisp
 - - - - (%INDEPENDENT-REDUCTION-EXPAND FORM)  analysis/ops.lisp [See above]
 - - - - (%GRID-ATOMIC-OP-NAME FN)  analysis/ops.lisp [See above]
+- - - - (%NOTE-REDUCTION-LAUNCH-INIT OP RETURN-CELL IDENTITY)  analysis/ops.lisp [See above]
 - - - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
 - - - - (COMPILER-NO-OP)  macros.lisp [See above]
 - - - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]

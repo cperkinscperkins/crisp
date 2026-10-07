@@ -141,7 +141,7 @@ Plan
 - [x] update `reductions-excerpt.md` + `ideal_001.md`: "Launching the Kernel Again" after the
       Phase 2 trade-off matrix (chapters regenerate at fold)
 - [ ] decide whether BUG 084's harness re-zero stays (belt and braces) or goes
-- [ ] fold into src/, regenerate reference / call graph, suites
+- [x] fold into src/, regenerate reference / call graph, suites -- 2026-10-06, see "Fold-back" below
 
 
 Implementation (overlay, 2026-10-03)
@@ -177,3 +177,32 @@ Suites on the overlay build (2026-10-03, BMG): unit 341/341, E2E 1376/1376 (incl
 VERIFY-AUTODIFF specs above; the full `--differentiate` pass is left to CI.
 
 Still open: the non-parameter return cell is a **warning**, not an error (D2's "refuse or note").
+
+
+Fold-back (2026-10-06)
+======================
+
+Folded by `put_temp_files_here/179/fold.py`: the SAME exact-anchor insertions `transform.py` made
+to the overlay copies, applied to the src files themselves (src was verified unchanged since the
+extraction), line endings following the surrounding text, all-or-nothing.  Every one of the 11
+forms in src is identical to its overlay copy (compared after CRLF normalisation), with exactly
+one definition each.
+
+| form | now in |
+|---|---|
+| `*reduction-launch-init*` | `src/compiler.lisp`, after `*implicit-scratch-size-expr-map*` |
+| `initialize-compiler` (+ clrhash) | `src/compiler.lisp` |
+| `%reduction-launch-init-for` | `src/metadata.lisp`, before `generate-declared-signature` |
+| `generate-declared-signature` (+ `:launch-init`) | `src/metadata.lisp` |
+| `%reduction-identity-value`, `%note-reduction-launch-init` | `src/analysis/ops.lisp`, before `%grid-atomic-op-name` |
+| `%grid-reduce-atomic-expand`, `%grid-reduce-cas-expand`, `%grid-reduce-last-man-expand`, `%fused-grid-reduce-form`, `%fused-grid-reduce-dependent-form` | `src/analysis/ops.lisp` (in place) |
+
+`overlays/crisp-compiler-overlay.lisp` is back to its 20-line header.  The overlay was emptied
+BEFORE the build and the suites, so they tested the folded src.  Regenerated: `docs/reference.md`,
+`docs/call_graph.md`, `docs/globals_matrix*.csv`, `docs/chapters/` (the Phase 2 trade-off chapter
+picks up "Launching the Kernel Again").
+
+Suites on the folded build (overlay empty), BMG: unit 341/341, E2E 1376/1376 (incl.
+`launch-state.unit.lisp`), negative 311/311; the 179 on-metal checks under `--differentiate` --
+175/26, 176/08, 176/14, 178/10 (last-man relaunch) and the controls 175/31, 175/40, 178/11, 178/12 --
+all PASS, analytical = numerical = 1.0.

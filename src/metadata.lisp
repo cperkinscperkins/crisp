@@ -530,6 +530,11 @@
 
 
 
+(defun %reduction-launch-init-for (kernel-name param-name)
+  "Endeavour 179.  The :launch-init plist recorded for KERNEL-NAME's parameter PARAM-NAME, or NIL."
+  (gethash (cons (string-upcase (string kernel-name)) (string-downcase (string param-name)))
+           *reduction-launch-init*))
+
 (defun generate-declared-signature (sig &optional declared-params)
   "Generates the declared-signature plist for a kernel's metadata.
    Omits :access — storage handles are always treated as read-write by hoist code."
@@ -579,6 +584,10 @@
                       (setf entry (append entry (list :rank n :align alg)))))))
 
               (setf entry (append entry (list :range (list start end))))
+              ;; 179: a reduction output the host must set to the identity before every launch.
+              (let ((launch-init (%reduction-launch-init-for (function-signature-name sig) name)))
+                (when launch-init
+                  (setf entry (append entry (list :launch-init launch-init)))))
               (push entry declared-args)
               (incf current-phys-index width)))))
     (nreverse declared-args)))
