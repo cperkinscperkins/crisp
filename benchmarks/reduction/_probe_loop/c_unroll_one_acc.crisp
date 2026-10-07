@@ -1,0 +1,37 @@
+;; PROBE (phase 3) -- unrolled x4 into ONE accumulator, in the original order.
+;;
+;; b_four_acc.crisp reached 99.5% of peak with four independent accumulators -- which REORDERS the
+;; additions.  This variant keeps the exact serial order of loop-vector-stride (acc += x[i], then
+;; x[i+gs], ...) and only puts four loads in flight per trip.  If it matches b, unrolling the stride
+;; loop is a pure scheduling change with bit-identical results; if not, the win needs reassociation.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_probe_unroll_one_acc (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0)
+        (gid (get-global-id 0))
+        (gs  (get-global-work-size 0))
+        (n   (length~ input)))
+    (declare (grid-level))
+    (let ((iters (if (>= gid n) 0ul (+ 1ul (/ (- (- n 1ul) gid) gs))))
+          (i gid))
+      (let ((quads (/ iters 4ul)))
+        (let ((rest (- iters (* quads 4ul))))
+          (dotimes (k quads)
+            (let ((x0 (~ input i))
+                  (x1 (~ input (+ i gs)))
+                  (x2 (~ input (+ i (* 2ul gs))))
+                  (x3 (~ input (+ i (* 3ul gs)))))
+              (set! acc (+ (+ (+ (+ acc x0) x1) x2) x3))
+              (set! i (+ i (* 4ul gs)))))
+          (dotimes (k rest)
+            (set! acc (+ acc (~ input i)))
+            (set! i (+ i gs))))))
+    (grid-reduce! #'+ acc 0.0 result :strategy :atomic)))

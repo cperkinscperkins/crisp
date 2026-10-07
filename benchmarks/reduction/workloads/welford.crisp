@@ -1,0 +1,44 @@
+;; Workload: Welford -- count, mean and M2 (sum of squared deviations) in one numerically stable pass.
+;;
+;; Each thread runs Welford's update over its stride slice; grid-reduce! merges the per-thread states
+;; with Chan's parallel formula (a dependent, three-variable reduction; last-man only).
+;;   n = na + nb,  d = mb - ma,  mean = ma + d*nb/n,  M2 = M2a + M2b + d*d*na*nb/n
+;; The count is a ulong: a float count stops being exact past 2^24 elements.  Dividing by max(n, 1)
+;; keeps the identity (0, 0, 0) NaN-free without a branch (both deltas are then 0).
+;; Variance = M2 / n.
+;;
+;; BENCH-WORKLOAD: welford
+;; BENCH-EXPECT: count = count(input)
+;; BENCH-EXPECT: mean = mean(input)
+;; BENCH-EXPECT: m2 = m2(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-function welford-combine (na ma m2a nb mb m2b)
+  (declare #'(ulong float float ulong float float => ulong float float))
+  (let ((n (+ na nb)))
+    (let ((nf (to-float (max n 1ul)))
+          (d  (- mb ma)))
+      (return n
+              (+ ma (/ (* d (to-float nb)) nf))
+              (+ (+ m2a m2b) (/ (* (* d d) (* (to-float na) (to-float nb))) nf))))))
+
+(def-kernel welford (input &out count mean m2)
+  (declare #'(in-vec &out uout-c out-c out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((n 0ul)
+        (mu 0.0)
+        (s2 0.0))
+    (loop-vector-stride input (i)
+      (let ((x (~ input i)))
+        (set! n (+ n 1ul))
+        (let ((d (- x mu)))
+          (set! mu (+ mu (/ d (to-float n))))
+          (set! s2 (+ s2 (* d (- x mu)))))))
+    (grid-reduce! #'welford-combine
+                  ((n 0ul count)
+                   (mu 0.0 mean)
+                   (s2 0.0 m2)))))

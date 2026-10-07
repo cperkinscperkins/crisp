@@ -1,0 +1,25 @@
+;; Workload: sum AND sum of squares in ONE pass over memory (an independent multi-variable reduction).
+;;
+;; The showcase: mean and variance need both totals, and a library that reduces one value per call
+;; reads the input twice.  Here each thread folds both in the same stride loop, and ONE grid-reduce!
+;; with two clauses combines them -- one fused Phase 1, one last-man election for both.
+;;
+;; BENCH-WORKLOAD: sum_sumsq
+;; BENCH-EXPECT: total = sum(input)
+;; BENCH-EXPECT: total_sq = sumsq(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_sumsq (input &out total total_sq)
+  (declare #'(in-vec &out out-c out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((s 0.0)
+        (q 0.0))
+    (loop-vector-stride input (i)
+      (let ((x (~ input i)))
+        (set! s (+ s x))
+        (set! q (+ q (* x x)))))
+    (grid-reduce! ((#'+ s 0.0 total)
+                   (#'+ q 0.0 total_sq)))))

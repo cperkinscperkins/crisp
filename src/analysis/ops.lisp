@@ -1383,6 +1383,10 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
            (dolist (clause clauses)
              (unless (%grid-atomic-op-name (first clause))
                (fail "grid-reduce-atomic!: ~s has no native hardware atomic, so there is no instruction for phase 2 to emit.  Only +, min and max qualify -- the hardware provides exactly those.  For an arbitrary commutative operator use grid-reduce-cas! (a CAS loop; no extra memory, high contention) or grid-reduce-last-man! (a global scratch buffer; no contention)." (first clause)))))
+         ;; 179: :atomic / :cas combine INTO each clause's return cell -- record that it needs
+         ;; the identity before every launch.
+         (dolist (clause clauses)
+           (%note-reduction-launch-init "grid-reduce!" (fourth clause) (third clause)))
          `(progn
             (,rwg ,(loop for clause in clauses
                          collect (destructuring-bind (fn var identity out &rest keys) clause
@@ -1450,7 +1454,10 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                                             collect `(,(first c) ,val ,(third c) :local-scratch-vec ,sv)))
                                (when-thread-in-group-is 0
                                  ,@(loop for c in clauses for val in vals
-                                         collect `(set! (~ ,(fourth c) 0) ,val))))))
+                                         collect `(set! (~ ,(fourth c) 0) ,val))
+                                 ;; 179: put the ticket counter back for the next launch.  Safe here: every workgroup
+                                 ;; has already drawn its ticket -- that is how this one knows it is last.
+                                 (set! (~ ,ctr) 0u)))))
                          (compiler-no-op))))
                (if lets `(let ,(nreverse lets) ,body) body)))))))))
 
@@ -1709,7 +1716,10 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                                                  collect `(,val ,(second c) :local-scratch-vec ,sv)))
                           (when-thread-in-group-is 0
                             ,@(loop for c in clauses for val in vals
-                                    collect `(set! (~ ,(third c) 0) ,val))))))
+                                    collect `(set! (~ ,(third c) 0) ,val))
+                            ;; 179: put the ticket counter back for the next launch.  Safe here: every workgroup
+                            ;; has already drawn its ticket -- that is how this one knows it is last.
+                            (set! (~ ,ctr) 0u)))))
                     (compiler-no-op))))
           (if lets `(let ,(nreverse lets) ,body) body))))))
 
@@ -2108,6 +2118,63 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
    ANALYZED form rather than a macro is what keeps the construct visible to the autodiff walk."
   (%analyze-reduction-maybe-implicit expr env context location #'%reduce-workgroup-expand))
 
+(defun %reduction-identity-value (form)
+  "Endeavour 179.  The compile-time value of reduction identity FORM, for the metacrisp: a number,
+   :infinity / :-infinity, or NIL when Crisp cannot see a constant.  Recognises a numeric literal,
+   a suffixed literal (0ul, 1.5f), (type-min T), (type-max T), (type-infinity T) and (- X).
+   Infinity is a keyword because SBCL cannot print it readably."
+  (cond
+    ((realp form) form)
+    ((and (symbolp form) form (not (keywordp form)))
+     (let ((lit (ignore-errors (%try-parse-typed-literal form nil))))
+       (and lit (semantic-literal-p lit) (realp (semantic-literal-value lit))
+            (semantic-literal-value lit))))
+    ((and (consp form) (symbolp (car form)))
+     (let ((head (symbol-name (car form))))
+       (cond
+         ((and (string= head "-") (= (length form) 2))
+          (let ((v (%reduction-identity-value (second form))))
+            (cond ((realp v) (- v))
+                  ((eq v :infinity) :-infinity)
+                  ((eq v :-infinity) :infinity))))
+         ((string-equal head "TYPE-MIN")
+          (let ((lit (ignore-errors (%analyze-type-min form nil nil nil))))
+            (and lit (semantic-literal-value lit))))
+         ((string-equal head "TYPE-MAX")
+          (let ((lit (ignore-errors (%analyze-type-max form nil nil nil))))
+            (and lit (semantic-literal-value lit))))
+         ((string-equal head "TYPE-INFINITY")
+          (and (ignore-errors (%type-extreme-scalar-info form nil)) :infinity)))))))
+
+(defun %note-reduction-launch-init (op return-cell identity)
+  "Endeavour 179.  Records that RETURN-CELL, a reduction's return cell, must hold IDENTITY before every
+   launch -- true of :atomic and :cas, which combine INTO it, and which cannot initialise it themselves
+   (knowing who is first would need a grid-wide sync).  Recorded against the kernel being compiled,
+   for generate-declared-signature to emit as :launch-init.  Only a kernel's own parameter can be
+   described in the metacrisp; anything else is logged as a warning, because a host that launches the
+   kernel twice must then reset that cell without being told."
+  (let* ((cc *compiler-context*)
+         (fn (and cc (compiler-context-current-compiling-function cc))))
+    (cond
+      ((null fn)
+       (log:debug "179: ~a outside a compiling function; nothing recorded" op))
+      ((not (symbolp return-cell))
+       (log:warn "~a in ~(~a~): the return cell ~s is not a plain kernel parameter, so the metacrisp cannot say it must hold the identity before each launch.  A host that launches this kernel twice must reset it itself."
+                 op fn return-cell))
+      ((not (gethash fn *kernel-declared-signatures*))
+       (log:warn "~a in ~(~a~): ~(~a~) is not a kernel, so the metacrisp cannot say that ~(~a~) must hold the identity before each launch."
+                 op fn fn return-cell))
+      (t
+       (let ((value (%reduction-identity-value identity))
+             (key (cons (string-upcase (symbol-name fn)) (string-downcase (symbol-name return-cell)))))
+         (setf (gethash key *reduction-launch-init*)
+               (if value
+                   (list :identity value)
+                   (list :identity-form (let ((*package* (find-package :crisp-language)))
+                                          (prin1-to-string identity)))))
+         (log:debug "179: ~a in ~a: ~a must hold ~s before each launch"
+                    op fn return-cell (gethash key *reduction-launch-init*)))))))
+
 (defun %grid-atomic-op-name (fn)
   "The atomic operator name for a literal #'op, or NIL if OP has no hardware atomic."
   (when (and (consp fn) (symbolp (car fn))
@@ -2140,6 +2207,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                :message (format nil "grid-reduce-atomic!: ~s has no native hardware atomic, so there is no instruction for phase 2 to emit.  Only +, min and max qualify -- the hardware provides exactly those.  For an arbitrary commutative operator use grid-reduce-cas! (a CAS loop; no extra memory, high contention) or grid-reduce-last-man! (a global scratch buffer; no contention)."
                                 fn)
                :source-location nil))
+      ;; 179: the atomic combines INTO return-vec, which must hold the identity before every launch.
+      (%note-reduction-launch-init "grid-reduce-atomic!" return-vec identity)
       `(progn
          ;; Phase 1 -- every thread of the workgroup ends up holding the workgroup's total.
          (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,scratch)
@@ -2238,7 +2307,10 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
              (let ((,val (if (< ,lid ,ng) (~ ,gv ,lid) ,identity)))
                (reduce-workgroup ,fn ,val ,identity :local-scratch-vec ,sv)
                (when-thread-in-group-is 0
-                 (set! (~ ,return-vec 0) ,val)))))
+                 (set! (~ ,return-vec 0) ,val)
+                 ;; 179: put the ticket counter back for the next launch.  Safe here: every workgroup
+                 ;; has already drawn its ticket -- that is how this one knows it is last.
+                 (set! (~ ,ctr) 0u)))))
          (compiler-no-op)))))
 
 (defun %analyze-grid-reduce-last-man (expr env context location)
@@ -2317,6 +2389,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
       (error 'crisp-compiler-error
              :message "grid-reduce-cas!: :local-scratch-vec is required -- one element per warp, for the per-workgroup reduction.  It must be allocated in the CALLER's scope: scratch created inside an analyzer's expansion is invisible to the Pass-1 scanner that builds implicit parameters, so Crisp cannot generate it for you here."
              :source-location nil))
+    ;; 179: the CAS loop combines INTO return-vec, which must hold the identity before every launch.
+    (%note-reduction-launch-init "grid-reduce-cas!" return-vec identity)
     `(progn
        ;; Phase 1 -- every thread of the workgroup ends up holding the workgroup's total.
        (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)

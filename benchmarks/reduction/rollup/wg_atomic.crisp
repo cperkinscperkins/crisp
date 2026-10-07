@@ -1,0 +1,18 @@
+;; Strategy rollup (plan/benchmark-reductions.md section 1b): Phase 1 = reduce-workgroup, Phase 2 = :atomic.
+;; Phase 0 is the stock loop-vector-stride fold in every rollup kernel, so rows differ ONLY in how the
+;; per-thread partials are combined.  One hardware atomic per work-group.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_rollup_wg_atomic (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (grid-reduce! #'+ acc 0.0 result :strategy :atomic)))

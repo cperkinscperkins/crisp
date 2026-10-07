@@ -80,7 +80,8 @@ SSH_KEY="${4:-$HOME/.ssh/id_ed25519}"
 ## large-N story was missing.  Nothing said so; the run looked successful.  `canonical` is
 ## resolved inside matmul.py (256..16384, plus 32768 on NVIDIA), so the definition lives in one
 ## place and the pod gets the same sweep a local run would.
-if [ "$BENCH" = "matmul" ]; then DEFAULT_SIZES="canonical"; else DEFAULT_SIZES="1K,100K,1M"; fi
+## reduction sizes are MiB of input (scripts/crisp_bench/reduction.py --sizes-mb).
+if [ "$BENCH" = "matmul" ]; then DEFAULT_SIZES="canonical"; else DEFAULT_SIZES="1,16,64,256,1024,4096"; fi
 SIZES="${5:-$DEFAULT_SIZES}"
 ITERS="${6:-100}"
 ## crisp-tree occupancy (reduction only): when empty, run.py reads :occupancy from the .crisp
@@ -250,20 +251,32 @@ export CRISP_USE_SYSTEM_TOOLS=true
 
 case "${BENCH}" in
   reduction)
-    ## Only pass --crisp-tree-occupancy when overriding; empty -> run.py reads it from
-    ## the .crisp file (avoids stale defaults).
-    PY_ARGS="--sizes=${SIZES} --iters=${ITERS}"
-    if [ -n "${CRISP_TREE_OCCUPANCY}" ]; then
-        PY_ARGS="\${PY_ARGS} --crisp-tree-occupancy=${CRISP_TREE_OCCUPANCY}"
-    fi
-    python3 benchmarks/reduction/run.py \${PY_ARGS}
+    ## plan/benchmark-reductions.md.  One batched session, in order:
+    ##   1. the measured READ ceiling (benchmarks/reduction/ceiling/read_bw.cu) -- the denominator of
+    ##      every "% of peak", measured on THIS part, never a spec sheet;
+    ##   2. the stale-state demo -- the harness must catch both cases or nothing after it is trusted;
+    ##   3. the ladder, strategy rollup and workloads (reduction.py, PTX + the CUDA fixture; grid
+    ##      from the hoist's occupancy formula -- plan section "Dispatch policy");
+    ##   4. the library contenders (CUB, Thrust, cuBLAS: benchmarks/reduction/contenders/nvidia).
+    ## --chapters= (optional) becomes reduction.py --kernels= for steps 3 and 4.
+    ## (Endeavour 180's _probe_unroll ran on H100 2026-10-04; run it by hand with --kernels if needed.)
+    nvcc -O3 -o /tmp/read_bw benchmarks/reduction/ceiling/read_bw.cu
+    /tmp/read_bw --sizes-mb=64,256,1024,4096 --iters=20 --pattern=hash \
+        --json=benchmarks/results/ceiling_nvidia_hash_\$(date +%s).json
+    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --stale-demo
+    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --sizes-mb=${SIZES} \
+        --iters=${ITERS} ${CHAPTERS:+--kernels=${CHAPTERS}} ${SCRATCH_ARG} \
+        || echo "bench-on-pod: the reduction sweep reported a verification failure (its JSON is saved; see the log)"
+    python3 scripts/crisp_bench/reduction.py --platform=nvidia --auto-profile --contenders --sizes-mb=${SIZES} \
+        --iters=${ITERS} ${CHAPTERS:+--kernels=${CHAPTERS}} ${SCRATCH_ARG} \
+        || echo "bench-on-pod: a contender reported a build or verification failure (see the log)"
     ;;
   matmul)
     ## MATH-FLAG POLICY: this sweep NEVER relies on a compiler's default precision or denormal
     ## behavior.  nvcc / icpx / crisp-compile have different (and inconsistently documented)
     ## defaults, so matmul.py passes a COMPLETE, explicit set of precision + denormal flags to
     ## every compiler on every precision pass (see nvcc_math_flags / icpx_math_flags and the
-    ## MATH-FLAG POLICY block in scripts/crisp_bench/matmul.py).  A bare `nvcc -O3` is never emitted.
+    ## MATH-FLAG POLICY block in scripts/crisp_bench/matmul.py).  A bare "nvcc -O3" is never emitted (no backticks: this heredoc is unquoted, so they would RUN locally).
     ## --chapters= (optional) restricts the ladder.  A fused-epilogue session does not need
     ## chap0/chap1/chap1.5/chap2 re-measured at 8192 — those are slow, known, and dominate
     ## the wall time.  Empty means the whole ladder, as before.

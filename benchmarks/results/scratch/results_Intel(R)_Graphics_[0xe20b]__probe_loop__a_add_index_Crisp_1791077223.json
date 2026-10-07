@@ -1,0 +1,120 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-04T01:27:03.344251Z",
+    "hardware": {
+      "gpu_model": "Intel(R) Graphics [0xe20b]",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null,
+      "hardware_profile": "bmg",
+      "profile_matched": true,
+      "profile_provenance": "builtin",
+      "profile_source": null
+    },
+    "crisp_commit": "0587fa4e",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "_probe_loop__a_add_index",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 262144,
+        "bytes": 1048576,
+        "size_mb": 1,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 10,
+        "verified": true,
+        "kernel": "sum_probe_add_index",
+        "step": "_probe_loop",
+        "kernel_best_us": 4.472,
+        "jit_ms": 100.046,
+        "device_reported": "Intel(R) Arc(TM) B580 Graphics",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 50.41947802778815,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json"
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 343.61910820007324,
+          "all_compile_ms": 343.61910820007324
+        },
+        "runtime": {
+          "wall_time_ms": 0.019149999999999997,
+          "kernel_execution_ms": 0.004575999999999999
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 229.14685314685318
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 16777216,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "sum",
+        "groups": 160,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 10,
+        "verified": true,
+        "kernel": "sum_probe_add_index",
+        "step": "_probe_loop",
+        "kernel_best_us": 365.976,
+        "jit_ms": 1.3568,
+        "device_reported": "Intel(R) Arc(TM) B580 Graphics",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 40.124699767204014,
+        "ceiling_file": "ceiling_intel_hash_1791074983.json"
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 343.61910820007324,
+          "all_compile_ms": 343.61910820007324
+        },
+        "runtime": {
+          "wall_time_ms": 0.38992,
+          "kernel_execution_ms": 0.368004
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 182.35906131455093
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 2.043588099287319e-07,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": false,
+  "contender_class": "Crisp"
+}

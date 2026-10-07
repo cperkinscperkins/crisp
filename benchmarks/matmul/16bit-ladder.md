@@ -1,6 +1,6 @@
 # The Technique Ladder in 16-bit (Intel BMG)
 
-> **The live table is `REPORT.md` § 1b**, generated from the sweep data on every run. This file is
+> **The live table is `REPORT-matmul.md` § 1b**, generated from the sweep data on every run. This file is
 > the *findings* — the scaling analysis, the caveats, and what building the ladder exposed. It
 > deliberately does not restate the numbers, because two hand-maintained copies of the same table
 > is the drift problem this benchmark work exists to remove.

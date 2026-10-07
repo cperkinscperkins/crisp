@@ -1,0 +1,21 @@
+;; Strategy rollup (plan/benchmark-reductions.md section 1b): Phase 1 = reduce-warp, Phase 2 = CAS (hand).
+;; Phase 0 is the stock loop-vector-stride fold in every rollup kernel, so rows differ ONLY in how the
+;; per-thread partials are combined.  Each warp leader folds its warp total in with a CAS loop (atomic-binop!).
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+;; BENCH-LAUNCH-INIT: result = 0.0
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_rollup_warp_cas (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (reduce-warp #'+ acc 0.0)
+    (when (= (to-ulong (warp-lane)) 0ul)
+      (atomic-binop! (~ result) #'+ acc))))

@@ -1,0 +1,17 @@
+;; Ladder step 5 -- reduce-vec: the whole reduction in one form.
+;;
+;; reduce-vec expands to step 4 (a grid-stride fold, then grid-reduce! at its default
+;; :last-man-standing), so the claim here is that the one-liner costs nothing: it should match
+;; step4_grid_reduce/sum.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_reduce_vec (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (reduce-vec #'+ input 0.0 result))

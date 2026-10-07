@@ -1,0 +1,25 @@
+;; PROBE (endeavour 180 verification, probe 1): unroll x1, f32, ONE accumulator in the original
+;; order, additive index.  Phase 2 is grid-reduce!'s default last-man (no float atomics, so fp64
+;; needs none).  Compare across the x1/x2/x4/x8 family at equal BYTES per input.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_probe_f32_x1 (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0)
+        (gid (get-global-id 0))
+        (gs  (get-global-work-size 0))
+        (n   (length~ input)))
+    (declare (grid-level))
+    (let ((iters (if (>= gid n) 0ul (+ 1ul (/ (- (- n 1ul) gid) gs))))
+          (i gid))
+      (dotimes (k iters)
+        (set! acc (+ acc (~ input i)))
+        (set! i (+ i gs))))
+    (grid-reduce! #'+ acc 0.0 result)))

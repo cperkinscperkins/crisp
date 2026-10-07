@@ -36,7 +36,7 @@
 #
 # Results are JSON in benchmarks/results/ (bind-mounted, so they appear on the
 # host).  Render the report with:
-#     python scripts/crisp_bench/report.py --output benchmarks/REPORT.md
+#     python scripts/crisp_bench/report.py --all     (REPORT.md index + REPORT-matmul.md + REPORT-reduction.md)
 # report.py auto-adds a `## Hardware: Intel BMG` section from the JSON.
 
 set -euo pipefail
@@ -83,7 +83,9 @@ fi
 IMAGE_TAG="crisp-bench-intel:latest"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile.bench-intel"
 
-echo "=== Crisp Intel Benchmark Runner (matmul) ==="
+echo "=== Crisp Intel Benchmark Runner (${CRISP_BENCH_SUITE:-matmul}) ==="
+# CRISP_BENCH_SUITE=reduction routes the container to scripts/crisp_bench/reduction.py instead of
+# matmul.py (see bench-intel-entrypoint.sh); unset, nothing about the matmul run changes.
 echo "  Sizes:      ${SIZES}"
 echo "  Iters:      ${ITERS}"
 echo "  Precision:  ${PRECISION}"
@@ -130,6 +132,7 @@ docker run --rm \
     -e CRISP_CACHE_CONTROL \
     -e CRISP_CACHE_CONTROL_KERNELS \
     -e CRISP_TILE_VISIT \
+    -e CRISP_BENCH_SUITE \
     -w /workspace \
     "${IMAGE_TAG}" \
     bash scripts/bench-intel-entrypoint.sh "${SIZES}" "${ITERS}" "${PRECISION}" "${CHAPTERS}" "${EXTRA}"

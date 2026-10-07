@@ -1,0 +1,17 @@
+{
+  "kind": "read-bandwidth-ceiling",
+  "device": "Intel(R) Graphics [0xe20b]",
+  "driver": "1.15.39122+11",
+  "compute_units": 160,
+  "global_mem_bytes": 12452507648,
+  "cache_bytes": 18874368,
+  "timestamp": 1791074912,
+  "iters": 20,
+  "sizes": [
+    {"mb": 16, "bytes": 16777216, "past_cache": false, "best_config": {"vec": 4, "wg": 256, "groups": 320}, "median_gbs": 853.541718, "best_gbs": 881.526692, "median_ms": 0.019656},
+    {"mb": 64, "bytes": 67108864, "past_cache": false, "best_config": {"vec": 4, "wg": 256, "groups": 160}, "median_gbs": 438.367893, "best_gbs": 439.562356, "median_ms": 0.153088},
+    {"mb": 256, "bytes": 268435456, "past_cache": true, "best_config": {"vec": 4, "wg": 256, "groups": 160}, "median_gbs": 449.905901, "best_gbs": 450.691488, "median_ms": 0.596648},
+    {"mb": 1024, "bytes": 1073741824, "past_cache": true, "best_config": {"vec": 4, "wg": 256, "groups": 160}, "median_gbs": 453.562387, "best_gbs": 454.061070, "median_ms": 2.367352}
+  ],
+  "peak_read_gbs": 453.562387
+}

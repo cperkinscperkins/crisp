@@ -1,0 +1,36 @@
+;; Workload: argmax -- the largest value and the FIRST index holding it (a dependent reduction).
+;;
+;; Each thread keeps (best value, its index) over its stride slice; strict > keeps the first index,
+;; since a thread visits its elements in increasing order.  grid-reduce! then merges the pairs with
+;; a combiner that breaks ties toward the smaller index, so the result is the first maximum overall.
+;; Dependent reductions are last-man only.
+;;
+;; BENCH-WORKLOAD: argmax
+;; BENCH-EXPECT: best = max(input)
+;; BENCH-EXPECT: best_at = argmax(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel argmax (input &out best best_at)
+  (declare #'(in-vec &out out-c uout-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((v (type-min float))
+        (at (type-max ulong)))
+    (loop-vector-stride input (i)
+      (let ((x (~ input i)))
+        (when (> x v)
+          (set! v x)
+          (set! at i))))
+    (grid-reduce! #'argmax-combine
+                  ((v (type-min float) best)
+                   (at (type-max ulong) best_at)))))

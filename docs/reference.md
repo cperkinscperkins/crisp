@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-03T19:11:25.248797Z
+Generated on 2026-10-07T04:46:08.361858Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2458,6 +2458,20 @@ Generated on 2026-10-03T19:11:25.248797Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzer for reduce-workgroup -- expands and delegates, supplying implicit scratch (176).  Being an  >    ANALYZED form rather than a macro is what keeps the construct visible to the autodiff walk.
+
+
+---
+### DEFUN `%REDUCTION-IDENTITY-VALUE`
+- **Args**: `(FORM)`
+
+  > Endeavour 179.  The compile-time value of reduction identity FORM, for the metacrisp: a number,  >    :infinity / :-infinity, or NIL when Crisp cannot see a constant.  Recognises a numeric literal,  >    a suffixed literal (0ul, 1.5f), (type-min T), (type-max T), (type-infinity T) and (- X).  >    Infinity is a keyword because SBCL cannot print it readably.
+
+
+---
+### DEFUN `%NOTE-REDUCTION-LAUNCH-INIT`
+- **Args**: `(OP RETURN-CELL IDENTITY)`
+
+  > Endeavour 179.  Records that RETURN-CELL, a reduction's return cell, must hold IDENTITY before every  >    launch -- true of :atomic and :cas, which combine INTO it, and which cannot initialise it themselves  >    (knowing who is first would need a grid-wide sync).  Recorded against the kernel being compiled,  >    for generate-declared-signature to emit as :launch-init.  Only a kernel's own parameter can be  >    described in the metacrisp; anything else is logged as a warning, because a host that launches the  >    kernel twice must then reset that cell without being told.
 
 
 ---
@@ -6336,6 +6350,12 @@ Generated on 2026-10-03T19:11:25.248797Z
 
 
 ---
+### DEFVAR `*REDUCTION-LAUNCH-INIT*`
+
+  > Endeavour 179.  (KERNEL-NAME . PARAM-NAME) -> the :launch-init plist for that kernel parameter,  >    e.g. (:identity 0.0).  Filled during analysis by the :atomic / :cas reduction lowerings, which  >    combine INTO their return cell, so the host must put the identity there before every launch.  >    Read by generate-declared-signature.  A PERSISTENT global cleared by initialize-compiler, like  >    *implicit-scratch-size-expr-map*: metadata emission runs after compile-module returns.
+
+
+---
 ### DEFVAR `*KERNEL-DISPATCH-DECLARATIONS*`
 
   > Maps kernel name symbol → plist of dispatch declarations extracted from def-kernel.  >    Keys: :global-size, :local-size, :num-groups. Values: the raw s-expression forms  >    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).
@@ -9554,6 +9574,13 @@ Generated on 2026-10-03T19:11:25.248797Z
 ---
 ### DEFUN `VALIDATE-14-PHYSICAL-SIGNATURE`
 - **Args**: `(PATHS)`
+
+---
+### DEFUN `%REDUCTION-LAUNCH-INIT-FOR`
+- **Args**: `(KERNEL-NAME PARAM-NAME)`
+
+  > Endeavour 179.  The :launch-init plist recorded for KERNEL-NAME's parameter PARAM-NAME, or NIL.
+
 
 ---
 ### DEFUN `GENERATE-DECLARED-SIGNATURE`

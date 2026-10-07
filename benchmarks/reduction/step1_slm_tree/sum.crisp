@@ -1,0 +1,36 @@
+;; Ladder step 1 -- one work-item per element, combined in shared local memory.
+;;
+;; Each work-group tree-reduces its 256 elements in SLM (8 halving rounds, a barrier each), then
+;; ONE work-item adds the group's total to the result: contention drops from one atomic per
+;; element to one per work-group.  Written by hand.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+;; BENCH-GROUPS: per-element
+;; BENCH-LAUNCH-INIT: result = 0.0
+;; BENCH-RTOL: 1e-2
+;;   One fp32 cell takes an atomic add per element (or per work-group): millions of roundings at
+;;   ulp(total).  Measured 0.3% at 64 MiB for step 0, 4e-4 at 3 GiB for steps 1-2.  1e-2 still
+;;   catches a stale or doubled result; the measured error is reported.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_slm_tree (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (local-size :set-to (256)))
+  (let ((gid (get-global-id 0))
+        (n   (length~ input))
+        (lid (to-ulong (get-local-id 0))))
+    (declare (grid-level))
+    (let ((slm    (make-scratch-vector float :match-workgroup-size))
+          (stride 128ul))                      ; local size / 2
+      (set! (~ slm lid) (if (< gid n) (~ input gid) 0.0))
+      ;; 8 rounds for a 256-wide group: stride 128, 64, ..., 1
+      (dotimes (round 8ul)
+        (sync-workgroup)
+        (when (< lid stride)
+          (set! (~ slm lid) (+ (~ slm lid) (~ slm (+ lid stride)))))
+        (set! stride (/ stride 2ul)))
+      (when (= lid 0ul)
+        (atomic-add! (~ result) (~ slm 0ul))))))

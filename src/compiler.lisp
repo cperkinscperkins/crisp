@@ -1019,6 +1019,13 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
   "Maps implicit scratch tensor param-name → size-expr form as written by the user
    (e.g. :match-warp-tile, 1, 4).  Used by generate-implicit-signature for metadata.")
 
+(defvar *reduction-launch-init* (make-hash-table :test 'equal)
+  "Endeavour 179.  (KERNEL-NAME . PARAM-NAME) -> the :launch-init plist for that kernel parameter,
+   e.g. (:identity 0.0).  Filled during analysis by the :atomic / :cas reduction lowerings, which
+   combine INTO their return cell, so the host must put the identity there before every launch.
+   Read by generate-declared-signature.  A PERSISTENT global cleared by initialize-compiler, like
+   *implicit-scratch-size-expr-map*: metadata emission runs after compile-module returns.")
+
 
 
 (defvar *kernel-dispatch-declarations* (make-hash-table :test #'eq)
@@ -1241,6 +1248,8 @@ Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attri
 
   ;; clear scratch tensor size-expr side table
   (clrhash *implicit-scratch-size-expr-map*)
+  ;; 179: clear the reduction launch-init side table (same lifetime)
+  (clrhash *reduction-launch-init*)
 
   ;; Endeavor 137: clear the CUtensorMap descriptor metadata side table.  This is a PERSISTENT
   ;; global (not rebound per-module) so it survives to metadata-emission time, which runs after

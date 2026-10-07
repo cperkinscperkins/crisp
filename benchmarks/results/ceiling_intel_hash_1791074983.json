@@ -1,0 +1,19 @@
+{
+  "kind": "read-bandwidth-ceiling",
+  "device": "Intel(R) Graphics [0xe20b]",
+  "driver": "1.15.39122+11",
+  "compute_units": 160,
+  "global_mem_bytes": 12452507648,
+  "cache_bytes": 18874368,
+  "timestamp": 1791074990,
+  "iters": 20,
+  "pattern": "hash",
+  "sizes": [
+    {"mb": 16, "bytes": 16777216, "past_cache": false, "best_config": {"vec": 4, "wg": 512, "groups": 160}, "median_gbs": 871.996674, "best_gbs": 886.370245, "median_ms": 0.019240},
+    {"mb": 64, "bytes": 67108864, "past_cache": false, "best_config": {"vec": 4, "wg": 256, "groups": 160}, "median_gbs": 438.367893, "best_gbs": 438.964312, "median_ms": 0.153088},
+    {"mb": 256, "bytes": 268435456, "past_cache": true, "best_config": {"vec": 4, "wg": 256, "groups": 160}, "median_gbs": 449.905901, "best_gbs": 450.848935, "median_ms": 0.596648},
+    {"mb": 1024, "bytes": 1073741824, "past_cache": true, "best_config": {"vec": 4, "wg": 256, "groups": 160}, "median_gbs": 453.602241, "best_gbs": 454.001170, "median_ms": 2.367144},
+    {"mb": 3072, "bytes": 3221225472, "past_cache": true, "best_config": {"vec": 4, "wg": 256, "groups": 160}, "median_gbs": 454.480812, "best_gbs": 454.807815, "median_ms": 7.087704}
+  ],
+  "peak_read_gbs": 454.480812
+}

@@ -1,0 +1,268 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-06T04:52:28.267346Z",
+    "hardware": {
+      "gpu_model": "Intel(R) Graphics [0xe20b]",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": null,
+      "sm_count": null,
+      "hardware_profile": "bmg",
+      "profile_matched": true,
+      "profile_provenance": "builtin",
+      "profile_source": null
+    },
+    "crisp_commit": "56cb083b",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "workloads__welford",
+  "competitor": "SYCL_Reduction",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 262144,
+        "bytes": 1048576,
+        "size_mb": 1,
+        "workload": "welford",
+        "verified": true,
+        "kernel": "sycl__welford",
+        "library": "sycl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 132.791,
+        "kernel_best_us": 135.281,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 1.6078296238969916,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1850.1150608062744,
+          "all_compile_ms": 4799.353122711182
+        },
+        "runtime": {
+          "wall_time_ms": 0.16494999999999999,
+          "kernel_execution_ms": 0.1434975
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 7.307277130263593
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 3.459806551977157e-10,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 4194304,
+        "bytes": 16777216,
+        "size_mb": 16,
+        "workload": "welford",
+        "verified": true,
+        "kernel": "sycl__welford",
+        "library": "sycl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 67.143,
+        "kernel_best_us": 151.698,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 23.785442078360166,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1850.1150608062744,
+          "all_compile_ms": 4799.353122711182
+        },
+        "runtime": {
+          "wall_time_ms": 0.15862600000000002,
+          "kernel_execution_ms": 0.15520050000000002
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 108.10027029552097
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 6.93289997811707e-08,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 16777216,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "welford",
+        "verified": true,
+        "kernel": "sycl__welford",
+        "library": "sycl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 64.977,
+        "kernel_best_us": 289.7,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 49.54052879665217,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1850.1150608062744,
+          "all_compile_ms": 4799.353122711182
+        },
+        "runtime": {
+          "wall_time_ms": 0.316379,
+          "kernel_execution_ms": 0.29806
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 225.15219754411862
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 4.5413097907022275e-08,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 67108864,
+        "bytes": 268435456,
+        "size_mb": 256,
+        "workload": "welford",
+        "verified": true,
+        "kernel": "sycl__welford",
+        "library": "sycl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 152.252,
+        "kernel_best_us": 758.359,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 74.90423636974977,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1850.1150608062744,
+          "all_compile_ms": 4799.353122711182
+        },
+        "runtime": {
+          "wall_time_ms": 0.8025399999999999,
+          "kernel_execution_ms": 0.7885295
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 340.42538167563805
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 6.81195924822582e-08,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 268435456,
+        "bytes": 1073741824,
+        "size_mb": 1024,
+        "workload": "welford",
+        "verified": true,
+        "kernel": "sycl__welford",
+        "library": "sycl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 90.557,
+        "kernel_best_us": 2913.57,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 76.5471971442909,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1850.1150608062744,
+          "all_compile_ms": 4799.353122711182
+        },
+        "runtime": {
+          "wall_time_ms": 3.0779,
+          "kernel_execution_ms": 3.08642
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 347.8923231446141
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 7.49576409542514e-08,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 805306368,
+        "bytes": 3221225472,
+        "size_mb": 3072,
+        "workload": "welford",
+        "verified": true,
+        "kernel": "sycl__welford",
+        "library": "sycl",
+        "timing": "host-clock (submit + wait)",
+        "launch_overhead_us": 262.331,
+        "kernel_best_us": 7561.22,
+        "device_reported": "Intel(R) Graphics [0xe20b]",
+        "peak_read_gbps": 454.480812,
+        "percent_of_peak": 92.17229717057036,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1850.1150608062744,
+          "all_compile_ms": 4799.353122711182
+        },
+        "runtime": {
+          "wall_time_ms": 7.72966,
+          "kernel_execution_ms": 7.689625
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 418.9054046198612
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 7.095790997695793e-09,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": true,
+  "contender_class": "Peer"
+}

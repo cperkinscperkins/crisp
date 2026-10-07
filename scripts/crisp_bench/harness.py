@@ -121,6 +121,10 @@ class BenchmarkSweep:
     denormal_handling: str
     results: List[SweepPoint] = field(default_factory=list)
     is_canonical: bool = True
+    # Recorded, not inferred from the competitor's name (plan/benchmark-reductions.md: the
+    # reduction suite adds peers and ceilings whose names classify_contender cannot know).
+    # Optional so every existing result file and caller is unchanged.
+    contender_class: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)

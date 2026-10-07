@@ -1,0 +1,18 @@
+{
+  "kind": "read-bandwidth-ceiling",
+  "device": "NVIDIA H100 NVL",
+  "driver": "13000",
+  "compute_units": 132,
+  "global_mem_bytes": 99949674496,
+  "cache_bytes": 62914560,
+  "timestamp": 1791323358,
+  "iters": 20,
+  "pattern": "hash",
+  "sizes": [
+    {"mb": 64, "bytes": 67108864, "past_cache": false, "best_config": {"vec": 4, "wg": 512, "groups": 528}, "median_gbs": 2781.368779, "best_gbs": 2830.164657, "median_ms": 0.024128},
+    {"mb": 256, "bytes": 268435456, "past_cache": true, "best_config": {"vec": 4, "wg": 512, "groups": 528}, "median_gbs": 3379.777544, "best_gbs": 3456.369057, "median_ms": 0.079424},
+    {"mb": 1024, "bytes": 1073741824, "past_cache": true, "best_config": {"vec": 4, "wg": 1024, "groups": 264}, "median_gbs": 3623.197507, "best_gbs": 3637.730984, "median_ms": 0.296352},
+    {"mb": 4096, "bytes": 4294967296, "past_cache": true, "best_config": {"vec": 4, "wg": 1024, "groups": 528}, "median_gbs": 3702.251463, "best_gbs": 3709.926668, "median_ms": 1.160096}
+  ],
+  "peak_read_gbs": 3702.251463
+}
