@@ -148,7 +148,7 @@ Plan
 - [x] implement (overlays): declaration parsing, `!llvm.loop` emission, the default, `reduce-vec`
       passthrough, AD accept-and-ignore + the 178 pre-pass
 - [ ] strength reduction at the IR level -- NOT DONE, deliberately (probe 3: worth <= 1.5%)
-- [x] on-metal: BMG ladder (below) -- [ ] NVIDIA (this evening)
+- [x] on-metal: BMG ladder; H100 (D2 confirmed, specs 25/25)
 - [x] update reduction benchmarks with new numbers (BMG canonical; report not regenerated yet)
 - [ ] fold into src/, regenerate reference / call graph / chapters, suites incl. --differentiate
 
@@ -242,8 +242,26 @@ Decisions (2026-10-07)
   `put_temp_files_here/e180/ptx/`): `reduce-vec :strategy :atomic` with NO hint has **33 LDG** in
   SASS -- ptxas unrolls far past LLVM's x4 -- while `:unroll 4` has **5** (4 + remainder): the hint
   leaves the main loop `.pragma "nounroll"` (2 pragmas in the PTX vs 1) and ptxas stops.  So on PTX
-  an explicit factor is FINAL.  Whether 33 beats 5 on an H100 is tonight's measurement (probe 4's hand
-  kernels: x4 86.5%, x8 85.5% -- maybe a wash).
+  an explicit factor is FINAL.
+  **MEASURED, H100 NVL, 2026-10-07** (`benchmarks/reduction/_probe_unroll_hint/`, `reduce-vec #'+
+  :strategy :atomic`, differing ONLY in `:unroll`; % of the 3697.5 GB/s measured read peak; every
+  point verified; JSON in `benchmarks/results/scratch/`):
+
+  | hint | SASS LDG | 256 MiB | 1 GiB | 4 GiB | groups |
+  |---|---|---|---|---|---|
+  | none (LLVM x4, then ptxas) | 33 | **86.0** | **91.5** | **89.5** | 1056 |
+  | x4 | 5 | 83.9 | 90.0 | 87.9 | 1056 |
+  | x2 | 3 | 82.5 | 87.1 | 84.8 | 1056 |
+  | x8 | 9 | 73.8 | 77.8 | 76.7 | 792 |
+  | nil | 1 | 60.3 | 63.1 | 63.4 | 1056 |
+
+  D2 CONFIRMED: no hint is best at every size; an explicit factor costs 1.5-2 points at x4 and more
+  below it.  x8 is worst of the unrolled ones, and the occupancy formula gave it only 792 groups --
+  the extra live loads cost registers.  `nil` (one load per trip, no ptxas unrolling) is NVIDIA's
+  57%-style case.  Same session, `step5_reduce_vec/sum` (default last-man) 41%: last-man's
+  groups <= local cap (256 groups), endeavour 181, not 180.
+  CUDA correctness on the same pod: `run-on-pod.sh ... 180-loop-unroll` 25/25, spec 13 on metal
+  `BUFFER out: 6`.
 - **D3 -- the default factor is capped at x8.**  16 bytes / 1-byte elements would be x16, which no
   probe measured.  A factor of 1 (an element of 16+ bytes) emits nothing.
 - **D4 -- the factor is chosen at CODEGEN** from `*target-backend*`; analysis records only the
@@ -273,8 +291,8 @@ For review (this evening)
 1. **The `src/semantic.lisp` slot.**  The only edit outside the overlays; it has to be in src/ (a
    struct).  Please eyeball it before anything else.
 2. **D1 (constant, not profile) and D2 (no PTX default)** are the two judgment calls.  D2 is the one
-   to confirm on the H100 tonight: `reduce-vec` on PTX should be unchanged by 180, and `:unroll 4`
-   should NOT be slower than no hint (if it is, that's the `.pragma "nounroll"` effect, as predicted).
+   was the one to confirm on the H100 -- DONE 2026-10-07: no hint 91.5% vs x4 90.0% at 1 GiB, the
+   `.pragma "nounroll"` effect as predicted (table under D2).
 3. **`let` silently drops unknown declarations** (e.g. a typo'd `(declare (gird-level))`).  180 only
    closed this for `unroll`.  A general fix would refuse every unknown spec -- worth a bug entry?
 4. **`%unroll-default` is an internal declaration** that `loop-vector-stride` writes.  A user could
