@@ -91,6 +91,9 @@ grows or shrinks `i`.  So:
 ```
 Binds `i` to 0, counts up to N, incrementing by `stride` each time through the loop. `stride` is optional, defaults to 1.
 
+Every loop in this family accepts `(declare (unroll ...))` at the start of its body; see
+[unroll](#unroll). A counted loop has no unroll default -- it is not necessarily a stream.
+
 #### dec-times / dec-times+  ✅
 ```
   (dec-times (i N:ulong &optional (stride:ulong 1))

@@ -1104,17 +1104,23 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
    multi-variable call (out of scope), a missing argument, a non-literal or unknown strategy (there is
    no second stage: it needs a second kernel launch) and a key the strategy does not use -- naming
    reduce-vec rather than leaving grid-reduce! to name itself.  The default strategy is
-   :last-man-standing, as for grid-reduce!."
+   :last-man-standing, as for grid-reduce!.
+   Endeavour 180: :unroll V is the loop's, not grid-reduce!'s -- it becomes (declare (unroll V)) at
+   the head of the loop-vector-stride body, which validates V.  Without it the loop gets the
+   loop-vector-stride stream default."
   (flet ((fail (fmt &rest args)
            (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil)))
     (unless (eq (%reduction-call-shape form) :single)
       (fail "reduce-vec: reduces ONE vector with one function, (reduce-vec fn vec identity out-cell &key strategy).  To reduce several variables at once, fold them yourself in a loop-vector-stride and pass them to grid-reduce! with clauses."))
     (unless (>= (length form) 5)
       (fail "reduce-vec: expected (reduce-vec fn vec identity out-cell &key strategy message), got ~s." form))
-    (destructuring-bind (fn vec identity out &rest keys) (rest form)
-      (unless (evenp (length keys))
-        (fail "reduce-vec: the keyword arguments ~s are not key/value pairs." keys))
-      (let* ((op (car form))
+    (destructuring-bind (fn vec identity out &rest all-keys) (rest form)
+      (unless (evenp (length all-keys))
+        (fail "reduce-vec: the keyword arguments ~s are not key/value pairs." all-keys))
+      (let* ((unroll-given (loop for (k v) on all-keys by #'cddr thereis (and (eq k :unroll) (list v))))
+             ;; Endeavour 180: :unroll belongs to the loop-vector-stride, never to grid-reduce!.
+             (keys (loop for (k v) on all-keys by #'cddr unless (eq k :unroll) append (list k v)))
+             (op (car form))
              (pkg (or (and (symbolp op) (symbol-package op)) (find-package :crisp-language)))
              (strategy-given (loop for (k v) on keys by #'cddr thereis (and (eq k :strategy) (list v))))
              (strategy (if strategy-given (first strategy-given) :last-man-standing))
@@ -1133,6 +1139,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                  `(let ((,p ,identity))
                     (%check-reduce-vec-element :reduce-vec ,vec ,p)
                     (loop-vector-stride ,vec (,i)
+                      ,@(when unroll-given
+                          `((,(intern "DECLARE" pkg) (,(intern "UNROLL" pkg) ,(first unroll-given)))))
                       (set! ,p ,(%175-apply-binop fn p `(~ ,vec ,i))))
                     (,(intern "GRID-REDUCE!" pkg) ,fn ,p ,identity ,out ,@keys))))
           (log:debug "178: ~s -> ~s" form expansion)

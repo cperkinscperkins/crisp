@@ -29,3 +29,38 @@ Communicates back to the hoisting code that this kernel should be run on only on
 
 For library writers. See the [entrypoint](#entrypoint-1) section
 
+#### unroll ✅
+```
+(dotimes (k n)
+  (declare (unroll 4))        ; unroll by 4 -- a remainder loop handles n not a multiple of 4
+  ...)
+
+(dotimes (k 8)
+  (declare (unroll t))        ; unroll fully -- the trip count must be a compile-time constant
+  ...)
+
+(loop-vector-stride v (i)
+  (declare (unroll nil))      ; never unroll this loop, whatever the default
+  ...)
+```
+
+The equivalent of `#pragma unroll` in CUDA, HIP and SYCL. It goes at the start of a loop body --
+`dotimes` and its variants (`dotimes+`, `dec-times`, `do-times-by-doubling`, ...) or
+`loop-vector-stride` -- and nowhere else. The value is a positive integer literal, `t` or `nil`.
+Anything else, a second `unroll` on the same loop, or an `unroll` outside a loop body, is a
+compilation error. It is the only declaration a loop body accepts.
+
+Unrolling is a request to the code generator, not a change to the program: the loop computes the
+same values, in the same order, with or without it, and autodiff sees the same loop. Crisp passes it
+to LLVM as loop metadata (`llvm.loop.unroll.count` / `.full` / `.disable`), and LLVM does the
+unrolling and writes the remainder loop. On PTX the factor is final, as with CUDA's `#pragma unroll`:
+the loop LLVM unrolled is marked `.pragma "nounroll"`, so `ptxas` does not unroll it further, and
+`(unroll nil)` keeps `ptxas` from unrolling it at all.
+
+Why bother: a loop that does little work per trip -- a stream over a large vector -- is limited by
+how many loads each thread has in flight, not by arithmetic. Unrolling it puts several independent
+loads in flight per thread. On an Intel Arc B580, a `loop-vector-stride` sum went from 57% to 99%
+of the memory bus from unrolling alone. The same request can hurt a heavy loop body (code size,
+registers), which is why it is a knob. `loop-vector-stride` has a default; see
+[loop-vector-stride](#loop-vector-stride).
+

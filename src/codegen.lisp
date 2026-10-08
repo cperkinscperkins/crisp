@@ -4034,10 +4034,84 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 
 
 
+;;; Endeavour 180 -- loop unrolling: the !llvm.loop node on a counted loop's latch, and the
+;;; per-target stream default.  tests/spec/180-loop-unroll/loop-unroll.md
+
+(defparameter *stream-unroll-bytes-in-flight* '((:spirv . 16) (:ptx . nil))
+  "Endeavour 180.  The loop-vector-stride stream default, per target: the bytes each thread should
+   have in flight, so the unroll factor is BYTES / element size.  MEASURED, not guessed
+   (loop-unroll.md, probes 1, 2 and 4):
+     :spirv  16 -- BMG reaches ~99% of the read peak at 16 bytes/thread (fp32 x4, fp64 x2); one
+                   load per trip (4 bytes) reaches 57%.  More never hurt, and gained < 1%.
+     :ptx    NIL -- no hint.  LLVM's NVPTX target already runtime-unrolls the loop x4 and ptxas
+                   unrolls again (16 loads per trip in SASS); a hint would leave the unrolled loop
+                   marked unroll.disable, which reaches the PTX as .pragma \"nounroll\" and stops
+                   ptxas -- a regression, not a default.
+   A target not listed gets no default.")
+
+(defparameter *stream-unroll-max-factor* 8
+  "Endeavour 180.  The largest factor the stream default picks.  Probe 1 measured up to x8; a
+   1-byte element would otherwise ask for x16, which no probe has run.")
+
+(defun %effective-loop-unroll (spec)
+  "Endeavour 180.  What the codegen emits for a loop's unroll SPEC on the current *target-backend*:
+   (values :count N), (values :full), (values :disable), or NIL for no metadata.  An explicit
+   request is emitted as written on every target; the stream default, (:stream BYTES), is a factor
+   only where *stream-unroll-bytes-in-flight* gives a budget and the factor is above 1."
+  (case (first spec)
+    (:count (values :count (second spec)))
+    (:full (values :full))
+    (:disable (values :disable))
+    (:stream
+     (let* ((budget (cdr (assoc *target-backend* *stream-unroll-bytes-in-flight*)))
+            (bytes (second spec))
+            (n (and budget bytes (plusp bytes)
+                    (min *stream-unroll-max-factor* (max 1 (floor budget bytes))))))
+       (log:debug "180: stream default on ~s, ~a-byte elements, budget ~a -> x~a"
+                  *target-backend* bytes budget n)
+       (when (and n (> n 1)) (values :count n))))
+    (t nil)))
+
+(defun %attach-loop-unroll-metadata (latch-br module spec)
+  "Endeavour 180.  Attaches !llvm.loop to LATCH-BR, a loop's back-edge branch, for the unroll SPEC
+   (see %effective-loop-unroll).  The loop ID is LLVM's distinct, self-referential node:
+     !L = distinct !{!L, !P}     !P = !{!\"llvm.loop.unroll.count\", i32 N}   (or .full / .disable)
+   LLVM-C cannot create a distinct node directly, so operand 0 starts as a temporary placeholder
+   that is then replaced with the node itself -- which LLVM turns into a distinct node.  Returns
+   LATCH-BR."
+  (multiple-value-bind (kind n) (%effective-loop-unroll spec)
+    (when kind
+      (let* ((ctx (crisp.llvm-bindings::llvm-get-module-context module))
+             (prop-name (ecase kind
+                          (:count "llvm.loop.unroll.count")
+                          (:full "llvm.loop.unroll.full")
+                          (:disable "llvm.loop.unroll.disable")))
+             (prop (cffi:with-foreign-object (ops :pointer 2)
+                     (setf (cffi:mem-aref ops :pointer 0)
+                           (crisp.llvm-bindings::llvm-md-string-in-context2 ctx prop-name (length prop-name)))
+                     (when (eq kind :count)
+                       (setf (cffi:mem-aref ops :pointer 1)
+                             (crisp.llvm-bindings::llvm-value-as-metadata
+                              (crisp.llvm-bindings::llvm-const-int (crisp.llvm-bindings::llvm-int32-type) n nil))))
+                     (crisp.llvm-bindings::llvm-md-node-in-context2 ctx ops (if (eq kind :count) 2 1))))
+             (temp (crisp.llvm-bindings::llvm-temporary-md-node ctx (cffi:null-pointer) 0))
+             (loop-id (cffi:with-foreign-object (ops :pointer 2)
+                        (setf (cffi:mem-aref ops :pointer 0) temp
+                              (cffi:mem-aref ops :pointer 1) prop)
+                        (crisp.llvm-bindings::llvm-md-node-in-context2 ctx ops 2)))
+             (kind-id (crisp.llvm-bindings::llvm-get-md-kind-id-in-context ctx "llvm.loop" 9)))
+        (crisp.llvm-bindings::llvm-metadata-replace-all-uses-with temp loop-id)
+        (crisp.llvm-bindings::llvm-set-metadata
+         latch-br kind-id (crisp.llvm-bindings::llvm-metadata-as-value ctx loop-id))
+        (log:debug "180: !llvm.loop ~a~@[ ~a~] on a latch (~s)" prop-name n *target-backend*))))
+  latch-br)
+
 (defmethod generate-node-ir ((node semantic-dotimes) builder module var-env di-builder di-scope location-map)
   "Generates IR for (dotimes (var limit [stride]) body...).
    Uses alloca+branch loop pattern (consistent with semantic-if).
-   LLVM mem2reg promotes the alloca to a phi node during optimization."
+   LLVM mem2reg promotes the alloca to a phi node during optimization.
+   Endeavour 180: the back-edge branch carries !llvm.loop when the loop has an unroll request
+   (%attach-loop-unroll-metadata)."
   (let* ((limit-node  (semantic-dotimes-limit-node node))
          (stride-node (semantic-dotimes-stride-node node))
          (var-name    (semantic-dotimes-var-name node))
@@ -4089,8 +4163,10 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (i-next (llvm-build-add builder i-cur stride-val "i_next")))
         (llvm-build-store builder i-next i-alloca)))
     ;; Branch back to check (unless body already terminated, e.g. explicit return)
+    ;; Endeavour 180: the back-edge is the loop's latch -- it carries the unroll request, if any.
     (unless (terminator-p (llvm-get-insert-block builder))
-      (llvm-build-br builder check-block))
+      (%attach-loop-unroll-metadata (llvm-build-br builder check-block) module
+                                    (semantic-dotimes-unroll node)))
     ;; --- Exit Block ---
     (llvm-position-builder-at-end builder exit-block)
     ;; dotimes returns void
@@ -4120,7 +4196,8 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
      :multiply       guard init/=0, f>1, init<=N; lim = N/f;   cont i <= lim     next i * f
      :power-up       guard N>1          start 1, lim=(N-1)/2   cont i <= lim     next i * 2
      :power-down     guard N>1          start 2^(W-1-clz(N-1)) cont next /= 0    next i / 2
-   The loop variable lives in an alloca (mem2reg promotes it), as in dotimes."
+   The loop variable lives in an alloca (mem2reg promotes it), as in dotimes.
+   Endeavour 180: the latch branch carries !llvm.loop when the loop has an unroll request."
   (let* ((kind (semantic-loop-variant-kind node))
          (var-name (semantic-loop-variant-var-name node))
          (llvm-type (crisp-type-to-llvm-type (semantic-loop-variant-var-type node) module))
@@ -4202,7 +4279,9 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                               (llvm-build-mul builder i-cur f-val "i_next"))
                      cont (cmp +llvm-int-ule+ i-cur lim))))
             (llvm-build-store builder next i-alloca)
-            (llvm-build-cond-br builder cont body-block exit-block)))
+            ;; Endeavour 180: the bottom test is the latch -- it carries the unroll request, if any.
+            (%attach-loop-unroll-metadata (llvm-build-cond-br builder cont body-block exit-block)
+                                          module (semantic-loop-variant-unroll node))))
         (llvm-position-builder-at-end builder exit-block)
         (values nil nil)))))
 

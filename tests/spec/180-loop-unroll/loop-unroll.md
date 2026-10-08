@@ -141,7 +141,7 @@ Plan
 
 - [x] verification probes (below) -- decide the defaults
 - [x] decide: defaults as constants, per element size, or in the hardware profile -- D1 below
-- [ ] API review with Chris (the API was implemented as proposed; see "For review")
+- [x] API review with Chris -- decisions accepted 2026-10-07
 - [x] ideal_001.md (`declare` -> "Other declare directives" gains `unroll`; `loop-vector-stride`,
       `dotimes`, `reduce-vec`) and `reductions-excerpt.md`
 - [x] TDD tests (above); bump `ci-stop.txt`
@@ -150,7 +150,11 @@ Plan
 - [ ] strength reduction at the IR level -- NOT DONE, deliberately (probe 3: worth <= 1.5%)
 - [x] on-metal: BMG ladder; H100 (D2 confirmed, specs 25/25)
 - [x] update reduction benchmarks with new numbers (BMG canonical; report not regenerated yet)
-- [ ] fold into src/, regenerate reference / call graph / chapters, suites incl. --differentiate
+- [x] fold into src/ (2026-10-07, put_temp_files_here/e180/fold.py, all-or-nothing; overlays back to
+      their headers), regenerate reference / call graph / chapters / globals.  Suites on the fold:
+      unit 341, E2E 1401/1401, negative 322/322.  --debug / --single-pass / --differentiate: CI.
+      The pre-180 analyzers are now %analyze-dotimes-core / %analyze-loop-variant-core, wrapped by
+      analyze-dotimes-expression / analyze-loop-variant-expression (the overlay's defvar wrappers are gone).
 
 
 Implementation (2026-10-07, overlays)

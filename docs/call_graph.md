@@ -579,6 +579,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER-WORKGROUP BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%ATTACH-LOOP-UNROLL-METADATA LATCH-BR MODULE SPEC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%EFFECTIVE-LOOP-UNROLL SPEC)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%LOOP-VARIANT-COERCE BUILDER VALUE LLVM-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
                                                                                              hw_tmp))  codegen.lisp [See above]
@@ -1152,6 +1154,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (INJECT-SPIR-KERNEL-METADATA IR-TEXT)  compiler.lisp
 - - - - - (FIND-SPIR-KERNELS IR-TEXT)  compiler.lisp
 - - - - - - (%EXTRACT-SPIR-KERNEL-INFO IR-TEXT KERNEL-POS)  compiler.lisp
+- - - - - (%MAX-METADATA-ID IR-TEXT)  compiler.lisp
 - - - - - (EXTRACT-KERNEL-PARAMS IR-TEXT FUNC-START FUNC-END)  compiler.lisp
 - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
 - - - - - (GENERATE-KERNEL-METADATA PARAMS METADATA-ID-BASE)  compiler.lisp
@@ -1325,6 +1328,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 
+- (%ANALYZE-DOTIMES-CORE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+
 - (%ANALYZE-GRID-REDUCE-ATOMIC EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp
 - - - (%REDUCTION-CALL-SHAPE FORM)  analysis/ops.lisp [See above]
@@ -1371,6 +1380,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ANALYZE-REDUCTION-MAYBE-IMPLICIT EXPR ENV CONTEXT LOCATION EXPANDER)  analysis/ops.lisp [See above]
 
 - (%ANALYZE-LET-STAR-REJECTED EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+
+- (%ANALYZE-LOOP-VARIANT-CORE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (%LOOP-VARIANT-USAGE HEAD-NAME ROLES)  analysis/control.lisp
+- - - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp
+- - (%ANALYZE-LOOP-VARIANT-OPERAND FORM ROLE HEAD-NAME ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp [See above]
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
+- - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp [See above]
+- - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (%ANALYZE-MAX-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -2069,14 +2090,24 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-DEC!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 
+- (ANALYZE-DECLARE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (%DECLARATION-SPEC-NAMED-P SPEC NAME)  analysis/control.lisp
+- - (%REFUSE-MISPLACED-UNROLL LOCATION)  analysis/control.lisp
+
 - (ANALYZE-DOTIMES+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
 - - (ANALYZE-DOTIMES-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
-- - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (%ANALYZE-LOOP-WITH-UNROLL ANALYZER EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - (%SPLIT-LOOP-BODY-DECLARATIONS BODY-FORMS HEAD LOCATION)  analysis/control.lisp
+- - - - - (%DECLARATION-SPEC-NAMED-P SPEC NAME)  analysis/control.lisp [See above]
+- - - - - (%PARSE-UNROLL-SPEC SPEC HEAD LOCATION)  analysis/control.lisp
+- - - - (%RESOLVE-UNROLL-SPEC SPEC NODE HEAD ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - - (%LOOP-TRIP-COUNT-CONSTANT-P NODE)  analysis/control.lisp
+- - - - - (%STREAM-ELEMENT-BYTES VEC-FORM ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-DVEC-COMPONENT-REF EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -2217,6 +2248,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-LET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - - (%STRIP-EXECUTION-CONTEXT-DECLARES BODY-FORMS)  analysis/control.lisp
 - - - (%CHECK-CONTEXT-DECLARATIONS DECL-SPECS LOCATION)  analysis/control.lisp
+- - - - (%DECLARATION-SPEC-NAMED-P SPEC NAME)  analysis/control.lisp [See above]
+- - - - (%REFUSE-MISPLACED-UNROLL LOCATION)  analysis/control.lisp [See above]
 - - - (%TO-UNIFORM-FORM-P FORM)  analysis/control.lisp
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -2309,16 +2342,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-LOOP-VARIANT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - (%LOOP-VARIANT-USAGE HEAD-NAME ROLES)  analysis/control.lisp
-- - - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp
-- - (%ANALYZE-LOOP-VARIANT-OPERAND FORM ROLE HEAD-NAME ENV CONTEXT LOCATION)  analysis/control.lisp
-- - - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp [See above]
-- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
-- - (%LOOP-VARIANT-ROLE-NAME ROLE)  analysis/control.lisp [See above]
-- - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%ANALYZE-LOOP-WITH-UNROLL ANALYZER EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-LOOP-VECTOR-STRIDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -3196,6 +3220,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-POINT-IN-METADATA METADATA-PATH)  metadata-val.lisp
 
+- (VALIDATE-PTX-HAS-NOUNROLL-PRAGMA FILE PTX-TEXT)  mma.lisp
+
 - (VALIDATE-REC-KB-BASIC IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]
 
@@ -3255,6 +3281,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (VALIDATE-SPV-SPLIT-BARRIER SPV-PATH)  mma.lisp
 - - (%SPV-DISASM SPV-PATH)  mma.lisp [See above]
+
+- (VALIDATE-SPV-STREAM-DOUBLE-UNROLLED-X2 SPV-PATH)  mma.lisp
+- - (%VALIDATE-SPV-STREAM-LOADS SPV-PATH WIDTH LO HI WHAT)  mma.lisp
+- - - (%SPV-SCALAR-LOAD-COUNT SPV-PATH WIDTH)  mma.lisp
+- - - - (%SPV-DISASM SPV-PATH)  mma.lisp [See above]
+- - - - (%SPV-TOKENS S)  mma.lisp [See above]
+
+- (VALIDATE-SPV-STREAM-NOT-UNROLLED SPV-PATH)  mma.lisp
+- - (%VALIDATE-SPV-STREAM-LOADS SPV-PATH WIDTH LO HI WHAT)  mma.lisp [See above]
+
+- (VALIDATE-SPV-STREAM-UNROLLED-X4 SPV-PATH)  mma.lisp
+- - (%VALIDATE-SPV-STREAM-LOADS SPV-PATH WIDTH LO HI WHAT)  mma.lisp [See above]
+
+- (VALIDATE-SPV-STREAM-UNROLLED-X8 SPV-PATH)  mma.lisp
+- - (%VALIDATE-SPV-STREAM-LOADS SPV-PATH WIDTH LO HI WHAT)  mma.lisp [See above]
 
 - (VALIDATE-SPV-TILE-ADDRESS-ARITH SPV-PATH)  mma.lisp
 - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]

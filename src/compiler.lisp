@@ -245,17 +245,34 @@ Returns (values addr-space-int access-qual-string type-name-string)."
 ;; The fix is to APPEND rather than replace: keep whatever LLVM emitted, then add our refs.  That is
 ;; strictly more information in the IR, and it is what lets function-level metadata survive to the
 ;; SPIR-V translator at all.
+(defun %max-metadata-id (ir-text)
+  "BUG 107.  The highest numbered metadata id defined in IR-TEXT (a line starting `!N = `), or -1
+   when there is none."
+  (let ((best -1))
+    (with-input-from-string (in ir-text)
+      (loop for line = (read-line in nil) while line
+            do (when (and (> (length line) 1) (char= (cl:char line 0) #\!) (digit-char-p (cl:char line 1)))
+                 (let ((end (position-if-not #'digit-char-p line :start 1)))
+                   (when (and end (search " = " line :start2 end :end2 (min (length line) (+ end 3))))
+                     (setf best (max best (parse-integer line :start 1 :end end))))))))
+    best))
+
 (defun inject-spir-kernel-metadata (ir-text)
   "Inject OpenCL kernel metadata for all SPIR kernels found in IR text.
 Returns modified IR text with metadata.
 
 Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attribute-group refs,
-!dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above."
+!dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above.
+
+BUG 107: the kernel-arg metadata is numbered from above the highest id already in IR-TEXT, not
+from a fixed !100."
   (let ((kernels (find-spir-kernels ir-text)))
     (if (null kernels)
         ir-text
         (let ((result ir-text)
-              (metadata-id-base 100)
+              ;; BUG 107: never 100 -- a module that already numbers past !99 (debug info; or, since
+              ;; endeavour 180, one !llvm.loop node per annotated loop) would get a duplicate id.
+              (metadata-id-base (max 100 (1+ (%max-metadata-id ir-text))))
               (all-metadata-defs ""))
 
           (dolist (kernel-info kernels)
