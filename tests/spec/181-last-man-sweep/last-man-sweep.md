@@ -176,13 +176,74 @@ Plan
 ----
 
 - [x] API/doc review -- decided above (D1-D7) in Chris's absence
-- [ ] TDD tests (above); bump `ci-stop.txt`
-- [ ] A: strided sweep at the three sites (overlays)
-- [ ] B: `:match-num-workgroups` in both hoists + metacrisp
-- [ ] C: VAD runner + benchmark plan/fixtures
-- [ ] on metal: BMG (small local size to make the cap bite) and NVIDIA (next pod)
-- [ ] benchmarks: re-run H100 last-man rows and workloads; BMG degradation question
+- [x] TDD tests: 10 specs (01-06 L0 metal, 07-09 CUDA metal, 10 VERIFY-AUTODIFF) + last-man-sweep.unit.lisp
+- [x] A: strided sweep at the three sites (overlays/crisp-compiler-overlay.lisp)
+- [x] B: :match-num-workgroups -- implicit alloc form; L0 hoist DEFERS the buffer past groupCount, CUDA
+      hoist fills it at the _crisp_launch anchor (overlays/hoist-l0, overlays/hoist-cuda)
+- [x] C: VAD runner (*vad-group-count*, spec-runner overlay); plan `count=@groups` / `u64 @groups*4`;
+      both fixtures resolve it after computing the grid (the CUDA fixture reordered: SLM offsets ->
+      grid -> buffers -> args); last-man `cap=` and the "groups > local" refusal removed
+- [x] on metal: BMG 10/10 + the five existing last-man VAD specs; H100 SXM 181/07-09, 176/07, 178/08
+- [x] suites (local, BMG): unit green, E2E 1411/1411, negative 322/322
+- [x] benchmarks -- see RESULTS below
 - [ ] fold into src/, regenerate reference / call graph / chapters, suites incl. --differentiate
+
+
+RESULTS (2026-10-08)
+--------------------
+
+**H100 SXM** (no NVL available; measured read peak 3178.6 GB/s, `scratch/ceiling_nvidia_sxm_hash_*`).
+All rows verified, all in `benchmarks/results/scratch/` (an SXM is not the report's NVL -- Chris's call
+whether to make them canonical).  % of the SXM peak, 4 GiB:
+
+| kernel | groups | before 181 (NVL, capped) | 181 |
+|---|---|---|---|
+| `:atomic` sum | 1056 | 91% | 95.6% |
+| last-man sum (`grid-reduce!` / `reduce-vec`) | 1056 (was 256) | 42% | 74.2% |
+| sum + sumsq (independent last-man) | 792 | 33% | **97.5%** |
+| argmax (dependent) | 660 | 52% | 79.8% |
+| Welford (dependent) | 1056 | 40% | 77.1% |
+| CUB sum / argmax (same session) | -- | -- | 100% / 99% |
+
+The cap is gone and sum+sumsq is at CUB.  **The remaining NVIDIA gap is NOT last-man's sweep** -- it is
+register pressure in the stride loop.  SASS (`ptxas -arch=sm_90` + cuobjdump, Docker, no GPU): at the
+32 registers of full occupancy, ptxas unrolls LLVM's x4 loop a further 8x and then routes every load
+through ONE register (`LDG R27 / FADD R26,R26,R27`) -- one load in flight per thread.  `:atomic` gets
+distinct registers; last-man has more values live across the loop (its scratch descriptors, which also
+land in a 144-byte stack frame because Crisp emits allocas mid-function).  `-maxrregcount=40` restores
+distinct registers.  Probe `_probe_lm_unroll` (H100): an explicit `:unroll 4` takes last-man sum from
+74.2% to 91.9% and costs `:atomic` 0.2 points -- but flipping 180's D2 (explicit x4 on PTX for every
+stream) was measured too and it is NOT uniform: argmax 79.8 -> 92.3, but sum+sumsq 97.5 -> 73.2 and
+Welford 77.1 -> 72.3.  So D2 stands; the lever is the register budget, not the unroll factor.
+
+**BMG** (Docker): unchanged from the report at the default grid (80 groups: last-man 98.9% vs `:atomic`
+99.0% at 3 GiB) -- the cap never bound here.  The old "worse with more groups" question, at 4x
+occupancy (320 groups > local 256, so the strided sweep is live), is EXPLAINED by `_probe_lastman`:
+
+| 320 groups | 64 MiB | 1 GiB |
+|---|---|---|
+| `:atomic` | 156.0 us | 2374.9 us |
+| `:atomic` + one `mem-fence` | 197.0 | 2431.6 |
+| last-man (stock = hand-written) | 194.7 | 2436.2 |
+| last-man WITHOUT the fence (unsafe; measurement only) | 158.1 | 2376.0 |
+
+The whole gap is the device-scope fence, executed by all 256 threads because BUG 082 refuses a fence
+inside thread 0's divergent block (16 subgroups x 320 groups of fences, where threadFenceReduction has
+thread 0 alone fence).  Election, ticket and strided sweep cost nothing measurable.
+
+
+FOLLOW-UPS (not done here; each wants a decision)
+-------------------------------------------------
+
+1. **NVIDIA register budget.**  Let ptxas trade occupancy for registers on reduction kernels
+   (`.maxntid` + `.minnctapersm`, or a profile-driven register target), or shrink what is live across
+   the stride loop.  sum+sumsq shows the prize: 40 registers at 792 groups = 97.5%.
+2. **Entry-block allocas** (one overlay on `llvm-build-alloca`, tried twice today, reverted): removes
+   the 144-byte stack frame on sm_90 and lets mem2reg promote everything.  Standard frontend practice;
+   needs a full-suite run, and BUG 109/030 interplay on BMG.
+3. **Thread-0-only fence** for last-man (relax BUG 082 for the release pattern, or fold the release
+   into the ticket atomic).  Worth ~40-80 us at 4x occupancy on BMG, ~8 us at the default grid.
+4. **BUG 109** minimal reproducer for Intel.
 
 Related: endeavour 179 (launch state; last-man counter self-reset), endeavour 180 (loop unroll --
 the BMG half of the same competitive gap).

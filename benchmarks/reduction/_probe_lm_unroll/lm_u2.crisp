@@ -1,0 +1,18 @@
+;; PROBE (endeavour 181): on H100, last-man reduce-vec trails :atomic by ~29% at 4 GiB on the SAME grid
+;; (1056 groups).  SASS shows why: at the 32-register budget of full occupancy, ptxas unrolls LLVM's x4
+;; loop a further 8x and then funnels every load through ONE register (LDG R27 / FADD R26,R26,R27), so a
+;; thread has one load in flight; last-man has more values live across the loop than :atomic.  An explicit
+;; :unroll leaves the loop .pragma "nounroll" (endeavour 180), so ptxas stops at the given factor.  These
+;; arms differ ONLY in :strategy and :unroll.  Run with --scratch.  This file: lm_u2.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_lmu_lm_u2 (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (reduce-vec #'+ input 0.0 result :unroll 2))

@@ -1,0 +1,45 @@
+;; PROBE (endeavour 181): where does last-man lose time to :atomic on BMG when the grid is 4x occupancy
+;; (320 groups at local 256)?  Run ONLY with --scratch --occupancy=4.  Three arms, hand-written so pieces
+;; can be removed: a_full = the grid-reduce-last-man! expansion verbatim (control); b_no_fence = a_full
+;; without the mem-fence (UNSAFE: the partial store is no longer ordered before the ticket -- it measures
+;; the fence, it is not a candidate); c_atomic_fence = :atomic plus one mem-fence per group (the fence on
+;; a path with no election).
+;; This file: b_no_fence.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_lm_b_no_fence (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0)
+        (sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float :match-num-workgroups :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (reduce-workgroup #'+ acc 0.0 :local-scratch-vec sv)
+    (when-thread-in-group-is 0
+      (set! (~ gv (to-int (get-workgroup-id 0))) acc))
+    (when-thread-in-group-is 0
+      (set! (~ flag)
+            (if (= (atomic-add! (~ ctr) 1u) (- (to-uint (get-num-groups 0)) 1u)) 1u 0u)))
+    (sync-workgroup)
+    (when+ (= (~ flag) 1u)
+      (let ((lid (to-int (get-local-linear-id)))
+            (ng (to-int (get-num-groups 0)))
+            (ls (to-int (get-local-linear-size))))
+        (let ((val 0.0))
+          (dotimes+ (k (/ (+ ng (- ls 1)) ls))
+            (let ((p (+ lid (* k ls))))
+              (when (< p ng)
+                (set! val (+ val (~ gv p))))))
+          (reduce-workgroup #'+ val 0.0 :local-scratch-vec sv)
+          (when-thread-in-group-is 0
+            (set! (~ result) val)
+            (set! (~ ctr) 0u)))))))
