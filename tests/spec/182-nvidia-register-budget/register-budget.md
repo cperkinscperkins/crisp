@@ -67,12 +67,66 @@ Pod script: `scripts/182-pod-budget.sh` -- one build, the Crisp sweep at minCTA 
 `rollup/wg_atomic, step5_reduce_vec, workloads`, 64 MiB - 4 GiB, scratch; SUMMARY.txt is a compact table.
 
 
-Open design question (after the measurement)
---------------------------------------------
+H100 measurement (2026-10-08, H100 SXM, `scripts/182-pod-budget.sh`)
+---------------------------------------------------------------------
 
-Who picks N: a per-kernel declaration, a hardware-profile value (measured per architecture, like 180's
-bytes-in-flight constant), or an automatic rule for streaming kernels (anything with loop-vector-stride
-or a grid stride).  Matmul kernels have very different register needs, so scope to streaming kernels.
+% of the SXM's measured 3178.6 GB/s, 4 GiB; all 96 points verified; JSON in `benchmarks/results/scratch/`;
+full table in `put_temp_files_here/e182/pod-SUMMARY.txt`.  Groups follow from the bound automatically
+(8 blocks/SM = 1056, 6 = 792, 5 = 660, 4 = 528).
+
+| kernel | none (today) | minCTA 6 | minCTA 5 | **minCTA 4** |
+|---|---|---|---|---|
+| `:atomic` sum | 95.8 | **99.1** | 97.1 | 97.1 |
+| last-man sum | 74.8 | **97.8** | 96.9 | 96.5 |
+| argmax | 80.3 | 85.0 | 77.0 | **96.7** |
+| sum + sumsq | **97.6** | 96.9 | 97.1 | 95.9 |
+| Welford | 77.6 | 94.1 | 92.6 | **96.2** |
+| worst kernel | 74.8 | 85.0 | 77.0 | **95.9** |
+
+- **minCTA 4 is the uniform choice**: every kernel 95.9-97.1% (CUB: 100% sum, 99% argmax).  minCTA 6 is
+  best for the simple float sums but leaves argmax at 85% (it spills there -- predicted offline).
+- **Small sizes favour 4 everywhere** (64 MiB: last-man sum 1195 -> 1684 GB/s, argmax 1167 -> 1480,
+  Welford 873 -> 1344): fewer groups, so less per-group fixed cost (fence, ticket, partial).
+- **The Welford prediction was WRONG.**  Offline said registers would not move it (4 loads + a MUFU in
+  the loop, same SASS loads at every setting); measured 77.6% -> 96.2%.  Its limit was latency-hiding
+  across the whole loop body, not loads per se.  Measure, don't classify (145's lesson again).
+- Interpretation: 4 x 256 = 1024 threads per SM -- HALF occupancy -- with 64 registers each beats full
+  occupancy at 32.  The classic memory-bound result: enough independent work per thread matters more
+  than more threads.  For other block sizes the natural generalisation is a THREADS-per-SM target
+  (1024 here), N = target / local-size.
+
+
+Decisions (with Chris, 2026-10-08)
+----------------------------------
+
+- **D1 -- automatic** for kernels whose own body has a stream loop (`loop-vector-stride`, so `reduce-vec`).
+- **D2 -- a hardware-profile key, not a compiler constant**: `:stream-occupancy-target` (threads per compute
+  unit, MEASURED).  Absent => no bound (pre-182 behaviour).  Chris: a constant means a compiler change for
+  every new part (CRI), and a tuning value measured in an empty room belongs where the operator can see and
+  revise it.  (180's `*stream-unroll-bytes-in-flight*` constant has the same flaw -- a candidate to migrate.)
+- **D3 -- `(declare (occupancy-target N))`** overrides per kernel; `nil` opts out.  Threads, like
+  local-size; needs a compile-time local-size; must be >= one workgroup; a literal.
+- **D4 -- PTX only.**  On SPIR-V the key and the declaration are accepted and do nothing.
+- **D5 -- the measured value lives in `benchmarks/profiles/h100-sxm.crisp`** (hand-maintained; like any
+  profile it is just another source file on the command line -- `crisp-compile h100-sxm.crisp <lib> <kernel>
+  --hardware-profile=h100-sxm` -- which is what the bench harness's `--profile-file` does), because `--auto-profile` regenerates `h100-80gb-hbm3.crisp` on every run.  Not
+  promoted to a builtin -- separate decision.  The generated skeleton and query-cuda.cu now name the key
+  as a commented MEASURED line, so a new part's profile documents it without guessing it.
+
+
+Implementation (overlays, 2026-10-08)
+-------------------------------------
+
+- `*hardware-profile-schema*` gains `(:stream-occupancy-target . :pos-int)`.
+- `internal-def-function` (wrapper) binds `*analyzing-function*` and parses/validates `(occupancy-target ...)`
+  into `*kernel-occupancy-targets*`; `%expand-loop-vector-stride-form` (wrapper) marks `*stream-functions*`.
+- `%apply-cluster-dims-attribute` (wrapper) calls `%apply-occupancy-bound`, which stamps `"nvvm.maxntid"` and
+  `"nvvm.minctasm"` (LLVM lowers them to `.maxntid` / `.minnctapersm`; checked with bin/llc.exe).
+- Known limit: a stream loop inside a separately defined grid function marks that function, not the
+  calling kernel -- declare the target on the kernel.
+- Verified by hand: spec 01's PTX has `.maxntid 256` / `.minnctapersm 4`; its SASS has 53 registers and
+  16 loads in flight (= the minCTA 4 probe); spec 05 has no bound; spec 08 is 512 / 2.
+- The env-var PROBE hook is removed.
 
 
 Plan
@@ -80,8 +134,9 @@ Plan
 
 - [x] offline SASS sweep (above)
 - [x] probe hook + pod script
-- [ ] H100 measurement: minCTA none / 6 / 5 / 4
-- [ ] design decision with Chris (who picks N)
-- [ ] TDD tests (PTX carries .maxntid / .minnctapersm when expected; metal + bench), bump ci-stop
-- [ ] implement via nvvm.maxntid / nvvm.minctasm; remove the probe hook
+- [x] H100 measurement: minCTA none / 6 / 5 / 4 -- minCTA 4 (1024 threads/SM) uniform winner
+- [x] design decision with Chris (D1-D5)
+- [x] TDD tests: 10 specs (01-09 PTX/SPIR-V compile + validators, 10 CUDA metal), 6 negative, unit file;
+      ci-stop -> 182
+- [x] implement via nvvm.maxntid / nvvm.minctasm; remove the probe hook; docs (ideal_001.md)
 - [ ] re-measure; fold 181 + 182

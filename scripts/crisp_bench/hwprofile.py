@@ -286,6 +286,9 @@ def _skeleton(device: str, platform: str) -> str:
         "  ;; MEASURED -- OMIT these unless you have actually swept them.",
         "  ;; :tile-visit-strip-width is +63% on BMG at N=2048 and -14.4% on H100 at W=16;",
         "  ;; absent means linear, which is safe.  A guess here can make your numbers WORSE.",
+        "  ;; :stream-occupancy-target (threads per compute unit for kernels with a stream loop;",
+        "  ;; PTX launch bounds) took H100 SXM streaming reductions from 75-80% to ~96% at 1024;",
+        "  ;; absent means no bound.  Sweep it: scripts/182-pod-budget.sh shows the method.",
         "  )",
     ]
     return "\n".join(lines)

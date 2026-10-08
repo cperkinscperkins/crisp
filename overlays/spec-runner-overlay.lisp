@@ -52,3 +52,18 @@
    every launch in this pass uses -- around the original pass."
   (let ((*vad-group-count* (or (getf spec :group-count) 1)))
     (funcall *181-run-verify-autodiff-pass-base* file spec)))
+
+;;;; ENDEAVOUR 182 -- launch-bound validators: names in the runner's package, implementations in
+;;;; :crisp.compiler (as for validate-ptx-has-nounroll-pragma).
+
+;; tests/run-specs.lisp
+(defun validate-ptx-minnctapersm-4 (file ptx-text)
+  (funcall (find-symbol "VALIDATE-PTX-MINNCTAPERSM-4" :crisp.compiler) file ptx-text))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-minnctapersm-2 (file ptx-text)
+  (funcall (find-symbol "VALIDATE-PTX-MINNCTAPERSM-2" :crisp.compiler) file ptx-text))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-no-minnctapersm (file ptx-text)
+  (funcall (find-symbol "VALIDATE-PTX-NO-MINNCTAPERSM" :crisp.compiler) file ptx-text))

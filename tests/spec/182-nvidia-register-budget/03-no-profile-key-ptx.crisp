@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]: validate-ptx-no-minnctapersm
+;;
+;; ENDEAVOUR 182 -- the bound comes from the hardware profile, not from the compiler: a profile without
+;; :stream-occupancy-target (the builtin h100 has none -- it was never measured on that part) means no
+;; bound, exactly what Crisp emitted before 182.  Same kernel as 01.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_unbounded (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256)))
+  (reduce-vec #'+ A 0.0 out))

@@ -358,40 +358,245 @@
     (:election-flag-cell '(make-scratch-cell uint))))
 
 ;;;; ---------------------------------------------------------------------------------------
-;;;; PROBE (endeavour 182 measurements) -- NOT A FEATURE, REMOVE when the real register-budget
-;;;; mechanism lands.  With CRISP_PROBE_PTX_MINCTA=N (and CRISP_PROBE_PTX_MAXNTID=T, default 256) set
-;;;; in the environment, compile-to-ptx inserts `.maxntid T, 1, 1` / `.minnctapersm N` after every
-;;;; .entry's parameter list, so one build can sweep ptxas's register budget.  Inert when unset.
+;;;; ENDEAVOUR 182 -- the NVIDIA register budget for streaming kernels.
+;;;; tests/spec/182-nvidia-register-budget/register-budget.md
 ;;;; ---------------------------------------------------------------------------------------
 
-;; PROBE ONLY -- not for src/
-(defvar *182-probe-compile-to-ptx-base* (fdefinition 'compile-to-ptx))
+;; src/hardware-profile.lisp
+(defparameter *hardware-profile-schema*
+  '((:simd-width                  . :pos-int)
+    (:compute-units               . :pos-int)
+    (:max-registers-per-cu        . :pos-int)
+    (:max-registers-per-thread    . :pos-int-or-modes)  ; 144 D4: scalar OR (mode ...)
+    (:max-total-threads-per-block . :pos-int)
+    (:max-concurrent-kernels      . :pos-int)
+    (:native-cache-line-size      . :pos-int)   ; bytes
+    (:max-shared-memory-per-block . :size)      ; KB/MB/GB/TB literal -> bytes
+    (:l2-cache-size               . :size)
+    (:tile-visit-strip-width      . :pos-int)   ; 144 Phase 1: measured; absent/1 => linear
+    (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
+    (:mma-shapes                  . :mma-shapes)   ; FRAGMENT granularity: (M N K) triples
+    (:wgmma-shapes                . :mma-shapes)   ; 161: WARPGROUP granularity
+    (:mma-lowerings               . :lowerings)    ; 156: ordered; first is the default
+    (:stream-occupancy-target     . :pos-int))     ; 182: MEASURED; threads per CU for stream kernels
+  "Endeavor 130: canonical hardware-profile keys and their value types.
 
-;; PROBE ONLY -- not for src/
-(defun %182-probe-insert-launch-bounds (ptx-path mincta maxntid)
-  "PROBE.  Rewrites PTX-PATH with `.maxntid MAXNTID, 1, 1` and `.minnctapersm MINCTA` after each
-   .entry's closing parameter line."
-  (let* ((lines (uiop:read-file-lines ptx-path))
-         (out '())
-         (in-entry nil))
-    (dolist (l lines)
-      (push l out)
-      (cond ((and (>= (length l) 15) (string= (subseq l 0 15) ".visible .entry")) (setf in-entry t))
-            ((and in-entry (plusp (length l)) (char= (cl:char l 0) #\)))
-             (push (format nil ".maxntid ~a, 1, 1" maxntid) out)
-             (push (format nil ".minnctapersm ~a" mincta) out)
-             (setf in-entry nil))))
-    (with-open-file (s ptx-path :direction :output :if-exists :supersede)
-      (format s "~{~a~%~}" (nreverse out)))
-    (log:warn "182 PROBE: ~a gets .maxntid ~a / .minnctapersm ~a" ptx-path maxntid mincta)))
+   Endeavour 182 added :stream-occupancy-target -- MEASURED, threads per compute unit that a kernel
+   with a stream loop (loop-vector-stride) should target on this device.  On PTX it becomes launch
+   bounds (.maxntid + .minnctapersm = target / workgroup size), which sets ptxas's register budget.
+   Absent => no bound (ptxas's default, full occupancy).  H100 SXM: 1024 (half occupancy at 64
+   registers beat full occupancy at 32 for every streaming reduction, 2026-10-08).
 
-;; src/compiler.lisp  (PROBE wrapper -- not for src/)
-(defun compile-to-ptx (module output-path &key (compute-capability "sm_80") debug-p)
-  "Compiles an LLVM Module to PTX using llc (see src/compiler.lisp).  182 PROBE: honours
-   CRISP_PROBE_PTX_MINCTA / CRISP_PROBE_PTX_MAXNTID when set."
-  (prog1 (funcall *182-probe-compile-to-ptx-base* module output-path
-                  :compute-capability compute-capability :debug-p debug-p)
-    (let ((mincta (uiop:getenv "CRISP_PROBE_PTX_MINCTA")))
-      (when (and mincta (plusp (length mincta)))
-        (%182-probe-insert-launch-bounds output-path mincta
-                                         (or (uiop:getenv "CRISP_PROBE_PTX_MAXNTID") "256"))))))
+   Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in
+   :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel
+   XMX, (16 8 8) for NVIDIA mma.sync -- and roughly eighteen call sites read it as such,
+   including the register-tile fragment decomposition (%mma-fragment-mn) and %spv-mma-shape.
+   wgmma's (64 N K) is WARPGROUP granularity: M is 64 because a warpgroup is 128 threads, and N
+   runs to 256.  Mixing warpgroup triples into :mma-shapes would feed those dims to fragment math.
+
+   GRANULARITY IS A DIFFERENT AXIS FROM ELEMENT TYPE.  Endeavour 155 typed the ENTRIES, adding
+   the 4-list (half 8 16 16) beside the bare (8 16 8), because a triple alone cannot say what
+   element type it is a shape FOR.  A triple cannot say what LEVEL it describes either, and that
+   is what this key adds.  The entry GRAMMAR is deliberately reused unchanged -- the value type
+   is still :mma-shapes -- so %mma-shape-entry-dims and %mma-shape-for-elem apply verbatim and a
+   part may write (bfloat16 64 256 16) here exactly as it would there.
+
+   Both keys are OPTIONAL.  A profile that declares neither behaves precisely as before.
+
+   Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can drive
+   its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the portable
+   SPV_KHR_cooperative_matrix path every backend has had until now.
+
+   Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) -- a scalar
+   for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose
+   register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the
+   MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent
+   means walk linearly.  It is deliberately a measured constant rather than a derived one -- see
+   the block comment in src/hardware-profile.lisp for the two-device data that refuted the
+   derivation.")
+
+;; src/analysis/core.lisp  (beside *kernel-dispatch-declarations*)
+(defvar *kernel-occupancy-targets* (make-hash-table :test 'equal)
+  "Endeavour 182.  Kernel name -> its DECLARED (occupancy-target N) value: a positive integer, or NIL
+   for an explicit opt-out.  A kernel ABSENT from the table declared nothing, so the hardware profile's
+   :stream-occupancy-target applies if the kernel streams.  Written by internal-def-function for every
+   entry point it analyzes (and removed when the declaration is gone), so a recompile cannot see a stale
+   entry.")
+
+;; src/analysis/core.lisp
+(defvar *stream-functions* (make-hash-table :test 'equal)
+  "Endeavour 182.  Function name -> T when its own body contains a stream loop (a loop-vector-stride,
+   which reduce-vec expands to).  Recorded by %expand-loop-vector-stride-form against
+   *analyzing-function*.  A stream loop in a separately defined grid function marks THAT function, not
+   the kernel calling it -- such a kernel gets no automatic bound (declare one).")
+
+;; src/analysis/core.lisp
+(defvar *analyzing-function* nil
+  "Endeavour 182.  The name of the function internal-def-function is analyzing, or NIL.")
+
+;; src/analysis/core.lisp
+(defun %declared-local-size-dims (declarations)
+  "Endeavour 182.  The compile-time workgroup extents from a (local-size :set-to X) among DECLARATIONS --
+   X an integer, a list of integers, or a quoted list -- as a list of 1-3 integers; NIL when the kernel
+   declares none, or one not fixed at compile time."
+  (let* ((decl (find "LOCAL-SIZE" declarations
+                     :key (lambda (x) (when (and (consp x) (symbolp (car x))) (symbol-name (car x))))
+                     :test #'string-equal))
+         (v (and decl (getf (rest decl) :set-to)))
+         (v (if (and (consp v) (symbolp (car v)) (string-equal (symbol-name (car v)) "QUOTE")) (second v) v)))
+    (cond ((and (integerp v) (plusp v)) (list v))
+          ((and (consp v) (<= 1 (length v) 3) (every (lambda (n) (and (integerp n) (plusp n))) v)) v)
+          (t nil))))
+
+;; src/analysis/core.lisp
+(defun %parse-occupancy-target-decl (name declarations)
+  "Endeavour 182.  Validates kernel NAME's (occupancy-target N) among DECLARATIONS.  Returns
+   (values present-p value): PRESENT-P is NIL when there is no such declaration; VALUE is a positive
+   integer (threads per compute unit) or NIL (opt out of the profile's automatic bound)."
+  (let ((decl (find "OCCUPANCY-TARGET" declarations
+                    :key (lambda (x) (when (and (consp x) (symbolp (car x))) (symbol-name (car x))))
+                    :test #'string-equal)))
+    (flet ((fail (fmt &rest args)
+             (error 'crisp-compiler-error
+                    :message (format nil "Kernel ~a: ~?" name fmt args)
+                    :source-location nil)))
+      (cond
+        ((null decl) (values nil nil))
+        ((/= (length (rest decl)) 1)
+         (fail "(occupancy-target ...) takes exactly one value -- threads per compute unit, or nil to turn the hardware profile's automatic bound off -- got ~s." (list decl)))
+        (t
+         (let ((v (second decl)))
+           (cond
+             ((null v) (values t nil))
+             ((not (and (integerp v) (plusp v)))
+              (fail "(occupancy-target ~s): the target must be a positive integer literal (threads per compute unit) or nil.  It becomes a launch bound in the PTX, so it has to be known at compile time." (list v)))
+             (t
+              (let ((dims (%declared-local-size-dims declarations)))
+                (unless dims
+                  (fail "(occupancy-target ~a) needs a compile-time workgroup size -- declare (local-size :set-to ...) -- because the target is THREADS per compute unit and the launch bound is a number of workgroups." (list v)))
+                (let ((wg (reduce #'* dims)))
+                  (when (< v wg)
+                    (fail "(occupancy-target ~a) is less than one workgroup of ~a threads, so no launch bound can express it.  Use at least ~a, or nil." (list v wg wg))))
+                (values t v))))))))))
+
+;; src/analysis/core.lisp  (FOLD: the binding and the occupancy parse go inside internal-def-function,
+;; next to the cluster-size parse; this wrapper shape cannot be pasted into src/)
+(defvar *182-internal-def-function-base* (fdefinition 'internal-def-function))
+
+;; src/analysis/core.lisp
+(defun internal-def-function (name params declarations body location)
+  "Endeavour 182 wrapper: binds *analyzing-function* (so a stream loop can be attributed to the function
+   it is in) and, for an entry point, records its (occupancy-target ...) in *kernel-occupancy-targets*,
+   then analyzes as before."
+  (let ((entry-p (loop for d in declarations
+                       thereis (and (listp d) (symbolp (first d))
+                                    (string-equal (symbol-name (first d)) "ENTRY-POINT")))))
+    (when name
+      (remhash name *stream-functions*)
+      (when entry-p
+        (multiple-value-bind (present value) (%parse-occupancy-target-decl name declarations)
+          (if present
+              (setf (gethash name *kernel-occupancy-targets*) value)
+              (remhash name *kernel-occupancy-targets*)))))
+    (let ((*analyzing-function* name))
+      (funcall *182-internal-def-function-base* name params declarations body location))))
+
+;; src/analysis/control.lisp  (FOLD: one line at the top of %expand-loop-vector-stride-form)
+(defvar *182-expand-lvs-base* (fdefinition '%expand-loop-vector-stride-form))
+
+;; src/analysis/control.lisp
+(defun %expand-loop-vector-stride-form (&rest args)
+  "Endeavour 182 wrapper: notes that the function being analyzed contains a stream loop, then expands
+   as before."
+  (when *analyzing-function*
+    (setf (gethash *analyzing-function* *stream-functions*) t))
+  (apply *182-expand-lvs-base* args))
+
+;; src/codegen.lisp
+(defun %effective-occupancy-target (kname)
+  "Endeavour 182.  The threads-per-compute-unit target for entry point KNAME, and where it came from:
+   (values N :declared), (values N :profile), or NIL.  A declaration always wins -- including
+   (occupancy-target nil), which turns the bound off.  The profile's :stream-occupancy-target applies
+   only to a kernel whose own body has a stream loop."
+  (multiple-value-bind (declared present) (gethash kname *kernel-occupancy-targets*)
+    (cond (present (if declared (values declared :declared) nil))
+          ((gethash kname *stream-functions*)
+           (let ((n (getf (active-hardware-profile) :stream-occupancy-target)))
+             (if n (values n :profile) nil)))
+          (t nil))))
+
+;; src/codegen.lisp
+(defun %apply-occupancy-bound (func kname module)
+  "Endeavour 182.  On PTX, stamps entry point FUNC with the launch bounds for its occupancy target:
+   \"nvvm.maxntid\" (the workgroup extents) and \"nvvm.minctasm\" (target / workgroup size, the minimum
+   number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.
+   ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX
+   construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a
+   workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis."
+  (when (eq *target-backend* :ptx)
+    (multiple-value-bind (target source) (%effective-occupancy-target kname)
+      (when target
+        (let* ((decls (gethash kname *kernel-dispatch-declarations*))
+               (local-decl (getf decls :local-size))
+               (dims (and local-decl (%declared-local-size-dims (list local-decl))))
+               (wg (and dims (reduce #'* dims))))
+          (if (or (null wg) (< target wg))
+              (log:info "Kernel ~a: ~(~a~) occupancy target ~a not applied (workgroup ~a)"
+                        kname source target (or wg "not fixed at compile time"))
+              (let ((ctx (llvm-get-module-context module)))
+                (flet ((stamp (key val)
+                         (llvm-add-attribute-at-index
+                          func +llvm-attribute-function-index+
+                          (llvm-create-string-attribute ctx key (length key) val (length val)))))
+                  (let ((maxntid (format nil "~{~a~^,~}" dims))
+                        (minctasm (format nil "~a" (floor target wg))))
+                    (log:info "Kernel ~a: ~(~a~) occupancy target ~a -> .maxntid ~a, .minnctapersm ~a"
+                              kname source target maxntid minctasm)
+                    (stamp "nvvm.maxntid" maxntid)
+                    (stamp "nvvm.minctasm" minctasm))))))))))
+
+;; src/codegen.lisp  (FOLD: %apply-cluster-dims-attribute's caller calls %apply-occupancy-bound next to it)
+(defvar *182-apply-cluster-dims-base* (fdefinition '%apply-cluster-dims-attribute))
+
+;; src/codegen.lisp
+(defun %apply-cluster-dims-attribute (func semantic-function module)
+  "Endeavor 152 (see src/codegen.lisp); endeavour 182 wrapper: also stamps the entry point's launch
+   bounds for its occupancy target."
+  (prog1 (funcall *182-apply-cluster-dims-base* func semantic-function module)
+    (%apply-occupancy-bound func (semantic-function-name semantic-function) module)))
+
+;; src/mma.lisp  (spec validators, beside validate-ptx-has-nounroll-pragma)
+(defun %ptx-minnctapersm (ptx-text)
+  "Endeavour 182.  The integer of the first .minnctapersm directive in PTX-TEXT, or NIL."
+  (let ((p (search ".minnctapersm" ptx-text)))
+    (and p (parse-integer ptx-text :start (+ p (length ".minnctapersm")) :junk-allowed t))))
+
+;; src/mma.lisp
+(defun %validate-ptx-minnctapersm (ptx-text expected)
+  (let ((got (%ptx-minnctapersm ptx-text)))
+    (cond ((null ptx-text) (format t "FAIL: no PTX text~%") nil)
+          ((eql got expected)
+           (or (search ".maxntid" ptx-text)
+               (progn (format t "FAIL: .minnctapersm ~a without a .maxntid~%" got) nil)))
+          (t (format t "FAIL: expected .minnctapersm ~a in the PTX, found ~a.~%" expected got) nil))))
+
+;; src/mma.lisp
+(defun validate-ptx-minnctapersm-4 (file ptx-text)
+  "Endeavour 182: the entry carries launch bounds with .minnctapersm 4 (and a .maxntid)."
+  (declare (ignore file))
+  (%validate-ptx-minnctapersm ptx-text 4))
+
+;; src/mma.lisp
+(defun validate-ptx-minnctapersm-2 (file ptx-text)
+  "Endeavour 182: the entry carries launch bounds with .minnctapersm 2 (and a .maxntid)."
+  (declare (ignore file))
+  (%validate-ptx-minnctapersm ptx-text 2))
+
+;; src/mma.lisp
+(defun validate-ptx-no-minnctapersm (file ptx-text)
+  "Endeavour 182: the entry carries NO launch bounds -- ptxas keeps its default register budget."
+  (declare (ignore file))
+  (cond ((null ptx-text) (format t "FAIL: no PTX text~%") nil)
+        ((or (search ".minnctapersm" ptx-text) (search ".maxntid" ptx-text))
+         (format t "FAIL: unexpected launch bounds (.maxntid / .minnctapersm) in the PTX.~%") nil)
+        (t t)))

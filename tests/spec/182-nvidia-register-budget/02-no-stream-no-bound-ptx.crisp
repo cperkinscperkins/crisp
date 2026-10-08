@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=stream-gpu --ir-target=ptx]: validate-ptx-no-minnctapersm
+;;
+;; ENDEAVOUR 182 -- the profile's :stream-occupancy-target applies to kernels with a STREAM loop only.  This
+;; kernel reduces one value per thread with no stride loop, so it keeps ptxas's default (full occupancy):
+;; the measurement that justified the bound was on streaming kernels, and nothing here is one.
+
+(def-hardware-profile stream-gpu :simd-width 32 :compute-units 132 :stream-occupancy-target 1024)
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel per_thread_sum (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 256))
+  (let ((v (to-float (get-global-linear-id))))
+    (grid-reduce! #'+ v 0.0 out)))

@@ -1,0 +1,15 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "positive integer"
+;; CHECK-FAIL-FLAGS: --hardware-profile=h100 --ir-target=ptx
+;;
+;; ENDEAVOUR 182 -- the target is a positive integer (threads per compute unit) or nil.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size :set-to (256))
+           (occupancy-target 0))
+  (reduce-vec #'+ A 0.0 out))

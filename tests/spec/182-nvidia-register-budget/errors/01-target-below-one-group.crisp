@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "less than one workgroup"
+;; CHECK-FAIL-FLAGS: --hardware-profile=h100 --ir-target=ptx
+;;
+;; ENDEAVOUR 182 -- a target below one workgroup cannot be met: 100 threads per compute unit with 256-thread
+;; workgroups would mean less than one resident workgroup.  Refused rather than rounded up to 1.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size :set-to (256))
+           (occupancy-target 100))
+  (reduce-vec #'+ A 0.0 out))
