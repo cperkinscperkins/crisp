@@ -134,10 +134,48 @@ Docs
 - `grid-reduce!` / `reduce-vec`: the "last-man carries its usual limit" sentence goes.
 
 
+Decisions (made 2026-10-08 while Chris was away -- review these)
+----------------------------------------------------------------
+
+- **D1 -- strided sweep, not hierarchical last-man.**  The final sweep reads `num_groups` partials,
+  a few thousand at most (H100 occupancy at local 256 is 1056; BMG at local 32 is ~640), so each
+  thread of the elected group does `ceil(ng/ls)` loads (5 on H100).  A second election level would
+  add a second counter, a second fence/ticket round and a second scratch buffer to save four loads.
+  The sweep keeps ONE election and a fixed, launch-independent fold order.
+- **D2 -- the accumulator starts at the IDENTITY and the loop folds `lid + k*ls` from k = 0.**  Counted
+  `dotimes+` over `ceil(ng/ls)` with a closed-form index, as proposed.  REVISED during implementation:
+  the first cut seeded from slot `lid` exactly as before (`(if (< lid ng) (~ gv lid) identity)`) and
+  looped from k = 1, so that `ng <= ls` stayed bit-identical to pre-181.  BMG then dropped the seed in
+  some kernels and not others -- correct IR at -O3, wrong answer on the device, moving with unrelated
+  code shape.  Filed as **BUG 109** (same signature as BUG 030).  Folding the first partial in the loop
+  like every other removes the divergent-if value IGC loses.  Cost of the change: `identity (+) x`
+  for the first partial, which is exact for every identity (a -0.0 partial would sum to +0.0).
+- **D3 -- the guard is `(<= num_groups (length~ gv))`, still an `r-t-assert-0`.**  NOTE what this
+  means: `*runtime-checks-enabled*` defaults to NIL, so the old local-size assert NEVER fired in a
+  normal build -- on an H100 at occupancy, pre-181 last-man silently summed the first 256 partials
+  and wrote past the implicit buffer.  (That is why the benchmark plan caps last-man's grid.)  An
+  always-on check was considered and rejected: on failure it can only `die`, which is just as silent
+  as a wrong answer, and every other Crisp guard is opt-in.  The size-expr change (B) is what makes
+  the default path safe; the guard protects a user-supplied buffer under `--runtime-checks`.
+- **D4 -- no negative metal spec for the guard.**  It needs `--runtime-checks` at hoist time and the
+  runner has no HOIST-FLAGS directive.  A unit test pins the guard's FORM at all three sites instead.
+- **D5 -- `:match-num-workgroups` = the TOTAL group count** (X*Y*Z) in both hoists: last-man indexes by
+  `workgroup-id 0` and is 1-D in practice, and the total is never smaller than the X count.
+- **D6 -- hoist plumbing.**  CUDA: `kernelParams[]` holds ADDRESSES and `cuLaunchKernel` reads them at
+  launch, so the buffer's variables are declared with the other args and allocated/filled just before
+  the launch lambda (the same anchor the cluster fix-up uses).  L0: `zeKernelSetArgumentValue` copies
+  the value, so the buffer's whole block (alloc, zero, six set-args) is DEFERRED and emitted after the
+  group count.  Zeroed once (the 179 contract for global scratch): CUDA `cuMemsetD8`; L0
+  `zeCommandListAppendMemoryFill` + barrier on the main command list, ahead of the launch.
+- **D7 -- no HOIST-RELAUNCH directive (179's D3 was never built).**  Bit-reproducibility is by
+  construction (fixed fold order given `(ng, ls)`); the relaunch is exercised by the VERIFY-AUTODIFF
+  specs (every FD probe re-launches) and by the benchmark fixture's verify-twice.
+
+
 Plan
 ----
 
-- [ ] API/doc review with Chris (is the strided sweep the design, or a hierarchical last-man?)
+- [x] API/doc review -- decided above (D1-D7) in Chris's absence
 - [ ] TDD tests (above); bump `ci-stop.txt`
 - [ ] A: strided sweep at the three sites (overlays)
 - [ ] B: `:match-num-workgroups` in both hoists + metacrisp

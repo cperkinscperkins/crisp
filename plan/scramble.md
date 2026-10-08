@@ -880,6 +880,7 @@ Reductions
 - - [x] 180 loop unrolling
 - - [ ] 181 last man occupancy cap on NVidia
 - - [ ] CAS lowering (slow on both vendors)
+- - [ ] BOTH MMA and reduction benchmarks should both (a) measure/report device compile time for MKL AND (b) note in the report that it uses precompiled kernels. Right now reductions do (a) and MMA (b) which is confusing and possibly misleading.  We want benchmark reports that are "above reproach".  Same for CuBLAS and possibly others. 
 - [ ] out of core.  ( def-orchestration ? )
 - [x] doc update: there are still old 'reduce-vec-1-cont' calls in the code base. 
 - - [x] plus lots of reduce-vec-warp instead of (reduce-vec :reduction-strategy :warp)

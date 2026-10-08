@@ -207,12 +207,12 @@ It accomplishes this via a cooperative finish.
 
 1. **Phase 1:** Every workgroup reduces its threads locally using `reduce-workgroup`.
 2. **Phase 2:** The leader thread of each workgroup writes its partial result into its `global-scratch-vec`, and then increments a global `atomic-counter`.
-3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. That final workgroup immediately reads the `global-scratch-vec` and performs one final `reduce-workgroup` to calculate the ultimate answer.
+3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. That final workgroup immediately reads the `global-scratch-vec` -- each of its threads folding partials `lid`, `lid + local_work_size`, `lid + 2*local_work_size`, ... so any number of workgroups is covered -- and performs one final `reduce-workgroup` to calculate the ultimate answer.
 
 **The Trade-off:**
 
 * **Pros:** Works with *any* commutative operation (unlike `grid-reduce-atomic!`). Zero contention on the final result cell. Requires only a single kernel launch.
-* **Cons:** Requires allocating a global scratch buffer sized to the number of workgroups, plus a secondary atomic counter cell. (Note: Like the older dual-pass strategies, this specific implementation requires that the total number of workgroups is less than or equal to the `local_work_size` so the final sweep can happen in one pass).
+* **Cons:** Requires allocating a global scratch buffer sized to the number of workgroups, plus a secondary atomic counter cell. Any number of workgroups: the final sweep is strided -- each thread of the last workgroup folds every `local_work_size`-th partial before the closing `reduce-workgroup` -- so its order is fixed by the grid and the result is reproducible run to run.
 
 **Arguments:**
 
@@ -222,8 +222,9 @@ It accomplishes this via a cooperative finish.
 * `return-cell`: A `:global` cell of `<someVar>`'s type (a length-1 vector is also accepted). Last-man *writes* it, so it needs no initial value.
 * `:local-scratch-vec`: Writeable local memory, one element per warp in the workgroup.
 * `:global-scratch-vec`: Writeable **`:global`** memory, one element per WORKGROUP
-  (`global_work_size / local_work_size`), holding the partials.  When Crisp allocates it, it is
-  sized to `local_work_size`, which the workgroup-count limit above makes always enough.
+  (`global_work_size / local_work_size`), holding the partials -- `:match-num-workgroups` when you
+  allocate it yourself, which is also how Crisp sizes it when you leave it out.  A shorter buffer
+  would be written past its end; under `--runtime-checks` the kernel refuses to run instead.
 * `:atomic-counter`: A zero-initialised `:global` `uint` cell, used to draw tickets.
 * `:election-flag-cell`: A **workgroup-local** `uint` cell, which broadcasts the ticket result from
   thread 0 to the rest of its workgroup.  It is what lets the LOSING workgroups retire
@@ -290,8 +291,8 @@ Phase 1 -- a `reduce-workgroup`, which is itself a warp shuffle followed by a sh
 must be reached by every thread, so in practice you choose the Phase 2 strategy:
 
 **The Speed Demon:** `grid-reduce!` (its default, `:last-man-standing`)
-One kernel, no contention on the result, any commutative function.  Its one limit: the number of
-workgroups may not exceed `local_work_size`.
+One kernel, no contention on the result, any commutative function, any number of workgroups, and a
+result that is the same bit for bit from run to run.
 
 **The Easy Button:** `grid-reduce!` with `:strategy :atomic`
 Summing (or taking the min or max of) a massive grid: no global scratch at all, at the cost of
@@ -327,7 +328,6 @@ Another thing Crisp can do to make things simpler is to simply elect a Phase 2 s
 `grid-reduce!` performs a `reduce-workgroup` on `<someVar>` as Phase 1, then uses `:strategy` for Phase 2, storing the final value in `return-cell`:
 
 * `:strategy` is one of `:atomic`, `:cas` or `:last-man-standing`, and defaults to `:last-man-standing`. It must be written as a literal keyword, because it decides which construct the call becomes (`grid-reduce-atomic!`, `grid-reduce-cas!` or `grid-reduce-last-man!`); a value computed at run time is a compilation error. There is no second-stage strategy: that needs a second kernel launch, which one call cannot arrange -- use `grid-reduce-second-stage!` in the second kernel.
-* The default carries last-man's limit: the number of workgroups must not exceed `local_work_size`.
 * `return-cell` is a `cell` of `<someVar>`'s type (a length-1 vector is also accepted). `:atomic` and `:cas` *accumulate* into it, so it should start at the identity; `:last-man-standing` *writes* it.
 * Every scratch argument is optional and is allocated by Crisp when left out, typed from the identity (see the condition above). A scratch key the chosen strategy does not use is a compilation error: `:atomic` and `:cas` take only `:local-scratch-vec`.
 * `:atomic` still requires an operator with a native hardware atomic (`#'+`, `#'min`, `#'max`).
@@ -586,8 +586,7 @@ for every variable into that variable's `:global-scratch-vec`, then draws a sing
 the shared `:atomic-counter`. The last workgroup sweeps all the variables. A call with `k`
 clauses costs one atomic ticket per workgroup, not `k`.
 
-`:last-man-standing` is the default strategy, and it carries its usual limit: the number of
-workgroups must not exceed `local_work_size`.
+`:last-man-standing` is the default strategy.
 
 ### Disposition of the Variables
 
@@ -691,9 +690,8 @@ A call means exactly this:
 
 **The grid does not have to match the vector.** That is the point of the stride: launch about as
 many threads as the hardware runs at once, and each folds several elements. A thread that owns no
-element at all contributes only the identity. `:last-man-standing` still carries its limit -- the
-number of workgroups must not exceed `local_work_size` -- but since the grid size is now yours to
-choose, any vector length can meet it.
+element at all contributes only the identity. Any grid works with every strategy, `:last-man-standing`
+included: its partials are sized one per workgroup and its final sweep is strided.
 
 `reduce-vec` is a grid-level operation, so it cannot be nested inside another grid-level stride.
 Several calls in one kernel are fine, one after another; each gets its own scratch. It reduces one

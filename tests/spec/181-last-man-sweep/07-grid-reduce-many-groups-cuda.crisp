@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 260096
+;;
+;; ENDEAVOUR 181 -- the CUDA twin of 01: 128 workgroups of 32 through grid-reduce!'s default
+;; (last-man).  Warp size 32 under h100, so each workgroup is ONE warp and the local sweep vector has
+;; one slot -- the workgroup reduction's halving loop runs zero times.  Same answer.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel grid_reduce_many_groups_cuda (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 32))
+  (let ((contrib (to-float (get-workgroup-id 0))))
+    (grid-reduce! #'+ contrib 0.0 out)))

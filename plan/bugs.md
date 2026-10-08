@@ -3872,3 +3872,37 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX (a hypothesis): refuse any spec a let does not understand, naming it.  First list what
         let bodies legitimately carry today -- expansions write (declare (grid-level)) / (workgroup-level),
         and the design doc says `use` may appear in a let -- so the allow-list does not break a lowering.
+
+[/] 109 BMG DROPS A VALUE DEFINED IN A DIVERGENT IF AND THEN CARRIED THROUGH A LOOP -- correct IR, wrong answer.
+
+        MEASURED 2026-10-08 (found during endeavour 181; worked around there, NOT fixed).  The first cut of
+        last-man's strided sweep seeded each thread's accumulator and then folded more partials in a loop:
+            (let ((val (if (< lid ng) (~ gv lid) identity)))     ; the SEED
+              (dotimes+ (k extra) ... (when (< p ng) (set! val (fn val (~ gv p))))))
+              (reduce-workgroup fn val identity ...))
+        On BMG (B580, driver 32.0.101.8864) the seed was LOST -- val came out as the loop's folds alone --
+        in some kernels and not others:
+            181/01 single grid-reduce!      PASS  -> FAIL once allocas were moved to the entry block
+            181/03 independent (+ , max u64) FAIL (outs = 260096 - 15872: exactly the 32 seeds missing)
+            181/05,/06 reduce-vec          FAIL (out 0 -- its only non-zero partial is a seed)
+            probes: one clause, two float clauses, float + u64 sum -- all PASS
+        Deterministic for a given compiled kernel; which kernels fail moves with unrelated code shape.
+
+        THE IR IS CORRECT.  Checked by hand at -O3 (put_temp_files_here/e181/r03.opt.ll, crisp-compile
+        --debug keeps it): the seed's load feeds a phi that enters the loop, the loop's fadd chain starts
+        from it, and the post-loop shuffles read the loop's result.  Not the hoist either: the launcher's
+        partials buffer is sized and bound correctly, and disabling its zero-fill changed nothing.  Only
+        SEEDS were ever lost; the loop's own folds were never wrong in any run.  Same signature as BUG 030:
+        correct LLVM IR, correct-looking SPIR-V shape, IGC computes something else.
+
+        TRIED: every alloca in the ENTRY block (one overlay on llvm-build-alloca -- standard frontend
+        practice, and mem2reg can then promote them).  It moved the failure (05/06 fixed, 01/02 broken), so
+        mid-function allocas are not the cause on their own.  Reverted; worth remembering for BUG 030.
+
+        WORKAROUND (181, in the lowering): no seed.  Each accumulator starts at the IDENTITY and the loop runs
+        from k = 0, so the first partial is folded like every other.  All 10 181 specs and the 175-178
+        last-man specs pass on BMG.  Cost: one identity-fold per thread in one workgroup per launch.
+
+        OPEN: a minimal reproducer for Intel (bug.ll + loader, like igc-bug-report/ for 030) -- not built.
+        Until then, the rule for lowerings: on SPIR-V, do not carry a value out of a divergent IF into a
+        loop when a branch-free shape is available.

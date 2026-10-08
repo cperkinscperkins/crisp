@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 181 -- reduce-vec (default strategy, last-man) with 128 workgroups of 32.  TDD.
+;; The hoist harness fills the input with 0 1 2 3, so the sum is 6; almost every thread contributes
+;; only the identity, but all 128 partials still have to be published and swept.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_many_groups (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 32))
+  (reduce-vec #'+ A 0.0 out))

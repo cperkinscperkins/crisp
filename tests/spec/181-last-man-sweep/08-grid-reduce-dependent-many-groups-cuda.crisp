@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER outv: 2999
+;; HOIST-EXPECT: BUFFER outi: 2999
+;;
+;; ENDEAVOUR 181 -- the CUDA twin of 04: dependent argmax, 128 workgroups of 32.
+
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel grid_reduce_argmax_many_groups_cuda (&out outv outi)
+  (declare #'(&out out-c uout-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 32))
+  (let ((v (to-float (rem (to-int (get-global-linear-id)) 3000)))
+        (i (get-global-linear-id)))
+    (grid-reduce! #'argmax-combine
+                  ((v (type-min float) outv)
+                   (i (type-max ulong) outi)))))
