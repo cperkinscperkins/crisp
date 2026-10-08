@@ -1,0 +1,685 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="for GPU kernel development.">
+      
+      
+        <meta name="author" content="Chris Perkins">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Performance Levers: MMA Matmul - Crisp - High Performance GPU Programming</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Nunito+Sans:300,300i,400,400i,700,700i%7CCaslon:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Nunito Sans";--md-code-font:"Caslon"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#performance-levers-mma-matmul" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-header__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Crisp - High Performance GPU Programming
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Performance Levers: MMA Matmul
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-nav__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Crisp - High Performance GPU Programming
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Welcome
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ideal_001/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Language Specification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="performance-levers-mma-matmul">Performance Levers: MMA Matmul<a class="headerlink" href="#performance-levers-mma-matmul" title="Permanent link">&para;</a></h1>
+<p>This document defines the tuning surface for Crisp <strong>MMA matmul</strong> kernels. It covers algorithms
+using a <code>tile-stride</code> over the output, tiles for A/B/C, a K loop, an MMA accumulate, and a
+<code>store-tile</code> epilogue.</p>
+<p><strong>You have already chosen the algorithm.</strong> This is the list of knobs for making that algorithm
+go faster on a given part — not a guide to picking a different one.</p>
+<h3 id="read-the-vendor-column">Read the vendor column<a class="headerlink" href="#read-the-vendor-column" title="Permanent link">&para;</a></h3>
+<p>The two backends do not have the same tuning surface, and the difference is not cosmetic:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Intel (Xe2 / BMG)</th>
+<th>NVIDIA (Hopper)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Where operands live</td>
+<td><strong>registers</strong> (<code>make-register-tile-ring</code>)</td>
+<td><strong>shared memory</strong> (<code>make-scratch-matrix-ring</code>)</td>
+</tr>
+<tr>
+<td>What the ring costs</td>
+<td>register budget → spilling</td>
+<td>SMEM budget → resident blocks</td>
+</tr>
+<tr>
+<td>Register file</td>
+<td>selectable modes <code>(128 256)</code></td>
+<td>fixed 255/thread</td>
+</tr>
+<tr>
+<td>MMA altitude</td>
+<td>one: per-subgroup fragments</td>
+<td><strong>two</strong>: fragment <em>or</em> warpgroup (wgmma)</td>
+</tr>
+<tr>
+<td>Getting operands in</td>
+<td><code>prefetch-tile</code></td>
+<td><code>cp.async</code> (<code>:linear</code>) or TMA (<code>:block</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Sections marked <strong>[Intel]</strong> or <strong>[NVIDIA]</strong> apply to one backend only. Everything else is shared.</p>
+<hr />
+<h2 id="1-kernel-level-levers-layer-1">1. Kernel-Level Levers (Layer 1)<a class="headerlink" href="#1-kernel-level-levers-layer-1" title="Permanent link">&para;</a></h2>
+<p>These are the primary directives set within the Crisp kernel. Many of these levers are highly coupled; tuning one usually requires re-tuning its pair.</p>
+<h3 id="geometry">Geometry<a class="headerlink" href="#geometry" title="Permanent link">&para;</a></h3>
+<p>Matrix geometry balances register pressure against arithmetic intensity.</p>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Location</th>
+<th>Heuristics &amp; Constraints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Per-Subgroup Tile ($TM \times TN$)</strong></td>
+<td><code>(tile-stride C (TM TN) ...)</code></td>
+<td>Drives per-thread register demand. <strong>[Intel]</strong> typical safe maximum is <code>32x64</code>; beyond it (<code>TN &gt; 64</code>, <code>TM &gt; 32</code>) risks register exhaustion or driver faults. <strong>[NVIDIA]</strong> fragment path runs <code>64x64</code>; the wgmma path is fixed at <code>64xN</code>.</td>
+</tr>
+<tr>
+<td><strong>Workgroup Tile ($M \times N$)</strong></td>
+<td><code>(tile-stride C ...)</code> + <code>:warps</code></td>
+<td>Scales data reuse (arithmetic intensity). <strong>Decoupled from subgroup tile:</strong> you can scale the workgroup tile up (e.g., to <code>256x256</code>) by adding subgroups without increasing per-thread register pressure.</td>
+</tr>
+<tr>
+<td><strong>Subgroup Count</strong></td>
+<td><code>:warps '(true true …)</code> on <code>make-register-tile</code></td>
+<td>List length equals subgroups. Must agree with <code>local-size / simd-width</code>.</td>
+</tr>
+<tr>
+<td><strong>K-Tile Extent</strong></td>
+<td>A/B tile inner dim, and K-loop divisor</td>
+<td>Sets work in flight per loop iteration. Typically 32 or 64.</td>
+</tr>
+<tr>
+<td><strong>MMA Shape</strong></td>
+<td><code>(mma-accumulate-via-tile (M N K) ...)</code></td>
+<td>Must match a shape in the profile's <code>:mma-shapes</code>, or it is a <strong>hard compile error</strong>. Narrower element types double K: <strong>[Intel]</strong> <code>8x16x8</code> tf32 → <code>8x16x16</code> bf16/fp16 → <code>8x16x32</code> int8; <strong>[NVIDIA]</strong> <code>16x8x8</code> tf32 → <code>16x8x16</code> fp16/bf16. fp64 has exactly one shape, <code>8x8x4</code>.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Coupling Rule: Subgroup Count vs. K-Tile Extent</strong>
+K-extent optimum moves inversely with subgroup count. A single subgroup might prefer K=64, while 16 subgroups require smaller steps (e.g., K=32) to prevent register spilling while keeping all participants fed. Never tune one without re-evaluating the other.</p>
+</blockquote>
+<h3 id="intel-pipelining-memory-access">[Intel] Pipelining &amp; Memory Access<a class="headerlink" href="#intel-pipelining-memory-access" title="Permanent link">&para;</a></h3>
+<p>NVIDIA's equivalents are in the async-staging section below; <code>prefetch-tile</code> and
+<code>make-register-tile-ring</code> are Xe2 facilities.</p>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Location</th>
+<th>Mechanism &amp; Constraints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Prefetch Distance</strong></td>
+<td>K-steps ahead the loop issues <code>prefetch-tile</code></td>
+<td>Generally, shorter is better monotonically ($d1 \ge d2 &gt; d3$). Highly effective when combined with large workgroup tiles and <code>:xe-native</code>.</td>
+</tr>
+<tr>
+<td><strong>Prefetch Distribution</strong></td>
+<td><code>:warp-partitioned true</code> on <code>prefetch-tile</code></td>
+<td><strong>Mandatory at multi-subgroup geometry.</strong> Without this, every subgroup issues every block, multiplying loads and severely degrading throughput.</td>
+</tr>
+<tr>
+<td><strong>Ring Depth</strong></td>
+<td><code>:ring-count N</code> on <code>make-register-tile-ring</code></td>
+<td>Count of register <em>buffers</em>, not logical pipeline stages. Deep rings (e.g., depth 3) on large per-subgroup tiles cause catastrophic spilling.</td>
+</tr>
+<tr>
+<td><strong>Barrier Pacing</strong></td>
+<td><code>(sync-workgroup)</code> in the K loop</td>
+<td>Fused vs. split vs. no barrier. At wide subgroup counts (e.g., 16), omitting the barrier is typically fastest.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="nvidia-warpgroup-mma-wgmma">[NVIDIA] Warpgroup MMA (wgmma)<a class="headerlink" href="#nvidia-warpgroup-mma-wgmma" title="Permanent link">&para;</a></h3>
+<p>Hopper offers a <strong>second MMA altitude</strong>, and it is the single largest lever on the NVIDIA side —
+it is the instruction cuBLAS itself uses. A fragment-level kernel and a warpgroup-level kernel
+are different algorithms wearing the same shape.</p>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Location</th>
+<th>Mechanism &amp; Constraints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Altitude</strong></td>
+<td><code>wgmma-accumulate-via-tile</code> + <code>make-wgmma-accumulator</code> vs <code>mma-accumulate-via-tile</code> + <code>make-register-tile</code></td>
+<td>Warpgroup MMA issues one instruction across <strong>128 threads (4 warps)</strong>. The accumulator is a warpgroup object, not a per-thread register tile.</td>
+</tr>
+<tr>
+<td><strong>wgmma Shape</strong></td>
+<td><code>(wgmma-accumulate-via-tile (M N K) D A B)</code></td>
+<td><strong>M is always 64</strong> — that is what a warpgroup is. <code>N</code> must be a multiple of 8 in <code>[8, 256]</code>. <code>K</code> is 8 for tf32, 16 for fp16/bf16. Checked against the profile's <code>:wgmma-shapes</code> when it declares them, otherwise against the sm_90a rules.</td>
+</tr>
+<tr>
+<td><strong>N width</strong></td>
+<td>the <code>N</code> in the shape and the accumulator</td>
+<td>The arithmetic-intensity knob. Wide <code>N</code> (256) buys reuse at large problem sizes; it costs registers, so it trades against ring depth.</td>
+</tr>
+<tr>
+<td><strong>Hopper-only</strong></td>
+<td><code>--ir-target-arch=sm_90</code></td>
+<td>Request plain <code>sm_90</code>; Crisp emits <code>.target sm_90a</code> for you (see below). wgmma and TMA do not exist on earlier architectures, so a wgmma kernel is not portable down. Shapes are validated at compile time, so an illegal one is an error rather than a silent fallback.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong><code>sm_90</code> in, <code>sm_90a</code> out — and you never type the <code>a</code>.</strong>
+Hopper's <em>architecture-specific</em> instructions — <code>wgmma.mma_async</code> and TMA's
+<code>cp.async.bulk.tensor</code> — are <strong>not</strong> in plain <code>sm_90</code>. NVIDIA gates them behind the <code>a</code>
+target variant precisely because they are not forward-compatible: <code>sm_90a</code> PTX is not
+guaranteed to JIT onto a future architecture, so it cannot live in the portable target.
+PTX that contains wgmma but declares <code>.target sm_90</code> is rejected at <code>cuModuleLoad</code>.</p>
+<p>Crisp handles this: a bare <code>sm_90</code> request is upgraded to <code>sm_90a</code> when the PTX target
+string is built, so <code>--ir-target-arch=sm_90</code> produces <code>.target sm_90a</code>. That is why
+<code>sm_90a</code> is <strong>not</strong> a Crisp architecture you can select — it is an output, not an input —
+while appearing all over the source comments as the rule source for shape validation. An
+explicit <code>sm_90a</code> or <code>sm_90f</code> passes through unchanged if you do write one.</p>
+<p>The one place the suffix is yours to supply is a <strong>separate host or reference compile</strong>
+sitting next to such a kernel, which may need <code>nvcc -arch=sm_90a</code> of its own.</p>
+<p><strong>There is no fp64 wgmma.</strong> Warpgroup MMA covers fp16/bf16/tf32/fp8/int8 only, so a double-precision
+kernel tops out at the fragment path. This is a hardware fact, not a Crisp gap.</p>
+</blockquote>
+<h3 id="nvidia-warp-specialization">[NVIDIA] Warp Specialization<a class="headerlink" href="#nvidia-warp-specialization" title="Permanent link">&para;</a></h3>
+<p>Splitting a workgroup into <strong>producer</strong> warps (which fetch) and <strong>consumer</strong> warps (which do math)
+lets the fetch run ahead without the consumers stalling on it.</p>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Location</th>
+<th>Mechanism &amp; Constraints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Producer / consumer split</strong></td>
+<td><code>(with-warp-specialization (:producer P :consumer C) ...)</code></td>
+<td><strong>Two consumers is the usual sweet spot.</strong> More consumers is not monotonically better — adding a second <em>pair</em> has been measured to regress.</td>
+</tr>
+<tr>
+<td><strong><code>local-size</code> must agree</strong></td>
+<td><code>(local-size :set-to (* 32 (+ P C)))</code></td>
+<td><code>96</code> = 1 producer + 2 consumers. <code>160</code> = 1 producer + one full 4-warp warpgroup for wgmma. Getting this wrong is a launch failure, not a slowdown.</td>
+</tr>
+<tr>
+<td><strong>Producer gets no C tile</strong></td>
+<td><code>:warps '(false true true)</code> on <code>make-register-tile</code></td>
+<td>The <code>false</code> slot is the producer. Omitting it distributes the accumulator across a warp that never does math, wasting its share of the tile.</td>
+</tr>
+<tr>
+<td><strong>Where the accumulator is built</strong></td>
+<td>inside <code>:consumer</code>, not before the block</td>
+<td>A <code>:warps</code>-distributed tile constructed outside the specialization does not belong to the consumers.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="nvidia-async-staging-cpasync-vs-tma">[NVIDIA] Async Staging: cp.async vs TMA<a class="headerlink" href="#nvidia-async-staging-cpasync-vs-tma" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Location</th>
+<th>Mechanism &amp; Constraints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Copy engine</strong></td>
+<td><code>:mode</code> on <code>make-async-barrier</code> / <code>make-async-barrier-ring</code></td>
+<td><code>:linear</code> = <code>cp.async</code> (per-element, no descriptor). <code>:block</code> = <strong>TMA</strong> via a <code>CUtensorMap</code> descriptor — the hardware copy engine, and the faster path for 2-D tiles.</td>
+</tr>
+<tr>
+<td><strong>Barrier arrivals</strong></td>
+<td><code>:arrivals N</code></td>
+<td>How many participants the barrier waits for. Must match the number of warps that actually signal, which changes when you re-tune the producer/consumer split.</td>
+</tr>
+<tr>
+<td><strong>Ring phase seeding</strong></td>
+<td><code>:initial-state :signaled</code> / <code>:waiting</code></td>
+<td>An <code>empty</code> ring starts <code>:signaled</code> (buffers are free); a <code>full</code> ring starts <code>:waiting</code>. Swapping these deadlocks rather than slows down.</td>
+</tr>
+<tr>
+<td><strong>SMEM Ring Depth</strong></td>
+<td><code>:ring-count N</code> on <code>make-scratch-matrix-ring</code></td>
+<td><strong>[NVIDIA] this spends shared memory, not registers</strong> — the opposite resource from Intel. Deeper rings buy overlap until SMEM caps resident blocks per SM, at which point occupancy falls and the pipelining stops paying.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="lowering-math">Lowering &amp; Math<a class="headerlink" href="#lowering-math" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Lever</th>
+<th>Location</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MMA Lowering</strong> <strong>[Intel]</strong></td>
+<td><code>(declare (mma-lowering :xe-native))</code></td>
+<td>Selects DPAS + 2-D block loads instead of the portable <code>:coop-matrix</code> path. Yields peak FP16 throughput when combined with peer geometry and warp-partitioned prefetch; less effective in isolation. Only offered by profiles whose <code>:mma-lowerings</code> lists it. NVIDIA has no lowering choice — the altitude choice (fragment vs wgmma) is the equivalent knob.</td>
+</tr>
+<tr>
+<td><strong>Precision</strong></td>
+<td><code>(declaim (precision fast))</code></td>
+<td>Enables contraction and reassociation. <strong>Note:</strong> <code>fast</code> flushes denormals unconditionally, ignoring <code>--denormal-handling=preserve</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dispatch-declarations">Dispatch Declarations<a class="headerlink" href="#dispatch-declarations" title="Permanent link">&para;</a></h3>
+<p>Grid sizes are decided <em>in the kernel</em> and emitted to the <code>.metacrisp</code> file.</p>
+<ul>
+<li><strong><code>local-size</code></strong>: Threads per workgroup. Divided by <code>:simd-width</code>, this must match the length of your <code>:warps</code> list.</li>
+<li><strong><code>:tile-shape</code></strong>: Defines the grid rank and shape (inferred from <code>tile-stride</code> if omitted). <strong>Trap:</strong> Using a 1-D grid under an N-D <code>tile-stride</code> will serialize an axis and destroy performance.</li>
+<li><strong><code>:occupancy</code></strong>: A grid-size multiplier against max-resident-workgroups. Only applies when there is no exact <code>:tile-shape</code>.</li>
+</ul>
+<hr />
+<h2 id="2-compiler-environment-layer-2">2. Compiler &amp; Environment (Layer 2)<a class="headerlink" href="#2-compiler-environment-layer-2" title="Permanent link">&para;</a></h2>
+<h3 id="high-impact-compiler-flags">High-Impact Compiler Flags<a class="headerlink" href="#high-impact-compiler-flags" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>--hardware-profile=</code></strong>: The most critical flag. Dictates MMA shapes, lowerings, register budgets, and tile-visit swizzles.</li>
+<li><strong><code>--math-precision=fast|ieee</code></strong>: Toggles contraction/reassociation.</li>
+<li><strong><code>--differentiate</code></strong>: Generates <code>_GRAD</code> twins; creates an entirely different module footprint.</li>
+</ul>
+<h3 id="key-profile-directives-metacrisp">Key Profile Directives (<code>.metacrisp</code>)<a class="headerlink" href="#key-profile-directives-metacrisp" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Register Mode Selection [Intel]:</strong> The compiler calculates register bytes per thread and selects from <code>:max-registers-per-thread</code>. For large tiles, forcing large-GRF (<code>-ze-opt-large-register-file</code>) can be crucial, but for distributed subgroups, the standard allocation often wins. <strong>[NVIDIA] there is no equivalent</strong> — the register file is a fixed 255/thread, so a tile that does not fit spills and the only remedy is smaller geometry or more warps.</li>
+<li><strong>Tile-Visit Swizzle:</strong> Controlled by <code>:tile-visit-strip-width</code> (overrideable via <code>CRISP_TILE_VISIT</code> for sweeps). A measured constant per profile, <strong>not derivable from L2 size</strong> — it has been measured as a large win on one part and a monotonic loss on another. Absent means linear, which is the safe default. <strong>[NVIDIA] measured harmful on H100; leave it out.</strong></li>
+<li><strong>Occupancy reporting [NVIDIA]:</strong> When the profile supplies <code>:max-registers-per-cu</code>, the compiler reports blocks-per-SM as limited by registers, and warns at one block — the case where there is no second block to hide memory latency behind. Treat that warning as "your tile is too big or too concentrated", answerable by a smaller accumulator or a wider <code>:warps</code> spread.</li>
+<li><strong>Shared-memory cap [NVIDIA]:</strong> <code>:max-shared-memory-per-block</code> must be the <strong>opt-in</strong> figure (~227KB), not the 48KB default. SMEM rings deeper than a couple of stages exceed 48KB immediately.</li>
+<li><strong><code>:compute-units</code> is load-bearing:</strong> it <em>overrides</em> the device SM query when the launch grid is sized. A profile naming the wrong variant (H100 PCIe's 114 vs a 132-SM part) under-dispatches every kernel, silently.</li>
+</ul>
+<hr />
+<h2 id="3-host-enqueue-rules-layer-3">3. Host Enqueue Rules (Layer 3)<a class="headerlink" href="#3-host-enqueue-rules-layer-3" title="Permanent link">&para;</a></h2>
+<p>The host's primary job is to <strong>reproduce what the compiler assumed</strong>. Disagreements between the host launch params and the <code>.metacrisp</code> usually result in silent correctness bugs that masquerade as performance shifts.</p>
+<ul>
+<li><strong>Grid and Local Size:</strong> Do not override the kernel's derived 2-D local sizes with 1-D groups on the host.</li>
+<li><strong>JIT Build Flags [Intel]:</strong> The host must pass the compiler's chosen register mode to the JIT (<code>pBuildFlags</code>).</li>
+<li><strong>Dynamic SMEM opt-in [NVIDIA]:</strong> A kernel asking for more than 48KB of shared memory needs <code>cuFuncSetAttribute(CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, …)</code> before launch. Without it the launch fails outright; the generated hoist reads the requirement from the <code>.metacrisp</code> and emits the call.</li>
+<li><strong>TMA descriptors [NVIDIA]:</strong> A <code>:block</code>-mode copy needs its <code>CUtensorMap</code> built on the host with the same extents and element type the kernel assumed. A descriptor that disagrees is a correctness bug, not a slow path.</li>
+<li><strong>Warmup/Iters:</strong> Under-warming reads low. Conversely, batching too many re-submits of an in-flight L0 command list can artificially inflate GFLOPS due to coalescing <strong>[Intel]</strong> — the CUDA path does not coalesce this way.</li>
+</ul>
+<hr />
+<h2 id="4-platform-driver-variance-layer-4">4. Platform &amp; Driver Variance (Layer 4)<a class="headerlink" href="#4-platform-driver-variance-layer-4" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Platform Disparities [Intel]:</strong> Windows-native L0 and Linux/Docker L0 can disagree significantly (up to 30% deltas at large $N$, often reordering kernel rankings entirely). <strong>A screen taken on one platform is not evidence for the other.</strong></li>
+<li><strong>Part Variance [NVIDIA]:</strong> SM count differs across parts of the same architecture (H100 PCIe 114, SXM/NVL/H200 132). Because <code>:compute-units</code> sizes the grid, a number from one variant does not transfer to another even at identical clocks.</li>
+<li><strong>Signal vs. Noise:</strong> Run-to-run variance on a stable container is typically 1-3%. Treat deltas under 5% as noise unless proven otherwise.</li>
+</ul>
+<hr />
+<h2 id="5-known-anti-patterns-what-not-to-do">5. Known Anti-Patterns (What Not to Do)<a class="headerlink" href="#5-known-anti-patterns-what-not-to-do" title="Permanent link">&para;</a></h2>
+<p>Do not waste time retrying these approaches for this specific algorithm class; they are measured dead ends.</p>
+<p><strong>[Intel]</strong></p>
+<ol>
+<li><strong>SLM Staging of Operands:</strong> <code>SPV_INTEL_2d_block_io</code> is a global-memory facility. Staging through SLM drops the 2D block load entirely, resulting in catastrophic throughput loss on Xe2.</li>
+<li><strong>Cache Control Directives:</strong> Manually applying <code>SPV_INTEL_cache_controls</code> (e.g., L1/L3 caching) has proven ineffective or slightly regressive. The driver default for 2D block IO already matches or ignores these pointer decorations.</li>
+<li><strong>Deep Rings on Large Tiles:</strong> Ring depth $\ge 3$ on <code>32x64</code> subgroup tiles guarantees register collapse.</li>
+<li><strong>More subgroups as a throughput lever:</strong> scaling the workgroup tile across many subgroups does <em>not</em> beat a single well-tuned subgroup on this part. It is a correctness-preserving geometry change, not a speedup.</li>
+</ol>
+<p><strong>[NVIDIA]</strong></p>
+<ol>
+<li><strong>Clusters and TMA multicast:</strong> forming a cluster is cheap, but multicasting operands across it has measured <em>slower</em> than the plain TMA ring. The operand-fetch path is not the bottleneck it appears to be.</li>
+<li><strong><code>:tile-visit-strip-width</code> on Hopper:</strong> a loss at every width tried, degrading monotonically as the strip widens. Wide output tiles already span most of the matrix, so the swizzle has nothing left to exploit. Omit the key.</li>
+<li><strong>Adding consumer warps past two:</strong> the second producer/consumer <em>pair</em> has measured a regression. Two consumers is the sweet spot; more warps split the accumulator further without adding useful overlap.</li>
+<li><strong>Assuming deeper SMEM rings keep paying:</strong> past the point where shared memory caps resident blocks per SM, extra depth buys overlap and loses occupancy, and the trade turns negative at large problem sizes.</li>
+</ol>
+<hr />
+<h2 id="benchmarking-discipline">Benchmarking Discipline<a class="headerlink" href="#benchmarking-discipline" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Measure A/B in one session.</strong> Driver and environment drift is real. An old number is a different experiment.</li>
+<li><strong>Use the platform of record.</strong> For Intel, standard benchmarking occurs in Docker/Linux (<code>scripts/bench-intel.sh</code>). For NVIDIA it is a rented pod (<code>scripts/bench-on-pod.sh</code>).</li>
+<li><strong>Match the profile to the part.</strong> The benchmark harness refuses to sweep on hardware with no validated hardware profile, because a profile for the wrong variant produces wrong numbers rather than slow ones. See <code>benchmarks/README.md</code>.</li>
+<li><strong>Check <code>verified</code> output.</strong> A kernel that skips a <code>store-tile</code> step will look incredibly fast. Ensure the math is actually executing.</li>
+<li><strong>Trust the <code>.metacrisp</code>.</strong> If the host harness and the <code>.metacrisp</code> disagree on geometry, lowering, or register mode, the benchmark is invalid.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "toc.integrate"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
