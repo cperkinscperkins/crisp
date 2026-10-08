@@ -3856,3 +3856,19 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FIXED (overlay, 2026-10-07): the base is (max 100 (1+ highest id already in the text))
         -- %max-metadata-id.
+
+[ ] 108 A LET SILENTLY DROPS A DECLARATION IT DOES NOT KNOW.
+
+        MEASURED 2026-10-07 (found during endeavour 180).  analyze-let-expression strips every leading
+        (declare ...) and %check-context-declarations looks only for grid-level and workgroup-level.  Any
+        other spec is ignored without a word, so a typo is invisible:
+            (let ((acc 1.0))
+              (declare (gird-level))       ; compiles -- and the let is NOT grid-level
+              ...)
+        put_temp_files_here/e180/typo.crisp compiles to SPIR-V with rc=0.
+
+        180 closed this for UNROLL only (refused with "allowed only at the start of a loop body").
+
+        LIKELY FIX (a hypothesis): refuse any spec a let does not understand, naming it.  First list what
+        let bodies legitimately carry today -- expansions write (declare (grid-level)) / (workgroup-level),
+        and the design doc says `use` may appear in a let -- so the allow-list does not break a lowering.
