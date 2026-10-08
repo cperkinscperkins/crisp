@@ -12,8 +12,7 @@
   (funcall (find-symbol "VALIDATE-SPV-STREAM-DOUBLE-UNROLLED-X2" :crisp.compiler) spv-path))
 (defun validate-spv-stream-not-unrolled (spv-path)
   (funcall (find-symbol "VALIDATE-SPV-STREAM-NOT-UNROLLED" :crisp.compiler) spv-path))
-(defun validate-ptx-has-nounroll-pragma (ptx-path)
-  (funcall (find-symbol "VALIDATE-PTX-HAS-NOUNROLL-PRAGMA" :crisp.compiler) ptx-path))
+
 
 ;; tests/run-specs.lisp -- SUPERSEDES the 1-argument delegator above (PTX validators take FILE PTX-TEXT).
 (defun validate-ptx-has-nounroll-pragma (file ptx-text)

@@ -621,29 +621,6 @@
 
 ;;; --- Endeavour 180 spec validators: count the loads in the SHIPPED module ---------------------
 
-;; src/mma.lisp (beside the other SPIR-V validators)
-(defun %spv-scalar-load-count (spv-path width)
-  "Endeavour 180.  The number of OpLoad instructions in SPV-PATH whose result is the WIDTH-bit
-   float type (32 or 64), read from `llvm-spirv --to-text`; NIL when llvm-spirv is unavailable.
-   In the specs' streaming kernels (B[i] = 2*A[i]) every such load is a load of A, so the count is
-   the loads per trip of the unrolled loop plus its remainder loop's one."
-  (let ((txt (%spv-disasm spv-path)))
-    (when txt
-      (let ((float-ids nil) (loads 0))
-        (with-input-from-string (s txt)
-          (loop for line = (read-line s nil) while line
-                do (let ((toks (%spv-tokens line)))
-                     (when (and (>= (length toks) 4) (string= (second toks) "TypeFloat")
-                                (string= (fourth toks) (princ-to-string width)))
-                       (push (third toks) float-ids)))))
-        (with-input-from-string (s txt)
-          (loop for line = (read-line s nil) while line
-                do (let ((toks (%spv-tokens line)))
-                     (when (and (>= (length toks) 3) (string= (second toks) "Load")
-                                (member (third toks) float-ids :test #'string=))
-                       (incf loads)))))
-        (log:debug "180: ~a has ~d f~d load(s)" spv-path loads width)
-        loads))))
 
 ;; src/mma.lisp
 (defun %validate-spv-stream-loads (spv-path width lo hi what)
@@ -678,14 +655,6 @@
   "Endeavour 180: (unroll nil) -- exactly one float load, the loop as it was."
   (%validate-spv-stream-loads spv-path 32 1 1 "exactly 1 -- (unroll nil) did not stop the unrolling"))
 
-;; src/codegen.lisp (beside compile-to-ptx)
-(defun validate-ptx-has-nounroll-pragma (ptx-path)
-  "Endeavour 180: {llvm.loop.unroll.disable} reached the PTX as .pragma \"nounroll\", so ptxas
-   leaves the loop alone too."
-  (let ((txt (and (probe-file ptx-path) (uiop:read-file-string ptx-path))))
-    (cond ((null txt) (format t "FAIL: no PTX at ~a~%" ptx-path) nil)
-          ((search ".pragma \"nounroll\"" txt) t)
-          (t (format t "FAIL: no .pragma \"nounroll\" in the PTX -- (unroll nil) was lost.~%") nil))))
 
 ;; src/codegen.lisp (beside compile-to-ptx) -- SUPERSEDES the 1-argument copy above: PTX validators
 ;; take (FILE PTX-TEXT), unlike the SPIR-V ones (run-spec-ptx-in-process).
