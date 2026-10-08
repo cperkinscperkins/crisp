@@ -149,7 +149,7 @@ Plan
       passthrough, AD accept-and-ignore + the 178 pre-pass
 - [ ] strength reduction at the IR level -- NOT DONE, deliberately (probe 3: worth <= 1.5%)
 - [x] on-metal: BMG ladder (below) -- [ ] NVIDIA (this evening)
-- [ ] update reduction benchmarks with new numbers.
+- [x] update reduction benchmarks with new numbers (BMG canonical; report not regenerated yet)
 - [ ] fold into src/, regenerate reference / call graph / chapters, suites incl. --differentiate
 
 
@@ -210,6 +210,12 @@ purpose: the canonical report is Chris's call); log `put_temp_files_here/e180/be
 | 5 `reduce-vec` | 91.6 | 98.8 | 98.9 |
 
 The easy button is now as fast as the hand-unrolled kernel: the goal of the endeavour, on BMG.
+
+CANONICAL rerun, same day (`bench-intel.sh canonical 50 fast`, the whole Crisp reduction suite, all
+six sizes, every point verified; JSON in `benchmarks/results/`, superseding the 10-03/10-05 runs).  At
+1 GiB every kernel with a `loop-vector-stride` fold is now 98.2-99.2%: steps 3/4/5, the workloads
+(argmax 98.5, sum+sumsq 98.7, Welford 98.7) and the rollup's atomic / last-man forms.  The CAS
+forms stay slow (warp_cas 32%, wg_cas 69%) -- the separate CAS-lowering issue, not 180.
 
 **BUG 107, found on the way** (plan/bugs.md).  `inject-spir-kernel-metadata` numbered the OpenCL
 kernel-arg metadata from a hard-coded `!100`.  Any module already past `!99` got a duplicate id and
