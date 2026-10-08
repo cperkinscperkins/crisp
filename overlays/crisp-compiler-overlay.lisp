@@ -356,3 +356,42 @@
     (:global-scratch-vec `(make-scratch-vector ,elem-type :match-num-workgroups :address-space :global))
     (:atomic-counter     '(make-scratch-cell uint :address-space :global))
     (:election-flag-cell '(make-scratch-cell uint))))
+
+;;;; ---------------------------------------------------------------------------------------
+;;;; PROBE (endeavour 182 measurements) -- NOT A FEATURE, REMOVE when the real register-budget
+;;;; mechanism lands.  With CRISP_PROBE_PTX_MINCTA=N (and CRISP_PROBE_PTX_MAXNTID=T, default 256) set
+;;;; in the environment, compile-to-ptx inserts `.maxntid T, 1, 1` / `.minnctapersm N` after every
+;;;; .entry's parameter list, so one build can sweep ptxas's register budget.  Inert when unset.
+;;;; ---------------------------------------------------------------------------------------
+
+;; PROBE ONLY -- not for src/
+(defvar *182-probe-compile-to-ptx-base* (fdefinition 'compile-to-ptx))
+
+;; PROBE ONLY -- not for src/
+(defun %182-probe-insert-launch-bounds (ptx-path mincta maxntid)
+  "PROBE.  Rewrites PTX-PATH with `.maxntid MAXNTID, 1, 1` and `.minnctapersm MINCTA` after each
+   .entry's closing parameter line."
+  (let* ((lines (uiop:read-file-lines ptx-path))
+         (out '())
+         (in-entry nil))
+    (dolist (l lines)
+      (push l out)
+      (cond ((and (>= (length l) 15) (string= (subseq l 0 15) ".visible .entry")) (setf in-entry t))
+            ((and in-entry (plusp (length l)) (char= (cl:char l 0) #\)))
+             (push (format nil ".maxntid ~a, 1, 1" maxntid) out)
+             (push (format nil ".minnctapersm ~a" mincta) out)
+             (setf in-entry nil))))
+    (with-open-file (s ptx-path :direction :output :if-exists :supersede)
+      (format s "~{~a~%~}" (nreverse out)))
+    (log:warn "182 PROBE: ~a gets .maxntid ~a / .minnctapersm ~a" ptx-path maxntid mincta)))
+
+;; src/compiler.lisp  (PROBE wrapper -- not for src/)
+(defun compile-to-ptx (module output-path &key (compute-capability "sm_80") debug-p)
+  "Compiles an LLVM Module to PTX using llc (see src/compiler.lisp).  182 PROBE: honours
+   CRISP_PROBE_PTX_MINCTA / CRISP_PROBE_PTX_MAXNTID when set."
+  (prog1 (funcall *182-probe-compile-to-ptx-base* module output-path
+                  :compute-capability compute-capability :debug-p debug-p)
+    (let ((mincta (uiop:getenv "CRISP_PROBE_PTX_MINCTA")))
+      (when (and mincta (plusp (length mincta)))
+        (%182-probe-insert-launch-bounds output-path mincta
+                                         (or (uiop:getenv "CRISP_PROBE_PTX_MAXNTID") "256"))))))
