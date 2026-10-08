@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]: validate-spv-stream-unrolled-x8
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER b: 0 2 4 6
+;;
+;; ENDEAVOUR 180 -- an explicit (declare (unroll N)) at the head of a loop-vector-stride body
+;; REPLACES the default: x8 here, so at least 8 float loads in the shipped SPIR-V.  B = 2A.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel lvs_x8 (A &out B)
+  (declare #'(f-vec &out f-vec => nil))
+  (loop-vector-stride A (i)
+    (declare (unroll 8))
+    (set! (~ B i) (* 2.0 (~ A i)))))

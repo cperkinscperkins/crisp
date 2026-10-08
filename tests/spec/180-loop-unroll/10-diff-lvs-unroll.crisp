@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=1100@0:0.01 at.A=641 expect.A=2.0 atol=1e-2 h=0.5 group=64 groups=2 output-vec=1100
+;;
+;; ENDEAVOUR 180 -- AUTODIFF through an unrolled loop-vector-stride.  Unrolling is codegen only: the
+;; AD pass sees the same loop with or without (declare (unroll 4)).  1100 elements over 128 threads
+;; is 8-9 trips per thread, so the x4 unrolled body really runs; element 641 = 5*128 + 1 is thread
+;; 1's sixth trip, inside the SECOND unrolled chunk.  B = 2A, so d(sum B)/dA[k] = 2.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel diff_lvs_u4 (A &out B)
+  (declare #'(f-vec &out f-vec => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (loop-vector-stride A (i)
+    (declare (unroll 4))
+    (set! (~ B i) (* 2.0 (~ A i)))))

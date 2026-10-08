@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-07T04:46:08.361858Z
+Generated on 2026-10-08T03:22:22.257543Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -408,7 +408,21 @@ Generated on 2026-10-07T04:46:08.361858Z
 ### DEFUN `%CHECK-CONTEXT-DECLARATIONS`
 - **Args**: `(DECL-SPECS LOCATION)`
 
-  > Checks DECL-SPECS for (grid-level) and (workgroup-level) declarations.  >    Enforces that:  >    - (grid-level) requires *in-dispatch-context* and cannot be nested.  >    - (workgroup-level) cannot be nested inside another workgroup-level context.  >    Returns (values has-grid-level has-workgroup-level).
+  > Checks DECL-SPECS for (grid-level) and (workgroup-level) declarations.  >    Enforces that:  >    - (grid-level) requires *in-dispatch-context* and cannot be nested.  >    - (workgroup-level) cannot be nested inside another workgroup-level context.  >    - (unroll ...) is refused (endeavour 180): it belongs to a loop body, and a let used to drop it  >      silently.  >    Returns (values has-grid-level has-workgroup-level).
+
+
+---
+### DEFUN `%REFUSE-MISPLACED-UNROLL`
+- **Args**: `(LOCATION)`
+
+  > Endeavour 180.  The error for a (declare (unroll ...)) anywhere but the head of a loop body.
+
+
+---
+### DEFUN `ANALYZE-DECLARE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 180.  A (declare ...) analyzed as an expression is out of place: declarations are  >    taken off the head of a let, a function or a loop body before the body is analyzed.  An  >    unroll declaration gets its own message; any other is the unsupported form it always was.
 
 
 ---
@@ -517,10 +531,66 @@ Generated on 2026-10-07T04:46:08.361858Z
 
 
 ---
+### DEFUN `%DECLARATION-SPEC-NAMED-P`
+- **Args**: `(SPEC NAME)`
+
+  > Endeavour 180.  T when SPEC, one spec of a (declare ...) form, is a list headed by a symbol  >    named NAME (compared by name, so the reading package does not matter).
+
+
+---
+### DEFUN `%PARSE-UNROLL-SPEC`
+- **Args**: `(SPEC HEAD LOCATION)`
+
+  > Endeavour 180.  Parses one (unroll V) declaration SPEC on the loop headed HEAD.  V is a positive  >    integer literal (unroll by V), t (unroll fully) or nil (never unroll).  Returns (:count V),  >    (:full) or (:disable); anything else is a compile error.
+
+
+---
+### DEFUN `%SPLIT-LOOP-BODY-DECLARATIONS`
+- **Args**: `(BODY-FORMS HEAD LOCATION)`
+
+  > Endeavour 180.  Splits the leading (declare ...) forms off a counted loop's BODY-FORMS.  A loop  >    body accepts ONE declaration: (unroll V) -- or (%unroll-default VEC), which only  >    loop-vector-stride's expansion writes.  Any other declaration, or a second unroll, is a compile  >    error naming the loop HEAD.  Returns (values remaining-body spec), where spec is NIL (none),  >    (:count N), (:full), (:disable) or (:stream VEC-FORM).
+
+
+---
+### DEFUN `%LOOP-TRIP-COUNT-CONSTANT-P`
+- **Args**: `(NODE)`
+
+  > Endeavour 180.  T when every operand of the counted loop NODE (a semantic-dotimes or  >    semantic-loop-variant) is a literal, so its trip count is known at compile time.
+
+
+---
+### DEFUN `%STREAM-ELEMENT-BYTES`
+- **Args**: `(VEC-FORM ENV CONTEXT LOCATION)`
+
+  > Endeavour 180.  The size in bytes of VEC-FORM's element type, or NIL when it is not a  >    registered scalar type (a struct element, say).  Used for loop-vector-stride's stream default;  >    never an error -- an unknown size only means no default.
+
+
+---
+### DEFUN `%RESOLVE-UNROLL-SPEC`
+- **Args**: `(SPEC NODE HEAD ENV CONTEXT LOCATION)`
+
+  > Endeavour 180.  Turns the parsed SPEC of the loop NODE into what the node keeps: checks that  >    (unroll t) has a constant trip count, and sizes the stream default from the vector's element  >    type -- (:stream VEC-FORM) becomes (:stream BYTES), or NIL when the size is unknown.
+
+
+---
+### DEFUN `%ANALYZE-LOOP-WITH-UNROLL`
+- **Args**: `(ANALYZER EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 180.  Runs the counted-loop ANALYZER on EXPR with its body's leading declarations  >    stripped, then records the unroll request on the node it returns.  The loop's own analysis  >    never sees a declaration.
+
+
+---
 ### DEFUN `ANALYZE-DOTIMES-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (dotimes (var limit [stride]) body...).  >    VAR is bound as the limit's type (int, ulong, etc.) in the body.  >    STRIDE is optional; defaults to literal 1 of the limit's type.  >    Returns a semantic-dotimes node (type void).
+  > Analyzes (dotimes (var limit [stride]) body...).  >    VAR is bound as the limit's type (int, ulong, etc.) in the body.  >    STRIDE is optional; defaults to literal 1 of the limit's type.  >    Endeavour 180: a leading (declare (unroll ...)) in the body is the loop's unroll request.  >    Returns a semantic-dotimes node (type void).
+
+
+---
+### DEFUN `%ANALYZE-DOTIMES-CORE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (dotimes (var limit [stride]) body...).  >    VAR is bound as the limit's type (int, ulong, etc.) in the body.  >    STRIDE is optional; defaults to literal 1 of the limit's type.  >    Returns a semantic-dotimes node (type void).  >    Endeavour 180: the CORE of analyze-dotimes-expression -- called with the body's leading declarations already  >    stripped by %analyze-loop-with-unroll, which records the unroll request on the node.
 
 
 ---
@@ -561,7 +631,14 @@ Generated on 2026-10-07T04:46:08.361858Z
 ### DEFUN `ANALYZE-LOOP-VARIANT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes every dotimes variant and its + form (endeavour 172):  >      (dec-times            (i N [stride]) body...)    i = ((N-1)/s)*s ... 0, the exact reverse of dotimes  >      (dec-times-by-half    (i N) body...)             i = N, N/2, ... 1  >      (dec-times-by-factor  (i N factor) body...)      i = N, N/f, ... >= 1  >      (do-times-by-doubling (i init N) body...)        i = init, 2*init, ... <= N  >      (do-times-by-multiply (i init N factor) body...) i = init, init*f, ... <= N  >      (do-power-step        (i N) body...)             i = 1, 2, 4, ... < N  >      (dec-power-step       (i N) body...)             i = largest power of 2 below N, ... 1  >    Operands must be unsigned (D2); literal gates per D3.  A + form requires every operand to  >    be provably uniform (D5).  The loop variable takes N's type and the combined uniformity of  >    all operands.  Returns a semantic-loop-variant.
+  > Analyzes a dotimes-family variant (dec-times, do-times-by-doubling, ... and the + forms;  >    endeavour 172).  Endeavour 180: a leading (declare (unroll ...)) in the body is the loop's  >    unroll request.  Returns a semantic-loop-variant.
+
+
+---
+### DEFUN `%ANALYZE-LOOP-VARIANT-CORE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes every dotimes variant and its + form (endeavour 172):  >      (dec-times            (i N [stride]) body...)    i = ((N-1)/s)*s ... 0, the exact reverse of dotimes  >      (dec-times-by-half    (i N) body...)             i = N, N/2, ... 1  >      (dec-times-by-factor  (i N factor) body...)      i = N, N/f, ... >= 1  >      (do-times-by-doubling (i init N) body...)        i = init, 2*init, ... <= N  >      (do-times-by-multiply (i init N factor) body...) i = init, init*f, ... <= N  >      (do-power-step        (i N) body...)             i = 1, 2, 4, ... < N  >      (dec-power-step       (i N) body...)             i = largest power of 2 below N, ... 1  >    Operands must be unsigned (D2); literal gates per D3.  A + form requires every operand to  >    be provably uniform (D5).  The loop variable takes N's type and the combined uniformity of  >    all operands.  Returns a semantic-loop-variant.  >    Endeavour 180: the CORE of analyze-loop-variant-expression -- called with the body's leading declarations already  >    stripped by %analyze-loop-with-unroll, which records the unroll request on the node.
 
 
 ---
@@ -622,7 +699,7 @@ Generated on 2026-10-07T04:46:08.361858Z
 ### DEFUN `%EXPAND-LOOP-VECTOR-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  >    Refactored to use %build-exact-iter-count-form for consistency with  >    the rest of Group A.  Same behaviour as the earlier rewrite — single  >    counter dotimes, body runs unconditionally.
+  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  >    Refactored to use %build-exact-iter-count-form for consistency with  >    the rest of Group A.  Same behaviour as the earlier rewrite — single  >    counter dotimes, body runs unconditionally.  >    Endeavour 180: leading (declare ...) forms of BODY belong to the LOOP, so they move to the head  >    of the dotimes body, where (declare (unroll ...)) is understood.  With no unroll declaration the  >    dotimes gets (declare (%unroll-default VEC)) -- the stream default, sized by VEC's element type  >    when the dotimes is analyzed.  (unroll t) is refused here: the trip count depends on the  >    vector's length and the grid, so it is never a compile-time constant.
 
 
 ---
@@ -2161,7 +2238,7 @@ Generated on 2026-10-07T04:46:08.361858Z
 ### DEFUN `%REDUCE-VEC-EXPAND`
 - **Args**: `(FORM)`
 
-  > Endeavour 178.  The expansion of (reduce-vec FN VEC IDENTITY OUT-CELL &key STRATEGY ...):  >   >      (let ((P IDENTITY))  >        (%check-reduce-vec-element :reduce-vec VEC P)  >        (loop-vector-stride VEC (I) (set! P (FN P (~ VEC I))))  >        (grid-reduce! FN P IDENTITY OUT-CELL :strategy STRATEGY ...scratch keys...))  >   >    A literal #'op is applied directly (%175-apply-binop), so the fold is differentiable.  Refuses a  >    multi-variable call (out of scope), a missing argument, a non-literal or unknown strategy (there is  >    no second stage: it needs a second kernel launch) and a key the strategy does not use -- naming  >    reduce-vec rather than leaving grid-reduce! to name itself.  The default strategy is  >    :last-man-standing, as for grid-reduce!.
+  > Endeavour 178.  The expansion of (reduce-vec FN VEC IDENTITY OUT-CELL &key STRATEGY ...):  >   >      (let ((P IDENTITY))  >        (%check-reduce-vec-element :reduce-vec VEC P)  >        (loop-vector-stride VEC (I) (set! P (FN P (~ VEC I))))  >        (grid-reduce! FN P IDENTITY OUT-CELL :strategy STRATEGY ...scratch keys...))  >   >    A literal #'op is applied directly (%175-apply-binop), so the fold is differentiable.  Refuses a  >    multi-variable call (out of scope), a missing argument, a non-literal or unknown strategy (there is  >    no second stage: it needs a second kernel launch) and a key the strategy does not use -- naming  >    reduce-vec rather than leaving grid-reduce! to name itself.  The default strategy is  >    :last-man-standing, as for grid-reduce!.  >    Endeavour 180: :unroll V is the loop's, not grid-reduce!'s -- it becomes (declare (unroll V)) at  >    the head of the loop-vector-stride body, which validates V.  Without it the loop gets the  >    loop-vector-stride stream default.
 
 
 ---
@@ -5490,6 +5567,32 @@ Generated on 2026-10-07T04:46:08.361858Z
 
 
 ---
+### DEFPARAMETER `*STREAM-UNROLL-BYTES-IN-FLIGHT*`
+
+  > Endeavour 180.  The loop-vector-stride stream default, per target: the bytes each thread should  >    have in flight, so the unroll factor is BYTES / element size.  MEASURED, not guessed  >    (loop-unroll.md, probes 1, 2 and 4):  >      :spirv  16 -- BMG reaches ~99% of the read peak at 16 bytes/thread (fp32 x4, fp64 x2); one  >                    load per trip (4 bytes) reaches 57%.  More never hurt, and gained < 1%.  >      :ptx    NIL -- no hint.  LLVM's NVPTX target already runtime-unrolls the loop x4 and ptxas  >                    unrolls again (16 loads per trip in SASS); a hint would leave the unrolled loop  >                    marked unroll.disable, which reaches the PTX as .pragma "nounroll" and stops  >                    ptxas -- a regression, not a default.  >    A target not listed gets no default.
+
+
+---
+### DEFPARAMETER `*STREAM-UNROLL-MAX-FACTOR*`
+
+  > Endeavour 180.  The largest factor the stream default picks.  Probe 1 measured up to x8; a  >    1-byte element would otherwise ask for x16, which no probe has run.
+
+
+---
+### DEFUN `%EFFECTIVE-LOOP-UNROLL`
+- **Args**: `(SPEC)`
+
+  > Endeavour 180.  What the codegen emits for a loop's unroll SPEC on the current *target-backend*:  >    (values :count N), (values :full), (values :disable), or NIL for no metadata.  An explicit  >    request is emitted as written on every target; the stream default, (:stream BYTES), is a factor  >    only where *stream-unroll-bytes-in-flight* gives a budget and the factor is above 1.
+
+
+---
+### DEFUN `%ATTACH-LOOP-UNROLL-METADATA`
+- **Args**: `(LATCH-BR MODULE SPEC)`
+
+  > Endeavour 180.  Attaches !llvm.loop to LATCH-BR, a loop's back-edge branch, for the unroll SPEC  >    (see %effective-loop-unroll).  The loop ID is LLVM's distinct, self-referential node:  >      !L = distinct !{!L, !P}     !P = !{!"llvm.loop.unroll.count", i32 N}   (or .full / .disable)  >    LLVM-C cannot create a distinct node directly, so operand 0 starts as a temporary placeholder  >    that is then replaced with the node itself -- which LLVM turns into a distinct node.  Returns  >    LATCH-BR.
+
+
+---
 ### DEFUN `%LOOP-VARIANT-COERCE`
 - **Args**: `(BUILDER VALUE LLVM-TYPE)`
 
@@ -6198,10 +6301,17 @@ Generated on 2026-10-07T04:46:08.361858Z
 
 
 ---
+### DEFUN `%MAX-METADATA-ID`
+- **Args**: `(IR-TEXT)`
+
+  > BUG 107.  The highest numbered metadata id defined in IR-TEXT (a line starting `!N = `), or -1  >    when there is none.
+
+
+---
 ### DEFUN `INJECT-SPIR-KERNEL-METADATA`
 - **Args**: `(IR-TEXT)`
 
-  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  > Returns modified IR text with metadata.  >   > Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attribute-group refs,  > !dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above.
+  > Inject OpenCL kernel metadata for all SPIR kernels found in IR text.  > Returns modified IR text with metadata.  >   > Endeavour 156: PRESERVES any metadata LLVM already attached to the kernel (attribute-group refs,  > !dbg, !intel_reqd_sub_group_size) instead of overwriting it -- see the comment above.  >   > BUG 107: the kernel-arg metadata is numbered from above the highest id already in IR-TEXT, not  > from a fixed !100.
 
 
 ---
@@ -10605,6 +10715,55 @@ Generated on 2026-10-07T04:46:08.361858Z
 
 
 ---
+### DEFUN `%SPV-SCALAR-LOAD-COUNT`
+- **Args**: `(SPV-PATH WIDTH)`
+
+  > Endeavour 180.  The number of OpLoad instructions in SPV-PATH whose result is the WIDTH-bit  >    float type (32 or 64), read from `llvm-spirv --to-text`; NIL when llvm-spirv is unavailable.  >    Counts only inside functions NOT named *_grad, so a --differentiate module (forward + gradient  >    kernel) counts the forward kernel alone.  In the specs' streaming kernels (B[i] = 2*A[i]) every  >    such load is a load of A: the loads per trip of the unrolled loop plus its remainder loop's one.
+
+
+---
+### DEFUN `%VALIDATE-SPV-STREAM-LOADS`
+- **Args**: `(SPV-PATH WIDTH LO HI WHAT)`
+
+  > Endeavour 180.  T when SPV-PATH has between LO and HI (inclusive; HI NIL = no limit) WIDTH-bit  >    float loads; prints WHAT on failure.  Skips (T) when llvm-spirv is unavailable.
+
+
+---
+### DEFUN `VALIDATE-SPV-STREAM-UNROLLED-X4`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 180: the float stream loop is unrolled x4 -- at least 4 float loads (body), at most 5  >    (plus the remainder loop's one).
+
+
+---
+### DEFUN `VALIDATE-SPV-STREAM-UNROLLED-X8`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 180: the float stream loop is unrolled x8 -- 8 or 9 float loads.
+
+
+---
+### DEFUN `VALIDATE-SPV-STREAM-DOUBLE-UNROLLED-X2`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 180: the double stream loop is unrolled x2 (16 bytes in flight) -- 2 or 3 double loads,  >    never the 4+ a fixed x4 would give.
+
+
+---
+### DEFUN `VALIDATE-SPV-STREAM-NOT-UNROLLED`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 180: (unroll nil) -- exactly one float load, the loop as it was.
+
+
+---
+### DEFUN `VALIDATE-PTX-HAS-NOUNROLL-PRAGMA`
+- **Args**: `(FILE PTX-TEXT)`
+
+  > Endeavour 180: {llvm.loop.unroll.disable} reached the PTX as .pragma "nounroll", so ptxas  >    leaves the loop alone too.
+
+
+---
 ### DEFUN `%SPV-PREFETCH-SHAPES`
 - **Args**: `(TXT)`
 
@@ -10976,7 +11135,7 @@ Generated on 2026-10-07T04:46:08.361858Z
 ---
 ### DEFSTRUCT `SEMANTIC-DOTIMES`
 
-  > Represents (dotimes (var limit [stride]) body...).  >    var is bound to 0, stride, 2*stride, ... while var < limit.  >    stride-node is NIL when the stride was omitted (emit constant 1).  >    Always returns void.
+  > Represents (dotimes (var limit [stride]) body...).  >    var is bound to 0, stride, 2*stride, ... while var < limit.  >    stride-node is NIL when the stride was omitted (emit constant 1).  >    UNROLL (endeavour 180) is the loop's unroll request, from a (declare (unroll ...)) at the head  >    of its body: NIL (none), (:count N), (:full), (:disable) or (:stream BYTES) -- the  >    loop-vector-stride default, whose factor the codegen picks per target from the element size.  >    Always returns void.
 
 
 ---

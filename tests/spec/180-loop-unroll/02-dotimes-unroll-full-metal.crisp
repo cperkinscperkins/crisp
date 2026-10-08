@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 180 -- (declare (unroll t)): full unrolling, {llvm.loop.unroll.full}.  The trip count
+;; is the literal 4, as (unroll t) requires.  Input 0 1 2 3 -> 6.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel du_full (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((acc 0.0))
+    (dotimes (k 4)
+      (declare (unroll t))
+      (set! acc (+ acc (~ A k))))
+    (set! (~ out) acc)))

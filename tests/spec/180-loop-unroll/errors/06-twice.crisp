@@ -1,0 +1,19 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "more than one unroll"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 180 -- two unroll declarations on one loop are refused, rather than one silently winning.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil))
+  (let ((acc 0.0))
+    (dotimes (k 4)
+      (declare (unroll 4))
+      (declare (unroll 2))
+      (set! acc (+ acc (~ A k))))
+    (set! (~ out) acc)))

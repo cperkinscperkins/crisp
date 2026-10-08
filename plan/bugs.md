@@ -3840,3 +3840,35 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         175-177 have no such [CUDA] spec, almost certainly for this reason.  The fix is the CUDA twin of the
         L0 :global path -- cuMemAlloc plus the same descriptor words, zeroed per launch (BUG 084's re-zero
         rule) -- then a [CUDA] copy of 178/10 (default strategy) and 178/12 (:cas).
+
+[x] 107 SPIR-V KERNEL-ARG METADATA NUMBERED FROM A FIXED !100 -- duplicate ids once a module passes !99.
+
+        MEASURED 2026-10-07 (endeavour 180).  inject-spir-kernel-metadata (src/compiler.lisp) appends the
+        OpenCL kernel_arg_* metadata to the printed IR TEXT, numbering it from a hard-coded 100.  A module
+        that already defines !100 or above gets a second definition, and llvm-as refuses the .temp.ll:
+            error: Metadata id is already used
+            !101 = !{!"none", !"none", ...}
+        Two ways to get there:
+          * crisp-compile --debug --ir-target=spv on any non-trivial kernel (debug info numbers past 100) --
+            the side finding of 180's probe 2, e.g. benchmarks/reduction/step5_reduce_vec/sum.crisp.
+          * since 180, without --debug: one !llvm.loop ID per annotated loop.  A 110-loop kernel
+            (put_temp_files_here/e180/many.crisp) reproduced it before the fix.
+
+        FIXED (overlay, 2026-10-07): the base is (max 100 (1+ highest id already in the text))
+        -- %max-metadata-id.
+
+[ ] 108 A LET SILENTLY DROPS A DECLARATION IT DOES NOT KNOW.
+
+        MEASURED 2026-10-07 (found during endeavour 180).  analyze-let-expression strips every leading
+        (declare ...) and %check-context-declarations looks only for grid-level and workgroup-level.  Any
+        other spec is ignored without a word, so a typo is invisible:
+            (let ((acc 1.0))
+              (declare (gird-level))       ; compiles -- and the let is NOT grid-level
+              ...)
+        put_temp_files_here/e180/typo.crisp compiles to SPIR-V with rc=0.
+
+        180 closed this for UNROLL only (refused with "allowed only at the start of a loop body").
+
+        LIKELY FIX (a hypothesis): refuse any spec a let does not understand, naming it.  First list what
+        let bodies legitimately carry today -- expansions write (declare (grid-level)) / (workgroup-level),
+        and the design doc says `use` may appear in a let -- so the allow-list does not break a lowering.

@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "only at the start of a loop body"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 180 -- a bare (declare (unroll ...)) in a progn is refused with the same message as in a let.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil))
+  (progn
+    (declare (unroll 4))
+    (set! (~ out) 0.0)))

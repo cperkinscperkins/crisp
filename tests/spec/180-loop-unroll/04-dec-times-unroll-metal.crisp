@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 180 -- the dotimes FAMILY takes the declaration too: dec-times is a bottom-tested loop
+;; (endeavour 172) whose latch is a conditional branch; the metadata goes on it.  k = 3 2 1 0.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel du_dec (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((acc 0.0))
+    (dec-times (k (length~ A))
+      (declare (unroll 2))
+      (set! acc (+ acc (~ A k))))
+    (set! (~ out) acc)))

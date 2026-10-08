@@ -4036,6 +4036,20 @@
 (defun validate-spv-fused-barrier-unchanged (spv-path)
   (funcall (find-symbol "VALIDATE-SPV-FUSED-BARRIER-UNCHANGED" :crisp.compiler) spv-path))
 
+;; Endeavour 180.  Two-package delegation, as for the 155/157 SPIR-V validators: the runner resolves
+;; validator names in its own package; the implementations live in :crisp.compiler.
+(defun validate-spv-stream-unrolled-x4 (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-STREAM-UNROLLED-X4" :crisp.compiler) spv-path))
+(defun validate-spv-stream-unrolled-x8 (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-STREAM-UNROLLED-X8" :crisp.compiler) spv-path))
+(defun validate-spv-stream-double-unrolled-x2 (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-STREAM-DOUBLE-UNROLLED-X2" :crisp.compiler) spv-path))
+(defun validate-spv-stream-not-unrolled (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-STREAM-NOT-UNROLLED" :crisp.compiler) spv-path))
+
+(defun validate-ptx-has-nounroll-pragma (file ptx-text)
+  (funcall (find-symbol "VALIDATE-PTX-HAS-NOUNROLL-PRAGMA" :crisp.compiler) file ptx-text))
+
 ;;;; ---------------------------------------------------------------------------------------------
 ;;;; Endeavour 154 item 3 — scope the wgmma store validator to the forward kernel.
 ;;;; Was failing the whole --differentiate pass on a property the forward kernel still satisfies.

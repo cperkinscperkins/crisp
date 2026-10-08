@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "only (unroll ...) may be declared"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 180 -- a loop body accepts only the unroll declaration; any other is named and refused.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil))
+  (let ((acc 0.0))
+    (dotimes (k 4)
+      (declare (grid-level))
+      (set! acc (+ acc (~ A k))))
+    (set! (~ out) acc)))

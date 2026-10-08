@@ -1455,6 +1455,8 @@
    Enforces that:
    - (grid-level) requires *in-dispatch-context* and cannot be nested.
    - (workgroup-level) cannot be nested inside another workgroup-level context.
+   - (unroll ...) is refused (endeavour 180): it belongs to a loop body, and a let used to drop it
+     silently.
    Returns (values has-grid-level has-workgroup-level)."
   (let ((has-grid-level (find "GRID-LEVEL" decl-specs
                           :key (lambda (x) (when (consp x) (symbol-name (car x))))
@@ -1462,6 +1464,9 @@
         (has-workgroup-level (find "WORKGROUP-LEVEL" decl-specs
                                :key (lambda (x) (when (consp x) (symbol-name (car x))))
                                :test #'string-equal)))
+
+    (when (find-if (lambda (s) (%declaration-spec-named-p s "UNROLL")) decl-specs)
+      (%refuse-misplaced-unroll location))
 
     (when has-grid-level
           (unless *in-dispatch-context*
@@ -1480,6 +1485,21 @@
                   :source-location location)))
 
     (values has-grid-level has-workgroup-level)))
+
+(defun %refuse-misplaced-unroll (location)
+  "Endeavour 180.  The error for a (declare (unroll ...)) anywhere but the head of a loop body."
+  (error 'crisp-compiler-error
+    :message "(declare (unroll ...)) is allowed only at the start of a loop body -- dotimes and its variants, or loop-vector-stride."
+    :source-location location))
+
+(defun analyze-declare-expression (expr env context location)
+  "Endeavour 180.  A (declare ...) analyzed as an expression is out of place: declarations are
+   taken off the head of a let, a function or a loop body before the body is analyzed.  An
+   unroll declaration gets its own message; any other is the unsupported form it always was."
+  (declare (ignore env context))
+  (if (find-if (lambda (s) (%declaration-spec-named-p s "UNROLL")) (rest expr))
+      (%refuse-misplaced-unroll location)
+      (error 'crisp-unsupported-form-error :form (car expr) :source-location (append location '(0)))))
 
 
 
@@ -1978,11 +1998,147 @@
          :source-location location)))))
 
 
+;;;; ===========================================================================================
+;;;; Endeavour 180 -- loop unrolling.  tests/spec/180-loop-unroll/loop-unroll.md
+;;;;
+;;;;   (dotimes (k n) (declare (unroll 4)) ...)      unroll by 4, LLVM adds the remainder loop
+;;;;   (dotimes (k 8) (declare (unroll t)) ...)      unroll fully (constant trip count only)
+;;;;   (loop-vector-stride v (i) (declare (unroll nil)) ...)   never unroll
+;;;;   (reduce-vec #'+ v 0.0 out :unroll 2)          passed to its loop-vector-stride
+;;;;
+;;;; Unrolling is CODEGEN ONLY: the declaration becomes !llvm.loop metadata on the loop's latch
+;;;; branch and LLVM does the work.  The analyzer strips the declaration off the body and records it
+;;;; on the node (semantic-dotimes-unroll); ANF and AD see the declaration as an inert form.
+;;;; loop-vector-stride with no declaration gets the STREAM DEFAULT: a byte budget in flight per
+;;;; thread, per target (*stream-unroll-bytes-in-flight*).
+;;;; ===========================================================================================
+
+(defun %declaration-spec-named-p (spec name)
+  "Endeavour 180.  T when SPEC, one spec of a (declare ...) form, is a list headed by a symbol
+   named NAME (compared by name, so the reading package does not matter)."
+  (and (consp spec) (symbolp (car spec)) (string-equal (symbol-name (car spec)) name)))
+
+(defun %parse-unroll-spec (spec head location)
+  "Endeavour 180.  Parses one (unroll V) declaration SPEC on the loop headed HEAD.  V is a positive
+   integer literal (unroll by V), t (unroll fully) or nil (never unroll).  Returns (:count V),
+   (:full) or (:disable); anything else is a compile error."
+  (unless (and (consp (cdr spec)) (null (cddr spec)))
+    (error 'crisp-compiler-error
+      :message (format nil "~(~a~): malformed unroll declaration ~s -- expected (unroll N), (unroll t) or (unroll nil)."
+                       head spec)
+      :source-location location))
+  (let ((v (second spec)))
+    (cond ((and (integerp v) (plusp v)) (list :count v))
+          ((and (symbolp v) (string= (symbol-name v) "T")) (list :full))
+          ((and (symbolp v) (string= (symbol-name v) "NIL")) (list :disable))
+          (t (error 'crisp-compiler-error
+               :message (format nil "~(~a~): in (unroll ~s), the unroll factor must be a positive integer literal, t (unroll fully) or nil (never unroll)."
+                                head v)
+               :source-location location)))))
+
+(defun %split-loop-body-declarations (body-forms head location)
+  "Endeavour 180.  Splits the leading (declare ...) forms off a counted loop's BODY-FORMS.  A loop
+   body accepts ONE declaration: (unroll V) -- or (%unroll-default VEC), which only
+   loop-vector-stride's expansion writes.  Any other declaration, or a second unroll, is a compile
+   error naming the loop HEAD.  Returns (values remaining-body spec), where spec is NIL (none),
+   (:count N), (:full), (:disable) or (:stream VEC-FORM)."
+  (let* ((decls (loop for f in body-forms
+                      while (and (consp f) (symbolp (car f))
+                                 (string-equal (symbol-name (car f)) "DECLARE"))
+                      collect f))
+         (rest (nthcdr (length decls) body-forms))
+         (spec nil))
+    (dolist (s (loop for d in decls append (rest d)))
+      (cond
+       ((%declaration-spec-named-p s "UNROLL")
+        (when (and spec (not (eq (first spec) :stream)))
+          (error 'crisp-compiler-error
+            :message (format nil "~(~a~): more than one unroll declaration on one loop -- write one (unroll ...)."
+                             head)
+            :source-location location))
+        (setf spec (%parse-unroll-spec s head location)))
+       ((%declaration-spec-named-p s "%UNROLL-DEFAULT")
+        (unless spec (setf spec (list :stream (second s)))))
+       (t
+        (error 'crisp-compiler-error
+          :message (format nil "~(~a~): only (unroll ...) may be declared at the start of a loop body, but found (declare ~s)."
+                           head s)
+          :source-location location))))
+    (log:debug "180: ~a body declarations ~s -> unroll ~s" head decls spec)
+    (values rest spec)))
+
+(defun %loop-trip-count-constant-p (node)
+  "Endeavour 180.  T when every operand of the counted loop NODE (a semantic-dotimes or
+   semantic-loop-variant) is a literal, so its trip count is known at compile time."
+  (flet ((lit-or-absent (n) (or (null n) (semantic-literal-p n))))
+    (and (lit-or-absent (semantic-dotimes-limit-node node))
+         (lit-or-absent (semantic-dotimes-stride-node node))
+         (or (not (semantic-loop-variant-p node))
+             (and (lit-or-absent (semantic-loop-variant-init-node node))
+                  (lit-or-absent (semantic-loop-variant-factor-node node)))))))
+
+(defun %stream-element-bytes (vec-form env context location)
+  "Endeavour 180.  The size in bytes of VEC-FORM's element type, or NIL when it is not a
+   registered scalar type (a struct element, say).  Used for loop-vector-stride's stream default;
+   never an error -- an unknown size only means no default."
+  (handler-case
+      (let* ((elem (resolve-type-alias
+                    (semantic-node-type
+                     (analyze-expression (list (intern "~" (find-package :crisp-language)) vec-form 0)
+                                         env context location))))
+             (ct (and (symbolp elem) (gethash elem *crisp-types*)))
+             (bits (and ct (crisp-type-size ct))))
+        (when (and bits (plusp bits)) (ceiling bits 8)))
+    (error (e)
+      (log:debug "180: no stream default for ~s -- element size unknown (~a)" vec-form e)
+      nil)))
+
+(defun %resolve-unroll-spec (spec node head env context location)
+  "Endeavour 180.  Turns the parsed SPEC of the loop NODE into what the node keeps: checks that
+   (unroll t) has a constant trip count, and sizes the stream default from the vector's element
+   type -- (:stream VEC-FORM) becomes (:stream BYTES), or NIL when the size is unknown."
+  (ecase (first spec)
+    ((:count :disable) spec)
+    (:full
+     (unless (%loop-trip-count-constant-p node)
+       (error 'crisp-compiler-error
+         :message (format nil "~(~a~): (unroll t) unrolls a loop fully, so its trip count must be a compile-time constant -- here it is computed at run time.  Use (unroll N) for a factor."
+                          head)
+         :source-location location))
+     spec)
+    (:stream
+     (let ((bytes (%stream-element-bytes (second spec) env context location)))
+       (when bytes (list :stream bytes))))))
+
+(defun %analyze-loop-with-unroll (analyzer expr env context location)
+  "Endeavour 180.  Runs the counted-loop ANALYZER on EXPR with its body's leading declarations
+   stripped, then records the unroll request on the node it returns.  The loop's own analysis
+   never sees a declaration."
+  (multiple-value-bind (body spec)
+      (%split-loop-body-declarations (cddr expr) (car expr) location)
+    (let ((node (funcall analyzer
+                         (if (eq body (cddr expr)) expr (list* (car expr) (cadr expr) body))
+                         env context location)))
+      (when (and spec (semantic-dotimes-p node))
+        (setf (semantic-dotimes-unroll node)
+              (%resolve-unroll-spec spec node (car expr) env context location)))
+      node)))
+
 (defun analyze-dotimes-expression (expr env context location)
   "Analyzes (dotimes (var limit [stride]) body...).
    VAR is bound as the limit's type (int, ulong, etc.) in the body.
    STRIDE is optional; defaults to literal 1 of the limit's type.
+   Endeavour 180: a leading (declare (unroll ...)) in the body is the loop's unroll request.
    Returns a semantic-dotimes node (type void)."
+  (%analyze-loop-with-unroll #'%analyze-dotimes-core expr env context location))
+
+(defun %analyze-dotimes-core (expr env context location)
+  "Analyzes (dotimes (var limit [stride]) body...).
+   VAR is bound as the limit's type (int, ulong, etc.) in the body.
+   STRIDE is optional; defaults to literal 1 of the limit's type.
+   Returns a semantic-dotimes node (type void).
+   Endeavour 180: the CORE of analyze-dotimes-expression -- called with the body's leading declarations already
+   stripped by %analyze-loop-with-unroll, which records the unroll request on the node."
   (unless (and (>= (length expr) 2) (listp (second expr)) (>= (length (second expr)) 2))
     (error 'crisp-compiler-error
       :message "Malformed dotimes: expected (dotimes (var limit [stride]) body...)"
@@ -2118,6 +2274,12 @@
     node))
 
 (defun analyze-loop-variant-expression (expr env context location)
+  "Analyzes a dotimes-family variant (dec-times, do-times-by-doubling, ... and the + forms;
+   endeavour 172).  Endeavour 180: a leading (declare (unroll ...)) in the body is the loop's
+   unroll request.  Returns a semantic-loop-variant."
+  (%analyze-loop-with-unroll #'%analyze-loop-variant-core expr env context location))
+
+(defun %analyze-loop-variant-core (expr env context location)
   "Analyzes every dotimes variant and its + form (endeavour 172):
      (dec-times            (i N [stride]) body...)    i = ((N-1)/s)*s ... 0, the exact reverse of dotimes
      (dec-times-by-half    (i N) body...)             i = N, N/2, ... 1
@@ -2128,7 +2290,9 @@
      (dec-power-step       (i N) body...)             i = largest power of 2 below N, ... 1
    Operands must be unsigned (D2); literal gates per D3.  A + form requires every operand to
    be provably uniform (D5).  The loop variable takes N's type and the combined uniformity of
-   all operands.  Returns a semantic-loop-variant."
+   all operands.  Returns a semantic-loop-variant.
+   Endeavour 180: the CORE of analyze-loop-variant-expression -- called with the body's leading declarations already
+   stripped by %analyze-loop-with-unroll, which records the unroll request on the node."
   (let* ((head (car expr))
          (head-name (symbol-name head))
          (plus-p (and (> (length head-name) 1)
@@ -2557,7 +2721,12 @@
   "Pure expansion of (loop-vector-stride VEC (VAR) BODY...).
    Refactored to use %build-exact-iter-count-form for consistency with
    the rest of Group A.  Same behaviour as the earlier rewrite — single
-   counter dotimes, body runs unconditionally."
+   counter dotimes, body runs unconditionally.
+   Endeavour 180: leading (declare ...) forms of BODY belong to the LOOP, so they move to the head
+   of the dotimes body, where (declare (unroll ...)) is understood.  With no unroll declaration the
+   dotimes gets (declare (%unroll-default VEC)) -- the stream default, sized by VEC's element type
+   when the dotimes is analyzed.  (unroll t) is refused here: the trip count depends on the
+   vector's length and the grid, so it is never a compile-time constant."
   (unless (and (>= (length expr) 3)
                (listp (third expr))
                (= (length (third expr)) 1)
@@ -2567,7 +2736,16 @@
       :source-location location))
   (let* ((vec-form (second expr))
          (var-name (first (third expr)))
-         (body-forms (cdddr expr))
+         (loop-decls (loop for f in (cdddr expr)
+                           while (and (consp f) (symbolp (car f))
+                                      (string-equal (symbol-name (car f)) "DECLARE"))
+                           collect f))
+         (body-forms (nthcdr (length loop-decls) (cdddr expr)))
+         (unroll-specs (loop for d in loop-decls
+                             append (remove-if-not (lambda (s)
+                                                     (and (consp s) (symbolp (car s))
+                                                          (string-equal (symbol-name (car s)) "UNROLL")))
+                                                   (rest d))))
          (gid-sym (gensym "GID"))
          (gsize-sym (gensym "GSIZE"))
          (len-sym (gensym "LEN"))
@@ -2591,7 +2769,12 @@
                          (first body-forms)
                          (cons progn-sym body-forms)))
          (inner-let (list let-sym (list i-binding) inner-body))
-         (dotimes-form (list dotimes-sym (list k-sym iters-sym) inner-let))
+         (dotimes-form (list* dotimes-sym (list k-sym iters-sym)
+                              (append loop-decls
+                                      (unless unroll-specs
+                                        (list (list declare-sym
+                                                    (list (intern "%UNROLL-DEFAULT" cl-pkg) vec-form))))
+                                      (list inner-let))))
          (iters-let (list let-sym
                           (list (list iters-sym
                                       (%build-exact-iter-count-form
@@ -2603,6 +2786,14 @@
                                 (list len-sym (list len-tilde-sym vec-form)))
                           (list declare-sym (list grid-level-sym))
                           iters-let)))
+    (when (find-if (lambda (s) (and (= (length s) 2) (symbolp (second s))
+                                    (string-equal (symbol-name (second s)) "T")))
+                   unroll-specs)
+      (error 'crisp-compiler-error
+        :message "loop-vector-stride: (unroll t) unrolls a loop fully, so its trip count must be a compile-time constant -- a loop-vector-stride's depends on the vector's length and the grid.  Use (unroll N) for a factor."
+        :source-location location))
+    (log:debug "180: loop-vector-stride over ~s, loop declarations ~s~:[, stream default~;~]"
+               vec-form loop-decls unroll-specs)
     expansion))
 
 (defun analyze-loop-vector-stride-expression (expr env context location)
@@ -4932,6 +5123,9 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-loop-vector-stride-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-loop-vector-stride-expression)))
+  ;; Endeavour 180: a misplaced (declare (unroll ...)) is named, not reported as an unsupported form.
+  (dolist (pkg (list (find-package :crisp-language) (find-package :crisp.compiler)))
+    (setf (gethash (intern "DECLARE" pkg) *expression-analyzers*) #'analyze-declare-expression))
   (let ((sym-cl (intern "TENSOR-STRIDE" (find-package :crisp-language)))
         (sym-cc (intern "TENSOR-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-tensor-stride-expression)

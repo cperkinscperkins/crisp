@@ -3947,6 +3947,41 @@ Communicates back to the hoisting code that this kernel should be run on only on
 
 For library writers. See the [entrypoint](#entrypoint-1) section
 
+#### unroll ✅
+```
+(dotimes (k n)
+  (declare (unroll 4))        ; unroll by 4 -- a remainder loop handles n not a multiple of 4
+  ...)
+
+(dotimes (k 8)
+  (declare (unroll t))        ; unroll fully -- the trip count must be a compile-time constant
+  ...)
+
+(loop-vector-stride v (i)
+  (declare (unroll nil))      ; never unroll this loop, whatever the default
+  ...)
+```
+
+The equivalent of `#pragma unroll` in CUDA, HIP and SYCL. It goes at the start of a loop body --
+`dotimes` and its variants (`dotimes+`, `dec-times`, `do-times-by-doubling`, ...) or
+`loop-vector-stride` -- and nowhere else. The value is a positive integer literal, `t` or `nil`.
+Anything else, a second `unroll` on the same loop, or an `unroll` outside a loop body, is a
+compilation error. It is the only declaration a loop body accepts.
+
+Unrolling is a request to the code generator, not a change to the program: the loop computes the
+same values, in the same order, with or without it, and autodiff sees the same loop. Crisp passes it
+to LLVM as loop metadata (`llvm.loop.unroll.count` / `.full` / `.disable`), and LLVM does the
+unrolling and writes the remainder loop. On PTX the factor is final, as with CUDA's `#pragma unroll`:
+the loop LLVM unrolled is marked `.pragma "nounroll"`, so `ptxas` does not unroll it further, and
+`(unroll nil)` keeps `ptxas` from unrolling it at all.
+
+Why bother: a loop that does little work per trip -- a stream over a large vector -- is limited by
+how many loads each thread has in flight, not by arithmetic. Unrolling it puts several independent
+loads in flight per thread. On an Intel Arc B580, a `loop-vector-stride` sum went from 57% to 99%
+of the memory bus from unrolling alone. The same request can hurt a heavy loop body (code size,
+registers), which is why it is a knob. `loop-vector-stride` has a default; see
+[loop-vector-stride](#loop-vector-stride).
+
 ### For `defmacro` writers
 
 #### grid-level / workgroup-level ✅
@@ -4779,6 +4814,14 @@ The only way to make `vector_add` faster is to use interleaved memory and kernel
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
+**Unrolling.** On SPIR-V, `loop-vector-stride` is unrolled by default, so that each thread keeps
+16 bytes of loads in flight: x4 for a `float` vector, x2 for `double`, x8 for 16-bit types (never
+more than x8). That number was measured on an Intel Arc B580, where one 4-byte load per trip reaches
+57% of the memory bus and 16 bytes reach 99%. On PTX there is no default: LLVM's NVPTX backend and
+`ptxas` already unroll the loop, and a hint would only stop `ptxas` from going further. A
+`(declare (unroll ...))` at the start of the body replaces the default on every target --
+`(unroll nil)` turns it off. See [unroll](#unroll).
+
 #### loop-soa-stride 📝
 `(loop-soa-stride soaVec (i) ...)`
 
@@ -5305,6 +5348,9 @@ grows or shrinks `i`.  So:
     ...)
 ```
 Binds `i` to 0, counts up to N, incrementing by `stride` each time through the loop. `stride` is optional, defaults to 1.
+
+Every loop in this family accepts `(declare (unroll ...))` at the start of its body; see
+[unroll](#unroll). A counted loop has no unroll default -- it is not necessarily a stream.
 
 #### dec-times / dec-times+  ✅
 ```
@@ -7013,7 +7059,7 @@ loop and the grid reduction for you:
 
 ```
 (reduce-vec someFunction vec identity out-cell
-            &key strategy message
+            &key strategy message unroll
                  local-scratch-vec global-scratch-vec atomic-counter election-flag-cell)
 ```
 
@@ -7043,6 +7089,10 @@ A call means exactly this:
 * The scratch keys and `:message` are passed straight through to `grid-reduce!`. Any scratch you
   leave out is allocated for you, and a key the chosen strategy does not use is a compilation
   error (`:atomic` and `:cas` take only `:local-scratch-vec`).
+* `:unroll` belongs to the loop, not to `grid-reduce!`: `:unroll 2` puts `(declare (unroll 2))` at
+  the start of the `loop-vector-stride` body. It takes what the declaration takes -- a positive
+  integer, `t` or `nil` -- and without it the loop gets `loop-vector-stride`'s default (see
+  [unroll](#unroll)).
 
 **The grid does not have to match the vector.** That is the point of the stride: launch about as
 many threads as the hardware runs at once, and each folds several elements. A thread that owns no

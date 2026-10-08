@@ -49,6 +49,14 @@ The only way to make `vector_add` faster is to use interleaved memory and kernel
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
+**Unrolling.** On SPIR-V, `loop-vector-stride` is unrolled by default, so that each thread keeps
+16 bytes of loads in flight: x4 for a `float` vector, x2 for `double`, x8 for 16-bit types (never
+more than x8). That number was measured on an Intel Arc B580, where one 4-byte load per trip reaches
+57% of the memory bus and 16 bytes reach 99%. On PTX there is no default: LLVM's NVPTX backend and
+`ptxas` already unroll the loop, and a hint would only stop `ptxas` from going further. A
+`(declare (unroll ...))` at the start of the body replaces the default on every target --
+`(unroll nil)` turns it off. See [unroll](#unroll).
+
 #### loop-soa-stride 📝
 `(loop-soa-stride soaVec (i) ...)`
 

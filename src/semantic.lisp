@@ -569,13 +569,17 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   "Represents (dotimes (var limit [stride]) body...).
    var is bound to 0, stride, 2*stride, ... while var < limit.
    stride-node is NIL when the stride was omitted (emit constant 1).
+   UNROLL (endeavour 180) is the loop's unroll request, from a (declare (unroll ...)) at the head
+   of its body: NIL (none), (:count N), (:full), (:disable) or (:stream BYTES) -- the
+   loop-vector-stride default, whose factor the codegen picks per target from the element size.
    Always returns void."
   type
   var-name
   limit-node
   stride-node
   body
-  source-location)
+  source-location
+  (unroll nil))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Endeavour 172 -- the dotimes family: dec-times, dec-times-by-half / -by-factor,

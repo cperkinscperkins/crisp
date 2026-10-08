@@ -3997,6 +3997,75 @@
             (cl:setf ok cl:nil))
           ok))))
 
+;;; Endeavour 180 spec validators: count the loads in the SHIPPED module.
+
+(defun %spv-scalar-load-count (spv-path width)
+  "Endeavour 180.  The number of OpLoad instructions in SPV-PATH whose result is the WIDTH-bit
+   float type (32 or 64), read from `llvm-spirv --to-text`; NIL when llvm-spirv is unavailable.
+   Counts only inside functions NOT named *_grad, so a --differentiate module (forward + gradient
+   kernel) counts the forward kernel alone.  In the specs' streaming kernels (B[i] = 2*A[i]) every
+   such load is a load of A: the loads per trip of the unrolled loop plus its remainder loop's one."
+  (let ((txt (%spv-disasm spv-path)))
+    (when txt
+      (let ((float-ids nil) (names (make-hash-table :test 'equal)) (loads 0) (counting nil))
+        (with-input-from-string (s txt)
+          (loop for line = (read-line s nil) while line
+                do (let ((toks (%spv-tokens line)))
+                     (cond ((and (>= (length toks) 4) (string= (second toks) "TypeFloat")
+                                 (string= (fourth toks) (princ-to-string width)))
+                            (push (third toks) float-ids))
+                           ((and (>= (length toks) 4) (string= (second toks) "Name"))
+                            (setf (gethash (third toks) names) (string-trim "\"" (fourth toks))))))))
+        (with-input-from-string (s txt)
+          (loop for line = (read-line s nil) while line
+                do (let ((toks (%spv-tokens line)))
+                     (cond ((and (>= (length toks) 4) (string= (second toks) "Function"))
+                            (let ((nm (gethash (fourth toks) names "")))
+                              (setf counting (not (search "_grad" nm :test #'char-equal)))))
+                           ((and (>= (length toks) 2) (string= (second toks) "FunctionEnd"))
+                            (setf counting nil))
+                           ((and counting (>= (length toks) 3) (string= (second toks) "Load")
+                                 (member (third toks) float-ids :test #'string=))
+                            (incf loads))))))
+        (log:debug "180: ~a has ~d f~d load(s) outside *_grad functions" spv-path loads width)
+        loads))))
+
+(defun %validate-spv-stream-loads (spv-path width lo hi what)
+  "Endeavour 180.  T when SPV-PATH has between LO and HI (inclusive; HI NIL = no limit) WIDTH-bit
+   float loads; prints WHAT on failure.  Skips (T) when llvm-spirv is unavailable."
+  (let ((n (%spv-scalar-load-count spv-path width)))
+    (cond ((null n)
+           (format t "  (llvm-spirv unavailable -- load-count check skipped)~%") t)
+          ((and (>= n lo) (or (null hi) (<= n hi))) t)
+          (t (format t "FAIL: ~d f~d load(s) in the shipped SPIR-V; expected ~a.~%" n width what)
+             nil))))
+
+(defun validate-spv-stream-unrolled-x4 (spv-path)
+  "Endeavour 180: the float stream loop is unrolled x4 -- at least 4 float loads (body), at most 5
+   (plus the remainder loop's one)."
+  (%validate-spv-stream-loads spv-path 32 4 5 "4 or 5 (x4 body + remainder) -- the stream default did not unroll"))
+
+(defun validate-spv-stream-unrolled-x8 (spv-path)
+  "Endeavour 180: the float stream loop is unrolled x8 -- 8 or 9 float loads."
+  (%validate-spv-stream-loads spv-path 32 8 9 "8 or 9 (x8 body + remainder) -- (unroll 8) did not reach the loop"))
+
+(defun validate-spv-stream-double-unrolled-x2 (spv-path)
+  "Endeavour 180: the double stream loop is unrolled x2 (16 bytes in flight) -- 2 or 3 double loads,
+   never the 4+ a fixed x4 would give."
+  (%validate-spv-stream-loads spv-path 64 2 3 "2 or 3 (x2 body + remainder) -- the default is a byte budget, 16 bytes = 2 doubles"))
+
+(defun validate-spv-stream-not-unrolled (spv-path)
+  "Endeavour 180: (unroll nil) -- exactly one float load, the loop as it was."
+  (%validate-spv-stream-loads spv-path 32 1 1 "exactly 1 -- (unroll nil) did not stop the unrolling"))
+
+(defun validate-ptx-has-nounroll-pragma (file ptx-text)
+  "Endeavour 180: {llvm.loop.unroll.disable} reached the PTX as .pragma \"nounroll\", so ptxas
+   leaves the loop alone too."
+  (declare (ignore file))
+  (cond ((null ptx-text) (format t "FAIL: no PTX text~%") nil)
+        ((search ".pragma \"nounroll\"" ptx-text) t)
+        (t (format t "FAIL: no .pragma \"nounroll\" in the PTX -- (unroll nil) was lost.~%") nil)))
+
 
 
 (defun %spv-prefetch-shapes (txt)

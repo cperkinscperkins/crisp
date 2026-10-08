@@ -11,7 +11,7 @@
 
 | device | data captured | Crisp commit | environment | hardware profile |
 |---|---|---|---|---|
-| Intel(R) Graphics [0xe20b] | 2026-10-06 | `56cb083b` | docker | `bmg` |
+| Intel(R) Graphics [0xe20b] | 2026-10-08 | `f894a8fd` | docker | `bmg` |
 | NVIDIA H100 80GB HBM3 | 2026-09-13 | `cc116e8c` | runpod | `h100-80gb-hbm3` |
 | NVIDIA H200 | 2026-09-13 | `66a7911d` | runpod | `h200` |
 | NVIDIA H100 NVL | 2026-10-06 | `dd7edf5e` | runpod | `h100-nvl` |
@@ -28,14 +28,14 @@ Fp32, at the largest size measured on each device.  % = share of the device's ME
 
 | workload | **Crisp** | best peer | top of line |
 |---|---|---|---|
-| argmax (3 GiB) | **57%** · 0.62 s | oneDPL 95% · 3.3 s | oneMKL 38% |
-| sum (3 GiB) | **58%** · 0.57 s | oneDPL 96% · 2.9 s | oneMKL 94% |
-| sum_sumsq (3 GiB) | **58%** · 0.58 s | oneDPL 95% · 3.0 s | oneMKL 48% |
-| welford (3 GiB) | **56%** · 0.62 s | oneDPL 96% · 3.0 s | — |
+| argmax (3 GiB) | **99%** · 0.65 s | oneDPL 95% · 3.3 s | oneMKL 38% |
+| sum (3 GiB) | **98%** · 0.63 s | oneDPL 96% · 2.9 s | oneMKL 94% |
+| sum_sumsq (3 GiB) | **99%** · 0.64 s | oneDPL 95% · 3.0 s | oneMKL 48% |
+| welford (3 GiB) | **99%** · 0.68 s | oneDPL 96% · 3.0 s | — |
 
 Crisp compiles **3–5x faster** than the peer libraries here.
 
-Ladder, sum at 3 GiB: hand-unrolled grid-stride (ladder 3b) 98%; `grid-reduce! :atomic` 58%; `reduce-vec` (default last-man) 58%.
+Ladder, sum at 3 GiB: hand-unrolled grid-stride (ladder 3b) 99%; `grid-reduce! :atomic` 99%; `reduce-vec` (default last-man) 99%.
 
 ### NVIDIA H100 NVL
 
@@ -50,9 +50,10 @@ Crisp compiles **9–19x faster** than the peer libraries here.
 
 Ladder, sum at 4 GiB: hand-unrolled grid-stride (ladder 3b) 96%; `grid-reduce! :atomic` 91%; `reduce-vec` (default last-man) 42%.
 
-**Known gaps, both recorded as endeavours with measurements and a plan:**
+**Closed:** [Endeavour 180 — loop unrolling](../tests/spec/180-loop-unroll/loop-unroll.md) (2026-10-07): `loop-vector-stride` now unrolls by default on SPIR-V (16 bytes in flight per thread), which took `reduce-vec` from 57% to 99% of peak on BMG.  NVIDIA gets no default: its backend already unrolls, and the H100 measured no hint as fastest.
 
-- [Endeavour 180 — loop unrolling](../tests/spec/180-loop-unroll/loop-unroll.md): the SPIR-V stride loop issues one load per trip; an unroll hint takes `reduce-vec` from 57% to 98% on BMG (measured).  NVIDIA's backend already unrolls.
+**Known gap, recorded as an endeavour with measurements and a plan:**
+
 - [Endeavour 181 — last-man sweep](../tests/spec/181-last-man-sweep/last-man-sweep.md): last-man (the default, and the only dependent strategy) is capped at groups <= local size, a quarter of an H100's resident groups; the same sum with `:atomic` reaches 91%.
 
 ## Regenerating

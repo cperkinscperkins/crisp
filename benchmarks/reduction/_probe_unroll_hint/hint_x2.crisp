@@ -1,0 +1,17 @@
+;; PROBE (endeavour 180, decision D2): does an unroll HINT help or hurt on NVIDIA?  The five files
+;; differ ONLY in reduce-vec's :unroll -- none (no hint: LLVM's NVPTX x4, then ptxas unrolls further;
+;; 33 LDG in SASS), nil, 2, 4, 8.  An explicit factor leaves the main loop .pragma "nounroll", so
+;; ptxas stops there (x4 = 5 LDG).  :atomic Phase 2, so last-man's groups<=local cap is not in play.
+;; This file: hint_x2.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_hint_x2 (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (reduce-vec #'+ input 0.0 result :strategy :atomic :unroll 2))

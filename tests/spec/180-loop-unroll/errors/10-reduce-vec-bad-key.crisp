@@ -1,0 +1,14 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be a positive integer"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;;
+;; ENDEAVOUR 180 -- reduce-vec :unroll takes what the declaration takes; 0 is refused.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil))
+  (reduce-vec #'+ A 0.0 out :strategy :atomic :unroll 0))
