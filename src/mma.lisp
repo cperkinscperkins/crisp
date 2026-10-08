@@ -4068,6 +4068,38 @@
 
 
 
+;; Endeavour 182 -- launch-bound validators.
+(defun %ptx-minnctapersm (ptx-text)
+  "Endeavour 182.  The integer of the first .minnctapersm directive in PTX-TEXT, or NIL."
+  (let ((p (search ".minnctapersm" ptx-text)))
+    (and p (parse-integer ptx-text :start (+ p (length ".minnctapersm")) :junk-allowed t))))
+
+(defun %validate-ptx-minnctapersm (ptx-text expected)
+  (let ((got (%ptx-minnctapersm ptx-text)))
+    (cond ((null ptx-text) (format t "FAIL: no PTX text~%") nil)
+          ((eql got expected)
+           (or (search ".maxntid" ptx-text)
+               (progn (format t "FAIL: .minnctapersm ~a without a .maxntid~%" got) nil)))
+          (t (format t "FAIL: expected .minnctapersm ~a in the PTX, found ~a.~%" expected got) nil))))
+
+(defun validate-ptx-minnctapersm-4 (file ptx-text)
+  "Endeavour 182: the entry carries launch bounds with .minnctapersm 4 (and a .maxntid)."
+  (declare (ignore file))
+  (%validate-ptx-minnctapersm ptx-text 4))
+
+(defun validate-ptx-minnctapersm-2 (file ptx-text)
+  "Endeavour 182: the entry carries launch bounds with .minnctapersm 2 (and a .maxntid)."
+  (declare (ignore file))
+  (%validate-ptx-minnctapersm ptx-text 2))
+
+(defun validate-ptx-no-minnctapersm (file ptx-text)
+  "Endeavour 182: the entry carries NO launch bounds -- ptxas keeps its default register budget."
+  (declare (ignore file))
+  (cond ((null ptx-text) (format t "FAIL: no PTX text~%") nil)
+        ((or (search ".minnctapersm" ptx-text) (search ".maxntid" ptx-text))
+         (format t "FAIL: unexpected launch bounds (.maxntid / .minnctapersm) in the PTX.~%") nil)
+        (t t)))
+
 (defun %spv-prefetch-shapes (txt)
   "List of (BLOCK-WIDTH . BLOCK-HEIGHT) for every Subgroup2DBlockPrefetchINTEL in TXT, with the
    constant IDs resolved to integers.  Operand order is

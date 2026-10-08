@@ -1347,6 +1347,31 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
     (%check-identity-matches-variable op-name var identity type env context location))
   (make-semantic-literal :value-type 'int :value 0 :source-location location))
 
+;; Endeavour 181 -- last-man's strided final sweep (tests/spec/181-last-man-sweep/).
+(defun %181-strided-sweep-form (lid ng ls fold-at)
+  "Endeavour 181.  Last-man's final sweep, run by every thread of the elected workgroup: thread LID folds
+   partials LID, LID+LS, LID+2*LS, ... below NG into accumulator(s) the caller has bound to the IDENTITY,
+   so one workgroup of LS threads covers any number of workgroups.  LID, NG and LS are symbols bound to
+   ints.  FOLD-AT is called with the symbol holding the partial index P and returns a LIST of the forms
+   that fold partial P in (spliced into the guarding WHEN).
+
+   A COUNTED loop over ceil(NG/LS) strides with a closed-form index -- not a loop-carried P -- keeps the
+   AD pass out of it (compare BUG 103/105), and the trip count is uniform (NG and LS are the same in
+   every thread), hence dotimes+.  The fold order is fixed by (NG, LS) alone, so last-man stays
+   reproducible.
+
+   The first partial is folded by the loop like every other, NOT read into the accumulator before it as
+   the pre-181 one-pass sweep did.  Seeding with (if (< lid ng) (~ gv lid) identity) and then looping
+   compiled to correct LLVM IR (checked at -O3) that BMG executed wrongly: the seed was dropped, in some
+   specs and not others depending on unrelated code shape, while the loop's own folds were never wrong.
+   Same signature as BUG 030 (IGC).  See tests/spec/181-last-man-sweep/last-man-sweep.md, D2."
+  (let ((k (gensym "LM-K"))
+        (p (gensym "LM-P")))
+    `(dotimes+ (,k (/ (+ ,ng (- ,ls 1)) ,ls))
+       (let ((,p (+ ,lid (* ,k ,ls))))
+         (when (< ,p ,ng)
+           ,@(funcall fold-at p))))))
+
 (defun %fused-grid-reduce-form (form)
   "Endeavour 176 Phase 2b.  An independent grid-reduce!, lowered with its work done once for all clauses.
    Phase 1 is ONE independent reduce-workgroup (itself fused).  Phase 2 by :strategy --
@@ -1432,12 +1457,16 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                     (flag (supply (getf rest :election-flag-cell) v1 nil :election-flag-cell))
                     (lid (gensym "LM-LID"))
                     (ng (gensym "LM-NG"))
+                    (ls (gensym "LM-LS"))
                     (vals (loop repeat (length clauses) collect (gensym "LM-VAL")))
                     (body
                       `(progn
                          ,@(reverse checks)
-                         (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
-                                       "grid-reduce!: the number of workgroups exceeds local_work_size, so the last-man final sweep cannot cover every partial in one pass.")
+                         ;; 181: one partial per workgroup in EVERY clause's buffer (the sweep is strided,
+                         ;; so the local size no longer caps the group count)
+                         ,@(loop for gv in (remove-duplicates gvs)
+                                 collect `(r-t-assert-0 (<= (get-num-groups 0) (length~ ,gv))
+                                                        "grid-reduce!: a last-man :global-scratch-vec has fewer elements than there are workgroups; it needs one per workgroup (:match-num-workgroups)."))
                          ;; Phase 1 -- ONE fused workgroup reduction of every clause
                          (,rwg ,(loop for c in clauses for sv in svs
                                       collect `(,(first c) ,(second c) ,(third c) :local-scratch-vec ,sv)))
@@ -1455,9 +1484,16 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                          ;; the LAST workgroup sweeps every clause's partials in ONE fused reduction
                          (when+ (= (~ ,flag) 1u)
                            (let ((,lid (to-int (get-local-linear-id)))
-                                 (,ng  (to-int (get-num-groups 0))))
-                             (let ,(loop for c in clauses for gv in gvs for val in vals
-                                         collect `(,val (if (< ,lid ,ng) (~ ,gv ,lid) ,(third c))))
+                                 (,ng  (to-int (get-num-groups 0)))
+                                 (,ls  (to-int (get-local-linear-size))))
+                             (let ,(loop for c in clauses for val in vals
+                                         collect `(,val ,(third c)))
+                               ;; 181: fold every partial, strided, every clause in one loop
+                               ,(%181-strided-sweep-form
+                                 lid ng ls
+                                 (lambda (p)
+                                   (loop for c in clauses for gv in gvs for val in vals
+                                         collect `(set! ,val ,(%175-apply-binop (first c) val `(~ ,gv ,p))))))
                                (,rwg ,(loop for c in clauses for sv in svs for val in vals
                                             collect `(,(first c) ,val ,(third c) :local-scratch-vec ,sv)))
                                (when-thread-in-group-is 0
@@ -1697,12 +1733,17 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                (flag (supply (getf rest :election-flag-cell) v1 nil :election-flag-cell))
                (lid (gensym "LMD-LID"))
                (ng (gensym "LMD-NG"))
+               (ls (gensym "LMD-LS"))
                (vals (loop repeat (length clauses) collect (gensym "LMD-VAL")))
+               (news (loop repeat (length clauses) collect (gensym "LMD-NEW")))
                (body
                  `(progn
                     ,@(reverse checks)
-                    (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
-                                  "grid-reduce!: the number of workgroups exceeds local_work_size, so the last-man final sweep cannot cover every partial in one pass.")
+                    ;; 181: one partial per workgroup in EVERY clause's buffer (the sweep is strided,
+                    ;; so the local size no longer caps the group count)
+                    ,@(loop for gv in (remove-duplicates gvs)
+                            collect `(r-t-assert-0 (<= (get-num-groups 0) (length~ ,gv))
+                                                   "grid-reduce!: a last-man :global-scratch-vec has fewer elements than there are workgroups; it needs one per workgroup (:match-num-workgroups)."))
                     (,rwg ,combiner ,(loop for c in clauses for sv in svs
                                            collect `(,(first c) ,(second c) :local-scratch-vec ,sv)))
                     (when-thread-in-group-is 0
@@ -1717,9 +1758,20 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                     (sync-workgroup)
                     (when+ (= (~ ,flag) 1u)
                       (let ((,lid (to-int (get-local-linear-id)))
-                            (,ng  (to-int (get-num-groups 0))))
-                        (let ,(loop for c in clauses for gv in gvs for val in vals
-                                    collect `(,val (if (< ,lid ,ng) (~ ,gv ,lid) ,(second c))))
+                            (,ng  (to-int (get-num-groups 0)))
+                            (,ls  (to-int (get-local-linear-size))))
+                        (let ,(loop for c in clauses for val in vals
+                                    collect `(,val ,(second c)))
+                          ;; 181: fold every partial, strided -- ONE combiner call per partial index,
+                          ;; carrying every variable of the state together
+                          ,(%181-strided-sweep-form
+                            lid ng ls
+                            (lambda (p)
+                              (list
+                               `(let ((,@news ,(%combiner-call combiner
+                                                              (append vals
+                                                                      (loop for gv in gvs collect `(~ ,gv ,p))))))
+                                  ,@(loop for val in vals for n in news collect `(set! ,val ,n))))))
                           (,rwg ,combiner ,(loop for c in clauses for sv in svs for val in vals
                                                  collect `(,val ,(second c) :local-scratch-vec ,sv)))
                           (when-thread-in-group-is 0
@@ -1946,7 +1998,8 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
 ;;;; reduction with the keys supplied.  Pass 1 scans that let (scan-operator methods below), so the
 ;;;; existing implicit-parameter plumbing carries the scratch to the kernel; Pass 2 analyzes the same
 ;;;; let.  The element type comes from the IDENTITY, read at scan time.  Last-man's global partials are
-;;;; sized :match-workgroup-size, which its num_workgroups <= local_work_size limit makes sufficient.
+;;;; sized :match-num-workgroups, one slot per workgroup (endeavour 181: the final sweep is strided,
+;;;; so the group count is no longer capped at local_work_size).
 ;;;; Design: tests/spec/176-reduce-multi/reduce-multi.md.
 
 (defparameter *176-implicit-scratch-specs*
@@ -2028,11 +2081,12 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
 
 (defun %implicit-scratch-alloc-form (key elem-type)
   "The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25).  The
-   global partials are sized :match-workgroup-size -- see the stage-A section header for why that is
-   always enough."
+   global partials are sized :match-num-workgroups, one slot per workgroup -- last-man's workgroup g
+   writes slot g, and since 181 its final sweep is strided, so the group count is no longer capped at
+   the local size (which is what made the pre-181 :match-workgroup-size enough)."
   (ecase key
     (:local-scratch-vec  `(make-scratch-vector ,elem-type :match-num-warps-per-workgroup))
-    (:global-scratch-vec `(make-scratch-vector ,elem-type :match-workgroup-size :address-space :global))
+    (:global-scratch-vec `(make-scratch-vector ,elem-type :match-num-workgroups :address-space :global))
     (:atomic-counter     '(make-scratch-cell uint :address-space :global))
     (:election-flag-cell '(make-scratch-cell uint))))
 
@@ -2281,11 +2335,13 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                :source-location nil)))
     (let ((lid (gensym "LM-LID"))
           (ng  (gensym "LM-NG"))
+          (ls  (gensym "LM-LS"))
           (val (gensym "LM-VAL")))
       `(progn
-         ;; The final sweep is ONE reduce-workgroup, so every partial must fit in one workgroup.
-         (r-t-assert-0 (<= (get-num-groups 0) (get-local-linear-size))
-                       "grid-reduce-last-man!: the number of workgroups exceeds local_work_size, so the final sweep cannot cover every partial in one pass")
+         ;; 181: workgroup g writes partial g, so the partials buffer must have a slot per workgroup.
+         ;; (The final sweep is strided, so the local size no longer caps the group count.)
+         (r-t-assert-0 (<= (get-num-groups 0) (length~ ,gv))
+                       "grid-reduce-last-man!: the :global-scratch-vec has fewer elements than there are workgroups; it needs one per workgroup (:match-num-workgroups)")
          ;; Phase 1 -- every thread of this workgroup ends up holding the workgroup's total.
          (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
          ;; Phase 2 -- publish this workgroup's partial.
@@ -2311,8 +2367,12 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          ;; THE LOSERS FALL STRAIGHT THROUGH HERE AND RETIRE.
          (when+ (= (~ ,flag) 1u)
            (let ((,lid (to-int (get-local-linear-id)))
-                 (,ng  (to-int (get-num-groups 0))))
-             (let ((,val (if (< ,lid ,ng) (~ ,gv ,lid) ,identity)))
+                 (,ng  (to-int (get-num-groups 0)))
+                 (,ls  (to-int (get-local-linear-size))))
+             (let ((,val ,identity))
+               ,(%181-strided-sweep-form lid ng ls
+                                         (lambda (p)
+                                           (list `(set! ,val ,(%175-apply-binop fn val `(~ ,gv ,p))))))
                (reduce-workgroup ,fn ,val ,identity :local-scratch-vec ,sv)
                (when-thread-in-group-is 0
                  (set! (~ ,return-vec 0) ,val)

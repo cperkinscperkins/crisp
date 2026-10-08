@@ -3906,3 +3906,21 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         OPEN: a minimal reproducer for Intel (bug.ll + loader, like igc-bug-report/ for 030) -- not built.
         Until then, the rule for lowerings: on SPIR-V, do not carry a value out of a divergent IF into a
         loop when a branch-free shape is available.
+
+[ ] 110 FORMAT ~<newline> CONTINUATIONS IN CRLF FILES -- every one is a crash on its error path.
+
+        MEASURED 2026-10-08 (found during endeavour 181).  In a CRLF source file a FORMAT string's
+        "~<newline>" continuation is really "~<return><newline>", and FORMAT reads "~<return>" as an
+        unknown directive: "error in FORMAT: Unknown format directive (character: Return)".  So the
+        message that was supposed to explain a problem crashes instead.  Seen live in 181/02 before the
+        fix: the hoister's ":match-num-workgroups is not implemented yet" refusal died this way.
+        (The same trap bit 178/13 -- see memory note tilde-continuation-breaks-on-crlf.)
+
+        COUNT, 2026-10-08 (bytes "~\r\n" in CRLF files under src/):  autodiff.lisp 7, compiler.lisp 3,
+        package.lisp 14, analysis/core.lisp 2, hoist-cuda/main.lisp 13, hoist-l0/main.lisp 12 = 51.
+        Some may sit in docstrings or comments, where they are harmless; the FORMAT-string ones are not.
+        181 fixed the two it touched (the :match-num-workgroups refusals in both hoists).
+
+        LIKELY FIX (a hypothesis): rewrite each FORMAT-string continuation as one long line or ~%
+        joins (what the overlays already do, since they are LF), and add a unit test that scans src/
+        for "~\r\n" inside string literals.  Mechanical, but touches ~50 messages: its own small sweep.

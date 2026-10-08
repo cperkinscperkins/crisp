@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-08T03:22:22.257543Z
+Generated on 2026-10-08T21:34:29.736650Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -699,7 +699,7 @@ Generated on 2026-10-08T03:22:22.257543Z
 ### DEFUN `%EXPAND-LOOP-VECTOR-STRIDE-FORM`
 - **Args**: `(EXPR LOCATION)`
 
-  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  >    Refactored to use %build-exact-iter-count-form for consistency with  >    the rest of Group A.  Same behaviour as the earlier rewrite — single  >    counter dotimes, body runs unconditionally.  >    Endeavour 180: leading (declare ...) forms of BODY belong to the LOOP, so they move to the head  >    of the dotimes body, where (declare (unroll ...)) is understood.  With no unroll declaration the  >    dotimes gets (declare (%unroll-default VEC)) -- the stream default, sized by VEC's element type  >    when the dotimes is analyzed.  (unroll t) is refused here: the trip count depends on the  >    vector's length and the grid, so it is never a compile-time constant.
+  > Pure expansion of (loop-vector-stride VEC (VAR) BODY...).  >    Refactored to use %build-exact-iter-count-form for consistency with  >    the rest of Group A.  Same behaviour as the earlier rewrite — single  >    counter dotimes, body runs unconditionally.  >    Endeavour 180: leading (declare ...) forms of BODY belong to the LOOP, so they move to the head  >    of the dotimes body, where (declare (unroll ...)) is understood.  With no unroll declaration the  >    dotimes gets (declare (%unroll-default VEC)) -- the stream default, sized by VEC's element type  >    when the dotimes is analyzed.  (unroll t) is refused here: the trip count depends on the  >    vector's length and the grid, so it is never a compile-time constant.  >    Endeavour 182: marks the function being analyzed as containing a stream loop (*stream-functions*),  >    which is what gives it the hardware profile's :stream-occupancy-target.
 
 
 ---
@@ -1714,10 +1714,24 @@ Generated on 2026-10-08T03:22:22.257543Z
 
 
 ---
+### DEFUN `%DECLARED-LOCAL-SIZE-DIMS`
+- **Args**: `(DECLARATIONS)`
+
+  > Endeavour 182.  The compile-time workgroup extents from a (local-size :set-to X) among DECLARATIONS --  >    X an integer, a list of integers, or a quoted list -- as a list of 1-3 integers; NIL when the kernel  >    declares none, or one not fixed at compile time.
+
+
+---
+### DEFUN `%PARSE-OCCUPANCY-TARGET-DECL`
+- **Args**: `(NAME DECLARATIONS)`
+
+  > Endeavour 182.  Validates kernel NAME's (occupancy-target N) among DECLARATIONS.  Returns  >    (values present-p value): PRESENT-P is NIL when there is no such declaration; VALUE is a positive  >    integer (threads per compute unit) or NIL (opt out of the profile's automatic bound).
+
+
+---
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the  >    body analysis.  Otherwise identical to the Phase 2 definition.
+  > Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the  >    body analysis.  Otherwise identical to the Phase 2 definition.  >    Endeavour 182: also binds *analyzing-function*, so a stream loop is attributed to the function it is  >    in (*stream-functions*), and records an entry point's (occupancy-target ...).
 
 
 ---
@@ -2318,6 +2332,13 @@ Generated on 2026-10-08T03:22:22.257543Z
 
 
 ---
+### DEFUN `%181-STRIDED-SWEEP-FORM`
+- **Args**: `(LID NG LS FOLD-AT)`
+
+  > Endeavour 181.  Last-man's final sweep, run by every thread of the elected workgroup: thread LID folds  >    partials LID, LID+LS, LID+2*LS, ... below NG into accumulator(s) the caller has bound to the IDENTITY,  >    so one workgroup of LS threads covers any number of workgroups.  LID, NG and LS are symbols bound to  >    ints.  FOLD-AT is called with the symbol holding the partial index P and returns a LIST of the forms  >    that fold partial P in (spliced into the guarding WHEN).  >   >    A COUNTED loop over ceil(NG/LS) strides with a closed-form index -- not a loop-carried P -- keeps the  >    AD pass out of it (compare BUG 103/105), and the trip count is uniform (NG and LS are the same in  >    every thread), hence dotimes+.  The fold order is fixed by (NG, LS) alone, so last-man stays  >    reproducible.  >   >    The first partial is folded by the loop like every other, NOT read into the accumulator before it as  >    the pre-181 one-pass sweep did.  Seeding with (if (< lid ng) (~ gv lid) identity) and then looping  >    compiled to correct LLVM IR (checked at -O3) that BMG executed wrongly: the seed was dropped, in some  >    specs and not others depending on unrelated code shape, while the loop's own folds were never wrong.  >    Same signature as BUG 030 (IGC).  See tests/spec/181-last-man-sweep/last-man-sweep.md, D2.
+
+
+---
 ### DEFUN `%FUSED-GRID-REDUCE-FORM`
 - **Args**: `(FORM)`
 
@@ -2499,7 +2520,7 @@ Generated on 2026-10-08T03:22:22.257543Z
 ### DEFUN `%IMPLICIT-SCRATCH-ALLOC-FORM`
 - **Args**: `(KEY ELEM-TYPE)`
 
-  > The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25).  The  >    global partials are sized :match-workgroup-size -- see the stage-A section header for why that is  >    always enough.
+  > The allocation form for scratch KEY: the same forms a caller writes by hand (see 175/25).  The  >    global partials are sized :match-num-workgroups, one slot per workgroup -- last-man's workgroup g  >    writes slot g, and since 181 its final sweep is strided, so the group count is no longer capped at  >    the local size (which is what made the pre-181 :match-workgroup-size enough).
 
 
 ---
@@ -4759,6 +4780,20 @@ Generated on 2026-10-08T03:22:22.257543Z
 
 
 ---
+### DEFUN `%EFFECTIVE-OCCUPANCY-TARGET`
+- **Args**: `(KNAME)`
+
+  > Endeavour 182.  The threads-per-compute-unit target for entry point KNAME, and where it came from:  >    (values N :declared), (values N :profile), or NIL.  A declaration always wins -- including  >    (occupancy-target nil), which turns the bound off.  The profile's :stream-occupancy-target applies  >    only to a kernel whose own body has a stream loop.
+
+
+---
+### DEFUN `%APPLY-OCCUPANCY-BOUND`
+- **Args**: `(FUNC KNAME MODULE)`
+
+  > Endeavour 182.  On PTX, stamps entry point FUNC with the launch bounds for its occupancy target:  >    "nvvm.maxntid" (the workgroup extents) and "nvvm.minctasm" (target / workgroup size, the minimum  >    number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.  >    ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX  >    construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a  >    workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis.
+
+
+---
 ### DEFVAR `*TMA-COPY-MULTICAST*`
 
   > semantic-nvvm-tma-tile-copy node -> the cluster dims it should multicast across.  >    Mirrors *tma-copy-ws-leader* (Endeavor 140), which exists for the same reason:  >    the node struct cannot gain a slot from an overlay.
@@ -6472,6 +6507,24 @@ Generated on 2026-10-08T03:22:22.257543Z
 
 
 ---
+### DEFVAR `*KERNEL-OCCUPANCY-TARGETS*`
+
+  > Endeavour 182.  Kernel name -> its DECLARED (occupancy-target N) value: a positive integer, or NIL  >    for an explicit opt-out.  A kernel ABSENT from the table declared nothing, so the hardware profile's  >    :stream-occupancy-target applies if the kernel streams.  Written by internal-def-function for every  >    entry point it analyzes (and removed when the declaration is gone), so a recompile cannot see a stale  >    entry.
+
+
+---
+### DEFVAR `*STREAM-FUNCTIONS*`
+
+  > Endeavour 182.  Function name -> T when its own body contains a stream loop (a loop-vector-stride,  >    which reduce-vec expands to).  Recorded by %expand-loop-vector-stride-form against  >    *analyzing-function*.  A stream loop in a separately defined grid function marks THAT function, not  >    the kernel calling it -- such a kernel gets no automatic bound (declare one).
+
+
+---
+### DEFVAR `*ANALYZING-FUNCTION*`
+
+  > Endeavour 182.  The name of the function internal-def-function is analyzing, or NIL.
+
+
+---
 ### DEFUN `REGISTER-FOREIGN-FUNCTION`
 - **Args**: `(C-NAME SIGNATURE &OPTIONAL BACKWARD-NAME)`
 
@@ -6777,7 +6830,7 @@ Generated on 2026-10-08T03:22:22.257543Z
 
 ### DEFPARAMETER `*HARDWARE-PROFILE-SCHEMA*`
 
-  > Endeavor 130: canonical hardware-profile keys and their value types.  >   >    Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in  >    :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel  >    XMX, (16 8 8) for NVIDIA mma.sync -- and roughly eighteen call sites read it as such,  >    including the register-tile fragment decomposition (%mma-fragment-mn) and %spv-mma-shape.  >    wgmma's (64 N K) is WARPGROUP granularity: M is 64 because a warpgroup is 128 threads, and N  >    runs to 256.  Mixing warpgroup triples into :mma-shapes would feed those dims to fragment math.  >   >    GRANULARITY IS A DIFFERENT AXIS FROM ELEMENT TYPE.  Endeavour 155 typed the ENTRIES, adding  >    the 4-list (half 8 16 16) beside the bare (8 16 8), because a triple alone cannot say what  >    element type it is a shape FOR.  A triple cannot say what LEVEL it describes either, and that  >    is what this key adds.  The entry GRAMMAR is deliberately reused unchanged -- the value type  >    is still :mma-shapes -- so %mma-shape-entry-dims and %mma-shape-for-elem apply verbatim and a  >    part may write (bfloat16 64 256 16) here exactly as it would there.  >   >    Both keys are OPTIONAL.  A profile that declares neither behaves precisely as before.  >   >    Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can drive  >    its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the portable  >    SPV_KHR_cooperative_matrix path every backend has had until now.  >   >    Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) -- a scalar  >    for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose  >    register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the  >    MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent  >    means walk linearly.  It is deliberately a measured constant rather than a derived one -- see  >    the block comment in src/hardware-profile.lisp for the two-device data that refuted the  >    derivation.
+  > Endeavor 130: canonical hardware-profile keys and their value types.  >   >    Endeavour 182 added :stream-occupancy-target -- MEASURED, threads per compute unit that a kernel  >    with a stream loop (loop-vector-stride) should target on this device.  On PTX it becomes launch  >    bounds (.maxntid + .minnctapersm = target / workgroup size), which sets ptxas's register budget.  >    Absent => no bound (ptxas's default, full occupancy).  H100 SXM: 1024 (half occupancy at 64  >    registers beat full occupancy at 32 for every streaming reduction, 2026-10-08).  >   >    Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in  >    :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel  >    XMX, (16 8 8) for NVIDIA mma.sync -- and roughly eighteen call sites read it as such,  >    including the register-tile fragment decomposition (%mma-fragment-mn) and %spv-mma-shape.  >    wgmma's (64 N K) is WARPGROUP granularity: M is 64 because a warpgroup is 128 threads, and N  >    runs to 256.  Mixing warpgroup triples into :mma-shapes would feed those dims to fragment math.  >   >    GRANULARITY IS A DIFFERENT AXIS FROM ELEMENT TYPE.  Endeavour 155 typed the ENTRIES, adding  >    the 4-list (half 8 16 16) beside the bare (8 16 8), because a triple alone cannot say what  >    element type it is a shape FOR.  A triple cannot say what LEVEL it describes either, and that  >    is what this key adds.  The entry GRAMMAR is deliberately reused unchanged -- the value type  >    is still :mma-shapes -- so %mma-shape-entry-dims and %mma-shape-for-elem apply verbatim and a  >    part may write (bfloat16 64 256 16) here exactly as it would there.  >   >    Both keys are OPTIONAL.  A profile that declares neither behaves precisely as before.  >   >    Endeavour 156 added :mma-lowerings -- the code-generation strategies this hardware can drive  >    its matrix engines with, most-preferred first.  Absent means (:coop-matrix), the portable  >    SPV_KHR_cooperative_matrix path every backend has had until now.  >   >    Endeavor 144 added two.  :max-registers-per-thread became :pos-int-or-modes (D4) -- a scalar  >    for a fixed per-thread allocation, or an ascending list of selectable modes for hardware whose  >    register file is a JIT-time choice.  :tile-visit-strip-width (Phase 1 revision) is the  >    MEASURED column-strip width for grouped tile-stride visit order on this machine; 1 or absent  >    means walk linearly.  It is deliberately a measured constant rather than a derived one -- see  >    the block comment in src/hardware-profile.lisp for the two-device data that refuted the  >    derivation.
 
 
 ---
@@ -7261,6 +7314,26 @@ Generated on 2026-10-08T03:22:22.257543Z
 
 
 ---
+### DEFVAR `*CUDA-DEFERRED-SCRATCH*`
+
+  > Endeavour 181.  C++ blocks (strings, newest first) that size and allocate :match-num-workgroups global  >    scratch, held back by the argument walk and injected by emit-launch once the grid is final.
+
+
+---
+### DEFUN `%CUDA-NUM-WORKGROUPS-SIZE-P`
+- **Args**: `(SIZE-EXPR)`
+
+  > T when SIZE-EXPR is the symbolic :match-num-workgroups.
+
+
+---
+### DEFUN `%CUDA-EMIT-NUM-WORKGROUPS-SCRATCH-ARG`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+  > Endeavour 181.  A rank-1 GLOBAL scratch vector of :size-expr :match-num-workgroups -- one element per  >    workgroup -- is sized by the GRID, which the launcher may compute at run time.  kernelParams[] holds  >    ADDRESSES and cuLaunchKernel reads them at launch, so the six host variables are only DECLARED here and  >    *cuda-deferred-scratch* gets the block that sizes, allocates and zeroes the buffer; emit-launch injects  >    it before the launch lambda.  Returns (values next-index arg-names) like the concrete path.
+
+
+---
 ### DEFUN `%CUDA-EMIT-GLOBAL-SCRATCH-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
 
@@ -7371,7 +7444,7 @@ Generated on 2026-10-08T03:22:22.257543Z
 - **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS
               KERNEL-NAME OUT-TILE)`
 
-  > Endeavor 152: renders %emit-launch-base to a string and injects the  >    cluster grid reconciliation immediately BEFORE the launch lambda -- i.e. after every strategy  >    has finished computing gridX/gridY/gridZ and after the device-limit clamping, so the  >    reconciliation is the last word on the grid.
+  > Endeavor 152: renders %emit-launch-base to a string and injects the  >    cluster grid reconciliation immediately BEFORE the launch lambda -- i.e. after every strategy  >    has finished computing gridX/gridY/gridZ and after the device-limit clamping, so the  >    reconciliation is the last word on the grid.  >   >    Endeavour 181: the :match-num-workgroups scratch blocks (*cuda-deferred-scratch*) are injected at the  >    same anchor, AFTER the fix-up, so they size from the grid that is actually launched.
 
 
 ---
@@ -7841,6 +7914,33 @@ Generated on 2026-10-08T03:22:22.257543Z
 ---
 ### DEFUN `%L0-EMIT-CONCRETE-LOCAL-SCRATCH-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+
+---
+### DEFVAR `*L0-DEFERRED-SCRATCH*`
+
+  > Endeavour 181.  C++ blocks (strings, newest first) for global scratch whose size is the group count,  >    held back by the argument walk and written out by %l0-emit-deferred-scratch once %l0-emit-dispatch  >    has declared `groupCount`.
+
+
+---
+### DEFUN `%L0-NUM-WORKGROUPS-SIZE-P`
+- **Args**: `(SIZE-EXPR)`
+
+  > T when SIZE-EXPR is the symbolic :match-num-workgroups.
+
+
+---
+### DEFUN `%L0-DEFERRED-GLOBAL-SCRATCH-BLOCK`
+- **Args**: `(PARAM-NAME PARAM-TYPE CONTEXT-VAR DEVICE-VAR ARG-INDEX)`
+
+  > Endeavour 181.  The C++ block (a string) that allocates a rank-1 GLOBAL scratch vector of one element  >    per workgroup and binds its 6 kernel arguments (ptr, byte-size, offset[0], stride[0], extent[0],  >    length -- %l0-emit-symbolic-global-scratch-arg's order).  It is emitted AFTER the group count, so it  >    reads `groupCount` directly.  Zeroed once, as all global scratch is (endeavour 179's contract), by a  >    memory fill on the main command list with a barrier before the launch that follows -- no staging  >    mirror, because there is nothing to copy.
+
+
+---
+### DEFUN `%L0-EMIT-DEFERRED-SCRATCH`
+- **Args**: `(STREAM)`
+
+  > Endeavour 181.  Writes the held-back :match-num-workgroups scratch blocks, oldest first, and clears  >    them.  Called right after %l0-emit-dispatch, which is where `groupCount` is declared.
+
 
 ---
 ### DEFUN `%L0-EMIT-SYMBOLIC-GLOBAL-SCRATCH-ARG`
@@ -10761,6 +10861,38 @@ Generated on 2026-10-08T03:22:22.257543Z
 - **Args**: `(FILE PTX-TEXT)`
 
   > Endeavour 180: {llvm.loop.unroll.disable} reached the PTX as .pragma "nounroll", so ptxas  >    leaves the loop alone too.
+
+
+---
+### DEFUN `%PTX-MINNCTAPERSM`
+- **Args**: `(PTX-TEXT)`
+
+  > Endeavour 182.  The integer of the first .minnctapersm directive in PTX-TEXT, or NIL.
+
+
+---
+### DEFUN `%VALIDATE-PTX-MINNCTAPERSM`
+- **Args**: `(PTX-TEXT EXPECTED)`
+
+---
+### DEFUN `VALIDATE-PTX-MINNCTAPERSM-4`
+- **Args**: `(FILE PTX-TEXT)`
+
+  > Endeavour 182: the entry carries launch bounds with .minnctapersm 4 (and a .maxntid).
+
+
+---
+### DEFUN `VALIDATE-PTX-MINNCTAPERSM-2`
+- **Args**: `(FILE PTX-TEXT)`
+
+  > Endeavour 182: the entry carries launch bounds with .minnctapersm 2 (and a .maxntid).
+
+
+---
+### DEFUN `VALIDATE-PTX-NO-MINNCTAPERSM`
+- **Args**: `(FILE PTX-TEXT)`
+
+  > Endeavour 182: the entry carries NO launch bounds -- ptxas keeps its default register budget.
 
 
 ---

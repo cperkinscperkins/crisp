@@ -43,9 +43,8 @@ A call means exactly this:
 
 **The grid does not have to match the vector.** That is the point of the stride: launch about as
 many threads as the hardware runs at once, and each folds several elements. A thread that owns no
-element at all contributes only the identity. `:last-man-standing` still carries its limit -- the
-number of workgroups must not exceed `local_work_size` -- but since the grid size is now yours to
-choose, any vector length can meet it.
+element at all contributes only the identity. Any grid works with every strategy, `:last-man-standing`
+included: its partials are sized one per workgroup and its final sweep is strided.
 
 `reduce-vec` is a grid-level operation, so it cannot be nested inside another grid-level stride.
 Several calls in one kernel are fine, one after another; each gets its own scratch. It reduces one

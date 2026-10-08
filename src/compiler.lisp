@@ -1049,6 +1049,24 @@ from a fixed !100."
   "Maps kernel name symbol → plist of dispatch declarations extracted from def-kernel.
    Keys: :global-size, :local-size, :num-groups. Values: the raw s-expression forms
    e.g. :global-size = (global-size :derive-from (width height) :strategy :one-thread-per).")
+
+;; Endeavour 182 -- the occupancy target (tests/spec/182-nvidia-register-budget/).
+(defvar *kernel-occupancy-targets* (make-hash-table :test 'equal)
+  "Endeavour 182.  Kernel name -> its DECLARED (occupancy-target N) value: a positive integer, or NIL
+   for an explicit opt-out.  A kernel ABSENT from the table declared nothing, so the hardware profile's
+   :stream-occupancy-target applies if the kernel streams.  Written by internal-def-function for every
+   entry point it analyzes (and removed when the declaration is gone), so a recompile cannot see a stale
+   entry.")
+
+(defvar *stream-functions* (make-hash-table :test 'equal)
+  "Endeavour 182.  Function name -> T when its own body contains a stream loop (a loop-vector-stride,
+   which reduce-vec expands to).  Recorded by %expand-loop-vector-stride-form against
+   *analyzing-function*.  A stream loop in a separately defined grid function marks THAT function, not
+   the kernel calling it -- such a kernel gets no automatic bound (declare one).")
+
+(defvar *analyzing-function* nil
+  "Endeavour 182.  The name of the function internal-def-function is analyzing, or NIL.")
+
   
 
 (defun register-foreign-function (c-name signature &optional backward-name)

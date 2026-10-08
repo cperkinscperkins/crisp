@@ -10,12 +10,12 @@ It accomplishes this via a cooperative finish.
 
 1. **Phase 1:** Every workgroup reduces its threads locally using `reduce-workgroup`.
 2. **Phase 2:** The leader thread of each workgroup writes its partial result into its `global-scratch-vec`, and then increments a global `atomic-counter`.
-3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. That final workgroup immediately reads the `global-scratch-vec` and performs one final `reduce-workgroup` to calculate the ultimate answer.
+3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. That final workgroup immediately reads the `global-scratch-vec` -- each of its threads folding partials `lid`, `lid + local_work_size`, `lid + 2*local_work_size`, ... so any number of workgroups is covered -- and performs one final `reduce-workgroup` to calculate the ultimate answer.
 
 **The Trade-off:**
 
 * **Pros:** Works with *any* commutative operation (unlike `grid-reduce-atomic!`). Zero contention on the final result cell. Requires only a single kernel launch.
-* **Cons:** Requires allocating a global scratch buffer sized to the number of workgroups, plus a secondary atomic counter cell. (Note: Like the older dual-pass strategies, this specific implementation requires that the total number of workgroups is less than or equal to the `local_work_size` so the final sweep can happen in one pass).
+* **Cons:** Requires allocating a global scratch buffer sized to the number of workgroups, plus a secondary atomic counter cell. Any number of workgroups: the final sweep is strided -- each thread of the last workgroup folds every `local_work_size`-th partial before the closing `reduce-workgroup` -- so its order is fixed by the grid and the result is reproducible run to run.
 
 **Arguments:**
 
@@ -25,8 +25,9 @@ It accomplishes this via a cooperative finish.
 * `return-cell`: A `:global` cell of `<someVar>`'s type (a length-1 vector is also accepted). Last-man *writes* it, so it needs no initial value.
 * `:local-scratch-vec`: Writeable local memory, one element per warp in the workgroup.
 * `:global-scratch-vec`: Writeable **`:global`** memory, one element per WORKGROUP
-  (`global_work_size / local_work_size`), holding the partials.  When Crisp allocates it, it is
-  sized to `local_work_size`, which the workgroup-count limit above makes always enough.
+  (`global_work_size / local_work_size`), holding the partials -- `:match-num-workgroups` when you
+  allocate it yourself, which is also how Crisp sizes it when you leave it out.  A shorter buffer
+  would be written past its end; under `--runtime-checks` the kernel refuses to run instead.
 * `:atomic-counter`: A zero-initialised `:global` `uint` cell, used to draw tickets.
 * `:election-flag-cell`: A **workgroup-local** `uint` cell, which broadcasts the ticket result from
   thread 0 to the rest of its workgroup.  It is what lets the LOSING workgroups retire

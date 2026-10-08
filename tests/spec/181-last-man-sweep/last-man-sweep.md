@@ -186,7 +186,8 @@ Plan
 - [x] on metal: BMG 10/10 + the five existing last-man VAD specs; H100 SXM 181/07-09, 176/07, 178/08
 - [x] suites (local, BMG): unit green, E2E 1411/1411, negative 322/322
 - [x] benchmarks -- see RESULTS below
-- [ ] fold into src/, regenerate reference / call graph / chapters, suites incl. --differentiate
+- [x] fold into src/ (2026-10-08, with 182), regenerate reference / call graph / chapters / globals;
+      overlays emptied; suites (see 182)
 
 
 RESULTS (2026-10-08)

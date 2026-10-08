@@ -6,8 +6,8 @@ Phase 1 -- a `reduce-workgroup`, which is itself a warp shuffle followed by a sh
 must be reached by every thread, so in practice you choose the Phase 2 strategy:
 
 **The Speed Demon:** `grid-reduce!` (its default, `:last-man-standing`)
-One kernel, no contention on the result, any commutative function.  Its one limit: the number of
-workgroups may not exceed `local_work_size`.
+One kernel, no contention on the result, any commutative function, any number of workgroups, and a
+result that is the same bit for bit from run to run.
 
 **The Easy Button:** `grid-reduce!` with `:strategy :atomic`
 Summing (or taking the min or max of) a massive grid: no global scratch at all, at the cost of

@@ -51,6 +51,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (%CUDA-SCRATCH-SYMBOLIC-SIZE-P SIZE-EXPR)  hoist-cuda/main.lisp [See above]
 - - - - - - - - - (%CUDA-RESOLVE-SYMBOLIC-SIZE SIZE-EXPR PARAM-NAME)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%CUDA-EMIT-GLOBAL-SCRATCH-TENSOR-ARG STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)  hoist-cuda/main.lisp
+- - - - - - - - (%CUDA-NUM-WORKGROUPS-SIZE-P SIZE-EXPR)  hoist-cuda/main.lisp
+- - - - - - - - (%CUDA-EMIT-NUM-WORKGROUPS-SCRATCH-ARG STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)  hoist-cuda/main.lisp
+- - - - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
 - - - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
 - - - - - - - - (%TENSOR-COMPACT-EXTENTS-STRIDES N EXTENTS-LIST)  hoist-cuda/main.lisp [See above]
 - - - - - - - - (%CUDA-SCRATCH-DIMS SIZE-EXPR RANK PARAM-NAME)  hoist-cuda/main.lisp [See above]
@@ -347,6 +350,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%RECORD-EFFECTIVE-CLUSTER-DIMS KERNEL-NAME DIMS)  codegen.lisp
 - - - - - - - - - - - - - - - - - - (%WARN-CLUSTER-DEGRADED KERNEL-NAME DECLARED)  codegen.lisp
+- - - - - - - - - - - - - - - - - (%APPLY-OCCUPANCY-BOUND FUNC KNAME MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - (%EFFECTIVE-OCCUPANCY-TARGET KNAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp
 - - - - - - - - - - - - - - - - (GENERATE-FUNCTION-BODY SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER LOCATION-MAP)  codegen.lisp
 - - - - - - - - - - - - - - - - - (INITIALIZE-FUNCTION-PARAMETERS BUILDER FUNC PARAM-NODES MODULE VAR-ENV &OPTIONAL IS-ENTRY-POINT)  codegen.lisp
 - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
@@ -928,6 +935,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%HP-MMA-LOWERINGS PROFILE)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%PARSE-CLUSTER-SIZE-DECL DECL KERNEL-NAME DECLARATIONS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - (%PARSE-OCCUPANCY-TARGET-DECL NAME DECLARATIONS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - (%HP-CHECK-WORKGROUP-BOUNDS KERNEL-NAME LOCAL-SIZE-DECL PROFILE)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
 - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
@@ -1290,6 +1299,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%175-VJP-REDUCE-WORKGROUP FORM CTX)  autodiff.lisp
 - - (%DEPENDENT-REDUCTION-FORM-P FORM)  analysis/ops.lisp [See above]
 - - (%177-VJP-DEPENDENT-REDUCTION FORM CTX &OPTIONAL LANE-FORM)  autodiff.lisp [See above]
+
+- (%181-STRIDED-SWEEP-FORM LID NG LS FOLD-AT)  analysis/ops.lisp
 
 - (%AD-REPLAY-READ-SYMS FORM)  autodiff.lisp
 
@@ -2955,14 +2966,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%IMPLICIT-SCRATCH-BINDING-NAME VAR KEY)  analysis/ops.lisp [See above]
 - - - - (%IMPLICIT-SCRATCH-ALLOC-FORM KEY ELEM-TYPE)  analysis/ops.lisp [See above]
 - - - - (%CLAUSE-KEY CLAUSE MIN-LEN KEY)  analysis/ops.lisp [See above]
-- - - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
 - - - (%FUSED-GRID-REDUCE-DEPENDENT-FORM FORM)  analysis/ops.lisp
 - - - - (%DEPENDENT-REDUCTION-VALIDATE FORM)  analysis/ops.lisp [See above]
 - - - - (%IDENTITY-SCAN-TYPE FORM)  analysis/ops.lisp [See above]
 - - - - (%IMPLICIT-SCRATCH-BINDING-NAME VAR KEY)  analysis/ops.lisp [See above]
 - - - - (%IMPLICIT-SCRATCH-ALLOC-FORM KEY ELEM-TYPE)  analysis/ops.lisp [See above]
 - - - - (%CLAUSE-KEY CLAUSE MIN-LEN KEY)  analysis/ops.lisp [See above]
-- - - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp [See above]
 - - - - (WHEN-THREAD-IN-GROUP-IS ID &BODY BODY)  macros.lisp [See above]
 - - - - (COMPILER-NO-OP)  macros.lisp [See above]
 
@@ -3221,6 +3230,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (VALIDATE-POINT-IN-METADATA METADATA-PATH)  metadata-val.lisp
 
 - (VALIDATE-PTX-HAS-NOUNROLL-PRAGMA FILE PTX-TEXT)  mma.lisp
+
+- (VALIDATE-PTX-MINNCTAPERSM-2 FILE PTX-TEXT)  mma.lisp
+- - (%VALIDATE-PTX-MINNCTAPERSM PTX-TEXT EXPECTED)  mma.lisp
+- - - (%PTX-MINNCTAPERSM PTX-TEXT)  mma.lisp
+
+- (VALIDATE-PTX-MINNCTAPERSM-4 FILE PTX-TEXT)  mma.lisp
+- - (%VALIDATE-PTX-MINNCTAPERSM PTX-TEXT EXPECTED)  mma.lisp [See above]
+
+- (VALIDATE-PTX-NO-MINNCTAPERSM FILE PTX-TEXT)  mma.lisp
 
 - (VALIDATE-REC-KB-BASIC IR-PATH)  metadata-val.lisp
 - - (VALIDATE-GENERIC-GRAD-SIGNATURE IR-PATH FORWARD-NAME EXPECTED-COMMAS)  metadata-val.lisp [See above]

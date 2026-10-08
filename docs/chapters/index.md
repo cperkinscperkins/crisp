@@ -294,8 +294,9 @@
 - [`def-hardware-profile`  ✅](52_hardware_profiles/01_def_hardware_profile.md)
 - [`:mma-shapes` ✅](52_hardware_profiles/02_mma_shapes.md)
 - [`:mma-lowerings` ✅](52_hardware_profiles/03_mma_lowerings.md)
-- [Crisp predefined hardware profiles](52_hardware_profiles/04_crisp_predefined_hardware_profiles.md)
-- [Probing Hardware Profile ✅](52_hardware_profiles/05_probing_hardware_profile.md)
+- [`:stream-occupancy-target` ✅](52_hardware_profiles/04_stream_occupancy_target.md)
+- [Crisp predefined hardware profiles](52_hardware_profiles/05_crisp_predefined_hardware_profiles.md)
+- [Probing Hardware Profile ✅](52_hardware_profiles/06_probing_hardware_profile.md)
 
 ## Topologically Aware Async
 - [`make-async-barrier` ✅](53_topologically_aware_async/01_make_async_barrier.md)

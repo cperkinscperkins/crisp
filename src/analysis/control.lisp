@@ -2726,7 +2726,11 @@
    of the dotimes body, where (declare (unroll ...)) is understood.  With no unroll declaration the
    dotimes gets (declare (%unroll-default VEC)) -- the stream default, sized by VEC's element type
    when the dotimes is analyzed.  (unroll t) is refused here: the trip count depends on the
-   vector's length and the grid, so it is never a compile-time constant."
+   vector's length and the grid, so it is never a compile-time constant.
+   Endeavour 182: marks the function being analyzed as containing a stream loop (*stream-functions*),
+   which is what gives it the hardware profile's :stream-occupancy-target."
+  (when *analyzing-function*
+    (setf (gethash *analyzing-function* *stream-functions*) t))
   (unless (and (>= (length expr) 3)
                (listp (third expr))
                (= (length (third expr)) 1)

@@ -628,10 +628,10 @@
          ;; and that write would land past the end.
          (ceiling (need-wg) warp))
         ((string-equal name "MATCH-NUM-WORKGROUPS")
-         (error "Scratch tensor ~a: :size-expr :match-num-workgroups is not implemented yet.~%~
-                 Its value is the grid's group count, which the generated launcher may compute at~%~
-                 RUNTIME from the device's SM count -- so it is not available here.~%~
-                 For now, size this buffer with an explicit integer."
+         ;; Endeavour 181: GLOBAL scratch of this size never reaches here -- it is filled at the
+         ;; launch anchor (%cuda-emit-global-scratch-tensor-arg / emit-launch).  Workgroup-LOCAL memory
+         ;; sized by the number of workgroups has no meaning.  (No ~<newline> continuation: CRLF file.)
+         (error "Scratch tensor ~a: :size-expr :match-num-workgroups (one element per workgroup in the grid) sizes GLOBAL scratch.  Workgroup-local scratch cannot be sized by the grid; give it a workgroup-relative or explicit size."
                 param-name))
         (t
          (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%~
@@ -1020,7 +1020,55 @@ overrides the runtime SM-count query in the grid-size heuristic."
         (incf current-idx)
         (values current-idx (nreverse arg-names))))))
 
+;;; Endeavour 181 -- :match-num-workgroups global scratch, filled at the launch anchor.
+(defvar *cuda-deferred-scratch* '()
+  "Endeavour 181.  C++ blocks (strings, newest first) that size and allocate :match-num-workgroups global
+   scratch, held back by the argument walk and injected by emit-launch once the grid is final.")
+
+(defun %cuda-num-workgroups-size-p (size-expr)
+  "T when SIZE-EXPR is the symbolic :match-num-workgroups."
+  (and (keywordp size-expr) (string-equal (symbol-name size-expr) "MATCH-NUM-WORKGROUPS")))
+
+(defun %cuda-emit-num-workgroups-scratch-arg (stream param-name param-type arg-index)
+  "Endeavour 181.  A rank-1 GLOBAL scratch vector of :size-expr :match-num-workgroups -- one element per
+   workgroup -- is sized by the GRID, which the launcher may compute at run time.  kernelParams[] holds
+   ADDRESSES and cuLaunchKernel reads them at launch, so the six host variables are only DECLARED here and
+   *cuda-deferred-scratch* gets the block that sizes, allocates and zeroes the buffer; emit-launch injects
+   it before the launch lambda.  Returns (values next-index arg-names) like the concrete path."
+  (let* ((elem-str   (crisp-type-to-cpp-type (second param-type)))
+         (elem-bytes (%hoist-elem-type-bytes elem-str))
+         (cpp        (substitute #\_ #\- param-name))
+         (names      (list (format nil "~a_ptr" cpp)
+                           (format nil "~a_byte_size" cpp)
+                           (format nil "~a_off0" cpp)
+                           (format nil "~a_str0" cpp)
+                           (format nil "~a_ext0" cpp)
+                           (format nil "~a_length" cpp))))
+    (format stream "~%    // GLOBAL scratch tensor: ~a (rank=1, ~a, one element per workgroup)~%" param-name elem-str)
+    (format stream "    //   :size-expr :match-num-workgroups -- sized and allocated just before the launch,~%")
+    (format stream "    //   once the grid is known; kernelParams[] reads these variables at launch time.~%")
+    (format stream "    CUdeviceptr ~a_ptr = 0;~%" cpp)
+    (format stream "    uint64_t ~a_byte_size = 0ULL;~%" cpp)
+    (format stream "    uint64_t ~a_off0 = 0ULL;~%" cpp)
+    (format stream "    uint64_t ~a_str0 = 1ULL;~%" cpp)
+    (format stream "    uint64_t ~a_ext0 = 0ULL;~%" cpp)
+    (format stream "    uint64_t ~a_length = 0ULL;~%" cpp)
+    (push (with-output-to-string (s)
+            (format s "    // GLOBAL scratch ~a: one element per workgroup (:match-num-workgroups), zeroed once~%" param-name)
+            (format s "    ~a_length = (uint64_t)gridX * gridY * gridZ;~%" cpp)
+            (format s "    ~a_ext0 = ~a_length;~%" cpp cpp)
+            (format s "    ~a_byte_size = ~a_length * ~dULL;~%" cpp cpp elem-bytes)
+            (format s "    CUDA_CHECK(cuMemAlloc(&~a_ptr, ~a_byte_size));~%" cpp cpp)
+            (format s "    CUDA_CHECK(cuMemsetD8(~a_ptr, 0, ~a_byte_size));~%" cpp cpp))
+          *cuda-deferred-scratch*)
+    (values (+ arg-index 6) names)))
+
 (defun %cuda-emit-global-scratch-tensor-arg (stream param param-name param-type arg-index)
+  ;; Endeavour 181: one element per WORKGROUP -- deferred to the launch (see the helper).
+  (when (and (%cuda-num-workgroups-size-p (getf param :size-expr))
+             (= (let ((n3 (third param-type))) (if (integerp n3) n3 1)) 1))
+    (return-from %cuda-emit-global-scratch-tensor-arg
+      (%cuda-emit-num-workgroups-scratch-arg stream param-name param-type arg-index)))
   (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
          (size-expr   (getf param :size-expr))
          (elem-type   (second param-type))
@@ -1839,17 +1887,27 @@ overrides the runtime SM-count query in the grid-size heuristic."
   "Endeavor 152: renders %emit-launch-base to a string and injects the
    cluster grid reconciliation immediately BEFORE the launch lambda -- i.e. after every strategy
    has finished computing gridX/gridY/gridZ and after the device-limit clamping, so the
-   reconciliation is the last word on the grid."
+   reconciliation is the last word on the grid.
+
+   Endeavour 181: the :match-num-workgroups scratch blocks (*cuda-deferred-scratch*) are injected at the
+   same anchor, AFTER the fix-up, so they size from the grid that is actually launched."
   (let* ((body (with-output-to-string (s)
                  (%emit-launch-base s dispatch-info shared-bytes compute-units kernel-name out-tile)))
-         (fixup (%cuda-cluster-grid-fixup-string dispatch-info)))
-    (if (string= fixup "")
+         (fixup (%cuda-cluster-grid-fixup-string dispatch-info))
+         (scratch (format nil "~{~a~}" (reverse *cuda-deferred-scratch*)))
+         (inject (concatenate 'string fixup scratch)))
+    (setf *cuda-deferred-scratch* '())
+    (if (string= inject "")
         (write-string body stream)
         ;; Anchor: the launch lambda, emitted exactly once by every path.  If it ever moves we
-        ;; must NOT silently drop the fix-up -- a clustered kernel would then launch with an
-        ;; unreconciled grid and be rejected by the driver with no explanation.
+        ;; must NOT silently drop the injection -- a clustered kernel would launch with an
+        ;; unreconciled grid, and a :match-num-workgroups buffer would never be allocated.
         (let ((pos (search "auto _crisp_launch" body)))
           (cond
+            ((and (null pos) (string/= scratch ""))
+             ;; An unallocated buffer is a crash on the device, not a degraded launch -- refuse.
+             (error "Endeavour 181: could not find the _crisp_launch anchor in emit-launch output for kernel ~a, so its :match-num-workgroups scratch cannot be allocated."
+                    kernel-name))
             ((null pos)
              (warn "Endeavor 152: could not find the _crisp_launch anchor in emit-launch output for kernel ~a; cluster grid reconciliation NOT emitted."
                    kernel-name)
@@ -1859,7 +1917,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
              (let ((line-start (let ((nl (position #\Newline body :end pos :from-end t)))
                                  (if nl (1+ nl) 0))))
                (write-string body stream :end line-start)
-               (write-string fixup stream)
+               (write-string inject stream)
                (write-string body stream :start line-start))))))))
 
 

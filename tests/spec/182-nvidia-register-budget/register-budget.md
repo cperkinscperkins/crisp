@@ -140,7 +140,11 @@ Plan
       ci-stop -> 182
 - [x] implement via nvvm.maxntid / nvvm.minctasm; remove the probe hook; docs (ideal_001.md)
 - [x] re-measure with the REAL mechanism (below)
-- [ ] fold 181 + 182
+- [x] fold 181 + 182 into src/ (2026-10-08): verbatim replacements by script (fold diff = exactly the
+      overlay changes), wrappers re-expressed at their call sites, overlays emptied LAST; build has no
+      redefinitions; 181 10/10 + 182 16/16; folded CUDA launcher identical to the overlay one but paths;
+      chapters / reference / call graph / globals regenerated
+- [ ] canonical benchmark runs from the folded commit (BMG Docker + H100 SXM pod), then REPORT-reduction
 
 
 Verification -- the real mechanism (2026-10-08, a different H100 SXM, `scripts/182-pod-verify.sh`)

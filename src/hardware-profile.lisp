@@ -41,8 +41,15 @@
     (:max-work-group-dims         . :dims3)     ; (x y z) positive ints
     (:mma-shapes                  . :mma-shapes)   ; FRAGMENT granularity: (M N K) triples
     (:wgmma-shapes                . :mma-shapes)   ; 161: WARPGROUP granularity
-    (:mma-lowerings               . :lowerings))   ; 156: ordered; first is the default
+    (:mma-lowerings               . :lowerings)    ; 156: ordered; first is the default
+    (:stream-occupancy-target     . :pos-int))     ; 182: MEASURED; threads per CU for stream kernels
   "Endeavor 130: canonical hardware-profile keys and their value types.
+
+   Endeavour 182 added :stream-occupancy-target -- MEASURED, threads per compute unit that a kernel
+   with a stream loop (loop-vector-stride) should target on this device.  On PTX it becomes launch
+   bounds (.maxntid + .minnctapersm = target / workgroup size), which sets ptxas's register budget.
+   Absent => no bound (ptxas's default, full occupancy).  H100 SXM: 1024 (half occupancy at 64
+   registers beat full occupancy at 32 for every streaming reduction, 2026-10-08).
 
    Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in
    :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel

@@ -91,6 +91,48 @@
          (when (%record-effective-cluster-dims kname (list 1 1 1))
            (%warn-cluster-degraded kname dims)))))))
 
+;; Endeavour 182 -- launch bounds from the occupancy target.
+(defun %effective-occupancy-target (kname)
+  "Endeavour 182.  The threads-per-compute-unit target for entry point KNAME, and where it came from:
+   (values N :declared), (values N :profile), or NIL.  A declaration always wins -- including
+   (occupancy-target nil), which turns the bound off.  The profile's :stream-occupancy-target applies
+   only to a kernel whose own body has a stream loop."
+  (multiple-value-bind (declared present) (gethash kname *kernel-occupancy-targets*)
+    (cond (present (if declared (values declared :declared) nil))
+          ((gethash kname *stream-functions*)
+           (let ((n (getf (active-hardware-profile) :stream-occupancy-target)))
+             (if n (values n :profile) nil)))
+          (t nil))))
+
+(defun %apply-occupancy-bound (func kname module)
+  "Endeavour 182.  On PTX, stamps entry point FUNC with the launch bounds for its occupancy target:
+   \"nvvm.maxntid\" (the workgroup extents) and \"nvvm.minctasm\" (target / workgroup size, the minimum
+   number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.
+   ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX
+   construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a
+   workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis."
+  (when (eq *target-backend* :ptx)
+    (multiple-value-bind (target source) (%effective-occupancy-target kname)
+      (when target
+        (let* ((decls (gethash kname *kernel-dispatch-declarations*))
+               (local-decl (getf decls :local-size))
+               (dims (and local-decl (%declared-local-size-dims (list local-decl))))
+               (wg (and dims (reduce #'* dims))))
+          (if (or (null wg) (< target wg))
+              (log:info "Kernel ~a: ~(~a~) occupancy target ~a not applied (workgroup ~a)"
+                        kname source target (or wg "not fixed at compile time"))
+              (let ((ctx (llvm-get-module-context module)))
+                (flet ((stamp (key val)
+                         (llvm-add-attribute-at-index
+                          func +llvm-attribute-function-index+
+                          (llvm-create-string-attribute ctx key (length key) val (length val)))))
+                  (let ((maxntid (format nil "~{~a~^,~}" dims))
+                        (minctasm (format nil "~a" (floor target wg))))
+                    (log:info "Kernel ~a: ~(~a~) occupancy target ~a -> .maxntid ~a, .minnctapersm ~a"
+                              kname source target maxntid minctasm)
+                    (stamp "nvvm.maxntid" maxntid)
+                    (stamp "nvvm.minctasm" minctasm))))))))))
+
 (defvar *tma-copy-multicast* (make-hash-table :test 'eq)
   "semantic-nvvm-tma-tile-copy node -> the cluster dims it should multicast across.
    Mirrors *tma-copy-ws-leader* (Endeavor 140), which exists for the same reason:
@@ -534,7 +576,9 @@
         ;; point on every backend -- it is what records the effective cluster extent
         ;; and warns when a declared cluster could not be formed.  Gating it per
         ;; backend is what let the SPIR-V degrade go silent.
-        (%apply-cluster-dims-attribute func semantic-function module))
+        (%apply-cluster-dims-attribute func semantic-function module)
+        ;; Endeavour 182: launch bounds for the kernel's occupancy target (PTX only; a no-op elsewhere).
+        (%apply-occupancy-bound func (semantic-function-name semantic-function) module))
 
   (unless (semantic-function-is-entry-point semantic-function)
     (case *target-backend*
