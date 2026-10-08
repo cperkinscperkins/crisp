@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]: validate-spv-stream-unrolled-x4
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER b: 0 2 4 6
+;;
+;; ENDEAVOUR 180 -- loop-vector-stride is unrolled BY DEFAULT on SPIR-V, with no declaration.  The
+;; default is 16 bytes in flight per thread (probe 1, BMG): x4 for a float stream.  The validator
+;; reads the SHIPPED SPIR-V and counts the float loads -- at least 4 (the unrolled body), where the
+;; un-unrolled loop has exactly 1.  B = 2A.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel lvs_default (A &out B)
+  (declare #'(f-vec &out f-vec => nil))
+  (loop-vector-stride A (i)
+    (set! (~ B i) (* 2.0 (~ A i)))))

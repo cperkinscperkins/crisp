@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=h100 --ir-target=ptx]: validate-ptx-has-nounroll-pragma
+;;
+;; ENDEAVOUR 180 -- on PTX, {llvm.loop.unroll.disable} reaches the PTX as .pragma "nounroll", so
+;; ptxas does not unroll the loop either -- (unroll nil) means the same thing as CUDA's
+;; #pragma unroll 1, end to end.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel ptx_off (A &out B)
+  (declare #'(f-vec &out f-vec => nil))
+  (loop-vector-stride A (i)
+    (declare (unroll nil))
+    (set! (~ B i) (* 2.0 (~ A i)))))

@@ -654,7 +654,7 @@ loop and the grid reduction for you:
 
 ```
 (reduce-vec someFunction vec identity out-cell
-            &key strategy message
+            &key strategy message unroll
                  local-scratch-vec global-scratch-vec atomic-counter election-flag-cell)
 ```
 
@@ -684,6 +684,10 @@ A call means exactly this:
 * The scratch keys and `:message` are passed straight through to `grid-reduce!`. Any scratch you
   leave out is allocated for you, and a key the chosen strategy does not use is a compilation
   error (`:atomic` and `:cas` take only `:local-scratch-vec`).
+* `:unroll` belongs to the loop, not to `grid-reduce!`: `:unroll 2` puts `(declare (unroll 2))` at
+  the start of the `loop-vector-stride` body. It takes what the declaration takes -- a positive
+  integer, `t` or `nil` -- and without it the loop gets `loop-vector-stride`'s default (see
+  [unroll](#unroll)).
 
 **The grid does not have to match the vector.** That is the point of the stride: launch about as
 many threads as the hardware runs at once, and each folds several elements. A thread that owns no

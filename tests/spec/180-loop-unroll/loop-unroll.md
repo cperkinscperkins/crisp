@@ -139,16 +139,140 @@ Tests (to write when the endeavour starts)
 Plan
 ----
 
-- [ ] verification probes (below) -- decide the defaults
-- [ ] decide: defaults as constants, per element size, or in the hardware profile
-- [ ] API review with Chris; ideal_001.md (`declare` -> "Other declare directives",
-      `loop-vector-stride`, `dotimes`, `reduce-vec`) and `reductions-excerpt.md`
-- [ ] TDD tests (above); bump `ci-stop.txt`
-- [ ] implement (overlays): declaration parsing, `!llvm.loop` emission, the default, `reduce-vec`
+- [x] verification probes (below) -- decide the defaults
+- [x] decide: defaults as constants, per element size, or in the hardware profile -- D1 below
+- [ ] API review with Chris (the API was implemented as proposed; see "For review")
+- [x] ideal_001.md (`declare` -> "Other declare directives" gains `unroll`; `loop-vector-stride`,
+      `dotimes`, `reduce-vec`) and `reductions-excerpt.md`
+- [x] TDD tests (above); bump `ci-stop.txt`
+- [x] implement (overlays): declaration parsing, `!llvm.loop` emission, the default, `reduce-vec`
       passthrough, AD accept-and-ignore + the 178 pre-pass
-- [ ] strength reduction at the IR level
-- [ ] on-metal: BMG ladder; NVIDIA once the CUDA fixture exists (benchmark phase 5)
+- [ ] strength reduction at the IR level -- NOT DONE, deliberately (probe 3: worth <= 1.5%)
+- [x] on-metal: BMG ladder (below) -- [ ] NVIDIA (this evening)
+- [ ] update reduction benchmarks with new numbers.
 - [ ] fold into src/, regenerate reference / call graph / chapters, suites incl. --differentiate
+
+
+Implementation (2026-10-07, overlays)
+-------------------------------------
+
+Done in one day while Chris was at the office; every decision he did not make himself is in
+"Decisions" below, and the ones worth a second look are under "For review".
+
+**How it works.**  `analyze-dotimes-expression` and `analyze-loop-variant-expression` strip the leading
+`(declare ...)` forms off the body (`%split-loop-body-declarations`), run the pre-180 analyzer on the
+rest, and record the request on the node's new `unroll` slot.  The codegen attaches `!llvm.loop` to
+the latch (`%attach-loop-unroll-metadata`): the dotimes back-edge `br label %dt_check`, or the
+loop-variant bottom test.  The loop ID is LLVM's distinct self-referential node, built from LLVM-C with
+a temporary placeholder (two new bindings: `LLVMTemporaryMDNode`, `LLVMMetadataReplaceAllUsesWith`).
+
+`loop-vector-stride` moves its body's leading declarations onto the dotimes it expands to.  With no
+`unroll`, it writes `(declare (%unroll-default VEC))` instead; the dotimes analyzer sizes that from
+VEC's element type to `(:stream BYTES)`, and the codegen turns it into a factor for the current
+target.  `reduce-vec :unroll V` becomes `(declare (unroll V))` at the head of its loop-vector-stride
+body and never reaches `grid-reduce!`.
+
+**AD needed nothing.**  ANF passes a `declare` through untouched and the backward walk already skips
+`DECLARE` forms, so the forward kernel keeps its metadata and the gradient kernel's loops are plain.
+Because the default is a declaration written by the expansion, it survives the AD stride pre-pass
+(endeavour 178) like any user declaration.
+
+**Files touched.**  Overlays: `crisp-compiler-overlay.lisp` (everything), `crisp-llvm-bindings-overlay.lisp`
+(2 bindings), `spec-runner-overlay.lisp` (5 validator delegators).  ONE `src/` patch, because a struct
+cannot be overlaid: `src/semantic.lisp`, slot `(unroll nil)` on `semantic-dotimes` (inherited by
+`semantic-loop-variant`).
+
+**Tests.**  14 specs + 11 `errors/` + `loop-unroll.unit.lisp` (13 tests, 45 assertions).  On BMG metal:
+01-07 and 09 run on the GPU; 10 and 11 pass VERIFY-AUTODIFF (analytical = numerical: 2.0 and 1.0) at
+1100 elements over 128 threads, so the x4 body really runs.  The load-count validators read the
+SHIPPED SPIR-V: float stream x4 = 5 loads (4 + remainder), double x2 = 3, explicit x8 = 9,
+`(unroll nil)` = 1.  Spec 14 is BUG 107's regression (110 annotated loops).  Default `reduce-vec` (178/01) went from 8 float loads to 12: its stream loop is
+now x4 + remainder.  NVIDIA, without a GPU: spec 13's hoisted `.cu` compiles and links with nvcc in
+`nvidia/cuda:12.4.1-devel`, and every PTX variant assembles with `ptxas -arch=sm_90` (D2 below).
+
+**Suites (with the BUG 107 fix, BMG box).**  Unit 341/341; E2E 1400/1400 (incl. the 180 unit file);
+negative 322/322.  `--differentiate`, targeted at the stride and reduction directories (093, 105, 107,
+175-178) and 180 itself: all green, the reduction VERIFY-AUTODIFF specs included.  The full
+`--debug` / `--single-pass` / `--differentiate` phases are left to CI.  NOT done: the "bit-identical on
+integer-valued data" check (the benchmark fixture verifies the sum, not bit-identity).
+
+**On metal, BMG (2026-10-07)** -- the reduction ladder with NO source change, 180's default only.
+Docker, `fast`, 80 groups (the driver's default), every point verified; % of the 454.5 GB/s measured
+peak.  Before 180 steps 3, 4 and 5 sat at ~57%.  JSON in `benchmarks/results/scratch/` (scratch on
+purpose: the canonical report is Chris's call); log `put_temp_files_here/e180/bench.log`.
+
+| step | 64 MiB | 1 GiB | 3 GiB |
+|---|---|---|---|
+| 3 grid-stride (`loop-vector-stride`) | 96.1 | 99.1 | 99.1 |
+| 3b hand-unrolled x4 (the target) | 96.6 | 99.2 | 98.9 |
+| 4 `grid-reduce!` last-man | 91.6 | 98.7 | 98.9 |
+| 4 `grid-reduce!` :atomic | 96.4 | 99.2 | 99.1 |
+| 5 `reduce-vec` | 91.6 | 98.8 | 98.9 |
+
+The easy button is now as fast as the hand-unrolled kernel: the goal of the endeavour, on BMG.
+
+**BUG 107, found on the way** (plan/bugs.md).  `inject-spir-kernel-metadata` numbered the OpenCL
+kernel-arg metadata from a hard-coded `!100`.  Any module already past `!99` got a duplicate id and
+`llvm-as` refused it -- that is the probe-2 side finding (`--debug --ir-target=spv` fails: debug info
+numbers past 100), and 180 made it reachable WITHOUT `--debug`: one loop ID per annotated loop.
+Reproduced with a 110-loop kernel before the fix.  Fixed: the base is now one above the module's
+highest id.
+
+
+Decisions (2026-10-07)
+----------------------
+
+- **D1 -- the default is a per-target CONSTANT, not a hardware-profile field.**
+  `*stream-unroll-bytes-in-flight*` = `((:spirv . 16) (:ptx . nil))`.  The profile-probe
+  applications query the device; the 16-byte knee came out of a sweep, which no query reports.  Today
+  "SPIR-V" means Intel, so per-backend is per-vendor.  Revisit when a second SPIR-V part shows a
+  different knee -- that is when it moves into the profile.
+- **D2 -- no default on PTX.**  Probe 4: LLVM's NVPTX target already runtime-unrolls the stream x4 and
+  ptxas unrolls again (16 loads/trip in SASS).  Worse, a hint would HURT: after LLVM unrolls a loop
+  it marks it `llvm.loop.unroll.disable`, which NVPTX prints as `.pragma "nounroll"`, which stops
+  ptxas.  An explicit request is still honoured on PTX -- exactly like CUDA's `#pragma unroll N`,
+  which nvcc lowers the same way (spec 12 checks `(unroll nil)` reaches the PTX as the pragma).
+  CHECKED OFFLINE (ptxas -arch=sm_90 + cuobjdump in the CUDA image, no GPU;
+  `put_temp_files_here/e180/ptx/`): `reduce-vec :strategy :atomic` with NO hint has **33 LDG** in
+  SASS -- ptxas unrolls far past LLVM's x4 -- while `:unroll 4` has **5** (4 + remainder): the hint
+  leaves the main loop `.pragma "nounroll"` (2 pragmas in the PTX vs 1) and ptxas stops.  So on PTX
+  an explicit factor is FINAL.  Whether 33 beats 5 on an H100 is tonight's measurement (probe 4's hand
+  kernels: x4 86.5%, x8 85.5% -- maybe a wash).
+- **D3 -- the default factor is capped at x8.**  16 bytes / 1-byte elements would be x16, which no
+  probe measured.  A factor of 1 (an element of 16+ bytes) emits nothing.
+- **D4 -- the factor is chosen at CODEGEN** from `*target-backend*`; analysis records only the
+  element size.  `--ir-target=llvmir` therefore gets no default (it has no target).  A vector of
+  structs gets no default (no scalar size); that is logged at debug, never an error.
+- **D5 -- a loop body accepts ONE declaration: `unroll`.**  Any other declaration at the head of a
+  loop body is an error naming it (`errors/09`).  Before 180 a `declare` in a dotimes body was
+  "Unsupported form 'DECLARE'", and in a loop-vector-stride body it fell into the inner `let`, which
+  ignored it.  `(unroll 1)` is accepted (it means "do not unroll", like CUDA's `unroll 1`).
+- **D6 -- misplaced `unroll` gets a named error everywhere.**  In a `let` (`%check-context-declarations`)
+  and as a bare form (a new `DECLARE` expression analyzer, registered by wrapping
+  `register-control-analyzers`; any non-unroll `declare` still gets the old unsupported-form error,
+  same message, same location).  NOTE: a `let` still silently drops OTHER unknown declarations --
+  out of scope, but see "For review".
+- **D7 -- loops the AD pass generates are plain.**  Verified: the `_grad` kernel's loops carry no
+  `!llvm.loop`.  Whether the backward broadcast loop should be unrolled is a measurement question for
+  later, as the principles said.
+- **D8 -- strength reduction not done.**  Probe 3: x4 already reaches 98.4%; the multiply costs at
+  most ~1.5%.  Left as an open item.
+- **D9 -- the SPIR-V load-count validators count only outside `*_grad` functions.**  Under the runner's
+  `--differentiate` pass a validator is handed the `_grad` module, which holds the forward kernel too.
+
+
+For review (this evening)
+-------------------------
+
+1. **The `src/semantic.lisp` slot.**  The only edit outside the overlays; it has to be in src/ (a
+   struct).  Please eyeball it before anything else.
+2. **D1 (constant, not profile) and D2 (no PTX default)** are the two judgment calls.  D2 is the one
+   to confirm on the H100 tonight: `reduce-vec` on PTX should be unchanged by 180, and `:unroll 4`
+   should NOT be slower than no hint (if it is, that's the `.pragma "nounroll"` effect, as predicted).
+3. **`let` silently drops unknown declarations** (e.g. a typo'd `(declare (gird-level))`).  180 only
+   closed this for `unroll`.  A general fix would refuse every unknown spec -- worth a bug entry?
+4. **`%unroll-default` is an internal declaration** that `loop-vector-stride` writes.  A user could
+   write it too (it would just ask for the default).  Fine, or rename it to something unspellable?
 
 
 Verification probes (before the endeavour starts)

@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 180 -- (declare (unroll N)) on a dotimes with a RUNTIME trip count.  The loop's latch
+;; carries !llvm.loop {llvm.loop.unroll.count 4}; LLVM unrolls it and adds a remainder loop.  The
+;; trip count here is the vector's length (4 on the hoist harness), so the unrolled body runs once.
+;; Input 0 1 2 3 -> 6.  The IR-level claim (the metadata node itself) is in loop-unroll.unit.lisp.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel du_count (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((acc 0.0))
+    (dotimes (k (length~ A))
+      (declare (unroll 4))
+      (set! acc (+ acc (~ A k))))
+    (set! (~ out) acc)))

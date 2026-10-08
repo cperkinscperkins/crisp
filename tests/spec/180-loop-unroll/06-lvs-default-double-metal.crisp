@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]: validate-spv-stream-double-unrolled-x2
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER b: 0 2 4 6
+;;
+;; ENDEAVOUR 180 -- the default is a BYTE budget, not a fixed factor: 16 bytes in flight is x2 for
+;; a double stream (probe 1: fp32 x4 and fp64 x2 land together, ~99% of peak).  The validator wants
+;; at least 2 double loads and fewer than 4 -- a fixed x4 would fail it.  B = 2A.
+
+(def-type d-vec (vector double :address-space :global :align :compact))
+
+(def-kernel lvs_default_d (A &out B)
+  (declare #'(d-vec &out d-vec => nil))
+  (loop-vector-stride A (i)
+    (set! (~ B i) (* 2.0d0 (~ A i)))))

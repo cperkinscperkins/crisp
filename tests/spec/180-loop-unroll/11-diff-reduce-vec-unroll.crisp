@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=1100@0:0.01 at.A=641 expect.A=1.0 atol=1e-2 h=0.5 group=64 groups=2
+;;
+;; ENDEAVOUR 180 -- AUTODIFF through reduce-vec :unroll.  The key must survive the AD stride pre-pass
+;; that expands REDUCE-VEC itself (endeavour 178); the forward loop keeps its metadata, the gradient
+;; is unchanged.  out = sum A, so d(out)/dA[k] = 1; element 641 is thread 1's sixth trip.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel diff_rvu_sum (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out :unroll 4))

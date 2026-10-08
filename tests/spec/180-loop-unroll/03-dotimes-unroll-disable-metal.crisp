@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 180 -- (declare (unroll nil)): never unroll, {llvm.loop.unroll.disable}.  Without it
+;; default<O3> would fully unroll this constant-trip loop.  Input 0 1 2 3 -> 6.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel du_off (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 1)
+           (local-size  :set-to 1))
+  (let ((acc 0.0))
+    (dotimes (k 4)
+      (declare (unroll nil))
+      (set! acc (+ acc (~ A k))))
+    (set! (~ out) acc)))

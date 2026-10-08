@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=bmg --ir-target=spv]: validate-spv-stream-not-unrolled
+;;
+;; ENDEAVOUR 180 -- (declare (unroll nil)) turns the default off: exactly ONE float load in the
+;; shipped SPIR-V, the loop as it was before this endeavour.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel lvs_off (A &out B)
+  (declare #'(f-vec &out f-vec => nil))
+  (loop-vector-stride A (i)
+    (declare (unroll nil))
+    (set! (~ B i) (* 2.0 (~ A i)))))

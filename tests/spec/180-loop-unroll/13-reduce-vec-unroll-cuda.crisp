@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-HARDWARE-PROFILE: h100
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 180 -- the CUDA twin of 09.  NOT YET RUN ON NVIDIA (written on the BMG box).
+;; Input 0 1 2 3 -> 6.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rvu_sum_cuda (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (reduce-vec #'+ A 0.0 out :strategy :atomic :unroll 2))
