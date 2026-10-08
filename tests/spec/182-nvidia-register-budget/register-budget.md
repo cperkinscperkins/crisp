@@ -139,4 +139,27 @@ Plan
 - [x] TDD tests: 10 specs (01-09 PTX/SPIR-V compile + validators, 10 CUDA metal), 6 negative, unit file;
       ci-stop -> 182
 - [x] implement via nvvm.maxntid / nvvm.minctasm; remove the probe hook; docs (ideal_001.md)
-- [ ] re-measure; fold 181 + 182
+- [x] re-measure with the REAL mechanism (below)
+- [ ] fold 181 + 182
+
+
+Verification -- the real mechanism (2026-10-08, a different H100 SXM, `scripts/182-pod-verify.sh`)
+-------------------------------------------------------------------------------------------------
+
+All 26 CUDA specs on metal (182: 16/16, 181: 10/10); every bench point verified; profile
+`benchmarks/profiles/h100-sxm.crisp` via `--profile-file`.  THIS card's measured read peak is
+3099.7 GB/s (the probe card's was 3178.6), so the baseline was re-run in the same session
+(`--auto-profile`, no key).  % of 3099.7, 4 GiB:
+
+| kernel | unbounded | `h100-sxm` profile | groups |
+|---|---|---|---|
+| `:atomic` sum | 93.0 | 93.9 | 1056 -> 660 |
+| last-man sum | 75.5 | **93.4** | 1056 -> 528 |
+| argmax | 80.3 | **94.5** | 660 -> 528 |
+| Welford | 78.0 | **94.0** | 1056 -> 528 |
+| sum + sumsq | **95.8** | 92.8 | 792 -> 528 |
+
+Reproduces the probe: the three laggards gain 14-18 points and meet `:atomic`; sum+sumsq loses ~3 (it
+was the one kernel already at a good budget by luck -- 40 registers at 792 groups).  `:atomic` gets 660
+groups, not 528: .minnctapersm is a MINIMUM, and ptxas fitted it in 48 registers, 5 blocks per SM.
+
