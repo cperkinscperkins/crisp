@@ -1716,10 +1716,11 @@ def render_index(data: dict, provenance: dict) -> List[str]:
                     notes.append(f"{label} {pts['Crisp']['configuration'].get('percent_of_peak', 0):.0f}%")
             if notes:
                 L.append(f"Ladder, sum at {_mib(sz) if sz else '?'}: " + "; ".join(notes) + ".\n")
-        L.append("**Known gaps, both recorded as endeavours with measurements and a plan:**\n")
-        L.append("- [Endeavour 180 — loop unrolling](../tests/spec/180-loop-unroll/loop-unroll.md): the "
-                 "SPIR-V stride loop issues one load per trip; an unroll hint takes `reduce-vec` from 57% to "
-                 "98% on BMG (measured).  NVIDIA's backend already unrolls.")
+        L.append("**Closed:** [Endeavour 180 — loop unrolling](../tests/spec/180-loop-unroll/loop-unroll.md) "
+                 "(2026-10-07): `loop-vector-stride` now unrolls by default on SPIR-V (16 bytes in flight per "
+                 "thread), which took `reduce-vec` from 57% to 99% of peak on BMG.  NVIDIA gets no default: "
+                 "its backend already unrolls, and the H100 measured no hint as fastest.\n")
+        L.append("**Known gap, recorded as an endeavour with measurements and a plan:**\n")
         L.append("- [Endeavour 181 — last-man sweep](../tests/spec/181-last-man-sweep/last-man-sweep.md): "
                  "last-man (the default, and the only dependent strategy) is capped at groups <= local size, "
                  "a quarter of an H100's resident groups; the same sum with `:atomic` reaches 91%.\n")
