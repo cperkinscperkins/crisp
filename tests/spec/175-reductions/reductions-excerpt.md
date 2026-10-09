@@ -206,8 +206,8 @@ After the operation, the value of `<someVar>` in any thread is indeterminate. `r
 It accomplishes this via a cooperative finish.
 
 1. **Phase 1:** Every workgroup reduces its threads locally using `reduce-workgroup`.
-2. **Phase 2:** The leader thread of each workgroup writes its partial result into its `global-scratch-vec`, and then increments a global `atomic-counter`.
-3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. That final workgroup immediately reads the `global-scratch-vec` -- each of its threads folding partials `lid`, `lid + local_work_size`, `lid + 2*local_work_size`, ... so any number of workgroups is covered -- and performs one final `reduce-workgroup` to calculate the ultimate answer.
+2. **Phase 2:** The leader thread of each workgroup writes its partial result into its `global-scratch-vec`, fences, and then increments a global `atomic-counter` -- store, fence, signal, in that one thread's program order (the release). Only the leader fences: the other threads published nothing.
+3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. Each of its threads fences once (the acquire), then that final workgroup reads the `global-scratch-vec` -- each of its threads folding partials `lid`, `lid + local_work_size`, `lid + 2*local_work_size`, ... so any number of workgroups is covered -- and performs one final `reduce-workgroup` to calculate the ultimate answer.
 
 **The Trade-off:**
 

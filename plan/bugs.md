@@ -2920,7 +2920,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         to be identical.  That leaves when-thread-in-warp-is / when-thread-in-group-is as the
         only forms in this endeavour requiring one.
 
-[ ] 082 mem-fence IS REFUSED IN DIVERGENT CONTROL FLOW THOUGH IT IS NOT A COLLECTIVE -- but
+[x] 082 mem-fence IS REFUSED IN DIVERGENT CONTROL FLOW THOUGH IT IS NOT A COLLECTIVE -- but
         that check is LOAD-BEARING for sync-wait, so the fix is not a blanket exemption.
 
         %analyze-gpu-builtin routes :sync-workgroup, :sync-warp, :mem-fence and :sync-cluster
@@ -2957,6 +2957,18 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         Ordering survives because it is thread 0's OWN program order that carries it: its store
         precedes its fence precedes its atomic.  The other threads fence for nothing, which costs
         little and is honest.
+
+        FIXED 2026-10-08 (endeavour 183) -- and the "ATTEMPTED AND REVERTED" diagnosis above was WRONG.
+        Exempting mem-fence does NOT let a divergent sync-wait through: sync-wait expands to
+        (progn (while ... (mem-fence)) (sync-workgroup)), and the trailing sync-workgroup is refused by
+        the same check.  Re-tested: with the exemption, 118/02 still fails to compile.  What changed in
+        August was the MESSAGE -- 118/02's CHECK-FAIL matched the borrowed MEM-FENCE wording, so the
+        negative spec failed on text, not because the kernel compiled.  So no check had to move onto
+        sync-wait.  The fix: %warp-spec-check-sync exempts the fences, and the barriers (sync-workgroup,
+        sync-warp, sync-cluster) get their own, accurate message ("a barrier every thread of the
+        workgroup must reach ... sync-wait ends in a sync-workgroup").  118/02 now matches that.  The
+        last-man lowerings then fence in thread 0 only (release) and once in the elected workgroup
+        (acquire): tests/spec/183-last-man-fence/.
 
 [x] 083 FIXED -- make-scratch-* SILENTLY DISCARDED :address-space :global, so a "global" scratch
         buffer was allocated as PER-WORKGROUP local memory.

@@ -1,7 +1,7 @@
 Endeavour 183 -- last-man's fence: thread 0 releases, the elected workgroup acquires
 ====================================================================================
 
-PROPOSAL, 2026-10-08 -- for Chris's review before any code.  Comes out of 181 (follow-up 3) and BUG 082.
+APPROVED by Chris 2026-10-08 ("anything worth doing is worth doing right"); implemented the same day.  Comes out of 181 (follow-up 3) and BUG 082.
 
 
 Why
@@ -67,9 +67,31 @@ Tests (TDD)
   H100 SXM: the small-size rows (1-64 MiB) -- needs a pod, after BMG is green.
 
 
-Decision wanted
----------------
+What happened
+-------------
 
-- Is the release/acquire split above the design you want, or do you want the fence kept on every
-  thread (status quo) as the conservative choice?
-- OK to fix BUG 082 as its entry describes (move the check to sync-wait)?
+- **BUG 082's diagnosis was wrong.**  Exempting the fence does not free a divergent sync-wait: its
+  expansion ends in a sync-workgroup, which the same check refuses.  The August "274 -> 273" was 118/02's
+  CHECK-FAIL text (it matched the borrowed MEM-FENCE wording), not a kernel that compiled.  So nothing
+  moved onto sync-wait; the barriers got an accurate message instead, and 118/02 matches it.
+- **IR, by hand** (BMG, `--debug` keeps the .opt.ll): one `__spirv_MemoryBarrier(1, 520)` inside thread 0's
+  block immediately before the ticket's `atomicrmw`, one opening the elected branch, none executed by
+  every thread.
+- **BMG, scratch, last-man before -> after (`:atomic` for reference):** R=1 1 MiB 7.7 -> 5.8 us (3.3);
+  R=1 3 GiB 7166 -> 7159 us (7186); R=4 64 MiB 194.7 -> 162.3 us (156.1); R=4 1 GiB 2436 -> 2379 us (2374);
+  argmax R=4 64 MiB 205.6 -> 175.4 us.  The 40-80 us penalty at 4x occupancy is ~5 us now.
+
+
+Plan
+----
+
+- [x] decisions (Chris): release/acquire split; fix BUG 082
+- [x] TDD: last-man-fence.unit.lisp (fence placement, all three lowerings), 01 (metal), 02 (both
+      backends), errors/01-02; 118/02 CHECK-FAIL updated; ci-stop -> 183
+- [x] implement (overlay): %warp-spec-check-sync; the three last-man lowerings
+- [x] BMG on metal + benchmark (above)
+- [x] docs: ideal_001.md (mem-fence in divergent code, sync-workgroup must be reached, last-man phases),
+      reductions-excerpt.md; BUG 082 closed with the corrected diagnosis
+- [x] full gate: unit, E2E 1434/1434, negative 331/331, six last-man VERIFY-AUTODIFF specs (BMG)
+- [ ] H100: the small-size rows (pod)
+- [ ] fold

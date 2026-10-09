@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "is a barrier every thread of the workgroup must reach"
+;;
+;; ENDEAVOUR 183 -- a workgroup barrier inside a thread-divergent conditional is still refused, now with
+;; a message that says what actually goes wrong (threads that skip the branch never arrive).  Named
+;; neutrally: CHECK-FAIL also matches the kernel name and the filename.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k_e (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (when (> (get-global-id 0) (to-ulong 10))
+    (sync-workgroup))
+  (set! (~ out) 1.0))

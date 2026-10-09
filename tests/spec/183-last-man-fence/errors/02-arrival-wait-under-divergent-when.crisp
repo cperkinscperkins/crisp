@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
+;; CHECK-FAIL: "ends in a sync-workgroup, so it is refused here too"
+;;
+;; ENDEAVOUR 183 -- the case BUG 082 was afraid of: a divergent arrival-sync wait genuinely deadlocks,
+;; and it stays refused once fences go free -- by the workgroup barrier its expansion ends in, with a
+;; message that names the construct the user wrote.
+
+(def-kernel k_e ()
+  (declare #'( => nil)
+           (global-size :set-to 128)
+           (local-size  :set-to 64))
+  (let ((s (make-arrival-sync 128)))
+    (sync-arrive s)
+    (when (> (get-global-id 0) (to-ulong 10))
+      (sync-wait s))))
