@@ -1,0 +1,268 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-08T22:01:24.799780Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H100 80GB HBM3",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 85520809984,
+      "sm_count": null,
+      "hardware_profile": "h100-sxm",
+      "profile_matched": false,
+      "profile_provenance": "file",
+      "profile_source": "benchmarks/profiles/h100-sxm.crisp"
+    },
+    "crisp_commit": "75d13e22",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "workloads__argmax",
+  "competitor": "cuBLAS",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 262144,
+        "bytes": 1048576,
+        "size_mb": 1,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "cublas__argmax",
+        "library": "cublas",
+        "timing": "cuda-events on the stream (Thrust: + its small host copy-back)",
+        "launch_overhead_us": 4.864,
+        "kernel_best_us": 10.208,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 3.11931200366016,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 881.8938732147217,
+          "all_compile_ms": 2065.9327507019043
+        },
+        "runtime": {
+          "wall_time_ms": 0.0,
+          "kernel_execution_ms": 0.010576
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 99.14674735249622
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 4194304,
+        "bytes": 16777216,
+        "size_mb": 16,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "cublas__argmax",
+        "library": "cublas",
+        "timing": "cuda-events on the stream (Thrust: + its small host copy-back)",
+        "launch_overhead_us": 4.832,
+        "kernel_best_us": 12.8,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 39.89098397909294,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 881.8938732147217,
+          "all_compile_ms": 2065.9327507019043
+        },
+        "runtime": {
+          "wall_time_ms": 0.0,
+          "kernel_execution_ms": 0.013231999999999999
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 1267.9274486094318
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 16777216,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "cublas__argmax",
+        "library": "cublas",
+        "timing": "cuda-events on the stream (Thrust: + its small host copy-back)",
+        "launch_overhead_us": 4.832,
+        "kernel_best_us": 37.472,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 55.49174726780463,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 881.8938732147217,
+          "all_compile_ms": 2065.9327507019043
+        },
+        "runtime": {
+          "wall_time_ms": 0.0,
+          "kernel_execution_ms": 0.038048
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 1763.7947855340622
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 67108864,
+        "bytes": 268435456,
+        "size_mb": 256,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "cublas__argmax",
+        "library": "cublas",
+        "timing": "cuda-events on the stream (Thrust: + its small host copy-back)",
+        "launch_overhead_us": 4.832,
+        "kernel_best_us": 115.296,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 72.50515110046123,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 881.8938732147217,
+          "all_compile_ms": 2065.9327507019043
+        },
+        "runtime": {
+          "wall_time_ms": 0.0,
+          "kernel_execution_ms": 0.11647999999999999
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2304.562637362638
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 268435456,
+        "bytes": 1073741824,
+        "size_mb": 1024,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "cublas__argmax",
+        "library": "cublas",
+        "timing": "cuda-events on the stream (Thrust: + its small host copy-back)",
+        "launch_overhead_us": 4.928,
+        "kernel_best_us": 430.112,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 78.11713778472068,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 881.8938732147217,
+          "all_compile_ms": 2065.9327507019043
+        },
+        "runtime": {
+          "wall_time_ms": 0.0,
+          "kernel_execution_ms": 0.432448
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2482.9385822110407
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 1073741824,
+        "bytes": 4294967296,
+        "size_mb": 4096,
+        "workload": "argmax",
+        "verified": true,
+        "kernel": "cublas__argmax",
+        "library": "cublas",
+        "timing": "cuda-events on the stream (Thrust: + its small host copy-back)",
+        "launch_overhead_us": 4.96,
+        "kernel_best_us": 1704.48,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 79.10432296059757,
+        "warmup": 5,
+        "iters": 50
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 881.8938732147217,
+          "all_compile_ms": 2065.9327507019043
+        },
+        "runtime": {
+          "wall_time_ms": 0.0,
+          "kernel_execution_ms": 1.708205
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2514.316077988298
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": true,
+  "contender_class": "Ceiling"
+}

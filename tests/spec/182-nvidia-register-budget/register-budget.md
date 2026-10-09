@@ -112,6 +112,12 @@ Decisions (with Chris, 2026-10-08)
   --hardware-profile=h100-sxm` -- which is what the bench harness's `--profile-file` does), because `--auto-profile` regenerates `h100-80gb-hbm3.crisp` on every run.  Not
   promoted to a builtin -- separate decision.  The generated skeleton and query-cuda.cu now name the key
   as a commented MEASURED line, so a new part's profile documents it without guessing it.
+- **D6 -- 180's stream unroll budget moved into the profile too** (Chris, 2026-10-08): `:stream-bytes-in-flight`
+  replaces `*stream-unroll-bytes-in-flight*` = ((:spirv . 16) (:ptx . nil)).  Builtin `bmg` carries 16; `h100`
+  nothing (D2 of 180 stands).  CONSEQUENCE, accepted: a SPIR-V compile with NO profile now gets no unroll
+  default (was x4) -- the same rule as :stream-occupancy-target, absent = not measured = no tuning.  All
+  specs and benchmarks name a profile.  Specs 11/12 and errors/07; 180's unit policy tests now name
+  their profile.  `*stream-unroll-max-factor*` (x8) stays a constant: a safety cap, not device tuning.
 
 
 Implementation (overlays, 2026-10-08)
@@ -144,7 +150,12 @@ Plan
       overlay changes), wrappers re-expressed at their call sites, overlays emptied LAST; build has no
       redefinitions; 181 10/10 + 182 16/16; folded CUDA launcher identical to the overlay one but paths;
       chapters / reference / call graph / globals regenerated
-- [ ] canonical benchmark runs from the folded commit (BMG Docker + H100 SXM pod), then REPORT-reduction
+- [x] canonical benchmark runs from the folded commit -- BMG (Docker, 4d2a91de) and H100 SXM (75d13e22,
+      `scripts/182-pod-canonical.sh`, ceiling 3178.5 GB/s) -- and REPORT-reduction.md regenerated.  4 GiB, % of
+      peak, SXM: every streaming Crisp row 95.5-98.0% (last-man sum 96.1, argmax 96.6, Welford 96.1,
+      sum+sumsq 95.5) vs CUB 98-100%.  The remaining gap is at SMALL sizes (1-256 MiB), where Crisp's
+      last-man carries a fixed per-launch cost (~13 us at 1 MiB vs `:atomic` 6.8 us) -- the fence and
+      election (181 follow-up 3).
 
 
 Verification -- the real mechanism (2026-10-08, a different H100 SXM, `scripts/182-pod-verify.sh`)

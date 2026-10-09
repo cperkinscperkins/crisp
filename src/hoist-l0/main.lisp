@@ -1576,10 +1576,7 @@
        (error "Scratch tensor ~a: :size-expr :match-num-workgroups (one element per workgroup in the grid) sizes GLOBAL scratch.  Workgroup-local scratch cannot be sized by the grid; give it a workgroup-relative or explicit size."
               param-name))
       (t
-       (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%~
-               The sizes this hoister can resolve are :match-workgroup-size and~%~
-               :match-num-warps-per-workgroup.  (:match-warp-tile is recorded in the metacrisp~%~
-               for tooling but has no host-side meaning, so it cannot size a buffer here.)"
+       (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%The sizes this hoister can resolve are :match-workgroup-size and~%:match-num-warps-per-workgroup.  (:match-warp-tile is recorded in the metacrisp~%for tooling but has no host-side meaning, so it cannot size a buffer here.)"
               param-name size-expr)))))
 
 (defun %l0-scratch-dims (size-expr rank param-name)
@@ -1598,11 +1595,7 @@
          ;; The emitter never uses this for a symbolic size -- it takes the expression path -- but
          ;; returning something well-formed keeps any other caller honest.
          (list (%l0-scratch-symbolic-expr size-expr param-name))
-         (error "Scratch tensor ~a: a symbolic :size-expr (~a) names ONE length, so it is only~%~
-                 meaningful for a rank-1 scratch vector; this tensor has rank ~d.~%~
-                 (The scalar-size rule would make a SQUARE tensor -- that size in EVERY~%~
-                 dimension -- which for a workgroup-derived size is almost never intended.)~%~
-                 Give explicit per-dimension extents instead, e.g. (make-scratch-matrix float (8 16))."
+         (error "Scratch tensor ~a: a symbolic :size-expr (~a) names ONE length, so it is only~%meaningful for a rank-1 scratch vector; this tensor has rank ~d.~%(The scalar-size rule would make a SQUARE tensor -- that size in EVERY~%dimension -- which for a workgroup-derived size is almost never intended.)~%Give explicit per-dimension extents instead, e.g. (make-scratch-matrix float (8 16))."
                 param-name size-expr rank)))
     ((integerp size-expr) (make-list rank :initial-element size-expr))
     ((and (listp size-expr) (= (length size-expr) rank) (every #'integerp size-expr))
@@ -1908,8 +1901,7 @@
         (%l0-emit-symbolic-global-scratch-arg stream param-name param-type context-var device-var
                                               arg-index size-expr)))
     (unless (integerp size-expr)
-      (error "Global scratch tensor ~a has non-integer :size-expr ~a. ~
-              Only literal integer sizes are supported in the L0 hoist launcher."
+      (error "Global scratch tensor ~a has non-integer :size-expr ~a. Only literal integer sizes are supported in the L0 hoist launcher."
         param-name size-expr))
     (multiple-value-bind (extents strides)
         (%tensor-compact-extents-strides rank (make-list rank :initial-element size-expr))

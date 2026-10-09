@@ -2010,7 +2010,8 @@
 ;;;; branch and LLVM does the work.  The analyzer strips the declaration off the body and records it
 ;;;; on the node (semantic-dotimes-unroll); ANF and AD see the declaration as an inert form.
 ;;;; loop-vector-stride with no declaration gets the STREAM DEFAULT: a byte budget in flight per
-;;;; thread, per target (*stream-unroll-bytes-in-flight*).
+;;;; thread, from the hardware profile's :stream-bytes-in-flight (endeavour 182; 180 kept it in a
+;;;; per-target constant).
 ;;;; ===========================================================================================
 
 (defun %declaration-spec-named-p (spec name)

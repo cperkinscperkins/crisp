@@ -4845,11 +4845,13 @@ The only way to make `vector_add` faster is to use interleaved memory and kernel
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
-**Unrolling.** On SPIR-V, `loop-vector-stride` is unrolled by default, so that each thread keeps
-16 bytes of loads in flight: x4 for a `float` vector, x2 for `double`, x8 for 16-bit types (never
-more than x8). That number was measured on an Intel Arc B580, where one 4-byte load per trip reaches
-57% of the memory bus and 16 bytes reach 99%. On PTX there is no default: LLVM's NVPTX backend and
-`ptxas` already unroll the loop, and a hint would only stop `ptxas` from going further. A
+**Unrolling.** `loop-vector-stride` is unrolled by default when the hardware profile says how many
+bytes of loads each thread should keep in flight (`:stream-bytes-in-flight`, see Hardware Profiles):
+the factor is that budget over the element size, never more than x8. The builtin `bmg` profile
+carries 16 bytes -- x4 for a `float` vector, x2 for `double`, x8 for 16-bit types -- measured on an
+Intel Arc B580, where one 4-byte load per trip reaches 57% of the memory bus and 16 bytes reach 99%.
+NVIDIA profiles leave it out: LLVM's NVPTX backend and `ptxas` already unroll the loop, and a hint
+would only stop `ptxas` from going further. No profile, or no key, means no default. A
 `(declare (unroll ...))` at the start of the body replaces the default on every target --
 `(unroll nil)` turns it off. See [unroll](#unroll).
 
@@ -11790,6 +11792,7 @@ Note that a hardware profile says nothing about that actual architecture. It may
   :max-total-threads-per-block 1024
   :max-concurrent-kernels 128
   :stream-occupancy-target 1024     ; MEASURED -- see below
+  :stream-bytes-in-flight 16        ; MEASURED -- see below
 
   ;; matrix units
   :mma-shapes '((16 8 16) (8 8 8))  ; list of (M N K) triples
@@ -11831,6 +11834,21 @@ The lowerings Crisp knows:
 
 A name outside that list is a compile error at `def-hardware-profile` time, so a typo is caught where
 it is written rather than surfacing later as a kernel that mysteriously never selects its lowering.
+
+### `:stream-bytes-in-flight` ✅
+
+`:stream-bytes-in-flight` is how many bytes of loads each thread should keep in flight in a **stream
+loop** (`loop-vector-stride`, and so `reduce-vec`). The loop is unrolled by that budget over the
+element size (at most x8), unless its body starts with an explicit `(declare (unroll ...))`.
+
+```
+:stream-bytes-in-flight 16
+```
+
+It is a MEASURED key, and absent means no unroll default. On an Intel Arc B580 16 bytes per thread
+is the knee (57% of the read peak at one 4-byte load per trip, 99% at 16 bytes); the builtin `bmg`
+profile carries it. NVIDIA parts leave it out -- their backend compiler unrolls the loop itself, and a
+hint would stop it (see `tests/spec/180-loop-unroll/`).
 
 ### `:stream-occupancy-target` ✅
 

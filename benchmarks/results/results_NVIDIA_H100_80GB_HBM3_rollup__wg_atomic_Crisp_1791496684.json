@@ -1,0 +1,334 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-08T21:57:56.302731Z",
+    "hardware": {
+      "gpu_model": "NVIDIA H100 80GB HBM3",
+      "arch_target": "sm_90",
+      "environment": "runpod",
+      "vram_bytes": 85520809984,
+      "sm_count": null,
+      "hardware_profile": "h100-sxm",
+      "profile_matched": false,
+      "profile_provenance": "file",
+      "profile_source": "benchmarks/profiles/h100-sxm.crisp"
+    },
+    "crisp_commit": "75d13e22",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "reduction",
+  "chapter": "rollup__wg_atomic",
+  "competitor": "Crisp",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [
+    {
+      "configuration": {
+        "elements": 262144,
+        "bytes": 1048576,
+        "size_mb": 1,
+        "workload": "sum",
+        "groups": 660,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_wg_atomic",
+        "step": "rollup",
+        "kernel_best_us": 6.4,
+        "jit_ms": 30.184,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 4.84005923572621,
+        "ceiling_file": "ceiling_nvidia_hash_1791496617.json",
+        "groups_spec": "occupancy 1.0 cu=132",
+        "occupancy": 1.0,
+        "max_resident": 660,
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 112.39123344421387,
+          "all_compile_ms": 112.39123344421387
+        },
+        "runtime": {
+          "wall_time_ms": 0.019997499999999998,
+          "kernel_execution_ms": 0.006816
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 153.84037558685446
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 4194304,
+        "bytes": 16777216,
+        "size_mb": 16,
+        "workload": "sum",
+        "groups": 660,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_wg_atomic",
+        "step": "rollup",
+        "kernel_best_us": 8.352,
+        "jit_ms": 0.172591,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 61.54821595281688,
+        "ceiling_file": "ceiling_nvidia_hash_1791496617.json",
+        "groups_spec": "occupancy 1.0 cu=132",
+        "occupancy": 1.0,
+        "max_resident": 660,
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 112.39123344421387,
+          "all_compile_ms": 112.39123344421387
+        },
+        "runtime": {
+          "wall_time_ms": 0.021764500000000003,
+          "kernel_execution_ms": 0.008576
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 1956.2985074626865
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 0.0,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 16777216,
+        "bytes": 67108864,
+        "size_mb": 64,
+        "workload": "sum",
+        "groups": 660,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_wg_atomic",
+        "step": "rollup",
+        "kernel_best_us": 27.968,
+        "jit_ms": 0.163418,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 73.2700583025205,
+        "ceiling_file": "ceiling_nvidia_hash_1791496617.json",
+        "groups_spec": "occupancy 1.0 cu=132",
+        "occupancy": 1.0,
+        "max_resident": 660,
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 112.39123344421387,
+          "all_compile_ms": 112.39123344421387
+        },
+        "runtime": {
+          "wall_time_ms": 0.0420013,
+          "kernel_execution_ms": 0.028816
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2328.875069405886
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 2.213887069858985e-07,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 67108864,
+        "bytes": 268435456,
+        "size_mb": 256,
+        "workload": "sum",
+        "groups": 660,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_wg_atomic",
+        "step": "rollup",
+        "kernel_best_us": 91.008,
+        "jit_ms": 0.165575,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 91.44793832490602,
+        "ceiling_file": "ceiling_nvidia_hash_1791496617.json",
+        "groups_spec": "occupancy 1.0 cu=132",
+        "occupancy": 1.0,
+        "max_resident": 660,
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 112.39123344421387,
+          "all_compile_ms": 112.39123344421387
+        },
+        "runtime": {
+          "wall_time_ms": 0.10552299999999999,
+          "kernel_execution_ms": 0.092352
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 2906.6555786555787
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 2.639634291100794e-07,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 268435456,
+        "bytes": 1073741824,
+        "size_mb": 1024,
+        "workload": "sum",
+        "groups": 660,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_wg_atomic",
+        "step": "rollup",
+        "kernel_best_us": 347.712,
+        "jit_ms": 0.169418,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 96.71338921924925,
+        "ceiling_file": "ceiling_nvidia_hash_1791496617.json",
+        "groups_spec": "occupancy 1.0 cu=132",
+        "occupancy": 1.0,
+        "max_resident": 660,
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 112.39123344421387,
+          "all_compile_ms": 112.39123344421387
+        },
+        "runtime": {
+          "wall_time_ms": 0.362904,
+          "kernel_execution_ms": 0.349296
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 3074.0169483761624
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 4.779015273684918e-07,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    },
+    {
+      "configuration": {
+        "elements": 1073741824,
+        "bytes": 4294967296,
+        "size_mb": 4096,
+        "workload": "sum",
+        "groups": 660,
+        "local_size": [
+          256,
+          1,
+          1
+        ],
+        "warmup": 5,
+        "iters": 50,
+        "verified": true,
+        "kernel": "sum_rollup_wg_atomic",
+        "step": "rollup",
+        "kernel_best_us": 1390.78,
+        "jit_ms": 0.168553,
+        "device_reported": "NVIDIA H100 80GB HBM3",
+        "peak_read_gbps": 3178.481256,
+        "percent_of_peak": 96.92525087539006,
+        "ceiling_file": "ceiling_nvidia_hash_1791496617.json",
+        "groups_spec": "occupancy 1.0 cu=132",
+        "occupancy": 1.0,
+        "max_resident": 660,
+        "launch_init_from_directive": [],
+        "rtol": 0.0001
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 112.39123344421387,
+          "all_compile_ms": 112.39123344421387
+        },
+        "runtime": {
+          "wall_time_ms": 1.40788,
+          "kernel_execution_ms": 1.39413
+        },
+        "throughput": {
+          "tflops": null,
+          "bandwidth_gbps": 3080.750931405249
+        },
+        "verification": {
+          "verified": true,
+          "mode": "full",
+          "relative_error": 6.790672051451054e-07,
+          "max_abs_err": null,
+          "samples": 2
+        }
+      }
+    }
+  ],
+  "is_canonical": true,
+  "contender_class": "Crisp"
+}

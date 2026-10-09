@@ -232,7 +232,9 @@ highest id.
 Decisions (2026-10-07)
 ----------------------
 
-- **D1 -- the default is a per-target CONSTANT, not a hardware-profile field.**
+- **D1 -- the default is a per-target CONSTANT, not a hardware-profile field.**  SUPERSEDED 2026-10-08 by
+  endeavour 182: it is now the MEASURED profile key `:stream-bytes-in-flight` (builtin `bmg` = 16, `h100`
+  absent); no profile or no key means no default.  The original reasoning follows.
   `*stream-unroll-bytes-in-flight*` = `((:spirv . 16) (:ptx . nil))`.  The profile-probe
   applications query the device; the 16-byte knee came out of a sweep, which no query reports.  Today
   "SPIR-V" means Intel, so per-backend is per-vendor.  Revisit when a second SPIR-V part shows a

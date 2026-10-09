@@ -588,6 +588,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%ATTACH-LOOP-UNROLL-METADATA LATCH-BR MODULE SPEC)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%EFFECTIVE-LOOP-UNROLL SPEC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%LOOP-VARIANT-COERCE BUILDER VALUE LLVM-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
                                                                                              hw_tmp))  codegen.lisp [See above]

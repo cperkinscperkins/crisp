@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=no-stream-key --ir-target=spv]: validate-spv-stream-not-unrolled
+;;
+;; ENDEAVOUR 182 (180 follow-up) -- a profile WITHOUT :stream-bytes-in-flight means no unroll default,
+;; on SPIR-V as everywhere: the value is measured per device, and absent means "not measured", so
+;; Crisp does not guess.  (Before this, SPIR-V always got 16 bytes from a per-target constant.)
+
+(def-hardware-profile no-stream-key :simd-width 16)
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel lvs_plain (A &out B)
+  (declare #'(f-vec &out f-vec => nil))
+  (loop-vector-stride A (i)
+    (set! (~ B i) (* 2.0 (~ A i)))))

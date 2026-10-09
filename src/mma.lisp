@@ -370,6 +370,7 @@
      :l2-cache-size 18MB
      :native-cache-line-size 64            ; Xe2 LSC line; not queryable
      :tile-visit-strip-width 4             ; measured; see the Phase 1 revision comment
+     :stream-bytes-in-flight 16            ; measured (180 probe 1): x4 fp32 / x2 fp64 streams
      ;; 156 Step 2: BMG offers a second code-generation strategy.  :coop-matrix stays FIRST
      ;; and is therefore still the default, so no existing kernel changes behaviour -- a
      ;; kernel gets :xe-native only by asking for it with (mma-lowering :xe-native).

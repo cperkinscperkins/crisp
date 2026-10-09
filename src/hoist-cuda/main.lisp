@@ -611,12 +611,7 @@
         (warp (%cuda-scratch-warp-size)))
     (flet ((need-wg ()
              (or wg
-                 (error "Scratch tensor ~a: :size-expr ~a needs the workgroup size, but this~%~
-                         kernel declares no compile-time (local-size :set-to N).~%~
-                         The CUDA hoister resolves a symbolic scratch size to a NUMBER at~%~
-                         generation time, because all workgroup-local scratch shares one~%~
-                         dynamic-shared blob whose total must be known to size the launch.~%~
-                         Either declare a local-size, or give this buffer an explicit integer extent."
+                 (error "Scratch tensor ~a: :size-expr ~a needs the workgroup size, but this~%kernel declares no compile-time (local-size :set-to N).~%The CUDA hoister resolves a symbolic scratch size to a NUMBER at~%generation time, because all workgroup-local scratch shares one~%dynamic-shared blob whose total must be known to size the launch.~%Either declare a local-size, or give this buffer an explicit integer extent."
                         param-name size-expr))))
       (cond
         ((string-equal name "MATCH-WORKGROUP-SIZE")
@@ -634,10 +629,7 @@
          (error "Scratch tensor ~a: :size-expr :match-num-workgroups (one element per workgroup in the grid) sizes GLOBAL scratch.  Workgroup-local scratch cannot be sized by the grid; give it a workgroup-relative or explicit size."
                 param-name))
         (t
-         (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%~
-                 The sizes this hoister can resolve are :match-workgroup-size and~%~
-                 :match-num-warps-per-workgroup.  (:match-warp-tile is recorded in the metacrisp~%~
-                 for tooling but has no host-side meaning, so it cannot size a buffer here.)"
+         (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%The sizes this hoister can resolve are :match-workgroup-size and~%:match-num-warps-per-workgroup.  (:match-warp-tile is recorded in the metacrisp~%for tooling but has no host-side meaning, so it cannot size a buffer here.)"
                 param-name size-expr))))))
 
 (defun %cuda-declared-wg-size (dispatch-info)
@@ -952,9 +944,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
     ((%cuda-scratch-symbolic-size-p size-expr)
      (if (= rank 1)
          (list (%cuda-resolve-symbolic-size size-expr param-name))
-         (error "Scratch tensor ~a: a symbolic :size-expr (~a) names ONE length, so it is only~%~
-                 meaningful for a rank-1 scratch vector; this tensor has rank ~d.~%~
-                 Give explicit per-dimension extents instead, e.g. (make-scratch-matrix float (8 16))."
+         (error "Scratch tensor ~a: a symbolic :size-expr (~a) names ONE length, so it is only~%meaningful for a rank-1 scratch vector; this tensor has rank ~d.~%Give explicit per-dimension extents instead, e.g. (make-scratch-matrix float (8 16))."
                 param-name size-expr rank)))
     ((integerp size-expr) (make-list rank :initial-element size-expr))
     ((and (listp size-expr) (= (length size-expr) rank) (every #'integerp size-expr))

@@ -42,7 +42,8 @@
     (:mma-shapes                  . :mma-shapes)   ; FRAGMENT granularity: (M N K) triples
     (:wgmma-shapes                . :mma-shapes)   ; 161: WARPGROUP granularity
     (:mma-lowerings               . :lowerings)    ; 156: ordered; first is the default
-    (:stream-occupancy-target     . :pos-int))     ; 182: MEASURED; threads per CU for stream kernels
+    (:stream-occupancy-target     . :pos-int)      ; 182: MEASURED; threads per CU for stream kernels
+    (:stream-bytes-in-flight      . :pos-int))     ; 182 (was 180's constant): MEASURED; stream unroll budget
   "Endeavor 130: canonical hardware-profile keys and their value types.
 
    Endeavour 182 added :stream-occupancy-target -- MEASURED, threads per compute unit that a kernel
@@ -50,6 +51,12 @@
    bounds (.maxntid + .minnctapersm = target / workgroup size), which sets ptxas's register budget.
    Absent => no bound (ptxas's default, full occupancy).  H100 SXM: 1024 (half occupancy at 64
    registers beat full occupancy at 32 for every streaming reduction, 2026-10-08).
+
+   :stream-bytes-in-flight (also 182, replacing 180's per-target constant) -- MEASURED, the bytes of loads
+   each thread should keep in flight in a stream loop; the loop-vector-stride unroll default is
+   BYTES / element size (capped at *stream-unroll-max-factor*).  Absent => no unroll default.  BMG: 16
+   (one 4-byte load per trip reaches 57% of the bus, 16 bytes 99%).  H100: absent -- LLVM's NVPTX
+   unroller and ptxas already unroll, and a hint would stop ptxas (180, D2).
 
    Endeavour 161 added :wgmma-shapes, and it is a SEPARATE KEY rather than more entries in
    :mma-shapes for a concrete reason.  :mma-shapes is FRAGMENT granularity -- (8 16 8) for Intel

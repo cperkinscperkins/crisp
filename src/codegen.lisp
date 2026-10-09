@@ -4081,18 +4081,6 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 ;;; Endeavour 180 -- loop unrolling: the !llvm.loop node on a counted loop's latch, and the
 ;;; per-target stream default.  tests/spec/180-loop-unroll/loop-unroll.md
 
-(defparameter *stream-unroll-bytes-in-flight* '((:spirv . 16) (:ptx . nil))
-  "Endeavour 180.  The loop-vector-stride stream default, per target: the bytes each thread should
-   have in flight, so the unroll factor is BYTES / element size.  MEASURED, not guessed
-   (loop-unroll.md, probes 1, 2 and 4):
-     :spirv  16 -- BMG reaches ~99% of the read peak at 16 bytes/thread (fp32 x4, fp64 x2); one
-                   load per trip (4 bytes) reaches 57%.  More never hurt, and gained < 1%.
-     :ptx    NIL -- no hint.  LLVM's NVPTX target already runtime-unrolls the loop x4 and ptxas
-                   unrolls again (16 loads per trip in SASS); a hint would leave the unrolled loop
-                   marked unroll.disable, which reaches the PTX as .pragma \"nounroll\" and stops
-                   ptxas -- a regression, not a default.
-   A target not listed gets no default.")
-
 (defparameter *stream-unroll-max-factor* 8
   "Endeavour 180.  The largest factor the stream default picks.  Probe 1 measured up to x8; a
    1-byte element would otherwise ask for x16, which no probe has run.")
@@ -4101,13 +4089,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
   "Endeavour 180.  What the codegen emits for a loop's unroll SPEC on the current *target-backend*:
    (values :count N), (values :full), (values :disable), or NIL for no metadata.  An explicit
    request is emitted as written on every target; the stream default, (:stream BYTES), is a factor
-   only where *stream-unroll-bytes-in-flight* gives a budget and the factor is above 1."
+   only where the active hardware profile's :stream-bytes-in-flight gives a budget (182; 180 kept it in
+   a per-target constant) and the factor is above 1."
   (case (first spec)
     (:count (values :count (second spec)))
     (:full (values :full))
     (:disable (values :disable))
     (:stream
-     (let* ((budget (cdr (assoc *target-backend* *stream-unroll-bytes-in-flight*)))
+     (let* ((budget (getf (active-hardware-profile) :stream-bytes-in-flight))
             (bytes (second spec))
             (n (and budget bytes (plusp bytes)
                     (min *stream-unroll-max-factor* (max 1 (floor budget bytes))))))

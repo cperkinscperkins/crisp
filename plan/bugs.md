@@ -3907,7 +3907,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         Until then, the rule for lowerings: on SPIR-V, do not carry a value out of a divergent IF into a
         loop when a branch-free shape is available.
 
-[ ] 110 FORMAT ~<newline> CONTINUATIONS IN CRLF FILES -- every one is a crash on its error path.
+[x] 110 FORMAT ~<newline> CONTINUATIONS IN CRLF FILES -- every one is a crash on its error path.
 
         MEASURED 2026-10-08 (found during endeavour 181).  In a CRLF source file a FORMAT string's
         "~<newline>" continuation is really "~<return><newline>", and FORMAT reads "~<return>" as an
@@ -3924,3 +3924,10 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX (a hypothesis): rewrite each FORMAT-string continuation as one long line or ~%
         joins (what the overlays already do, since they are LF), and add a unit test that scans src/
         for "~\r\n" inside string literals.  Mechanical, but touches ~50 messages: its own small sweep.
+
+        FIXED 2026-10-08.  Of the 51 tilde-CR-LF byte sequences, 27 were in comments (harmless) and 24 in
+        string literals -- all in (error "...") calls, nine messages: autodiff.lisp (6), hoist-cuda/main.lisp
+        (10), hoist-l0/main.lisp (8).  Each continuation was JOINED exactly as FORMAT would have read it
+        (tilde, CR, LF and the next line's indentation removed), so the printed messages are unchanged.
+        Guard: tests/test-source-hygiene.lisp (run-ci) scans src/ for a tilde + CR LF inside any string
+        literal; proven by planting one (red) and removing it (green).
