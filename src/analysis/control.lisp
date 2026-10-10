@@ -1000,15 +1000,29 @@
 
 (defun %warp-spec-check-sync (builtin-kw name-str location)
   "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
-   (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
-   ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal
-   thread-divergent check."
-  (if *in-warp-spec-block*
-      (when (member builtin-kw '(:sync-workgroup :sync-cluster))
-        (error 'crisp-compiler-error
-          :message (format nil "~a cannot appear inside a with-warp-specialization role block — it is a COLLECTIVE and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering." name-str)
-          :source-location location))
-      (%tlc-check-not-divergent name-str location)))
+   (sync-workgroup, sync-cluster) DEADLOCKS -- only one role's warps reach it -- so it is forbidden;
+   warp-scoped ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, a BARRIER inside a
+   thread-divergent conditional is refused.
+
+   Endeavour 183 (BUG 082): a FENCE (mem-fence, mem-fence-workgroup) is exempt.  It orders the calling
+   thread's own memory accesses and waits for no one, so there is nothing to deadlock -- and
+   publish-then-signal (store, fence, ticket) needs it inside the one thread that stores.  The barriers
+   get their own message: the shared %tlc-check-not-divergent text explains an INTERNAL sync-workgroup
+   (load-tile-at's problem), which is not what a barrier is."
+  (cond
+    (*in-warp-spec-block*
+     (when (member builtin-kw '(:sync-workgroup :sync-cluster))
+       (error 'crisp-compiler-error
+         :message (format nil "~a cannot appear inside a with-warp-specialization role block — it is a COLLECTIVE and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering." name-str)
+         :source-location location)))
+    ((member builtin-kw '(:mem-fence :mem-fence-workgroup)) nil)
+    (*in-divergent-conditional*
+     (error 'crisp-compiler-error
+       :message (format nil "~a cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It is a barrier every thread of the ~a must reach: threads that skip the branch never arrive, so the threads that enter it wait forever.  (sync-wait ends in a sync-workgroup, so it is refused here too.)  Compile-time conditionals (if+ / when+ / unless+) are safe, and so is a condition every thread of the ~a evaluates the same way (e.g. one based on get-workgroup-id, not get-local-id).  A mem-fence, which waits for no one, may appear here."
+                        name-str
+                        (case builtin-kw (:sync-cluster "cluster") (:sync-warp "warp") (t "workgroup"))
+                        (case builtin-kw (:sync-cluster "cluster") (:sync-warp "warp") (t "workgroup")))
+       :source-location location))))
 
 
 (defun %warp-spec-check-block-only (op-name mode location)

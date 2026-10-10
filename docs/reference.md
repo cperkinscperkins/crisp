@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-08T23:31:31.184413Z
+Generated on 2026-10-10T16:17:28.996064Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -274,7 +274,7 @@ Generated on 2026-10-08T23:31:31.184413Z
 ### DEFUN `%WARP-SPEC-CHECK-SYNC`
 - **Args**: `(BUILTIN-KW NAME-STR LOCATION)`
 
-  > Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective  >    (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped  >    ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal  >    thread-divergent check.
+  > Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective  >    (sync-workgroup, sync-cluster) DEADLOCKS -- only one role's warps reach it -- so it is forbidden;  >    warp-scoped ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, a BARRIER inside a  >    thread-divergent conditional is refused.  >   >    Endeavour 183 (BUG 082): a FENCE (mem-fence, mem-fence-workgroup) is exempt.  It orders the calling  >    thread's own memory accesses and waits for no one, so there is nothing to deadlock -- and  >    publish-then-signal (store, fence, ticket) needs it inside the one thread that stores.  The barriers  >    get their own message: the shared %tlc-check-not-divergent text explains an INTERNAL sync-workgroup  >    (load-tile-at's problem), which is not what a barrier is.
 
 
 ---

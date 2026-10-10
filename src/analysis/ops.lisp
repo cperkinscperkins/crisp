@@ -1471,11 +1471,11 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                          (,rwg ,(loop for c in clauses for sv in svs
                                       collect `(,(first c) ,(second c) ,(third c) :local-scratch-vec ,sv)))
                          ;; every partial written, then ONE ticket, ONE election
+                         ;; 183: thread 0's program order is the RELEASE -- every partial stored, ONE fence, ONE ticket
                          (when-thread-in-group-is 0
                            ,@(loop for c in clauses for gv in gvs
-                                   collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(second c))))
-                         (mem-fence)
-                         (when-thread-in-group-is 0
+                                   collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(second c)))
+                           (mem-fence)
                            (set! (~ ,flag)
                                  (if (= (atomic-add! (~ ,ctr) 1u)
                                         (- (to-uint (get-num-groups 0)) 1u))
@@ -1483,6 +1483,9 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                          (sync-workgroup)
                          ;; the LAST workgroup sweeps every clause's partials in ONE fused reduction
                          (when+ (= (~ ,flag) 1u)
+                           ;; 183: the ACQUIRE half of publish-then-signal -- every thread of the elected workgroup
+                           ;; fences once before reading the partials other workgroups published.
+                           (mem-fence)
                            (let ((,lid (to-int (get-local-linear-id)))
                                  (,ng  (to-int (get-num-groups 0)))
                                  (,ls  (to-int (get-local-linear-size))))
@@ -1746,17 +1749,20 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                                                    "grid-reduce!: a last-man :global-scratch-vec has fewer elements than there are workgroups; it needs one per workgroup (:match-num-workgroups)."))
                     (,rwg ,combiner ,(loop for c in clauses for sv in svs
                                            collect `(,(first c) ,(second c) :local-scratch-vec ,sv)))
+                    ;; 183: thread 0's program order is the RELEASE -- every partial stored, ONE fence, ONE ticket
                     (when-thread-in-group-is 0
                       ,@(loop for c in clauses for gv in gvs
-                              collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(first c))))
-                    (mem-fence)
-                    (when-thread-in-group-is 0
+                              collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(first c)))
+                      (mem-fence)
                       (set! (~ ,flag)
                             (if (= (atomic-add! (~ ,ctr) 1u)
                                    (- (to-uint (get-num-groups 0)) 1u))
                                 1u 0u)))
                     (sync-workgroup)
                     (when+ (= (~ ,flag) 1u)
+                      ;; 183: the ACQUIRE half of publish-then-signal -- every thread of the elected workgroup
+                      ;; fences once before reading the partials other workgroups published.
+                      (mem-fence)
                       (let ((,lid (to-int (get-local-linear-id)))
                             (,ng  (to-int (get-num-groups 0)))
                             (,ls  (to-int (get-local-linear-size))))
@@ -2344,15 +2350,13 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                        "grid-reduce-last-man!: the :global-scratch-vec has fewer elements than there are workgroups; it needs one per workgroup (:match-num-workgroups)")
          ;; Phase 1 -- every thread of this workgroup ends up holding the workgroup's total.
          (reduce-workgroup ,fn ,var ,identity :local-scratch-vec ,sv)
-         ;; Phase 2 -- publish this workgroup's partial.
+         ;; Phase 2 -- thread 0 publishes this workgroup's partial and draws its ticket.  183: the
+         ;; RELEASE half of publish-then-signal is thread 0's own program order -- store, fence,
+         ;; ticket -- so only thread 0 fences.  (BUG 082 used to refuse a fence in this block, which
+         ;; made every thread fence; a fence is not a collective.)
          (when-thread-in-group-is 0
-           (set! (~ ,gv (to-int (get-workgroup-id 0))) ,var))
-         ;; The store must be visible before the counter announces this workgroup has arrived.
-         ;; OUTSIDE the election because a fence in divergent control flow is refused (BUG 082,
-         ;; over-strict but load-bearing for sync-wait).  Ordering survives regardless: it is
-         ;; thread 0's OWN program order that carries it -- store, then fence, then atomic.
-         (mem-fence)
-         (when-thread-in-group-is 0
+           (set! (~ ,gv (to-int (get-workgroup-id 0))) ,var)
+           (mem-fence)
            ;; atomic-add! yields the value BEFORE the addition, so exactly one workgroup in the
            ;; grid draws num_groups-1.  Verified on hardware, not assumed.
            (set! (~ ,flag)
@@ -2366,6 +2370,9 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          ;; collective inside a merely thread-divergent conditional is refused.
          ;; THE LOSERS FALL STRAIGHT THROUGH HERE AND RETIRE.
          (when+ (= (~ ,flag) 1u)
+           ;; 183: the ACQUIRE half of publish-then-signal -- every thread of the elected workgroup
+           ;; fences once before reading the partials other workgroups published.
+           (mem-fence)
            (let ((,lid (to-int (get-local-linear-id)))
                  (,ng  (to-int (get-num-groups 0)))
                  (,ls  (to-int (get-local-linear-size))))

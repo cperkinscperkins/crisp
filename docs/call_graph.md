@@ -125,7 +125,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (REGISTER-WARP-BUILTINS)  analysis/core.lisp
 - - - - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
 - - - - - - - - (%WARP-SPEC-CHECK-SYNC BUILTIN-KW NAME-STR LOCATION)  analysis/control.lisp
-- - - - - - - - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp
 - - - - - - - - (%GPU-BUILTIN-INFO BUILTIN-KW)  analysis/core.lisp
 - - - - - (REGISTER-STRUCT-ANALYZERS)  analysis/structs.lisp
 - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
@@ -2312,7 +2311,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp [See above]
 - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
+- - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp
 - - - (%TLC-CHECK-ELEM-MATCH SRC TILE ENV OP-NAME LOCATION)  analysis/control.lisp
 - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - - (GET-ARRAY-ELEMENT-TYPE TYPE)  analysis/structs.lisp [See above]
