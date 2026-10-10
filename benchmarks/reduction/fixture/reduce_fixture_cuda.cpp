@@ -53,6 +53,7 @@ struct Buffer {
     int id = -1;
     std::string name, elem, init, fill_hex;
     uint64_t count = 0;
+    std::string count_expr;          // @groups[*k], resolved once the grid is known (endeavour 181)
     bool readback = false;
     CUdeviceptr dev = 0;
     std::vector<uint8_t> fill;       // one element's bytes
@@ -62,7 +63,21 @@ struct Buffer {
 struct Slot {
     std::string kind;                // slm | u64 | ptr
     uint64_t value = 0;
+    std::string expr;                // @groups[*k], resolved once the grid is known (endeavour 181)
 };
+
+// "@groups" or "@groups*<k>" -> GROUPS (x k) in OUT.  False if E is not of that form.
+static bool resolve_groups_expr(const std::string &e, uint64_t groups, uint64_t &out) {
+    if (e.rfind("@groups", 0) != 0) return false;
+    const std::string rest = e.substr(7);
+    uint64_t k = 1;
+    if (!rest.empty()) {
+        if (rest[0] != '*') return false;
+        k = std::stoull(rest.substr(1));
+    }
+    out = groups * k;
+    return true;
+}
 
 static size_t elem_bytes(const std::string &e) {
     if (e == "f64" || e == "i64" || e == "u64") return 8;
@@ -171,7 +186,8 @@ int main(int argc, char **argv) {
                 in >> b.id;
                 auto m = kv(in);
                 b.name = m["name"]; b.elem = m["elem"]; b.init = m["init"];
-                b.count = std::stoull(m["count"]);
+                if (!m["count"].empty() && m["count"][0] == '@') b.count_expr = m["count"];
+                else b.count = std::stoull(m["count"]);
                 b.fill_hex = m.count("fill") ? m["fill"] : "";
                 b.readback = m.count("readback") && m["readback"] == "1";
                 b.fill = unhex(b.fill_hex);
@@ -183,7 +199,10 @@ int main(int argc, char **argv) {
                 buffers.push_back(b);
             } else if (word == "slot") {
                 int i; Slot s;
-                in >> i >> s.kind >> s.value;
+                std::string v;
+                in >> i >> s.kind >> v;
+                if (!v.empty() && v[0] == '@') s.expr = v;
+                else s.value = std::stoull(v);
                 slots[i] = s;
             } else { std::cerr << "plan: unknown directive '" << word << "'\n"; return 1; }
         }
@@ -221,6 +240,57 @@ int main(int argc, char **argv) {
     const double jit_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - jit0).count();
     res << "jit_ms " << jit_ms << "\n";
     CUfunction kernel; CU_OK(cuModuleGetFunction(&kernel, module_, kname.c_str()), "cuModuleGetFunction");
+
+    // ---- dynamic shared size FIRST: the occupancy query below needs it.  Endeavour 181 moved the grid
+    //      ahead of the buffers, so a buffer (a last-man kernel's partials) may be sized by the group count.
+    std::vector<unsigned long long> values(slots.size(), 0);
+    std::vector<void *> params(slots.size(), nullptr);
+    size_t shared_bytes = 0;
+    for (auto &kvs : slots)
+        if (kvs.second.kind == "slm") {
+            const size_t off = 16 * ((shared_bytes + 15) / 16);
+            values[kvs.first] = off;
+            shared_bytes = off + (size_t)kvs.second.value;
+        }
+    if (shared_bytes > 48 * 1024)
+        CU_OK(cuFuncSetAttribute(kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared_bytes),
+              "dynamic shared size");
+
+    // ---- grid size: a fixed count, SM-relative, or the CUDA hoist's occupancy formula --------
+    // occupancy R: cuOccupancyMaxActiveBlocksPerMultiprocessor (this kernel, this block size, this
+    // dynamic shared size) x SMs (or the profile's :compute-units, cu=) x R; then capped at cap=.
+    uint32_t groups = 0, max_resident = 0;
+    {
+        std::istringstream gs(groups_spec);
+        std::string mode;
+        gs >> mode;
+        if (mode == "occupancy") {
+            double ratio = 1.0;
+            gs >> ratio;
+            auto m = kv(gs);
+            int per_sm = 0;
+            CU_OK(cuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel,
+                      (int)(local[0] * local[1] * local[2]), shared_bytes), "occupancy query");
+            const uint64_t units = m.count("cu") ? std::stoull(m["cu"]) : (uint64_t)sms;
+            max_resident = (uint32_t)(per_sm * units);
+            double g = (double)max_resident * ratio;
+            groups = g < 1.0 ? 1u : (uint32_t)g;
+            if (m.count("cap") && groups > std::stoul(m["cap"])) groups = (uint32_t)std::stoul(m["cap"]);
+        } else if (mode == "eu") groups = (uint32_t)sms;
+        else if (mode.rfind("eu*", 0) == 0) groups = (uint32_t)sms * (uint32_t)std::stoul(mode.substr(3));
+        else groups = (uint32_t)std::stoul(mode);
+    }
+    res << "groups " << groups << "\n" << "max_resident " << max_resident << "\n";
+
+    // ---- symbolic sizes, now that the grid is known (endeavour 181) ---------------------------
+    for (auto &b : buffers)
+        if (!b.count_expr.empty() && !resolve_groups_expr(b.count_expr, groups, b.count)) {
+            std::cerr << "buffer " << b.name << ": bad count " << b.count_expr << "\n"; return 1;
+        }
+    for (auto &kvs : slots)
+        if (!kvs.second.expr.empty() && !resolve_groups_expr(kvs.second.expr, groups, kvs.second.value)) {
+            std::cerr << "slot " << kvs.first << ": bad value " << kvs.second.expr << "\n"; return 1;
+        }
 
     // ---- buffers -------------------------------------------------------------------------------
     for (auto &b : buffers) {
@@ -274,16 +344,11 @@ int main(int argc, char **argv) {
     if (fill_once(0)) return 2;
 
     // ---- arguments: every slot is 8 bytes (pointer, u64, or a shared-memory byte offset) --------
-    std::vector<unsigned long long> values(slots.size(), 0);
-    std::vector<void *> params(slots.size(), nullptr);
-    size_t shared_bytes = 0;
     for (auto &kvs : slots) {
         const int i = kvs.first;
         const Slot &s = kvs.second;
         if (s.kind == "slm") {
-            const size_t off = 16 * ((shared_bytes + 15) / 16);
-            values[i] = off;
-            shared_bytes = off + (size_t)s.value;
+            // offset assigned above, with the dynamic shared size
         } else if (s.kind == "u64") {
             values[i] = s.value;
         } else if (s.kind == "ptr") {
@@ -292,35 +357,6 @@ int main(int argc, char **argv) {
         } else { std::cerr << "slot " << i << ": unknown kind " << s.kind << "\n"; return 1; }
         params[i] = &values[i];
     }
-    if (shared_bytes > 48 * 1024)
-        CU_OK(cuFuncSetAttribute(kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared_bytes),
-              "dynamic shared size");
-
-    // ---- grid size: a fixed count, SM-relative, or the CUDA hoist's occupancy formula --------
-    // occupancy R: cuOccupancyMaxActiveBlocksPerMultiprocessor (this kernel, this block size, this
-    // dynamic shared size) x SMs (or the profile's :compute-units, cu=) x R; then capped at cap=.
-    uint32_t groups = 0, max_resident = 0;
-    {
-        std::istringstream gs(groups_spec);
-        std::string mode;
-        gs >> mode;
-        if (mode == "occupancy") {
-            double ratio = 1.0;
-            gs >> ratio;
-            auto m = kv(gs);
-            int per_sm = 0;
-            CU_OK(cuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel,
-                      (int)(local[0] * local[1] * local[2]), shared_bytes), "occupancy query");
-            const uint64_t units = m.count("cu") ? std::stoull(m["cu"]) : (uint64_t)sms;
-            max_resident = (uint32_t)(per_sm * units);
-            double g = (double)max_resident * ratio;
-            groups = g < 1.0 ? 1u : (uint32_t)g;
-            if (m.count("cap") && groups > std::stoul(m["cap"])) groups = (uint32_t)std::stoul(m["cap"]);
-        } else if (mode == "eu") groups = (uint32_t)sms;
-        else if (mode.rfind("eu*", 0) == 0) groups = (uint32_t)sms * (uint32_t)std::stoul(mode.substr(3));
-        else groups = (uint32_t)std::stoul(mode);
-    }
-    res << "groups " << groups << "\n" << "max_resident " << max_resident << "\n";
 
     CUevent ev0, ev1;
     CU_OK(cuEventCreate(&ev0, CU_EVENT_DEFAULT), "eventCreate");

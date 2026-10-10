@@ -5,7 +5,7 @@ The golden rule of GPU programming is: if you have threads cooperating on a task
 
 #### sync-workgroup ✅
 `(sync-workgroup)`
-This routine inserts a local barrier. It ensures that all threads in the workgroup have reached the same location before continuing. This barrier includes a memory fence that guarantees all writes to local memory by threads in the workgroup are visible to all other threads in that same workgroup. Use it after you are done writing to shared local memory and before any other thread is expected to read from it. On CUDA it will map to `__syncthreads()` and on OpenCL to `barrier(CLK_LOCAL_MEM_FENCE)`.
+This routine inserts a local barrier. It ensures that all threads in the workgroup have reached the same location before continuing. Every thread of the workgroup must reach it, so it may not appear inside a thread-divergent conditional (`if` / `when` / `unless` / `cond` on a per-thread condition) -- the threads that skip the branch would never arrive, and the ones that enter it would wait forever; Crisp refuses it at compile time. `sync-wait`, which ends in a `sync-workgroup`, is refused there for the same reason. This barrier includes a memory fence that guarantees all writes to local memory by threads in the workgroup are visible to all other threads in that same workgroup. Use it after you are done writing to shared local memory and before any other thread is expected to read from it. On CUDA it will map to `__syncthreads()` and on OpenCL to `barrier(CLK_LOCAL_MEM_FENCE)`.
 
 
 #### sync-warp ✅
@@ -53,6 +53,20 @@ row covers it.
 
 There is no narrower scope. A warp-scoped fence would be very nearly a no-op on hardware that runs a
 warp in lockstep, so `:scope :subgroup` is refused rather than offered as a false economy.
+
+**A fence may sit in divergent code.** Because it makes nobody wait, `mem-fence` is allowed inside
+a thread-divergent conditional -- unlike the barriers, which every thread must reach. That is exactly
+where publish-then-signal wants it: the one thread that publishes stores, fences, then signals.
+
+```lisp
+(when-thread-in-group-is 0
+  (set! (~ partials (to-int (get-workgroup-id 0))) total)   ; publish
+  (mem-fence)                                               ; release: the store is visible ...
+  (atomic-add! (~ arrivals) 1u))                            ; ... before the signal
+```
+
+The reader needs the other half: after it observes the signal, a `mem-fence` before it reads what
+was published (the acquire). `grid-reduce-last-man!` is built this way.
 
 
 

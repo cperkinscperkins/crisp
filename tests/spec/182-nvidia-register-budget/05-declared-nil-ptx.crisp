@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=stream-gpu --ir-target=ptx]: validate-ptx-no-minnctapersm
+;;
+;; ENDEAVOUR 182 -- (declare (occupancy-target nil)) turns the profile's automatic bound OFF for this
+;; kernel: the declaration always wins over the profile.
+
+(def-hardware-profile stream-gpu :simd-width 32 :compute-units 132 :stream-occupancy-target 1024)
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_opted_out (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256))
+           (occupancy-target nil))
+  (reduce-vec #'+ A 0.0 out))

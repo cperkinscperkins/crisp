@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=64x32@0:0.01 at.A=50,7 expect.A=1.0 atol=1e-2 h=0.5 group=32 groups=64
+;;
+;; ENDEAVOUR 181 -- autodiff through grid-reduce! (last-man, implicit scratch) with 64 workgroups of
+;; 32, twice the local size.  TDD.
+;;
+;; out = sum of A, so d(out)/dA = 1 everywhere; the element checked, row 50 col 7, is thread 1607 in
+;; workgroup 50 -- a partial the pre-181 sweep never read.  The VJP is a broadcast and ignores the
+;; sweep entirely, so the BACKWARD pass should not care; what this measures is the FORWARD, which the
+;; finite-difference probes launch over and over: if workgroups past 32 were dropped, perturbing
+;; A[50][7] would not move the output and the numerical gradient would be 0.  Every probe is also a
+;; re-launch, so the counter reset (179) and the partials buffer's sizing from the RUNNER's group
+;; count are both on the line.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel diff_grid_reduce_many_groups (A &out out)
+  (declare #'(mat-t &out out-c)
+           (global-size :set-to 2048)
+           (local-size  :set-to 32))
+  (let ((tid (to-int (get-global-linear-id))))
+    (let ((row (/ tid 32))
+          (col (rem tid 32)))
+      (let ((v (~ A row col)))
+        (grid-reduce! #'+ v 0.0 out)))))

@@ -1,0 +1,28 @@
+;; PROBE (endeavour 181): where does last-man lose time to :atomic on BMG when the grid is 4x occupancy
+;; (320 groups at local 256)?  Run ONLY with --scratch --occupancy=4.  Three arms, hand-written so pieces
+;; can be removed: a_full = the grid-reduce-last-man! expansion verbatim (control); b_no_fence = a_full
+;; without the mem-fence (UNSAFE: the partial store is no longer ordered before the ticket -- it measures
+;; the fence, it is not a candidate); c_atomic_fence = :atomic plus one mem-fence per group (the fence on
+;; a path with no election).
+;; This file: a_full.
+;;
+;; BENCH-WORKLOAD: sum
+;; BENCH-EXPECT: result = sum(input)
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel sum_lm_a_full (input &out result)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size :set-to (256)))
+  (let ((acc 0.0)
+        (sv (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv (make-scratch-vector float :match-num-workgroups :address-space :global))
+        (ctr (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (loop-vector-stride input (i)
+      (set! acc (+ acc (~ input i))))
+    (grid-reduce-last-man! #'+ acc 0.0 result
+                           :local-scratch-vec sv :global-scratch-vec gv
+                           :atomic-counter ctr :election-flag-cell flag)))

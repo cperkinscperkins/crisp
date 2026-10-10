@@ -1943,13 +1943,62 @@ in single-pass mode."
 
 ;; src/analysis/core.lisp
 
+;; Endeavour 182 -- (declare (occupancy-target N)).
+(defun %declared-local-size-dims (declarations)
+  "Endeavour 182.  The compile-time workgroup extents from a (local-size :set-to X) among DECLARATIONS --
+   X an integer, a list of integers, or a quoted list -- as a list of 1-3 integers; NIL when the kernel
+   declares none, or one not fixed at compile time."
+  (let* ((decl (find "LOCAL-SIZE" declarations
+                     :key (lambda (x) (when (and (consp x) (symbolp (car x))) (symbol-name (car x))))
+                     :test #'string-equal))
+         (v (and decl (getf (rest decl) :set-to)))
+         (v (if (and (consp v) (symbolp (car v)) (string-equal (symbol-name (car v)) "QUOTE")) (second v) v)))
+    (cond ((and (integerp v) (plusp v)) (list v))
+          ((and (consp v) (<= 1 (length v) 3) (every (lambda (n) (and (integerp n) (plusp n))) v)) v)
+          (t nil))))
+
+(defun %parse-occupancy-target-decl (name declarations)
+  "Endeavour 182.  Validates kernel NAME's (occupancy-target N) among DECLARATIONS.  Returns
+   (values present-p value): PRESENT-P is NIL when there is no such declaration; VALUE is a positive
+   integer (threads per compute unit) or NIL (opt out of the profile's automatic bound)."
+  (let ((decl (find "OCCUPANCY-TARGET" declarations
+                    :key (lambda (x) (when (and (consp x) (symbolp (car x))) (symbol-name (car x))))
+                    :test #'string-equal)))
+    (flet ((fail (fmt &rest args)
+             (error 'crisp-compiler-error
+                    :message (format nil "Kernel ~a: ~?" name fmt args)
+                    :source-location nil)))
+      (cond
+        ((null decl) (values nil nil))
+        ((/= (length (rest decl)) 1)
+         (fail "(occupancy-target ...) takes exactly one value -- threads per compute unit, or nil to turn the hardware profile's automatic bound off -- got ~s." (list decl)))
+        (t
+         (let ((v (second decl)))
+           (cond
+             ((null v) (values t nil))
+             ((not (and (integerp v) (plusp v)))
+              (fail "(occupancy-target ~s): the target must be a positive integer literal (threads per compute unit) or nil.  It becomes a launch bound in the PTX, so it has to be known at compile time." (list v)))
+             (t
+              (let ((dims (%declared-local-size-dims declarations)))
+                (unless dims
+                  (fail "(occupancy-target ~a) needs a compile-time workgroup size -- declare (local-size :set-to ...) -- because the target is THREADS per compute unit and the launch bound is a number of workgroups." (list v)))
+                (let ((wg (reduce #'* dims)))
+                  (when (< v wg)
+                    (fail "(occupancy-target ~a) is less than one workgroup of ~a threads, so no launch bound can express it.  Use at least ~a, or nil." (list v wg wg))))
+                (values t v))))))))))
+
 (defun internal-def-function (name params declarations body location)
   "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
-   body analysis.  Otherwise identical to the Phase 2 definition."
+   body analysis.  Otherwise identical to the Phase 2 definition.
+   Endeavour 182: also binds *analyzing-function*, so a stream loop is attributed to the function it is
+   in (*stream-functions*), and records an entry point's (occupancy-target ...)."
   (log:info "Analyzing function ~s" name)
+  ;; 182: a stale mark from an earlier compile of a function with this name must not survive
+  (when name (remhash name *stream-functions*))
   (multiple-value-bind (explicit-env return-type)
       (parse-function-declarations params declarations)
     (let* ((*compiler-context* (or *compiler-context* (make-compiler-context)))
+           (*analyzing-function* name)
            (is-entry-p (loop for d in declarations
                              thereis (and (listp d) (symbolp (first d))
                                           (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
@@ -2004,6 +2053,11 @@ in single-pass mode."
                (mma-lowering (%parse-mma-lowering-decl mma-lowering-decl name
                                                        (active-hardware-profile))))
           (setf cluster-dims (%parse-cluster-size-decl cluster-size-decl name declarations))
+          ;; 182: (occupancy-target N | nil) -- validated here, applied as launch bounds at codegen
+          (multiple-value-bind (present value) (%parse-occupancy-target-decl name declarations)
+            (if present
+                (setf (gethash name *kernel-occupancy-targets*) value)
+                (remhash name *kernel-occupancy-targets*)))
           (when (or global-size-decl local-size-decl num-groups-decl cluster-size-decl
                     mma-lowering-decl)
             (let ((dispatch-plist

@@ -21,7 +21,3 @@ The lowerings Crisp knows:
 A name outside that list is a compile error at `def-hardware-profile` time, so a typo is caught where
 it is written rather than surfacing later as a kernel that mysteriously never selects its lowering.
 
-A profile is selected at the command line with
-`--hardware-profile=<NAME>`, or named by a `compute-unit` in a
-`def-topology` (see [`topology.md`](topology.md)).
-

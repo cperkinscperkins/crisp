@@ -16,4 +16,11 @@
 ;;;;   %cuda-local-param-bytes-- symbolic clause added to its inner count cond, so the sizer
 ;;;;                             and the emitters still resolve the size the same way
 
+;;;;
+;;;; EMPTY AGAIN as of 2026-10-08.  Endeavour 181 (:match-num-workgroups scratch) folded into
+;;;; src/hoist-cuda/main.lisp: *cuda-deferred-scratch*, %cuda-num-workgroups-size-p,
+;;;; %cuda-emit-num-workgroups-scratch-arg (the wrapper's branch, now a named function that
+;;;; %cuda-emit-global-scratch-tensor-arg returns early into), and emit-launch (injects the
+;;;; deferred blocks at the _crisp_launch anchor, after the cluster fix-up).
+
 (in-package :crisp.hoist.cuda)

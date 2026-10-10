@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "OCCUPANCY-TARGET expects a positive integer"
+;;
+;; ENDEAVOUR 182 -- the profile key is validated where the profile is defined, like every other key:
+;; :stream-occupancy-target is a positive integer (threads per compute unit).
+
+(def-hardware-profile g_e :simd-width 32 :stream-occupancy-target 0)
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k_e (&out out)
+  (declare #'(&out out-c => nil))
+  (set! (~ out) 1.0))

@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=stream-gpu --ir-target=ptx]: validate-ptx-minnctapersm-2
+;;
+;; ENDEAVOUR 182 -- a declared target replaces the profile's: 512 here, not the profile's 1024.
+
+(def-hardware-profile stream-gpu :simd-width 32 :compute-units 132 :stream-occupancy-target 1024)
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_override (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256))
+           (occupancy-target 512))
+  (reduce-vec #'+ A 0.0 out))

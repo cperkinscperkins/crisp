@@ -1,6 +1,10 @@
 ;; TEST-EXPECT: FAIL
 ;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
-;; CHECK-FAIL: "MEM-FENCE cannot appear inside a thread-divergent conditional"
+;; CHECK-FAIL: "SYNC-WORKGROUP cannot appear inside a thread-divergent conditional"
+;;
+;; Endeavour 183 (BUG 082): the refusal used to come from the mem-fence in sync-wait's spin loop, with
+;; a message about an internal sync-workgroup.  Fences now go free; the divergent wait is still refused,
+;; by the workgroup barrier its expansion ends in.
 
 
 (def-kernel test_arrival_sync_divergent ()

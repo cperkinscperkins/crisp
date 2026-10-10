@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=stream-gpu --ir-target=ptx]: validate-ptx-minnctapersm-4
+;;
+;; ENDEAVOUR 182 -- a kernel with a stream loop (here reduce-vec's loop-vector-stride) on a profile that
+;; carries :stream-occupancy-target gets PTX launch bounds AUTOMATICALLY: 1024 threads per SM over a
+;; 256-thread workgroup is .maxntid 256, 1, 1 + .minnctapersm 4.  ptxas then budgets 64 registers per
+;; thread instead of the 32 of full occupancy, which keeps several loads in flight (H100 SXM, 2026-10-08:
+;; last-man sum 74.8% -> 96.5% of the read peak, argmax 80.3% -> 96.7%).
+
+(def-hardware-profile stream-gpu :simd-width 32 :compute-units 132 :stream-occupancy-target 1024)
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_bounded (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256)))
+  (reduce-vec #'+ A 0.0 out))

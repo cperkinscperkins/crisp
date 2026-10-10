@@ -1,0 +1,15 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "needs a compile-time workgroup size"
+;; CHECK-FAIL-FLAGS: --hardware-profile=h100 --ir-target=ptx
+;;
+;; ENDEAVOUR 182 -- a declared target is THREADS per compute unit; turning it into a launch bound needs the
+;; workgroup size, so a kernel without (local-size :set-to ...) cannot honour it.  Refused, not ignored.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (occupancy-target 1024))
+  (reduce-vec #'+ A 0.0 out))

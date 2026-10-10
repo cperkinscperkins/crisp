@@ -37,6 +37,5 @@ for every variable into that variable's `:global-scratch-vec`, then draws a sing
 the shared `:atomic-counter`. The last workgroup sweeps all the variables. A call with `k`
 clauses costs one atomic ticket per workgroup, not `k`.
 
-`:last-man-standing` is the default strategy, and it carries its usual limit: the number of
-workgroups must not exceed `local_work_size`.
+`:last-man-standing` is the default strategy.
 

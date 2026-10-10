@@ -42,6 +42,7 @@
 ;; Level Zero device, the other CUDA), so this checks the one thing checkable without hardware:
 ;; that the profile KEYS they print match *hardware-profile-schema* and cover the built-ins.
 (load "tests/test-hw-profile-probes.lisp")
+(load "tests/test-source-hygiene.lisp")
 (load "tests/spec/049-auto-diff-record-at-kernel-boundary/record-ad-transforms.unit.lisp")
 (load "tests/spec/052-differentiate-sub-functions/sub-func-ad.unit.lisp")
 ;; Endeavor 147: the VERIFY-AUTODIFF backend pin and runtime-selection policy.

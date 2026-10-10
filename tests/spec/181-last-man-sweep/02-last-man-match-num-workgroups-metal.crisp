@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 260096
+;;
+;; ENDEAVOUR 181 -- grid-reduce-last-man! with the scratch passed BY HAND, the partials sized
+;; :match-num-workgroups.  TDD.
+;;
+;; The user-facing half of the change: one partial per workgroup is what last-man needs, and the size
+;; expression that says so is :match-num-workgroups.  Before 181 both hoisters refused it ("not
+;; implemented yet"), because the group count is only known once the launcher has computed the grid.
+;; Same grid and answer as 01.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel last_man_match_num_workgroups (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 32))
+  (let ((sv   (make-scratch-vector float :match-num-warps-per-workgroup))
+        (gv   (make-scratch-vector float :match-num-workgroups :address-space :global))
+        (ctr  (make-scratch-cell uint :address-space :global))
+        (flag (make-scratch-cell uint)))
+    (let ((contrib (to-float (get-workgroup-id 0))))
+      (grid-reduce-last-man! #'+ contrib 0.0 out
+                             :local-scratch-vec sv
+                             :global-scratch-vec gv
+                             :atomic-counter ctr
+                             :election-flag-cell flag))))

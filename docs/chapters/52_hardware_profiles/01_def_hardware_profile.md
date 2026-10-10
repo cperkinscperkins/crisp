@@ -25,6 +25,8 @@
   :max-work-group-dims '(1024 1024 64)
   :max-total-threads-per-block 1024
   :max-concurrent-kernels 128
+  :stream-occupancy-target 1024     ; MEASURED -- see below
+  :stream-bytes-in-flight 16        ; MEASURED -- see below
 
   ;; matrix units
   :mma-shapes '((16 8 16) (8 8 8))  ; list of (M N K) triples

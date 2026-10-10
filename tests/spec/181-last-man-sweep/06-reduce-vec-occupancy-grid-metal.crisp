@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 6
+;;
+;; ENDEAVOUR 181 -- reduce-vec on the OCCUPANCY grid, the shape every benchmark row uses.  TDD.
+;;
+;; (global-size :derive-from A :strategy :strided) lets the generated launcher pick the group count at
+;; RUN TIME from the device's properties; with workgroups of 32 that is hundreds of groups on BMG, far
+;; more than 32.  So the partials buffer cannot be sized when the launcher is generated -- it has to be
+;; allocated AFTER the launcher has computed the grid.  That ordering is what this spec pins.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_occupancy (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 32))
+  (reduce-vec #'+ A 0.0 out))

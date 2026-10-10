@@ -89,24 +89,37 @@
 
 ;;; --- the per-target default policy -------------------------------------
 
-(defun %policy (spec target)
+(defun %policy (spec target &key (profile (if (eq target :ptx) "h100" "bmg")) define)
+  "What %effective-loop-unroll gives SPEC on TARGET under hardware PROFILE (182: the stream default
+   comes from the profile's :stream-bytes-in-flight).  DEFINE, a def-hardware-profile source string,
+   is registered first -- for a profile no builtin provides."
+  (crisp.compiler:initialize-compiler :log-level :error :hardware-profile profile)
+  (when define (eval (first (%read-all define))))
   (let ((crisp.compiler:*target-backend* target))
     (multiple-value-list (crisp.compiler::%effective-loop-unroll spec))))
 
-(define-test (loop-unroll-test stream-default-is-16-bytes-in-flight-on-spirv)
-  "SPIR-V: 16 bytes / element size, capped at x8; a factor of 1 emits nothing."
+(define-test (loop-unroll-test stream-default-is-16-bytes-in-flight-on-bmg)
+  "bmg (:stream-bytes-in-flight 16): 16 bytes / element size, capped at x8; a factor of 1 emits nothing."
   (is equal '(:count 4) (%policy '(:stream 4) :spirv))
   (is equal '(:count 2) (%policy '(:stream 8) :spirv))
   (is equal '(:count 8) (%policy '(:stream 2) :spirv))
   (is equal '(:count 8) (%policy '(:stream 1) :spirv))
   (is equal '(nil) (%policy '(:stream 16) :spirv)))
 
-(define-test (loop-unroll-test no-stream-default-on-ptx)
-  "PTX: no default (LLVM's NVPTX unroller and ptxas already unroll the stream) -- but an explicit
-   request is honoured on every target."
+(define-test (loop-unroll-test no-stream-default-on-h100)
+  "h100 carries no :stream-bytes-in-flight (LLVM's NVPTX unroller and ptxas already unroll the stream)
+   -- but an explicit request is honoured on every target."
   (is equal '(nil) (%policy '(:stream 4) :ptx))
   (is equal '(:count 3) (%policy '(:count 3) :ptx))
   (is equal '(:disable) (%policy '(:disable) :ptx)))
+
+(define-test (loop-unroll-test stream-default-follows-the-profile-not-the-target)
+  "182: the value belongs to the DEVICE.  A SPIR-V profile without the key gets no default; a PTX
+   profile with one gets it."
+  (is equal '(nil) (%policy '(:stream 4) :spirv :profile "plain-spv"
+                                                :define "(def-hardware-profile plain-spv :simd-width 16)"))
+  (is equal '(:count 4) (%policy '(:stream 4) :ptx :profile "ptx-16"
+                                                   :define "(def-hardware-profile ptx-16 :simd-width 32 :stream-bytes-in-flight 16)")))
 
 ;;; --- the unoptimised IR ---------------------------------------------------
 

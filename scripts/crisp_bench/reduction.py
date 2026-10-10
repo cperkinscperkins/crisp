@@ -137,8 +137,8 @@ def groups_policy(rec, d: Dict[str, Any], cli_groups: Optional[str], cli_occupan
          --groups (explicit)  >  BENCH-GROUPS (the kernel's own fixed choice)  >
          :strided -> the hoist's occupancy formula with R = --occupancy, else the kernel's
          declared :occupancy, else 1.0 (the hoist's default)  >  'eu'.
-    A last-man kernel is capped at its local size: its final sweep reduces every partial in one
-    work-group.  Returns (fixture groups spec, the R used or None)."""
+    No cap for last-man since endeavour 181: its final sweep is strided, and its partials buffer is
+    sized by the group count the fixture computes.  Returns (fixture groups spec, the R used or None)."""
     if cli_groups:
         return cli_groups, None
     if d["groups"]:
@@ -146,8 +146,6 @@ def groups_policy(rec, d: Dict[str, Any], cli_groups: Optional[str], cli_occupan
     if (rec.strategy or "").upper() == "STRIDED":
         r = cli_occupancy if cli_occupancy is not None else (rec.occupancy if rec.occupancy is not None else 1.0)
         spec = f"occupancy {r}"
-        if last_man:
-            spec += f" cap={rec.local_size[0] * rec.local_size[1] * rec.local_size[2]}"
         if rec.compute_units:
             spec += f" cu={rec.compute_units}"
         return spec, r
@@ -581,10 +579,8 @@ def main() -> int:
                     continue
                 groups = res.get("groups")
                 ok, worst, why = verify(res, d["expect"], d["rtol"])
-                if last_man and groups and groups > rec.local_size[0]:
-                    ok = False
-                    why.append(f"{groups} work-groups exceed the local size {rec.local_size[0]}: "
-                               f"last-man's final sweep cannot cover every partial")
+                # (Endeavour 181 removed the "groups > local size" refusal here: last-man's final sweep is
+                # strided and its partials are sized by the group count, so any grid is covered.)
                 times = res["time_us"]
                 med_us = statistics.median(times)
                 gbps = in_bytes / (med_us * 1e-6) / 1e9

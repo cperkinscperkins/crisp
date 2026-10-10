@@ -1000,15 +1000,29 @@
 
 (defun %warp-spec-check-sync (builtin-kw name-str location)
   "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
-   (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
-   ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal
-   thread-divergent check."
-  (if *in-warp-spec-block*
-      (when (member builtin-kw '(:sync-workgroup :sync-cluster))
-        (error 'crisp-compiler-error
-          :message (format nil "~a cannot appear inside a with-warp-specialization role block — it is a COLLECTIVE and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering." name-str)
-          :source-location location))
-      (%tlc-check-not-divergent name-str location)))
+   (sync-workgroup, sync-cluster) DEADLOCKS -- only one role's warps reach it -- so it is forbidden;
+   warp-scoped ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, a BARRIER inside a
+   thread-divergent conditional is refused.
+
+   Endeavour 183 (BUG 082): a FENCE (mem-fence, mem-fence-workgroup) is exempt.  It orders the calling
+   thread's own memory accesses and waits for no one, so there is nothing to deadlock -- and
+   publish-then-signal (store, fence, ticket) needs it inside the one thread that stores.  The barriers
+   get their own message: the shared %tlc-check-not-divergent text explains an INTERNAL sync-workgroup
+   (load-tile-at's problem), which is not what a barrier is."
+  (cond
+    (*in-warp-spec-block*
+     (when (member builtin-kw '(:sync-workgroup :sync-cluster))
+       (error 'crisp-compiler-error
+         :message (format nil "~a cannot appear inside a with-warp-specialization role block — it is a COLLECTIVE and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering." name-str)
+         :source-location location)))
+    ((member builtin-kw '(:mem-fence :mem-fence-workgroup)) nil)
+    (*in-divergent-conditional*
+     (error 'crisp-compiler-error
+       :message (format nil "~a cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It is a barrier every thread of the ~a must reach: threads that skip the branch never arrive, so the threads that enter it wait forever.  (sync-wait ends in a sync-workgroup, so it is refused here too.)  Compile-time conditionals (if+ / when+ / unless+) are safe, and so is a condition every thread of the ~a evaluates the same way (e.g. one based on get-workgroup-id, not get-local-id).  A mem-fence, which waits for no one, may appear here."
+                        name-str
+                        (case builtin-kw (:sync-cluster "cluster") (:sync-warp "warp") (t "workgroup"))
+                        (case builtin-kw (:sync-cluster "cluster") (:sync-warp "warp") (t "workgroup")))
+       :source-location location))))
 
 
 (defun %warp-spec-check-block-only (op-name mode location)
@@ -2010,7 +2024,8 @@
 ;;;; branch and LLVM does the work.  The analyzer strips the declaration off the body and records it
 ;;;; on the node (semantic-dotimes-unroll); ANF and AD see the declaration as an inert form.
 ;;;; loop-vector-stride with no declaration gets the STREAM DEFAULT: a byte budget in flight per
-;;;; thread, per target (*stream-unroll-bytes-in-flight*).
+;;;; thread, from the hardware profile's :stream-bytes-in-flight (endeavour 182; 180 kept it in a
+;;;; per-target constant).
 ;;;; ===========================================================================================
 
 (defun %declaration-spec-named-p (spec name)
@@ -2726,7 +2741,11 @@
    of the dotimes body, where (declare (unroll ...)) is understood.  With no unroll declaration the
    dotimes gets (declare (%unroll-default VEC)) -- the stream default, sized by VEC's element type
    when the dotimes is analyzed.  (unroll t) is refused here: the trip count depends on the
-   vector's length and the grid, so it is never a compile-time constant."
+   vector's length and the grid, so it is never a compile-time constant.
+   Endeavour 182: marks the function being analyzed as containing a stream loop (*stream-functions*),
+   which is what gives it the hardware profile's :stream-occupancy-target."
+  (when *analyzing-function*
+    (setf (gethash *analyzing-function* *stream-functions*) t))
   (unless (and (>= (length expr) 3)
                (listp (third expr))
                (= (length (third expr)) 1)

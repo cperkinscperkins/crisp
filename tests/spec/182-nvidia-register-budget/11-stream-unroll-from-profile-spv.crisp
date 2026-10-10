@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=deep-stream --ir-target=spv]: validate-spv-stream-unrolled-x8
+;;
+;; ENDEAVOUR 182 (180 follow-up) -- the loop-vector-stride unroll default comes from the hardware
+;; profile's :stream-bytes-in-flight, not from a compiler constant.  32 bytes over 4-byte floats is
+;; x8 -- a value no builtin profile carries, so x8 here can only have come from this profile.
+
+(def-hardware-profile deep-stream :simd-width 16 :stream-bytes-in-flight 32)
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel lvs_deep (A &out B)
+  (declare #'(f-vec &out f-vec => nil))
+  (loop-vector-stride A (i)
+    (set! (~ B i) (* 2.0 (~ A i)))))

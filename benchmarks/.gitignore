@@ -56,3 +56,4 @@ bin_*
 # caught by `*_L0.cpp` on a case-insensitive checkout (which Windows is by default).
 !matmul/crisp/bench_harness_l0.cpp
 !reduction/crisp/bench_harness_l0.cpp
+!reduction/fixture/reduce_fixture_l0.cpp

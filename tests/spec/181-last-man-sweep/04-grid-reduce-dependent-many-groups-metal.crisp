@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outv: 2999
+;; HOIST-EXPECT: BUFFER outi: 2999
+;;
+;; ENDEAVOUR 181 -- the DEPENDENT fused last-man (argmax) with 128 workgroups of 32.  TDD.
+;;
+;; v = gid mod 3000 peaks at 2999, first reached by thread 2999 in workgroup 93 -- far past the 32
+;; partials a one-pass sweep could cover.  Thread 2999 + 3000 does not exist (4096 threads), so the
+;; argmax is unique and the tie-break is not what is being tested; the strided fold is: it must carry
+;; the value AND the index together through the combiner, as the fused sweep does.
+
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-function argmax-combine (val-a idx-a val-b idx-b)
+  (declare #'(float ulong float ulong => float ulong))
+  (if (or (> val-a val-b)
+          (and (= val-a val-b) (< idx-a idx-b)))
+      (return val-a idx-a)
+      (return val-b idx-b)))
+
+(def-kernel grid_reduce_argmax_many_groups (&out outv outi)
+  (declare #'(&out out-c uout-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 32))
+  (let ((v (to-float (rem (to-int (get-global-linear-id)) 3000)))
+        (i (get-global-linear-id)))
+    (grid-reduce! #'argmax-combine
+                  ((v (type-min float) outv)
+                   (i (type-max ulong) outi)))))

@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=stream-bmg --ir-target=spv]: PASS
+;;
+;; ENDEAVOUR 182 -- launch bounds are a PTX construct.  On SPIR-V a profile's :stream-occupancy-target and
+;; a kernel's (occupancy-target N) are accepted and have no effect: the kernel compiles as before.  (BMG
+;; already reads at ~99% of its peak; the register file there is a JIT-time choice.)
+
+(def-hardware-profile stream-bmg :simd-width 16 :stream-occupancy-target 1024)
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_sum_spv (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256))
+           (occupancy-target 512))
+  (reduce-vec #'+ A 0.0 out))

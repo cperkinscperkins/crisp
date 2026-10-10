@@ -40,8 +40,9 @@ Each cell: forward / autodiff / on-metal.
       own `let` binding: deferred until real code keeps hitting it.)
 - [x] scratch defaults in &optional / &key variants (g-p1a) are part of 176 ("in for a penny").
 - [ ] where do `type-min`/`type-max`/`type-infinity` live in the design doc?
-- [ ] last-man's `num_workgroups <= local_work_size` limit: keep and document it, or make the final
+- [x] last-man's `num_workgroups <= local_work_size` limit: keep and document it, or make the final
       sweep a strided loop? It matters because last-man is the `grid-reduce!` default.
+      RESOLVED by endeavour 181 (2026-10-08): strided sweep, partials sized :match-num-workgroups.
 - [ ] dependent-form autodiff: special-case argmax/argmin? require a user-registered combiner VJP?
       declare it unsupported? Whatever we pick, it must fail LOUDLY -- a VJP that declines looks
       exactly like a zero gradient.

@@ -91,6 +91,48 @@
          (when (%record-effective-cluster-dims kname (list 1 1 1))
            (%warn-cluster-degraded kname dims)))))))
 
+;; Endeavour 182 -- launch bounds from the occupancy target.
+(defun %effective-occupancy-target (kname)
+  "Endeavour 182.  The threads-per-compute-unit target for entry point KNAME, and where it came from:
+   (values N :declared), (values N :profile), or NIL.  A declaration always wins -- including
+   (occupancy-target nil), which turns the bound off.  The profile's :stream-occupancy-target applies
+   only to a kernel whose own body has a stream loop."
+  (multiple-value-bind (declared present) (gethash kname *kernel-occupancy-targets*)
+    (cond (present (if declared (values declared :declared) nil))
+          ((gethash kname *stream-functions*)
+           (let ((n (getf (active-hardware-profile) :stream-occupancy-target)))
+             (if n (values n :profile) nil)))
+          (t nil))))
+
+(defun %apply-occupancy-bound (func kname module)
+  "Endeavour 182.  On PTX, stamps entry point FUNC with the launch bounds for its occupancy target:
+   \"nvvm.maxntid\" (the workgroup extents) and \"nvvm.minctasm\" (target / workgroup size, the minimum
+   number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.
+   ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX
+   construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a
+   workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis."
+  (when (eq *target-backend* :ptx)
+    (multiple-value-bind (target source) (%effective-occupancy-target kname)
+      (when target
+        (let* ((decls (gethash kname *kernel-dispatch-declarations*))
+               (local-decl (getf decls :local-size))
+               (dims (and local-decl (%declared-local-size-dims (list local-decl))))
+               (wg (and dims (reduce #'* dims))))
+          (if (or (null wg) (< target wg))
+              (log:info "Kernel ~a: ~(~a~) occupancy target ~a not applied (workgroup ~a)"
+                        kname source target (or wg "not fixed at compile time"))
+              (let ((ctx (llvm-get-module-context module)))
+                (flet ((stamp (key val)
+                         (llvm-add-attribute-at-index
+                          func +llvm-attribute-function-index+
+                          (llvm-create-string-attribute ctx key (length key) val (length val)))))
+                  (let ((maxntid (format nil "~{~a~^,~}" dims))
+                        (minctasm (format nil "~a" (floor target wg))))
+                    (log:info "Kernel ~a: ~(~a~) occupancy target ~a -> .maxntid ~a, .minnctapersm ~a"
+                              kname source target maxntid minctasm)
+                    (stamp "nvvm.maxntid" maxntid)
+                    (stamp "nvvm.minctasm" minctasm))))))))))
+
 (defvar *tma-copy-multicast* (make-hash-table :test 'eq)
   "semantic-nvvm-tma-tile-copy node -> the cluster dims it should multicast across.
    Mirrors *tma-copy-ws-leader* (Endeavor 140), which exists for the same reason:
@@ -534,7 +576,9 @@
         ;; point on every backend -- it is what records the effective cluster extent
         ;; and warns when a declared cluster could not be formed.  Gating it per
         ;; backend is what let the SPIR-V degrade go silent.
-        (%apply-cluster-dims-attribute func semantic-function module))
+        (%apply-cluster-dims-attribute func semantic-function module)
+        ;; Endeavour 182: launch bounds for the kernel's occupancy target (PTX only; a no-op elsewhere).
+        (%apply-occupancy-bound func (semantic-function-name semantic-function) module))
 
   (unless (semantic-function-is-entry-point semantic-function)
     (case *target-backend*
@@ -4037,18 +4081,6 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
 ;;; Endeavour 180 -- loop unrolling: the !llvm.loop node on a counted loop's latch, and the
 ;;; per-target stream default.  tests/spec/180-loop-unroll/loop-unroll.md
 
-(defparameter *stream-unroll-bytes-in-flight* '((:spirv . 16) (:ptx . nil))
-  "Endeavour 180.  The loop-vector-stride stream default, per target: the bytes each thread should
-   have in flight, so the unroll factor is BYTES / element size.  MEASURED, not guessed
-   (loop-unroll.md, probes 1, 2 and 4):
-     :spirv  16 -- BMG reaches ~99% of the read peak at 16 bytes/thread (fp32 x4, fp64 x2); one
-                   load per trip (4 bytes) reaches 57%.  More never hurt, and gained < 1%.
-     :ptx    NIL -- no hint.  LLVM's NVPTX target already runtime-unrolls the loop x4 and ptxas
-                   unrolls again (16 loads per trip in SASS); a hint would leave the unrolled loop
-                   marked unroll.disable, which reaches the PTX as .pragma \"nounroll\" and stops
-                   ptxas -- a regression, not a default.
-   A target not listed gets no default.")
-
 (defparameter *stream-unroll-max-factor* 8
   "Endeavour 180.  The largest factor the stream default picks.  Probe 1 measured up to x8; a
    1-byte element would otherwise ask for x16, which no probe has run.")
@@ -4057,13 +4089,14 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
   "Endeavour 180.  What the codegen emits for a loop's unroll SPEC on the current *target-backend*:
    (values :count N), (values :full), (values :disable), or NIL for no metadata.  An explicit
    request is emitted as written on every target; the stream default, (:stream BYTES), is a factor
-   only where *stream-unroll-bytes-in-flight* gives a budget and the factor is above 1."
+   only where the active hardware profile's :stream-bytes-in-flight gives a budget (182; 180 kept it in
+   a per-target constant) and the factor is above 1."
   (case (first spec)
     (:count (values :count (second spec)))
     (:full (values :full))
     (:disable (values :disable))
     (:stream
-     (let* ((budget (cdr (assoc *target-backend* *stream-unroll-bytes-in-flight*)))
+     (let* ((budget (getf (active-hardware-profile) :stream-bytes-in-flight))
             (bytes (second spec))
             (n (and budget bytes (plusp bytes)
                     (min *stream-unroll-max-factor* (max 1 (floor budget bytes))))))

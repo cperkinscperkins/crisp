@@ -1,0 +1,16 @@
+{
+  "kind": "read-bandwidth-ceiling",
+  "device": "NVIDIA H100 80GB HBM3",
+  "driver": "13000",
+  "compute_units": 132,
+  "global_mem_bytes": 85017493504,
+  "cache_bytes": 52428800,
+  "timestamp": 1791486133,
+  "iters": 20,
+  "pattern": "hash",
+  "sizes": [
+    {"mb": 1024, "bytes": 1073741824, "past_cache": true, "best_config": {"vec": 4, "wg": 1024, "groups": 264}, "median_gbs": 3064.331682, "best_gbs": 3079.235662, "median_ms": 0.350400},
+    {"mb": 4096, "bytes": 4294967296, "past_cache": true, "best_config": {"vec": 4, "wg": 1024, "groups": 1056}, "median_gbs": 3099.716647, "best_gbs": 3110.347739, "median_ms": 1.385600}
+  ],
+  "peak_read_gbs": 3099.716647
+}

@@ -150,374 +150,377 @@ global-size / local-size,142,implemented
 `:occupancy`,149,implemented
 num-groups,150,not implemented
 cluster-size,151,implemented
-check-thread-bounds,152,not implemented
-check-wg-bounds,153,not implemented
-check-async-hazards,154,not implemented
-Latency Hiding - warp sizes and workgroup sizes,155,implemented
-One Thread Per Element,156,implemented
-in-each-thread,157,not implemented
-in-each-thread-in-group,158,not implemented
-in-each-group,159,not implemented
-Looping - Grid Stride,160,implemented
-`loop-vector-stride`,161,implemented
-loop-soa-stride,162,not implemented
-strided strategy,163,implemented
-"General Purpose: `tensor-stride`, `grid-stride`,  `tile-stride` and `hardware-stride`",164,implemented
-Simple Safe tensor-stride,165,implemented
-Strict tensor-stride,166,implemented
-Mathematical grid-stride,167,implemented
-tile-stride,168,implemented
-hardware-stride - stride by workgroup or warp.,169,implemented
-`:workgroup-idx`,170,implemented
-`:warp-idx`,171,implemented
-Helper Macros,172,implemented
-`tile-indices`,173,implemented
-workgroup-stride,174,implemented
-Hardware Context Helpers,175,implemented
-`ceil-pow2`,176,not implemented
-Looping -- Uniform Loops,177,implemented
-`provably-uniform?` and `provably-divergent?`,178,implemented
-detecting uniform execution,179,implemented
-forcing uniform loop execution,180,implemented
-providing uniformity hints to the compiler,181,implemented
-(constexpr <varName>),182,not implemented
-dotimes+,183,implemented
-Looping Constructs,184,implemented
-+ variants,185,implemented
-Operand rules,186,implemented
-dotimes / dotimes+,187,partially implemented
-dec-times / dec-times+,188,implemented
-do-times-by-doubling / do-times-by-doubling+,189,implemented
-do-times-by-multiply / do-times-by-multiply+,190,implemented
-dec-times-by-half / dec-times-by-half+,191,implemented
-dec-times-by-factor / dec-times-by-factor+,192,implemented
-do-power-step / do-power-step+,193,implemented
-dec-power-step / dec-power-step+,194,implemented
-Grid Level Operations,195,implemented
-`(declare (grid-level))`,196,implemented
-Workgroup Level Operations,197,implemented
-`(declare (workgroup-level))`,198,implemented
-Barriers and Fences,199,implemented
-sync-workgroup,200,implemented
-sync-warp,201,implemented
-mem-fence,202,implemented
-Sum a Vector using Local Memory,203,implemented
-Warps & Shuffles,204,implemented
-How many lanes is a warp?,205,implemented
-warp-size,206,implemented
-Sizing the workgroup,207,implemented
-Shuffles are warp collectives,208,implemented
-The width argument: segmenting a warp,209,implemented
-shuffle,210,implemented
-shuffle-up  / shuffle-down,211,implemented
-shuffle-xor,212,implemented
-Ballot Operations,213,not implemented
-warp-ballot,214,not implemented
-warp-any? / warp-all?,215,not implemented
-Supported Types,216,implemented
-Differentiating a shuffle,217,implemented
-Sum a Vector using Warps and Shuffles,218,implemented
-Bit Twiddling Operations,219,not implemented
-`op-popcount`,220,not implemented
-`op-count-leading-zeros` / `op-count-trailing-zeros`,221,not implemented
-`op-find-msb` / `op-find-lsb`,222,not implemented
-`op-bit-reverse`,223,not implemented
-`op-bitfield-extract` / `op-bitfield-insert`,224,not implemented
-Hardware Bit Packing / Unpacking,225,not implemented
-`op-pack-11` / `op-unpack-11`,226,not implemented
-`op-pack-half-2x16` / `op-unpack-half-2x16`,227,not implemented
-`op-pack-unorm-4x8` / `op-unpack-unorm-4x8`,228,not implemented
-`op-pack-snorm-4x8` / `op-unpack-snorm-4x8`,229,not implemented
-`op-pack-unorm-2x16` / `op-unpack-unorm-2x16`,230,not implemented
-`op-pack-double-2x32` / `op-unpack-double-2x32`,231,not implemented
-Branching,232,partially implemented
-`cond` default,233,implemented
-+ variant,234,implemented
-Predicated Selection,235,not implemented
-Higher Order Function Operations,236,implemented
-Compile Time Resolution,237,implemented
-"Lambda No, Curry Yes",238,not implemented
-`curry`,239,not implemented
-`compose`,240,not implemented
-`ident`,241,not implemented
-map,242,not implemented
-map-stride,243,not implemented
-Invoking Functions: `funcall`,244,implemented
-`reduce-warp`,245,implemented
-`reduce-workgroup`,246,implemented
-`grid-reduce-atomic!`,247,implemented
-`grid-reduce-cas!`,248,implemented
-`grid-reduce-last-man!`,249,implemented
-`grid-reduce-second-stage!`,250,implemented
-`grid-reduce!`,251,implemented
-`reduce-vec`,252,implemented
-Boolean Reductions,253,not implemented
-`all?` / `none?`,254,not implemented
-`any?`,255,not implemented
-Segmented Reduction,256,not implemented
-Filtering / Prefix-Sum Scan,257,not implemented
-`prepare-for-scan--value`,258,not implemented
-`exclusive-scan-workgroup`,259,not implemented
-`inclusive-scan-workgroup`,260,not implemented
-global-exclusive-scan,261,not implemented
-global-inclusive-scan,262,not implemented
-`filter`,263,not implemented
-Gather / Scatter,264,not implemented
-`find-indices`,265,not implemented
-Sorting,266,not implemented
-Bitonic Sort,267,not implemented
-`bitonic-sort-workgroup`,268,not implemented
-`bitonic_merge_pass`,269,not implemented
-Don't Make Me Think `gen-bitonic-sort-vector`,270,not implemented
-Radix Sort,271,not implemented
-`histogram-pass`,272,not implemented
-scan histogram pass,273,not implemented
-scatter pass,274,not implemented
-Atomics,275,partially implemented
-Atomic Operations,276,partially implemented
-atomic-add!,277,implemented
-atomic-sub!,278,implemented
-atomic-inc!,279,implemented
-atomic-dec!,280,implemented
-atomic-min!,281,implemented
-atomic-max!,282,implemented
-atomic-xchg!  |   atomic-set!,283,implemented
-atomic-binop!,284,implemented
-atomic-op!,285,implemented
-atomic-cas!,286,implemented
-Vector and Tensor Operations,287,not implemented
-`fill` and `iota`,288,not implemented
-`copy`,289,not implemented
-dot product,290,not implemented
-dot-prod-grid / dot-prod-seq,291,not implemented
-matrix multiplication (matmul),292,not implemented
-matmul,293,not implemented
-Matrix Vector Multiply `(m*v M v)`,294,not implemented
-Convolution,295,not implemented
-Math Operations & Arithmetic,296,implemented
-Floating Point Precision,297,implemented
-precision,298,implemented
-selecting precision,299,implemented
-overriding precision: `--force-math-precision`,300,implemented
-`--denormal-handling [preserve | ftz]`,301,implemented
-Floating Point Only Operations,302,partially implemented
-Unary Operations,303,implemented
-Binary Operations,304,implemented
-Transcendental Functions,305,implemented
-Autodiff,306,implemented
-Precision behavior,307,implemented
-Floating Point and Integer Operations,308,implemented
-Integer Only Operations,309,not implemented
-Integer Division,310,implemented
-`/` truncating division,311,implemented
-`floor`,312,implemented
-`ceil`,313,implemented
-`round`,314,implemented
-Hardware Supported Math Operations,315,implemented
-`op-fma` Fused Multiply Add,316,implemented
-`op-saturate`  Clamp Between 0.0 and 1.0,317,implemented
-`op-imad` Integer Multiply-Add,318,implemented
-`op-imad-sat`  Integer Multiply-Add with Saturation,319,implemented
-`op-abs-diff` Absolute Value of Difference,320,implemented
-`op-min3` / `op-max3`  Min / Max of 3 Arguments,321,implemented
-`op-rsqrt-approx` (Reciprocal Square Root),322,implemented
-`op-rcp-approx` (Reciprocal),323,implemented
-`op-log2-approx` (Base-2 Logarithm),324,implemented
-`op-exp2-approx` (Base-2 Exponential),325,implemented
-`op-sin-approx`,326,implemented
-`op-cos-approx`,327,implemented
-`op-sincos-approx`,328,implemented
-`op-abs-diff-add` Absolute Difference and Add,329,implemented
-`op-sad` Sum of Absolute Differences,330,implemented
-Autodiff of the Hardware Math Operations,331,implemented
-Quantized Integers,332,not implemented
-Quantized Integer Types,333,not implemented
-def-qint,334,not implemented
-to-XXXX,335,not implemented
-to-float,336,not implemented
-additon and subtraction,337,not implemented
-`*!` widened multiplication,338,not implemented
-max / min,339,not implemented
-"Low Precision Floats (""microfloats"")",340,not implemented
-Micro Float Types,341,not implemented
-def-microfloat-block,342,not implemented
-blockwise operations,343,not implemented
-widening multiplication,344,not implemented
-addition / subtraction,345,not implemented
-max / min,346,not implemented
-Vector Conversion Operations,347,not implemented
-quantize-to-XXXX,348,not implemented
-dequantize-from-XXXX,349,not implemented
-element-wise access,350,not implemented
-`~`,351,not implemented
-`to-float`,352,not implemented
-Complex Numbers,353,not implemented
-soa-vector and complex,354,not implemented
-Fast Fourier Transform (FFT),355,not implemented
-Fused Softmax,356,not implemented
-Builtin GPU Functions,357,implemented
-Forgotten,358,not implemented
-Strings - Compile Time and Run Time,359,not implemented
-Compile Time Strings,360,not implemented
-`string-concat`,361,not implemented
-Runtime Strings,362,not implemented
-Logging and Debugging,363,not implemented
-Compile Time Output and Assert,364,implemented
-`c-t-output`,365,implemented
-`c-t-assert`,366,implemented
-"`(die ""disaster"")`",367,partially implemented
-Runtime Asserts,368,partially implemented
-`r-t-workgroup-assert`,369,not implemented
-`r-t-assert`,370,implemented
-Runtime Logging,371,not implemented
-`r-t-workgroup-output-if`,372,not implemented
-`r-t-output`,373,not implemented
-Logging Utilities,374,not implemented
-Debugging Implementation,375,not implemented
-`--logging-output`  Master Switch.,376,not implemented
---logging-scope,377,not implemented
---logging-target,378,not implemented
---logging-by-call-site,379,not implemented
---logging-mode,380,not implemented
---logging-wg-index,381,not implemented
---logging-warp-index,382,not implemented
-Common Debug Flag Configurations,383,not implemented
-Conditional Compilation,384,implemented
-defmacro,385,implemented
-target-has / device-has,386,not implemented
-Assist defmacro Development,387,not implemented
-`is-thread-level?`,388,not implemented
-`get-return-type`,389,not implemented
-`get-signature`,390,not implemented
-`can-call?`,391,not implemented
-`get-struct-members`,392,partially implemented
-`get-struct-types`,393,partially implemented
-`get-c-t-length`,394,not implemented
-`get-current-context`,395,not implemented
-`is-logging?`,396,not implemented
-`is-runtime-checking?`,397,not implemented
-`is-set?`,398,not implemented
-`(declare (grid-level))`,399,implemented
-`(declare (warp-convergent))` and `(declare (workgroup-convergent))`,400,not implemented
-`entrypoint`,401,not implemented
-Static Analysys,402,not implemented
-declaim,403,partially implemented
-check-coalesce,404,not implemented
-check-bank-conflicts,405,not implemented
-check-divergence,406,not implemented
-max-registers / warn-max-registers,407,not implemented
-check-barriers,408,not implemented
-miscellaneous,409,partially implemented
-Auto Differentiation (AD),410,implemented
-`--differentiate`,411,implemented
-Promoted adjoint types,412,implemented
-Foreign Function Interface (FFI),413,implemented
-`def-foreign-function`,414,implemented
-pointers and handles: `c-pointer`,415,implemented
-`base-ptr~` accessor,416,implemented
-handles,417,implemented
-basic invocation,418,implemented
-deferred invocation,419,not implemented
-Topologically Aware Compilation,420,implemented
-Hardware Profiles,421,implemented
-`def-hardware-profile`,422,implemented
-`:mma-shapes`,423,implemented
-`:mma-lowerings`,424,implemented
-Probing Hardware Profile,425,implemented
-`make-async-barrier`,426,implemented
-`load-tile`,427,implemented
-`:multicast`,428,implemented
-`load-tile-at`,429,implemented
-`store-tile`,430,implemented
-`store-tile-at`,431,implemented
-`await`,432,implemented
-`signal`,433,implemented
-More Tile helpers,434,implemented
-Sync Operations,435,implemented
-sync-cluster,436,implemented
-Split-Phase Execution (Design Sketch),437,not implemented
-sync-workgroup,438,implemented
-sync-warp,439,implemented
-Sync on Arrival,440,implemented
-Semaphore Operations,441,not implemented
-Rings,442,implemented
-`ring-get`,443,implemented
-`make-register-tile-ring`,444,implemented
-`make-async-barrier-ring`,445,implemented
-Warp Specialization,446,implemented
-Matrix Multiplication,447,implemented
-`mma-lowering`,448,implemented
-`make-register-tile`,449,implemented
-matrix-multiply-tile-stride,450,implemented
-inner-dimension,451,implemented
-outer-dimensions,452,implemented
-fill-tile,453,implemented
-Autodiff,454,implemented
-mma-accumulate-via-tile,455,implemented
-Matrix Multiply with pipelining,456,implemented
-Matrix Multiply with Pipelining via Warp Specialization,457,implemented
-Operand layout: Intel MMA operands must be `:row-major`,458,implemented
-Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile`,459,implemented
-Hoisting and `def-orchestration`,460,partially implemented
-`def-orchestration`,461,not implemented
-"""default"" orchestration",462,implemented
-gen-KERNEL_NAME,463,not implemented
-allocate-tensor and kernel_var_name::param-name,464,not implemented
-allocate-cell,465,not implemented
-copy-back,466,not implemented
-template def-orchestration,467,not implemented
-`_` as a dummy var placeholder.,468,not implemented
-launch-sequential,469,not implemented
-launch-kernel,470,not implemented
-launch-parallel,471,not implemented
-Compiler Invocation and Options,472,implemented
-Output Targeting Options,473,not implemented
-`--output-base=<NAME>`,474,not implemented
-`--transpile-to=<ID>`,475,not implemented
-`--ir-target=<ID>`,476,implemented
-`--ir-target-arch=<ID>`,477,not implemented
-`--hardware-profile=<NAME>`,478,implemented
-`--binary-gpu-target=<ID>`,479,not implemented
-`--fat-binary`,480,not implemented
-`--hoist=<ID>`,481,partially implemented
-`--metadata`,482,implemented
-`--differentiate`,483,implemented
-Other Flags,484,partially implemented
-`--runtime-checks`,485,implemented
-`--logging-output`,486,not implemented
-`--debug` or `-g`,487,implemented
-`--hoist-dynamic=<KERNELNAME>`,488,not implemented
-`--re-output-crisp=<DIRECTORY>`,489,not implemented
-`--no-inference`,490,not implemented
-`--no-static-analysis`,491,not implemented
-`--single-pass`,492,implemented
-`--skip-c-t-checks`,493,not implemented
-`--tree-shaking`,494,not implemented
-Compiliation Flags,495,implemented
-`-D`,496,not implemented
-Math Flags `--math-precision`,497,not implemented
-Fast Compilation,498,implemented
-Compiler Invocations and Files,499,implemented
-Hoisting Code,500,implemented
-In-Memory Compilation API,501,not implemented
-C API,502,not implemented
-`new_context( target_identifier )`,503,not implemented
-"`set_tree_shake_directory( context, path )`",504,not implemented
-"`add_input_file( context, file.crisp )`",505,not implemented
-"`add_input_string ( context, crisp_string, virtual_file_name )`",506,not implemented
-"`set_flags( context, string )`",507,not implemented
-"`get_flags( context, char** flagHandle, size_t* sz )`",508,not implemented
-"`compile(context, size_t* sz)`",509,not implemented
-"`compile( context,  string, size_t* sz )`",510,not implemented
-"`bool get_binary(context, const void** out_data, size_t* out_size)`",511,not implemented
-`long get_compilation_error_code(context)`,512,not implemented
-`const char* get_messages(context)`,513,not implemented
-`const char* get_metadata(context)`,514,not implemented
-`destroy_context( context )`,515,not implemented
-Status Codes,516,implemented
-dot product and matmul,517,not implemented
-max-pool,518,not implemented
-Average Pool,519,not implemented
-ReLU,520,not implemented
-Acknowledgements,521,implemented
-SUMMARY (Total: 521),Impl: 278 (53.4%),Not Impl: 220 (42.2%) | Part: 23 (4.4%)
+occupancy-target,152,implemented
+check-thread-bounds,153,not implemented
+check-wg-bounds,154,not implemented
+check-async-hazards,155,not implemented
+Latency Hiding - warp sizes and workgroup sizes,156,implemented
+One Thread Per Element,157,implemented
+in-each-thread,158,not implemented
+in-each-thread-in-group,159,not implemented
+in-each-group,160,not implemented
+Looping - Grid Stride,161,implemented
+`loop-vector-stride`,162,implemented
+loop-soa-stride,163,not implemented
+strided strategy,164,implemented
+"General Purpose: `tensor-stride`, `grid-stride`,  `tile-stride` and `hardware-stride`",165,implemented
+Simple Safe tensor-stride,166,implemented
+Strict tensor-stride,167,implemented
+Mathematical grid-stride,168,implemented
+tile-stride,169,implemented
+hardware-stride - stride by workgroup or warp.,170,implemented
+`:workgroup-idx`,171,implemented
+`:warp-idx`,172,implemented
+Helper Macros,173,implemented
+`tile-indices`,174,implemented
+workgroup-stride,175,implemented
+Hardware Context Helpers,176,implemented
+`ceil-pow2`,177,not implemented
+Looping -- Uniform Loops,178,implemented
+`provably-uniform?` and `provably-divergent?`,179,implemented
+detecting uniform execution,180,implemented
+forcing uniform loop execution,181,implemented
+providing uniformity hints to the compiler,182,implemented
+(constexpr <varName>),183,not implemented
+dotimes+,184,implemented
+Looping Constructs,185,implemented
++ variants,186,implemented
+Operand rules,187,implemented
+dotimes / dotimes+,188,partially implemented
+dec-times / dec-times+,189,implemented
+do-times-by-doubling / do-times-by-doubling+,190,implemented
+do-times-by-multiply / do-times-by-multiply+,191,implemented
+dec-times-by-half / dec-times-by-half+,192,implemented
+dec-times-by-factor / dec-times-by-factor+,193,implemented
+do-power-step / do-power-step+,194,implemented
+dec-power-step / dec-power-step+,195,implemented
+Grid Level Operations,196,implemented
+`(declare (grid-level))`,197,implemented
+Workgroup Level Operations,198,implemented
+`(declare (workgroup-level))`,199,implemented
+Barriers and Fences,200,implemented
+sync-workgroup,201,implemented
+sync-warp,202,implemented
+mem-fence,203,implemented
+Sum a Vector using Local Memory,204,implemented
+Warps & Shuffles,205,implemented
+How many lanes is a warp?,206,implemented
+warp-size,207,implemented
+Sizing the workgroup,208,implemented
+Shuffles are warp collectives,209,implemented
+The width argument: segmenting a warp,210,implemented
+shuffle,211,implemented
+shuffle-up  / shuffle-down,212,implemented
+shuffle-xor,213,implemented
+Ballot Operations,214,not implemented
+warp-ballot,215,not implemented
+warp-any? / warp-all?,216,not implemented
+Supported Types,217,implemented
+Differentiating a shuffle,218,implemented
+Sum a Vector using Warps and Shuffles,219,implemented
+Bit Twiddling Operations,220,not implemented
+`op-popcount`,221,not implemented
+`op-count-leading-zeros` / `op-count-trailing-zeros`,222,not implemented
+`op-find-msb` / `op-find-lsb`,223,not implemented
+`op-bit-reverse`,224,not implemented
+`op-bitfield-extract` / `op-bitfield-insert`,225,not implemented
+Hardware Bit Packing / Unpacking,226,not implemented
+`op-pack-11` / `op-unpack-11`,227,not implemented
+`op-pack-half-2x16` / `op-unpack-half-2x16`,228,not implemented
+`op-pack-unorm-4x8` / `op-unpack-unorm-4x8`,229,not implemented
+`op-pack-snorm-4x8` / `op-unpack-snorm-4x8`,230,not implemented
+`op-pack-unorm-2x16` / `op-unpack-unorm-2x16`,231,not implemented
+`op-pack-double-2x32` / `op-unpack-double-2x32`,232,not implemented
+Branching,233,partially implemented
+`cond` default,234,implemented
++ variant,235,implemented
+Predicated Selection,236,not implemented
+Higher Order Function Operations,237,implemented
+Compile Time Resolution,238,implemented
+"Lambda No, Curry Yes",239,not implemented
+`curry`,240,not implemented
+`compose`,241,not implemented
+`ident`,242,not implemented
+map,243,not implemented
+map-stride,244,not implemented
+Invoking Functions: `funcall`,245,implemented
+`reduce-warp`,246,implemented
+`reduce-workgroup`,247,implemented
+`grid-reduce-atomic!`,248,implemented
+`grid-reduce-cas!`,249,implemented
+`grid-reduce-last-man!`,250,implemented
+`grid-reduce-second-stage!`,251,implemented
+`grid-reduce!`,252,implemented
+`reduce-vec`,253,implemented
+Boolean Reductions,254,not implemented
+`all?` / `none?`,255,not implemented
+`any?`,256,not implemented
+Segmented Reduction,257,not implemented
+Filtering / Prefix-Sum Scan,258,not implemented
+`prepare-for-scan--value`,259,not implemented
+`exclusive-scan-workgroup`,260,not implemented
+`inclusive-scan-workgroup`,261,not implemented
+global-exclusive-scan,262,not implemented
+global-inclusive-scan,263,not implemented
+`filter`,264,not implemented
+Gather / Scatter,265,not implemented
+`find-indices`,266,not implemented
+Sorting,267,not implemented
+Bitonic Sort,268,not implemented
+`bitonic-sort-workgroup`,269,not implemented
+`bitonic_merge_pass`,270,not implemented
+Don't Make Me Think `gen-bitonic-sort-vector`,271,not implemented
+Radix Sort,272,not implemented
+`histogram-pass`,273,not implemented
+scan histogram pass,274,not implemented
+scatter pass,275,not implemented
+Atomics,276,partially implemented
+Atomic Operations,277,partially implemented
+atomic-add!,278,implemented
+atomic-sub!,279,implemented
+atomic-inc!,280,implemented
+atomic-dec!,281,implemented
+atomic-min!,282,implemented
+atomic-max!,283,implemented
+atomic-xchg!  |   atomic-set!,284,implemented
+atomic-binop!,285,implemented
+atomic-op!,286,implemented
+atomic-cas!,287,implemented
+Vector and Tensor Operations,288,not implemented
+`fill` and `iota`,289,not implemented
+`copy`,290,not implemented
+dot product,291,not implemented
+dot-prod-grid / dot-prod-seq,292,not implemented
+matrix multiplication (matmul),293,not implemented
+matmul,294,not implemented
+Matrix Vector Multiply `(m*v M v)`,295,not implemented
+Convolution,296,not implemented
+Math Operations & Arithmetic,297,implemented
+Floating Point Precision,298,implemented
+precision,299,implemented
+selecting precision,300,implemented
+overriding precision: `--force-math-precision`,301,implemented
+`--denormal-handling [preserve | ftz]`,302,implemented
+Floating Point Only Operations,303,partially implemented
+Unary Operations,304,implemented
+Binary Operations,305,implemented
+Transcendental Functions,306,implemented
+Autodiff,307,implemented
+Precision behavior,308,implemented
+Floating Point and Integer Operations,309,implemented
+Integer Only Operations,310,not implemented
+Integer Division,311,implemented
+`/` truncating division,312,implemented
+`floor`,313,implemented
+`ceil`,314,implemented
+`round`,315,implemented
+Hardware Supported Math Operations,316,implemented
+`op-fma` Fused Multiply Add,317,implemented
+`op-saturate`  Clamp Between 0.0 and 1.0,318,implemented
+`op-imad` Integer Multiply-Add,319,implemented
+`op-imad-sat`  Integer Multiply-Add with Saturation,320,implemented
+`op-abs-diff` Absolute Value of Difference,321,implemented
+`op-min3` / `op-max3`  Min / Max of 3 Arguments,322,implemented
+`op-rsqrt-approx` (Reciprocal Square Root),323,implemented
+`op-rcp-approx` (Reciprocal),324,implemented
+`op-log2-approx` (Base-2 Logarithm),325,implemented
+`op-exp2-approx` (Base-2 Exponential),326,implemented
+`op-sin-approx`,327,implemented
+`op-cos-approx`,328,implemented
+`op-sincos-approx`,329,implemented
+`op-abs-diff-add` Absolute Difference and Add,330,implemented
+`op-sad` Sum of Absolute Differences,331,implemented
+Autodiff of the Hardware Math Operations,332,implemented
+Quantized Integers,333,not implemented
+Quantized Integer Types,334,not implemented
+def-qint,335,not implemented
+to-XXXX,336,not implemented
+to-float,337,not implemented
+additon and subtraction,338,not implemented
+`*!` widened multiplication,339,not implemented
+max / min,340,not implemented
+"Low Precision Floats (""microfloats"")",341,not implemented
+Micro Float Types,342,not implemented
+def-microfloat-block,343,not implemented
+blockwise operations,344,not implemented
+widening multiplication,345,not implemented
+addition / subtraction,346,not implemented
+max / min,347,not implemented
+Vector Conversion Operations,348,not implemented
+quantize-to-XXXX,349,not implemented
+dequantize-from-XXXX,350,not implemented
+element-wise access,351,not implemented
+`~`,352,not implemented
+`to-float`,353,not implemented
+Complex Numbers,354,not implemented
+soa-vector and complex,355,not implemented
+Fast Fourier Transform (FFT),356,not implemented
+Fused Softmax,357,not implemented
+Builtin GPU Functions,358,implemented
+Forgotten,359,not implemented
+Strings - Compile Time and Run Time,360,not implemented
+Compile Time Strings,361,not implemented
+`string-concat`,362,not implemented
+Runtime Strings,363,not implemented
+Logging and Debugging,364,not implemented
+Compile Time Output and Assert,365,implemented
+`c-t-output`,366,implemented
+`c-t-assert`,367,implemented
+"`(die ""disaster"")`",368,partially implemented
+Runtime Asserts,369,partially implemented
+`r-t-workgroup-assert`,370,not implemented
+`r-t-assert`,371,implemented
+Runtime Logging,372,not implemented
+`r-t-workgroup-output-if`,373,not implemented
+`r-t-output`,374,not implemented
+Logging Utilities,375,not implemented
+Debugging Implementation,376,not implemented
+`--logging-output`  Master Switch.,377,not implemented
+--logging-scope,378,not implemented
+--logging-target,379,not implemented
+--logging-by-call-site,380,not implemented
+--logging-mode,381,not implemented
+--logging-wg-index,382,not implemented
+--logging-warp-index,383,not implemented
+Common Debug Flag Configurations,384,not implemented
+Conditional Compilation,385,implemented
+defmacro,386,implemented
+target-has / device-has,387,not implemented
+Assist defmacro Development,388,not implemented
+`is-thread-level?`,389,not implemented
+`get-return-type`,390,not implemented
+`get-signature`,391,not implemented
+`can-call?`,392,not implemented
+`get-struct-members`,393,partially implemented
+`get-struct-types`,394,partially implemented
+`get-c-t-length`,395,not implemented
+`get-current-context`,396,not implemented
+`is-logging?`,397,not implemented
+`is-runtime-checking?`,398,not implemented
+`is-set?`,399,not implemented
+`(declare (grid-level))`,400,implemented
+`(declare (warp-convergent))` and `(declare (workgroup-convergent))`,401,not implemented
+`entrypoint`,402,not implemented
+Static Analysys,403,not implemented
+declaim,404,partially implemented
+check-coalesce,405,not implemented
+check-bank-conflicts,406,not implemented
+check-divergence,407,not implemented
+max-registers / warn-max-registers,408,not implemented
+check-barriers,409,not implemented
+miscellaneous,410,partially implemented
+Auto Differentiation (AD),411,implemented
+`--differentiate`,412,implemented
+Promoted adjoint types,413,implemented
+Foreign Function Interface (FFI),414,implemented
+`def-foreign-function`,415,implemented
+pointers and handles: `c-pointer`,416,implemented
+`base-ptr~` accessor,417,implemented
+handles,418,implemented
+basic invocation,419,implemented
+deferred invocation,420,not implemented
+Topologically Aware Compilation,421,implemented
+Hardware Profiles,422,implemented
+`def-hardware-profile`,423,implemented
+`:mma-shapes`,424,implemented
+`:mma-lowerings`,425,implemented
+`:stream-bytes-in-flight`,426,implemented
+`:stream-occupancy-target`,427,implemented
+Probing Hardware Profile,428,implemented
+`make-async-barrier`,429,implemented
+`load-tile`,430,implemented
+`:multicast`,431,implemented
+`load-tile-at`,432,implemented
+`store-tile`,433,implemented
+`store-tile-at`,434,implemented
+`await`,435,implemented
+`signal`,436,implemented
+More Tile helpers,437,implemented
+Sync Operations,438,implemented
+sync-cluster,439,implemented
+Split-Phase Execution (Design Sketch),440,not implemented
+sync-workgroup,441,implemented
+sync-warp,442,implemented
+Sync on Arrival,443,implemented
+Semaphore Operations,444,not implemented
+Rings,445,implemented
+`ring-get`,446,implemented
+`make-register-tile-ring`,447,implemented
+`make-async-barrier-ring`,448,implemented
+Warp Specialization,449,implemented
+Matrix Multiplication,450,implemented
+`mma-lowering`,451,implemented
+`make-register-tile`,452,implemented
+matrix-multiply-tile-stride,453,implemented
+inner-dimension,454,implemented
+outer-dimensions,455,implemented
+fill-tile,456,implemented
+Autodiff,457,implemented
+mma-accumulate-via-tile,458,implemented
+Matrix Multiply with pipelining,459,implemented
+Matrix Multiply with Pipelining via Warp Specialization,460,implemented
+Operand layout: Intel MMA operands must be `:row-major`,461,implemented
+Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile`,462,implemented
+Hoisting and `def-orchestration`,463,partially implemented
+`def-orchestration`,464,not implemented
+"""default"" orchestration",465,implemented
+gen-KERNEL_NAME,466,not implemented
+allocate-tensor and kernel_var_name::param-name,467,not implemented
+allocate-cell,468,not implemented
+copy-back,469,not implemented
+template def-orchestration,470,not implemented
+`_` as a dummy var placeholder.,471,not implemented
+launch-sequential,472,not implemented
+launch-kernel,473,not implemented
+launch-parallel,474,not implemented
+Compiler Invocation and Options,475,implemented
+Output Targeting Options,476,not implemented
+`--output-base=<NAME>`,477,not implemented
+`--transpile-to=<ID>`,478,not implemented
+`--ir-target=<ID>`,479,implemented
+`--ir-target-arch=<ID>`,480,not implemented
+`--hardware-profile=<NAME>`,481,implemented
+`--binary-gpu-target=<ID>`,482,not implemented
+`--fat-binary`,483,not implemented
+`--hoist=<ID>`,484,partially implemented
+`--metadata`,485,implemented
+`--differentiate`,486,implemented
+Other Flags,487,partially implemented
+`--runtime-checks`,488,implemented
+`--logging-output`,489,not implemented
+`--debug` or `-g`,490,implemented
+`--hoist-dynamic=<KERNELNAME>`,491,not implemented
+`--re-output-crisp=<DIRECTORY>`,492,not implemented
+`--no-inference`,493,not implemented
+`--no-static-analysis`,494,not implemented
+`--single-pass`,495,implemented
+`--skip-c-t-checks`,496,not implemented
+`--tree-shaking`,497,not implemented
+Compiliation Flags,498,implemented
+`-D`,499,not implemented
+Math Flags `--math-precision`,500,not implemented
+Fast Compilation,501,implemented
+Compiler Invocations and Files,502,implemented
+Hoisting Code,503,implemented
+In-Memory Compilation API,504,not implemented
+C API,505,not implemented
+`new_context( target_identifier )`,506,not implemented
+"`set_tree_shake_directory( context, path )`",507,not implemented
+"`add_input_file( context, file.crisp )`",508,not implemented
+"`add_input_string ( context, crisp_string, virtual_file_name )`",509,not implemented
+"`set_flags( context, string )`",510,not implemented
+"`get_flags( context, char** flagHandle, size_t* sz )`",511,not implemented
+"`compile(context, size_t* sz)`",512,not implemented
+"`compile( context,  string, size_t* sz )`",513,not implemented
+"`bool get_binary(context, const void** out_data, size_t* out_size)`",514,not implemented
+`long get_compilation_error_code(context)`,515,not implemented
+`const char* get_messages(context)`,516,not implemented
+`const char* get_metadata(context)`,517,not implemented
+`destroy_context( context )`,518,not implemented
+Status Codes,519,implemented
+dot product and matmul,520,not implemented
+max-pool,521,not implemented
+Average Pool,522,not implemented
+ReLU,523,not implemented
+Acknowledgements,524,implemented
+SUMMARY (Total: 524),Impl: 281 (53.6%),Not Impl: 220 (42.0%) | Part: 23 (4.4%)

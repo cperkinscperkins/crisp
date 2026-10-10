@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 260096
+;;
+;; ENDEAVOUR 181 -- last-man with MORE WORKGROUPS THAN THREADS PER WORKGROUP.  TDD.
+;;
+;; grid-reduce! (default strategy = last-man), single variable, implicit scratch.  4096 threads in
+;; workgroups of 32 is 128 workgroups, four times the local size.  Before 181 the final sweep was one
+;; partial per thread, so the elected workgroup could only see 32 of the 128 partials -- and the
+;; implicit partials buffer had 32 slots, so workgroups 32..127 wrote past its end.
+;;
+;; Each thread contributes its WORKGROUP id, so every workgroup's partial is distinct (32*g) and a
+;; dropped partial cannot hide: 32 * (0 + 1 + ... + 127) = 32 * 8128 = 260096, exact in float (every
+;; partial sum is an integer below 2^24).
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel grid_reduce_many_groups (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 32))
+  (let ((contrib (to-float (get-workgroup-id 0))))
+    (grid-reduce! #'+ contrib 0.0 out)))

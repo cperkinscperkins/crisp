@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER out: 1
+;;
+;; ENDEAVOUR 183 (BUG 082) -- a mem-fence inside a thread-divergent block is accepted.  A fence orders
+;; the calling thread's own memory accesses and waits for no one, so nothing can deadlock; this is the
+;; publish-then-signal shape (store, fence, then signal) with the fence where it belongs, in the one
+;; thread that stores.  Before 183 it was refused with a message about an internal sync-workgroup.
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel publish_from_thread_zero (&out out)
+  (declare #'(&out out-c => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (when-thread-in-group-is 0
+    (set! (~ out) 1.0)
+    (mem-fence)))

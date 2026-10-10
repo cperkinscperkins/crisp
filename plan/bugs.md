@@ -2920,7 +2920,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         to be identical.  That leaves when-thread-in-warp-is / when-thread-in-group-is as the
         only forms in this endeavour requiring one.
 
-[ ] 082 mem-fence IS REFUSED IN DIVERGENT CONTROL FLOW THOUGH IT IS NOT A COLLECTIVE -- but
+[x] 082 mem-fence IS REFUSED IN DIVERGENT CONTROL FLOW THOUGH IT IS NOT A COLLECTIVE -- but
         that check is LOAD-BEARING for sync-wait, so the fix is not a blanket exemption.
 
         %analyze-gpu-builtin routes :sync-workgroup, :sync-warp, :mem-fence and :sync-cluster
@@ -2957,6 +2957,18 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         Ordering survives because it is thread 0's OWN program order that carries it: its store
         precedes its fence precedes its atomic.  The other threads fence for nothing, which costs
         little and is honest.
+
+        FIXED 2026-10-08 (endeavour 183) -- and the "ATTEMPTED AND REVERTED" diagnosis above was WRONG.
+        Exempting mem-fence does NOT let a divergent sync-wait through: sync-wait expands to
+        (progn (while ... (mem-fence)) (sync-workgroup)), and the trailing sync-workgroup is refused by
+        the same check.  Re-tested: with the exemption, 118/02 still fails to compile.  What changed in
+        August was the MESSAGE -- 118/02's CHECK-FAIL matched the borrowed MEM-FENCE wording, so the
+        negative spec failed on text, not because the kernel compiled.  So no check had to move onto
+        sync-wait.  The fix: %warp-spec-check-sync exempts the fences, and the barriers (sync-workgroup,
+        sync-warp, sync-cluster) get their own, accurate message ("a barrier every thread of the
+        workgroup must reach ... sync-wait ends in a sync-workgroup").  118/02 now matches that.  The
+        last-man lowerings then fence in thread 0 only (release) and once in the elected workgroup
+        (acquire): tests/spec/183-last-man-fence/.
 
 [x] 083 FIXED -- make-scratch-* SILENTLY DISCARDED :address-space :global, so a "global" scratch
         buffer was allocated as PER-WORKGROUP local memory.
@@ -3872,3 +3884,62 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX (a hypothesis): refuse any spec a let does not understand, naming it.  First list what
         let bodies legitimately carry today -- expansions write (declare (grid-level)) / (workgroup-level),
         and the design doc says `use` may appear in a let -- so the allow-list does not break a lowering.
+
+[/] 109 BMG DROPS A VALUE DEFINED IN A DIVERGENT IF AND THEN CARRIED THROUGH A LOOP -- correct IR, wrong answer.
+
+        MEASURED 2026-10-08 (found during endeavour 181; worked around there, NOT fixed).  The first cut of
+        last-man's strided sweep seeded each thread's accumulator and then folded more partials in a loop:
+            (let ((val (if (< lid ng) (~ gv lid) identity)))     ; the SEED
+              (dotimes+ (k extra) ... (when (< p ng) (set! val (fn val (~ gv p))))))
+              (reduce-workgroup fn val identity ...))
+        On BMG (B580, driver 32.0.101.8864) the seed was LOST -- val came out as the loop's folds alone --
+        in some kernels and not others:
+            181/01 single grid-reduce!      PASS  -> FAIL once allocas were moved to the entry block
+            181/03 independent (+ , max u64) FAIL (outs = 260096 - 15872: exactly the 32 seeds missing)
+            181/05,/06 reduce-vec          FAIL (out 0 -- its only non-zero partial is a seed)
+            probes: one clause, two float clauses, float + u64 sum -- all PASS
+        Deterministic for a given compiled kernel; which kernels fail moves with unrelated code shape.
+
+        THE IR IS CORRECT.  Checked by hand at -O3 (put_temp_files_here/e181/r03.opt.ll, crisp-compile
+        --debug keeps it): the seed's load feeds a phi that enters the loop, the loop's fadd chain starts
+        from it, and the post-loop shuffles read the loop's result.  Not the hoist either: the launcher's
+        partials buffer is sized and bound correctly, and disabling its zero-fill changed nothing.  Only
+        SEEDS were ever lost; the loop's own folds were never wrong in any run.  Same signature as BUG 030:
+        correct LLVM IR, correct-looking SPIR-V shape, IGC computes something else.
+
+        TRIED: every alloca in the ENTRY block (one overlay on llvm-build-alloca -- standard frontend
+        practice, and mem2reg can then promote them).  It moved the failure (05/06 fixed, 01/02 broken), so
+        mid-function allocas are not the cause on their own.  Reverted; worth remembering for BUG 030.
+
+        WORKAROUND (181, in the lowering): no seed.  Each accumulator starts at the IDENTITY and the loop runs
+        from k = 0, so the first partial is folded like every other.  All 10 181 specs and the 175-178
+        last-man specs pass on BMG.  Cost: one identity-fold per thread in one workgroup per launch.
+
+        OPEN: a minimal reproducer for Intel (bug.ll + loader, like igc-bug-report/ for 030) -- not built.
+        Until then, the rule for lowerings: on SPIR-V, do not carry a value out of a divergent IF into a
+        loop when a branch-free shape is available.
+
+[x] 110 FORMAT ~<newline> CONTINUATIONS IN CRLF FILES -- every one is a crash on its error path.
+
+        MEASURED 2026-10-08 (found during endeavour 181).  In a CRLF source file a FORMAT string's
+        "~<newline>" continuation is really "~<return><newline>", and FORMAT reads "~<return>" as an
+        unknown directive: "error in FORMAT: Unknown format directive (character: Return)".  So the
+        message that was supposed to explain a problem crashes instead.  Seen live in 181/02 before the
+        fix: the hoister's ":match-num-workgroups is not implemented yet" refusal died this way.
+        (The same trap bit 178/13 -- see memory note tilde-continuation-breaks-on-crlf.)
+
+        COUNT, 2026-10-08 (bytes "~\r\n" in CRLF files under src/):  autodiff.lisp 7, compiler.lisp 3,
+        package.lisp 14, analysis/core.lisp 2, hoist-cuda/main.lisp 13, hoist-l0/main.lisp 12 = 51.
+        Some may sit in docstrings or comments, where they are harmless; the FORMAT-string ones are not.
+        181 fixed the two it touched (the :match-num-workgroups refusals in both hoists).
+
+        LIKELY FIX (a hypothesis): rewrite each FORMAT-string continuation as one long line or ~%
+        joins (what the overlays already do, since they are LF), and add a unit test that scans src/
+        for "~\r\n" inside string literals.  Mechanical, but touches ~50 messages: its own small sweep.
+
+        FIXED 2026-10-08.  Of the 51 tilde-CR-LF byte sequences, 27 were in comments (harmless) and 24 in
+        string literals -- all in (error "...") calls, nine messages: autodiff.lisp (6), hoist-cuda/main.lisp
+        (10), hoist-l0/main.lisp (8).  Each continuation was JOINED exactly as FORMAT would have read it
+        (tilde, CR, LF and the next line's indentation removed), so the printed messages are unchanged.
+        Guard: tests/test-source-hygiene.lisp (run-ci) scans src/ for a tilde + CR LF inside any string
+        literal; proven by planting one (red) and removing it (green).

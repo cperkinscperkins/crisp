@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--hardware-profile=stream-gpu --ir-target=ptx]: validate-ptx-minnctapersm-4
+;;
+;; ENDEAVOUR 182 -- the automatic bound follows the STREAM LOOP, not reduce-vec: a hand-written
+;; loop-vector-stride followed by grid-reduce! (the shape of the argmax / Welford workloads) gets it too.
+
+(def-hardware-profile stream-gpu :simd-width 32 :compute-units 132 :stream-occupancy-target 1024)
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel lvs_sumsq (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256)))
+  (let ((acc 0.0))
+    (loop-vector-stride A (i)
+      (set! acc (+ acc (* (~ A i) (~ A i)))))
+    (grid-reduce! #'+ acc 0.0 out)))

@@ -24,7 +24,7 @@ import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 # --------------------------------------------------------------------------------------------
@@ -309,12 +309,15 @@ def poison_hex(elem: str) -> str:
     return POISON.get(elem, 'ff' * ELEM_BYTES[elem])
 
 
+GROUPS_TOKEN = '@groups'      # a size the fixture resolves once it has computed the grid (181)
+
+
 @dataclass
 class Buffer:
     bid: int
     name: str
     elem: str
-    count: int
+    count: Union[int, str]    # an int, or GROUPS_TOKEN: one per work-group, resolved by the fixture
     init: str                 # 'gen' | 'once-zero' | 'each-fill' | 'each-poison'
     fill_hex: str = ''
     readback: bool = False
@@ -330,7 +333,9 @@ def build_plan(rec: KernelRecord, n_elements: int, groups: int,
     a last-man output is overwritten, so a poisoned value surviving a launch means the kernel
     never wrote it (the stale-state failure endeavour 179 fixed).  Implicit global scratch is
     zeroed ONCE, the kernel's documented precondition.  Implicit local scratch is sized from its
-    :size-expr against the local size and the profile's warp width.
+    :size-expr against the local size and the profile's warp width.  Scratch sized
+    :match-num-workgroups (a last-man kernel's partials, endeavour 181) is SYMBOLIC -- `@groups` --
+    because under occupancy the group count is computed inside the fixture.
     """
     wg = rec.local_size[0] * rec.local_size[1] * rec.local_size[2]
     warp = rec.simd_width or 32          # %l0-scratch-warp-size: profile :simd-width, else 32
@@ -348,12 +353,14 @@ def build_plan(rec: KernelRecord, n_elements: int, groups: int,
             return wg
         if name == 'MATCH-NUM-WARPS-PER-WORKGROUP':
             return (wg + warp - 1) // warp      # CEILING, as the hoister does
+        if name == 'MATCH-NUM-WORKGROUPS':
+            return GROUPS_TOKEN                 # one per work-group; the fixture knows how many
         raise ValueError(f"{rec.name}: cannot size scratch {p.name} with :size-expr {se!r}")
 
     def descriptor(base: int, st: StorageType, count: int, first_value: str):
         """Fill the slots of a cell/tensor at BASE.  Rank > 1 is laid out row-major compact."""
         slots[base] = first_value
-        nbytes = count * st.elem_bytes
+        nbytes = f"{count}*{st.elem_bytes}" if count == GROUPS_TOKEN else count * st.elem_bytes
         slots[base + 1] = f"u64 {nbytes}"
         if st.kind == 'cell':
             slots[base + 2] = "u64 0"

@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=h100 --ir-target=ptx]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;;
+;; ENDEAVOUR 183 (BUG 082) -- a fence under a data-dependent (thread-divergent) IF compiles on both
+;; backends: membar on PTX, OpMemoryBarrier on SPIR-V -- neither waits for other threads.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel fence_when_positive (A &out B)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((i (to-int (get-global-linear-id))))
+    (when (> (~ A i) 0.0)
+      (set! (~ B i) (~ A i))
+      (mem-fence))))

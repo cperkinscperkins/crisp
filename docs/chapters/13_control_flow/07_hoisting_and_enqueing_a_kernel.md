@@ -443,6 +443,37 @@ SPIR-V, not a degrade.)
 hoisting code configures the cluster dimensions.
 
 
+#### occupancy-target ✅
+```
+(occupancy-target N)      ; N threads per compute unit, or nil
+```
+
+```lisp
+(declare (occupancy-target 1024))   ; keep ~1024 threads resident per SM
+(declare (occupancy-target nil))    ; no bound, even if the hardware profile has one
+```
+
+How many threads a kernel aims to keep resident on each compute unit.  Lower than the hardware
+maximum means fewer threads but more registers for each -- and for a loop that streams memory, more
+registers means more loads in flight per thread, which is where bandwidth comes from.  On an H100,
+full occupancy (2048 threads per SM) leaves 32 registers a thread; at that budget ptxas funnels a
+reduction's loads through one register, one load in flight.  At 1024 threads (64 registers) the same
+kernels read at ~96% of the measured peak instead of 75-80%.
+
+**Measured in threads, like `local-size`.**  The compiler divides by the workgroup size, so a
+kernel using it must declare a compile-time `(local-size :set-to ...)`, and the target must be at
+least one workgroup.  `nil` turns the bound off.
+
+**Usually you do not write this.**  A hardware profile's `:stream-occupancy-target` applies the same
+bound automatically to every kernel whose body has a stream loop (`loop-vector-stride`, and so
+`reduce-vec`).  The declaration is for overriding that -- a different target, or `nil` -- and for
+kernels the automatic rule does not cover.
+
+**Where it has an effect.**  On PTX it becomes the entry's launch bounds, `.maxntid` (the workgroup
+size) and `.minnctapersm` (target / workgroup size) -- CUDA's `__launch_bounds__` -- from which ptxas
+derives its register budget.  The hoisting code needs no change: it sizes the grid from the
+compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
+
 #### check-thread-bounds 📝
 By itself, the `global-size` expressions above doesn't result in any change to the 
 the way the kernel compiles or runs. It is mostly for communicating intent to the host which 

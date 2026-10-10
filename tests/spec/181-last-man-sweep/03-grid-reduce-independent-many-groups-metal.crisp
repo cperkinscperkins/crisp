@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-HARDWARE-PROFILE: bmg
+;; HOIST-EXPECT: BUFFER outs: 260096
+;; HOIST-EXPECT: BUFFER outm: 4095
+;;
+;; ENDEAVOUR 181 -- the INDEPENDENT fused last-man (one election, two clauses) with 128 workgroups of
+;; 32.  TDD.  The sum is 01's; the max is the largest global id, 4095, which lives in the LAST
+;; workgroup -- the one a 32-slot sweep could never reach.
+
+(def-type out-c  (cell float :address-space :global))
+(def-type uout-c (cell ulong :address-space :global))
+
+(def-kernel grid_reduce_independent_many_groups (&out outs outm)
+  (declare #'(&out out-c uout-c => nil)
+           (global-size :set-to 4096)
+           (local-size  :set-to 32))
+  (let ((s (to-float (get-workgroup-id 0)))
+        (m (get-global-linear-id)))
+    (grid-reduce! ((#'+   s 0.0 outs)
+                   (#'max m 0ul outm)))))

@@ -5,21 +5,21 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
-;;;; EMPTY as of 2026-10-07 -- endeavour 180 (loop unrolling) and BUG 107 folded into src/:
-;;;;   * unroll declarations       -> %declaration-spec-named-p, %parse-unroll-spec,
-;;;;                                  %split-loop-body-declarations, %loop-trip-count-constant-p,
-;;;;                                  %stream-element-bytes, %resolve-unroll-spec, %analyze-loop-with-unroll;
-;;;;                                  analyze-dotimes-expression / analyze-loop-variant-expression are now the
-;;;;                                  wrappers, the pre-180 analyzers renamed %analyze-dotimes-core /
-;;;;                                  %analyze-loop-variant-core (src/analysis/control.lisp)
-;;;;   * misplaced unroll          -> %check-context-declarations, %refuse-misplaced-unroll,
-;;;;                                  analyze-declare-expression, registered in register-control-analyzers
-;;;;   * stream default            -> %expand-loop-vector-stride-form (control.lisp), %reduce-vec-expand (ops.lisp)
-;;;;   * !llvm.loop emission       -> *stream-unroll-bytes-in-flight*, *stream-unroll-max-factor*,
-;;;;                                  %effective-loop-unroll, %attach-loop-unroll-metadata, and both counted-loop
-;;;;                                  generate-node-ir methods (src/codegen.lisp)
-;;;;   * spec validators           -> %spv-scalar-load-count, %validate-spv-stream-loads, validate-spv-stream-*,
-;;;;                                  validate-ptx-has-nounroll-pragma (src/mma.lisp)
-;;;;   * BUG 107                   -> %max-metadata-id, inject-spir-kernel-metadata (src/compiler.lisp)
+;;;; EMPTY as of 2026-10-10 -- endeavour 183 (last-man fence; BUG 082) folded: %warp-spec-check-sync
+;;;;   (src/analysis/control.lisp) and the three last-man lowerings (src/analysis/ops.lisp).
+;;;; Before that, 2026-10-08 -- endeavours 181 (last-man sweep) and 182 (NVIDIA register budget)
+;;;; folded into src/:
+;;;;   * strided final sweep      -> %181-strided-sweep-form (new), %grid-reduce-last-man-expand,
+;;;;                                  %fused-grid-reduce-form, %fused-grid-reduce-dependent-form,
+;;;;                                  %implicit-scratch-alloc-form (:match-num-workgroups) (src/analysis/ops.lisp)
+;;;;   * profile key              -> *hardware-profile-schema* :stream-occupancy-target (src/hardware-profile.lisp)
+;;;;   * occupancy target         -> *kernel-occupancy-targets*, *stream-functions*, *analyzing-function*
+;;;;                                  (src/compiler.lisp); %declared-local-size-dims, %parse-occupancy-target-decl,
+;;;;                                  internal-def-function binds/parses (src/analysis/core.lisp);
+;;;;                                  %expand-loop-vector-stride-form marks the stream (src/analysis/control.lisp)
+;;;;   * launch bounds            -> %effective-occupancy-target, %apply-occupancy-bound, called beside
+;;;;                                  %apply-cluster-dims-attribute (src/codegen.lisp)
+;;;;   * spec validators          -> %ptx-minnctapersm, validate-ptx-minnctapersm-4/-2, validate-ptx-no-minnctapersm
+;;;;                                  (src/mma.lisp)
 
 (in-package :crisp.compiler)

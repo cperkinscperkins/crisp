@@ -1426,8 +1426,7 @@
      (%tlc-bwd-adj-name (cdr (assoc sym *ad-view-alias-map*))
                         inputs outputs nil kernel-pkg))
    ((not (symbolp sym))
-     (error "No adjoint rule for the tile expression ~s.  A tile argument must be a tensor ~
-             symbol or a view of one (e.g. (ring-get RING slot))." sym))
+     (error "No adjoint rule for the tile expression ~s.  A tile argument must be a tensor symbol or a view of one (e.g. (ring-get RING slot))." sym))
    ((or (member sym inputs) (member sym outputs))
      (intern (format nil "~A_GRAD" (symbol-name sym))
              (or kernel-pkg (symbol-package sym))))
@@ -6633,12 +6632,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 (defun %175-vjp-atomic-refuse (form ctx op-name why)
   "Backward rule for an atomic Crisp cannot differentiate: refuse, with the reason."
   (declare (ignore form ctx))
-  (error "~A is not differentiable.  ~A~%~
-          Crisp refuses rather than returning a gradient of zero, which is what it did before~%~
-          BUG 077: a kernel accumulating with an atomic compiled, ran, and reported an~%~
-          analytical derivative of 0.0 where the true value was 1.0, with no diagnostic.~%~
-          atomic-add! and atomic-sub! DO differentiate (they are linear in their value).~%~
-          If this kernel is genuinely forward-only, mark it SKIP-WITH[--differentiate]."
+  (error "~A is not differentiable.  ~A~%Crisp refuses rather than returning a gradient of zero, which is what it did before~%BUG 077: a kernel accumulating with an atomic compiled, ran, and reported an~%analytical derivative of 0.0 where the true value was 1.0, with no diagnostic.~%atomic-add! and atomic-sub! DO differentiate (they are linear in their value).~%If this kernel is genuinely forward-only, mark it SKIP-WITH[--differentiate]."
          op-name why))
 
 (defun %175-vjp-reduce-warp (form ctx)

@@ -216,6 +216,10 @@ int main() {
             std::printf("                                       ;   ONLY if your part supports DPAS + Block2D.\n");
             std::printf("  ; :tile-visit-strip-width <N>        ; MEASURED -- OMIT IT unless you have swept it.\n");
             std::printf("  ;                                    ;   Absent => linear, which is safe.\n");
+            std::printf("  ; :stream-bytes-in-flight <N>        ; MEASURED -- bytes of loads per thread a\n");
+            std::printf("  ;                                    ;   stream loop keeps in flight (unroll =\n");
+            std::printf("  ;                                    ;   N / element size).  BMG: 16 (57%% of the\n");
+            std::printf("  ;                                    ;   bus at 4 B, 99%% at 16).  Absent => none.\n");
             std::printf("  ; :max-registers-per-cu <N>          ; not queryable; derive as GRF/thread x\n");
             std::printf("  ;                                    ;   numThreadsPerEU x numEUsPerSubslice\n");
             std::printf("  ; :wgmma-shapes                      ; N/A on Intel (no warpgroup MMA)\n");

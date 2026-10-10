@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "IN-FLIGHT expects a positive integer"
+;;
+;; ENDEAVOUR 182 (180 follow-up) -- :stream-bytes-in-flight is validated where the profile is defined:
+;; a positive integer (bytes of loads each thread keeps in flight in a stream loop).
+
+(def-hardware-profile g_e :simd-width 16 :stream-bytes-in-flight 0)
+
+(def-type out-c (cell float :address-space :global))
+
+(def-kernel k_e (&out out)
+  (declare #'(&out out-c => nil))
+  (set! (~ out) 1.0))

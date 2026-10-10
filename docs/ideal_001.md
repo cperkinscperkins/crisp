@@ -4614,6 +4614,37 @@ SPIR-V, not a degrade.)
 hoisting code configures the cluster dimensions.
 
 
+#### occupancy-target ✅
+```
+(occupancy-target N)      ; N threads per compute unit, or nil
+```
+
+```lisp
+(declare (occupancy-target 1024))   ; keep ~1024 threads resident per SM
+(declare (occupancy-target nil))    ; no bound, even if the hardware profile has one
+```
+
+How many threads a kernel aims to keep resident on each compute unit.  Lower than the hardware
+maximum means fewer threads but more registers for each -- and for a loop that streams memory, more
+registers means more loads in flight per thread, which is where bandwidth comes from.  On an H100,
+full occupancy (2048 threads per SM) leaves 32 registers a thread; at that budget ptxas funnels a
+reduction's loads through one register, one load in flight.  At 1024 threads (64 registers) the same
+kernels read at ~96% of the measured peak instead of 75-80%.
+
+**Measured in threads, like `local-size`.**  The compiler divides by the workgroup size, so a
+kernel using it must declare a compile-time `(local-size :set-to ...)`, and the target must be at
+least one workgroup.  `nil` turns the bound off.
+
+**Usually you do not write this.**  A hardware profile's `:stream-occupancy-target` applies the same
+bound automatically to every kernel whose body has a stream loop (`loop-vector-stride`, and so
+`reduce-vec`).  The declaration is for overriding that -- a different target, or `nil` -- and for
+kernels the automatic rule does not cover.
+
+**Where it has an effect.**  On PTX it becomes the entry's launch bounds, `.maxntid` (the workgroup
+size) and `.minnctapersm` (target / workgroup size) -- CUDA's `__launch_bounds__` -- from which ptxas
+derives its register budget.  The hoisting code needs no change: it sizes the grid from the
+compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
+
 #### check-thread-bounds 📝
 By itself, the `global-size` expressions above doesn't result in any change to the 
 the way the kernel compiles or runs. It is mostly for communicating intent to the host which 
@@ -4814,11 +4845,13 @@ The only way to make `vector_add` faster is to use interleaved memory and kernel
     (set! (~ C i) ( + (~ A i) (~ B i)))))
 ```
 
-**Unrolling.** On SPIR-V, `loop-vector-stride` is unrolled by default, so that each thread keeps
-16 bytes of loads in flight: x4 for a `float` vector, x2 for `double`, x8 for 16-bit types (never
-more than x8). That number was measured on an Intel Arc B580, where one 4-byte load per trip reaches
-57% of the memory bus and 16 bytes reach 99%. On PTX there is no default: LLVM's NVPTX backend and
-`ptxas` already unroll the loop, and a hint would only stop `ptxas` from going further. A
+**Unrolling.** `loop-vector-stride` is unrolled by default when the hardware profile says how many
+bytes of loads each thread should keep in flight (`:stream-bytes-in-flight`, see Hardware Profiles):
+the factor is that budget over the element size, never more than x8. The builtin `bmg` profile
+carries 16 bytes -- x4 for a `float` vector, x2 for `double`, x8 for 16-bit types -- measured on an
+Intel Arc B580, where one 4-byte load per trip reaches 57% of the memory bus and 16 bytes reach 99%.
+NVIDIA profiles leave it out: LLVM's NVPTX backend and `ptxas` already unroll the loop, and a hint
+would only stop `ptxas` from going further. No profile, or no key, means no default. A
 `(declare (unroll ...))` at the start of the body replaces the default on every target --
 `(unroll nil)` turns it off. See [unroll](#unroll).
 
@@ -5534,7 +5567,7 @@ The golden rule of GPU programming is: if you have threads cooperating on a task
 
 #### sync-workgroup ✅
 `(sync-workgroup)`
-This routine inserts a local barrier. It ensures that all threads in the workgroup have reached the same location before continuing. This barrier includes a memory fence that guarantees all writes to local memory by threads in the workgroup are visible to all other threads in that same workgroup. Use it after you are done writing to shared local memory and before any other thread is expected to read from it. On CUDA it will map to `__syncthreads()` and on OpenCL to `barrier(CLK_LOCAL_MEM_FENCE)`.
+This routine inserts a local barrier. It ensures that all threads in the workgroup have reached the same location before continuing. Every thread of the workgroup must reach it, so it may not appear inside a thread-divergent conditional (`if` / `when` / `unless` / `cond` on a per-thread condition) -- the threads that skip the branch would never arrive, and the ones that enter it would wait forever; Crisp refuses it at compile time. `sync-wait`, which ends in a `sync-workgroup`, is refused there for the same reason. This barrier includes a memory fence that guarantees all writes to local memory by threads in the workgroup are visible to all other threads in that same workgroup. Use it after you are done writing to shared local memory and before any other thread is expected to read from it. On CUDA it will map to `__syncthreads()` and on OpenCL to `barrier(CLK_LOCAL_MEM_FENCE)`.
 
 
 #### sync-warp ✅
@@ -5582,6 +5615,20 @@ row covers it.
 
 There is no narrower scope. A warp-scoped fence would be very nearly a no-op on hardware that runs a
 warp in lockstep, so `:scope :subgroup` is refused rather than offered as a false economy.
+
+**A fence may sit in divergent code.** Because it makes nobody wait, `mem-fence` is allowed inside
+a thread-divergent conditional -- unlike the barriers, which every thread must reach. That is exactly
+where publish-then-signal wants it: the one thread that publishes stores, fences, then signals.
+
+```lisp
+(when-thread-in-group-is 0
+  (set! (~ partials (to-int (get-workgroup-id 0))) total)   ; publish
+  (mem-fence)                                               ; release: the store is visible ...
+  (atomic-add! (~ arrivals) 1u))                            ; ... before the signal
+```
+
+The reader needs the other half: after it observes the signal, a `mem-fence` before it reads what
+was published (the acquire). `grid-reduce-last-man!` is built this way.
 
 
 
@@ -6611,13 +6658,13 @@ After the operation, the value of `<someVar>` in any thread is indeterminate. `r
 It accomplishes this via a cooperative finish.
 
 1. **Phase 1:** Every workgroup reduces its threads locally using `reduce-workgroup`.
-2. **Phase 2:** The leader thread of each workgroup writes its partial result into its `global-scratch-vec`, and then increments a global `atomic-counter`.
-3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. That final workgroup immediately reads the `global-scratch-vec` and performs one final `reduce-workgroup` to calculate the ultimate answer.
+2. **Phase 2:** The leader thread of each workgroup writes its partial result into its `global-scratch-vec`, fences, and then increments a global `atomic-counter` -- store, fence, signal, in that one thread's program order (the release). Only the leader fences: the other threads published nothing.
+3. **The Sweep:** The workgroup that increments the counter to `num_workgroups - 1` knows it is the *last* one to finish. Each of its threads fences once (the acquire), then that final workgroup reads the `global-scratch-vec` -- each of its threads folding partials `lid`, `lid + local_work_size`, `lid + 2*local_work_size`, ... so any number of workgroups is covered -- and performs one final `reduce-workgroup` to calculate the ultimate answer.
 
 **The Trade-off:**
 
 * **Pros:** Works with *any* commutative operation (unlike `grid-reduce-atomic!`). Zero contention on the final result cell. Requires only a single kernel launch.
-* **Cons:** Requires allocating a global scratch buffer sized to the number of workgroups, plus a secondary atomic counter cell. (Note: Like the older dual-pass strategies, this specific implementation requires that the total number of workgroups is less than or equal to the `local_work_size` so the final sweep can happen in one pass).
+* **Cons:** Requires allocating a global scratch buffer sized to the number of workgroups, plus a secondary atomic counter cell. Any number of workgroups: the final sweep is strided -- each thread of the last workgroup folds every `local_work_size`-th partial before the closing `reduce-workgroup` -- so its order is fixed by the grid and the result is reproducible run to run.
 
 **Arguments:**
 
@@ -6627,8 +6674,9 @@ It accomplishes this via a cooperative finish.
 * `return-cell`: A `:global` cell of `<someVar>`'s type (a length-1 vector is also accepted). Last-man *writes* it, so it needs no initial value.
 * `:local-scratch-vec`: Writeable local memory, one element per warp in the workgroup.
 * `:global-scratch-vec`: Writeable **`:global`** memory, one element per WORKGROUP
-  (`global_work_size / local_work_size`), holding the partials.  When Crisp allocates it, it is
-  sized to `local_work_size`, which the workgroup-count limit above makes always enough.
+  (`global_work_size / local_work_size`), holding the partials -- `:match-num-workgroups` when you
+  allocate it yourself, which is also how Crisp sizes it when you leave it out.  A shorter buffer
+  would be written past its end; under `--runtime-checks` the kernel refuses to run instead.
 * `:atomic-counter`: A zero-initialised `:global` `uint` cell, used to draw tickets.
 * `:election-flag-cell`: A **workgroup-local** `uint` cell, which broadcasts the ticket result from
   thread 0 to the rest of its workgroup.  It is what lets the LOSING workgroups retire
@@ -6695,8 +6743,8 @@ Phase 1 -- a `reduce-workgroup`, which is itself a warp shuffle followed by a sh
 must be reached by every thread, so in practice you choose the Phase 2 strategy:
 
 **The Speed Demon:** `grid-reduce!` (its default, `:last-man-standing`)
-One kernel, no contention on the result, any commutative function.  Its one limit: the number of
-workgroups may not exceed `local_work_size`.
+One kernel, no contention on the result, any commutative function, any number of workgroups, and a
+result that is the same bit for bit from run to run.
 
 **The Easy Button:** `grid-reduce!` with `:strategy :atomic`
 Summing (or taking the min or max of) a massive grid: no global scratch at all, at the cost of
@@ -6732,7 +6780,6 @@ Another thing Crisp can do to make things simpler is to simply elect a Phase 2 s
 `grid-reduce!` performs a `reduce-workgroup` on `<someVar>` as Phase 1, then uses `:strategy` for Phase 2, storing the final value in `return-cell`:
 
 * `:strategy` is one of `:atomic`, `:cas` or `:last-man-standing`, and defaults to `:last-man-standing`. It must be written as a literal keyword, because it decides which construct the call becomes (`grid-reduce-atomic!`, `grid-reduce-cas!` or `grid-reduce-last-man!`); a value computed at run time is a compilation error. There is no second-stage strategy: that needs a second kernel launch, which one call cannot arrange -- use `grid-reduce-second-stage!` in the second kernel.
-* The default carries last-man's limit: the number of workgroups must not exceed `local_work_size`.
 * `return-cell` is a `cell` of `<someVar>`'s type (a length-1 vector is also accepted). `:atomic` and `:cas` *accumulate* into it, so it should start at the identity; `:last-man-standing` *writes* it.
 * Every scratch argument is optional and is allocated by Crisp when left out, typed from the identity (see the condition above). A scratch key the chosen strategy does not use is a compilation error: `:atomic` and `:cas` take only `:local-scratch-vec`.
 * `:atomic` still requires an operator with a native hardware atomic (`#'+`, `#'min`, `#'max`).
@@ -6991,8 +7038,7 @@ for every variable into that variable's `:global-scratch-vec`, then draws a sing
 the shared `:atomic-counter`. The last workgroup sweeps all the variables. A call with `k`
 clauses costs one atomic ticket per workgroup, not `k`.
 
-`:last-man-standing` is the default strategy, and it carries its usual limit: the number of
-workgroups must not exceed `local_work_size`.
+`:last-man-standing` is the default strategy.
 
 ### Disposition of the Variables
 
@@ -7096,9 +7142,8 @@ A call means exactly this:
 
 **The grid does not have to match the vector.** That is the point of the stride: launch about as
 many threads as the hardware runs at once, and each folds several elements. A thread that owns no
-element at all contributes only the identity. `:last-man-standing` still carries its limit -- the
-number of workgroups must not exceed `local_work_size` -- but since the grid size is now yours to
-choose, any vector length can meet it.
+element at all contributes only the identity. Any grid works with every strategy, `:last-man-standing`
+included: its partials are sized one per workgroup and its final sweep is strided.
 
 `reduce-vec` is a grid-level operation, so it cannot be nested inside another grid-level stride.
 Several calls in one kernel are fine, one after another; each gets its own scratch. It reduces one
@@ -11760,6 +11805,8 @@ Note that a hardware profile says nothing about that actual architecture. It may
   :max-work-group-dims '(1024 1024 64)
   :max-total-threads-per-block 1024
   :max-concurrent-kernels 128
+  :stream-occupancy-target 1024     ; MEASURED -- see below
+  :stream-bytes-in-flight 16        ; MEASURED -- see below
 
   ;; matrix units
   :mma-shapes '((16 8 16) (8 8 8))  ; list of (M N K) triples
@@ -11801,6 +11848,38 @@ The lowerings Crisp knows:
 
 A name outside that list is a compile error at `def-hardware-profile` time, so a typo is caught where
 it is written rather than surfacing later as a kernel that mysteriously never selects its lowering.
+
+### `:stream-bytes-in-flight` ✅
+
+`:stream-bytes-in-flight` is how many bytes of loads each thread should keep in flight in a **stream
+loop** (`loop-vector-stride`, and so `reduce-vec`). The loop is unrolled by that budget over the
+element size (at most x8), unless its body starts with an explicit `(declare (unroll ...))`.
+
+```
+:stream-bytes-in-flight 16
+```
+
+It is a MEASURED key, and absent means no unroll default. On an Intel Arc B580 16 bytes per thread
+is the knee (57% of the read peak at one 4-byte load per trip, 99% at 16 bytes); the builtin `bmg`
+profile carries it. NVIDIA parts leave it out -- their backend compiler unrolls the loop itself, and a
+hint would stop it (see `tests/spec/180-loop-unroll/`).
+
+### `:stream-occupancy-target` ✅
+
+`:stream-occupancy-target` is the number of threads per compute unit that kernels with a **stream
+loop** (`loop-vector-stride`, and so `reduce-vec`) should aim for on this device.  It is applied
+automatically, exactly as if each such kernel had declared `(occupancy-target N)` (see the
+declaration under the kernel declarations); a kernel's own declaration always wins, and
+`(occupancy-target nil)` opts a kernel out.
+
+```
+:stream-occupancy-target 1024
+```
+
+It is a MEASURED key: no query can answer it, so sweep it or leave it out.  Absent means no bound --
+the backend compiler's default.  On an H100 SXM 1024 took every streaming reduction to 96-97% of the
+measured read peak (last-man sum from 75%, argmax from 80%, Welford from 78%); see
+`tests/spec/182-nvidia-register-budget/` for the sweep and `scripts/182-pod-budget.sh` for the method.
 
 A profile is selected at the command line with
 `--hardware-profile=<NAME>`, or named by a `compute-unit` in a

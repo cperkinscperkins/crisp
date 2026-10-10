@@ -167,6 +167,13 @@ int main() {
         std::printf("  ; :tile-visit-strip-width <N>          ; MEASURED -- OMIT IT unless you have swept\n");
         std::printf("  ;                                      ;   it.  Measured HARMFUL on H100 (-8.3%% at\n");
         std::printf("  ;                                      ;   W=4, -14.4%% at W=16).  Absent => linear.\n");
+        std::printf("  ; :stream-occupancy-target <N>         ; MEASURED (endeavour 182) -- threads per SM\n");
+        std::printf("  ;                                      ;   for stream kernels; becomes PTX launch\n");
+        std::printf("  ;                                      ;   bounds.  H100 SXM: 1024 (last-man sum\n");
+        std::printf("  ;                                      ;   75%% -> 96%%).  Absent => no bound.\n");
+        std::printf("  ; :stream-bytes-in-flight <N>          ; MEASURED -- stream-loop unroll budget.\n");
+        std::printf("  ;                                      ;   OMIT on NVIDIA: NVPTX + ptxas unroll the\n");
+        std::printf("  ;                                      ;   loop themselves; a hint stops ptxas.\n");
         std::printf("  )\n\n");
 
         if (p.sharedMemPerBlockOptin % 1024 != 0)
