@@ -56,8 +56,8 @@ followed around the back edge.
 - Stack frames (144-376 B) are outside the hot loops at every spill-free setting; see 181 follow-up 2.
 
 
-Probe mechanism (temporary)
----------------------------
+Probe mechanism (temporary -- REMOVED 2026-10-08 once the real mechanism landed)
+----------------------------------------------------------------------------------
 
 `overlays/crisp-compiler-overlay.lisp`, labelled PROBE: with `CRISP_PROBE_PTX_MINCTA=N` (and optional
 `CRISP_PROBE_PTX_MAXNTID`, default 256) set, compile-to-ptx inserts the two directives into every
@@ -120,8 +120,8 @@ Decisions (with Chris, 2026-10-08)
   their profile.  `*stream-unroll-max-factor*` (x8) stays a constant: a safety cap, not device tuning.
 
 
-Implementation (overlays, 2026-10-08)
--------------------------------------
+Implementation (written in overlays 2026-10-08; FOLDED into src/ the same day -- see the plan)
+----------------------------------------------------------------------------------------------
 
 - `*hardware-profile-schema*` gains `(:stream-occupancy-target . :pos-int)`.
 - `internal-def-function` (wrapper) binds `*analyzing-function*` and parses/validates `(occupancy-target ...)`
