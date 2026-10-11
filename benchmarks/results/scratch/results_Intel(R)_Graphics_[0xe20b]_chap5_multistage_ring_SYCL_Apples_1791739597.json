@@ -1,0 +1,90 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-10-11T17:26:35.908919Z",
+    "hardware": {
+      "gpu_model": "Intel(R) Graphics [0xe20b]",
+      "arch_target": "bmg",
+      "environment": "docker",
+      "vram_bytes": 12455405158,
+      "sm_count": null,
+      "hardware_profile": "bmg",
+      "profile_matched": true,
+      "profile_provenance": "builtin",
+      "profile_source": null
+    },
+    "crisp_commit": "9f44a3f9",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "chap5_multistage_ring",
+  "competitor": "SYCL_Apples",
+  "precision": "fast",
+  "denormal_handling": "preserve",
+  "results": [
+    {
+      "configuration": {
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1829.862356185913,
+          "all_compile_ms": 4292.341232299805
+        },
+        "runtime": {
+          "wall_time_ms": 432.97,
+          "kernel_execution_ms": 13.30794
+        },
+        "throughput": {
+          "tflops": 10.32759,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0.0,
+          "samples": null
+        }
+      }
+    },
+    {
+      "configuration": {
+        "m": 8192,
+        "n": 8192,
+        "k": 8192,
+        "warmup": 2,
+        "iters": 5,
+        "verified": true
+      },
+      "metrics": {
+        "compile_time": {
+          "device_compile_ms": 1829.862356185913,
+          "all_compile_ms": 4292.341232299805
+        },
+        "runtime": {
+          "wall_time_ms": 1357.85,
+          "kernel_execution_ms": 138.99839
+        },
+        "throughput": {
+          "tflops": 7.91025,
+          "bandwidth_gbps": null
+        },
+        "verification": {
+          "verified": true,
+          "mode": "spot_check",
+          "relative_error": null,
+          "max_abs_err": 0.0,
+          "samples": null
+        }
+      }
+    }
+  ],
+  "is_canonical": true,
+  "contender_class": null
+}
