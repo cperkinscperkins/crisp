@@ -335,3 +335,135 @@
            (r-t-assert-0 (= ,done 1)
                          "atomic-op!: the bounded CAS retry loop exhausted without succeeding, so this update was LOST.  The bound is global_size + 1, which is sound when each thread performs the operation once; it can be exceeded if atomic-op! runs inside a loop, so that total successes on this location exceed the grid size.")
            ,prev)))))
+
+
+;;;; ===========================================================================================
+;;;; ENDEAVOUR 184 cas-lowering, step 2 -- every atomic RELAXED at DEVICE scope
+;;;;   Decision: ordering is never implied by an atomic, only by an explicit mem-fence.
+;;;;   The two methods below are verbatim script-extracts of src/codegen.lisp with ONLY the ordering,
+;;;;   the scope and the docstring changed (diff: put_temp_files_here/184/*-orig vs *-step2).
+;;;; ===========================================================================================
+
+;; src/codegen.lisp  (next to the atomic-rmw method)
+(defun %184-device-sync-scope (module)
+  "The sync-scope ID of \"device\" in MODULE's context -- the scope every Crisp atomic uses (184).
+   DEVICE is the floor, not a preference: fence-fence synchronisation with a relaxed atomic needs the
+   atomic's scope to include the fences' (mem-fence is device scope on both backends).  Spelled
+   \"device\" because both NVPTX and llvm-spirv honour it; llvm-spirv silently turns \"agent\" into
+   CrossDevice."
+  (let ((name "device"))
+    (crisp.llvm-bindings::llvm-get-sync-scope-id
+     (crisp.llvm-bindings::llvm-get-module-context module) name (length name))))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-atomic-rmw) builder module var-env
+                              di-builder di-scope location-map)
+  "Generates IR for atomic RMW operations (atomic-add!, atomic-sub!, etc.).
+Returns the old value at the target location (fetch-and-op semantics).
+LLVM AtomicRMWBinOp enum: xchg=0 add=1 sub=2 max=7 min=8 umax=9 umin=10
+                           fadd=11 fsub=12 fmax=13 fmin=14
+Endeavour 184: RELAXED (monotonic) at DEVICE scope -- see %184-device-sync-scope.  Ordering is
+never implied by an atomic; it comes only from an explicit mem-fence."
+  (let* ((target-aref     (semantic-atomic-rmw-target-node node))
+         (delta-node      (semantic-atomic-rmw-delta-node node))
+         (op              (semantic-atomic-rmw-op node))
+         (elem-type       (semantic-atomic-rmw-type node))
+         (elem-crisp-type (gethash elem-type *crisp-types*))
+         (is-float        (and elem-crisp-type
+                               (eq (crisp-type-category elem-crisp-type) :float)))
+         (is-unsigned     (and elem-crisp-type
+                               (eq (crisp-type-category elem-crisp-type) :unsigned-int))))
+
+    ;; Get the GEP pointer from the target aref (3rd return value)
+    (multiple-value-bind (aref-val aref-loc ptr)
+        (generate-node-ir target-aref builder module var-env di-builder di-scope location-map)
+      (declare (ignore aref-val aref-loc))
+      (unless ptr
+        (error "Compiler error in atomic RMW: target ~a did not produce an address pointer"
+               target-aref))
+
+      ;; Compute the delta value
+      (let* ((delta-raw (generate-node-ir delta-node builder module var-env
+                                          di-builder di-scope location-map))
+             (delta-val (extract-primary-value builder delta-raw elem-type))
+             ;; Select the LLVM RMW opcode
+             ;; Inline integer literals avoid defconstant redefinition issues in overlays.
+             (rmw-op (ecase op
+                       (:add  (if is-float 11 1))   ;; fadd=11, add=1
+                       (:sub  (if is-float 12 2))   ;; fsub=12, sub=2
+                       (:min  (cond (is-float 14)   ;; fmin=14
+                                    (is-unsigned 10) ;; umin=10
+                                    (t 8)))          ;; min=8 (signed)
+                       (:max  (cond (is-float 13)   ;; fmax=13
+                                    (is-unsigned 9)  ;; umax=9
+                                    (t 7)))          ;; max=7 (signed)
+                       (:xchg 0))))                 ;; xchg=0
+
+        (log:info "atomic-rmw: op=~a elem-type=~a is-float=~a is-unsigned=~a rmw-op=~a"
+                  op elem-type is-float is-unsigned rmw-op)
+
+        (let ((result (crisp.llvm-bindings::llvm-build-atomic-rmw-sync-scope
+                       builder rmw-op ptr delta-val
+                       2  ;; Endeavour 184: LLVMAtomicOrderingMonotonic (relaxed)
+                       (%184-device-sync-scope module))))
+          (values result nil))))))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-atomic-cas) builder module var-env
+                             di-builder di-scope location-map)
+  "Generates a cmpxchg for atomic-cas!, yielding either the PRIOR value or the success flag
+   according to the node's RESULT-MODE.
+   Endeavour 184: monotonic (relaxed) on both success and failure, at DEVICE scope -- see
+   %184-device-sync-scope.  Ordering is never implied by an atomic; it comes only from an explicit
+   mem-fence.  (Before 184: seq_cst at system scope, which NVPTX lowers to a fence.sc.sys before
+   every attempt.)"
+  (let* ((target-aref (semantic-atomic-cas-target-node node))
+         (mode        (semantic-atomic-cas-result-mode node))
+         ;; For :success the node's TYPE is int (the Crisp boolean); the memory element type has
+         ;; to come from the target instead.
+         (elem-type   (semantic-aref-type target-aref))
+         (int-width   (%175-cas-int-width-for elem-type)))
+    (multiple-value-bind (aref-val aref-loc ptr)
+        (generate-node-ir target-aref builder module var-env di-builder di-scope location-map)
+      (declare (ignore aref-val aref-loc))
+      (unless ptr
+        (error "Compiler error in atomic-cas!: target ~a did not produce an address pointer"
+               target-aref))
+      (let* ((exp-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-expected-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (des-val (extract-primary-value
+                       builder (generate-node-ir (semantic-atomic-cas-desired-node node)
+                                                 builder module var-env di-builder di-scope
+                                                 location-map)
+                       elem-type))
+             (int-ty  (and int-width (if (= int-width 64)
+                                         (crisp.llvm-bindings::llvm-int64-type)
+                                         (crisp.llvm-bindings::llvm-int32-type))))
+             ;; A float CAS compares BIT PATTERNS, which is what CAS means -- "has memory changed
+             ;; since I read it" is a question about bits, not about numeric equality.  Visible
+             ;; consequences: +0.0 and -0.0 do not match, and a NaN never matches itself.  Both
+             ;; hold for every hardware float CAS, which is precisely why :success exists.
+             (exp-i (if int-ty (llvm-build-bit-cast builder exp-val int-ty "cas_exp_i") exp-val))
+             (des-i (if int-ty (llvm-build-bit-cast builder des-val int-ty "cas_des_i") des-val)))
+        (log:info "atomic-cas!: elem-type=~a int-width=~a mode=~a" elem-type int-width mode)
+        (let ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg-sync-scope
+                     builder ptr exp-i des-i
+                     2   ;; success: Monotonic (Endeavour 184: relaxed)
+                     2   ;; failure: Monotonic
+                     (%184-device-sync-scope module))))
+          (if (eq mode :success)
+              ;; Field 1 is the i1 "swap happened" flag; widen it to Crisp's int.
+              (let ((flag (llvm-build-extract-value builder pair 1 "cas_ok")))
+                (values (crisp.llvm-bindings::llvm-build-zext
+                         builder flag (resolve-type-to-llvm 'int) "cas_ok_i")
+                        nil))
+              ;; Field 0 is the value that was loaded.
+              (let* ((old-i (llvm-build-extract-value builder pair 0 "cas_old"))
+                     (old   (if int-ty
+                                (llvm-build-bit-cast builder old-i
+                                                     (resolve-type-to-llvm elem-type) "cas_old_f")
+                                old-i)))
+                (values old nil))))))))
