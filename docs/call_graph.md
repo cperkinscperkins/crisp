@@ -126,6 +126,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
 - - - - - - - - (%WARP-SPEC-CHECK-SYNC BUILTIN-KW NAME-STR LOCATION)  analysis/control.lisp
 - - - - - - - - (%GPU-BUILTIN-INFO BUILTIN-KW)  analysis/core.lisp
+- - - - - - (%RFL-WRAP-STRIDE-ANALYZER NAME ANALYZER)  analysis/control.lisp
+- - - - - - - (%RFL-FREE-IN-FORMS-P FORMS)  analysis/control.lisp
+- - - - - - - - (%RFL-HEAD-NAME FORM)  analysis/control.lisp
 - - - - - (REGISTER-STRUCT-ANALYZERS)  analysis/structs.lisp
 - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
 - - - - - (REGISTER-MMA-ANALYZERS)  mma.lisp
@@ -369,6 +372,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
 - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - (%COLLECT-READONLY-TENSOR-PARAM-SYMS SEMANTIC-FUNCTION)  codegen.lisp
 - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
@@ -392,6 +396,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%GENERATE-TENSOR-SCRATCH-LITERAL-IR BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
@@ -484,6 +489,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
@@ -492,6 +498,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
@@ -514,6 +521,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
                                                            SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%ARRAY-NODE-READONLY-TENSOR-PARAM-P ARRAY-NODE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%ATTACH-INVARIANT-LOAD LOADED-INST MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%DVEC-COERCE-ELEMENT-IR ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
@@ -529,6 +537,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%MV-BUILD-ZERO-I64-ARRAY RANK)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%MV-ROW-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp
 - - - - - - - - - - - - - - - - - - - (%MV-BUILD-CONST-I64-ARRAY BUILDER RANK VALUES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%184-DEVICE-SYNC-SCOPE MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%SV-TO-I64 BUILDER VAL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-VEC3 BUILDER MODULE SREG-BASE)  codegen.lisp
@@ -591,6 +600,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - (%LOOP-VARIANT-COERCE BUILDER VALUE LLVM-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
                                                                                              hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%184-CALL-WITH-LOOP-EXIT-TARGET BUILDER THUNK)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-MBAR-GLOBAL MODULE &OPTIONAL (COUNT
                                                                                    1))  codegen.lisp
@@ -703,6 +713,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (%LLVM-FLOAT-WIDTH TY)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
                                                             (EQL XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%XE-SURFACE BUILDER TENSOR-VAL ELEM-BYTES)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (%XE-COORD BUILDER OROW OCOL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - (%COOP-STORE BUILDER MODULE TENSOR-VAL MATRIX-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
@@ -714,6 +725,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%ELEM-LLVM-BYTES ELEM-LLVM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%XE-SURFACE BUILDER TENSOR-VAL ELEM-BYTES)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (%XE-COORD BUILDER OROW OCOL)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [See above]
@@ -1738,6 +1750,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%COLLECT-LOCALLY-BOUND-VARS BODY-FORMS)  autodiff.lisp
 - - - - (%DOTIMES-FAMILY-HEAD-P HEAD)  anf-transform.lisp [See above]
 - - - (%GFW-PROCESS-DOTIMES FORM EMIT-FN PROCESS-FORM-FN BINDING BODY LOCAL-VARS ADJOINT-MAP INTERMEDIATE-ZERO)  autodiff.lisp
+- - - - (%RFL-FREE-IN-FORMS-P FORMS)  analysis/control.lisp [See above]
+- - - - (%RFL-HEAD-NAME FORM)  analysis/control.lisp [See above]
 - - - - (%AD-CHECK-LOOP-CARRIED-PRIMALS BINDING BODY LOCAL-VARS BACKWARD-FORMS)  autodiff.lisp
 - - - - - (%AD-LOOP-CARRIED-TAINTED BODY LOCAL-VARS)  autodiff.lisp
 - - - - - (%AD-STALE-PRIMAL-READS FORMS TAINTED)  autodiff.lisp
@@ -2110,6 +2124,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
 - - (ANALYZE-DOTIMES-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - - (%ANALYZE-LOOP-WITH-UNROLL ANALYZER EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - (%RFL-PLUS-LOOP-P EXPR)  analysis/control.lisp
+- - - - - (%RFL-HEAD-NAME FORM)  analysis/control.lisp [See above]
+- - - - (%RFL-FREE-IN-FORMS-P FORMS)  analysis/control.lisp [See above]
+- - - - (%RFL-HEAD-NAME FORM)  analysis/control.lisp [See above]
 - - - - (%SPLIT-LOOP-BODY-DECLARATIONS BODY-FORMS HEAD LOCATION)  analysis/control.lisp
 - - - - - (%DECLARATION-SPEC-NAMED-P SPEC NAME)  analysis/control.lisp [See above]
 - - - - - (%PARSE-UNROLL-SPEC SPEC HEAD LOCATION)  analysis/control.lisp
@@ -2524,6 +2542,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-RETURN-FROM-LOOP-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 
 - (ANALYZE-RING-GET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]

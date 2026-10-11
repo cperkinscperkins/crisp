@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "no enclosing loop"
+;; Endeavour 184 D3: the enclosing loop is LEXICAL.  A function called from inside a loop cannot
+;; leave its caller's loop -- inside the function there is no loop at all.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-function helper_f (x)
+  (declare #'(ulong => nil))
+  (when (= x 3ul)
+    (return-from-loop)))
+
+(def-kernel k_f (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (dotimes (i 10ul)
+    (set! (~ out) (+ (~ out) 1ul))
+    (helper_f i)))

@@ -1750,6 +1750,13 @@
 
    ENDEAVOUR 178: refuses a loop whose backward body would read a STALE loop-carried primal
    (%ad-check-loop-carried-primals) -- a nonlinear fold over a variable set! across iterations."
+  ;; Endeavour 184 D5: a loop that can exit early is refused -- the backward pass replays the loop in
+  ;; reverse and needs each thread's trip count, which return-from-loop makes data-dependent.
+  (when (%rfl-free-in-forms-p body)
+    (error 'crisp-compiler-error
+      :message (format nil "--differentiate: a loop that can exit early (~(~a~) containing return-from-loop) is not differentiable yet.  The backward pass replays the loop in reverse, and to do that it needs each thread's per-thread trip count, which an early exit makes data-dependent.  Crisp refuses rather than replaying the wrong iterations.  End the loop by its bound to differentiate it."
+                       (%rfl-head-name form))
+      :source-location nil))
   (let ((local-forms nil)
         (inherited-replay-requests (copy-list *ad-replay-pending*))
         (*ad-loop-vars* (if (and (consp binding) (symbolp (car binding)))

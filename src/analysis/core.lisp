@@ -2533,7 +2533,9 @@ in single-pass mode."
     (semantic-shuffle                 (semantic-shuffle-type node))
     (semantic-mma-accumulate          (semantic-mma-accumulate-type node))
     ;; Endeavour 175: atomic compare-and-swap.
-    (semantic-atomic-cas              (semantic-atomic-cas-type node))))
+    (semantic-atomic-cas              (semantic-atomic-cas-type node))
+    ;; Endeavour 184: (return-from-loop).
+    (semantic-return-from-loop        (semantic-return-from-loop-type node))))
 
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
@@ -2607,7 +2609,9 @@ in single-pass mode."
     (semantic-spirv-group-wait        (semantic-spirv-group-wait-source-location node))
     (semantic-mma-accumulate          (semantic-mma-accumulate-source-location node))
     ;; Endeavour 175: atomic compare-and-swap.
-    (semantic-atomic-cas              (semantic-atomic-cas-source-location node))))
+    (semantic-atomic-cas              (semantic-atomic-cas-source-location node))
+    ;; Endeavour 184: (return-from-loop).
+    (semantic-return-from-loop        (semantic-return-from-loop-source-location node))))
 
 ;; --- Helper to get the type from a node expected to be a single value ---
 (defun get-single-value-type (node)

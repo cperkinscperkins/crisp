@@ -3943,3 +3943,41 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (tilde, CR, LF and the next line's indentation removed), so the printed messages are unchanged.
         Guard: tests/test-source-hygiene.lisp (run-ci) scans src/ for a tilde + CR LF inside any string
         literal; proven by planting one (red) and removing it (green).
+
+[ ] 111 THE CAS RETRY LOOP READS ITS LOCATION WITH A PLAIN, NON-ATOMIC LOAD -- a data race in LLVM's model.
+
+        FOUND 2026-10-10 (endeavour 184).  %atomic-binop-expand / %atomic-op-expand (src/analysis/ops.lisp)
+        read the location with (~ loc) -- an ordinary load -- while other threads cmpxchg it.  LLVM's memory
+        model makes a non-atomic load that races with a write return undef, so the expansion is undefined
+        behaviour on paper.  In practice it is harmless today: the GPUs return a real value, and LLVM cannot
+        move the load across the cmpxchg on the same address.  Nothing observed; no spec fails.
+
+        LIKELY FIX (a hypothesis): make that read a relaxed (monotonic) atomic load at device scope -- the
+        same ordering and scope every Crisp atomic uses since 184 step 2.  Needs an atomic-load form, or an
+        :atomic flag on the aref's load.  Small and independent of 112.
+
+[ ] 112 A FAILED CAS ATTEMPT RE-READS MEMORY INSTEAD OF USING THE VALUE cmpxchg RETURNED. (enhancement)
+
+        MEASURED 2026-10-11 (endeavour 184).  Each retry is: load old; new = f(old, arg); cmpxchg; on failure
+        LOAD AGAIN.  The cmpxchg already returned the value that beat it, so the second load is one wasted
+        round trip per FAILED attempt.  Only warp-level CAS fails often: after 184, rollup warp_cas is 3.7 ms
+        on H100 PCIe and 3.9 ms on BMG, and the bound on this fix is about 2x there.  wg_cas would not move.
+        Most of warp_cas's cost is contention (hundreds of warp leaders on ONE word), which is the strategy,
+        not the lowering -- so this is deliberately deferred.
+
+        THE DESIGN QUESTION: the loop needs BOTH the old value and the success flag from ONE cmpxchg, and the
+        semantic-atomic-cas node yields one (result-mode :old or :success).  Success must compare BIT
+        PATTERNS, not numbers (+0.0/-0.0, NaN) -- the reason %atomic-cas-ok! exists.  Options: a node yielding
+        both (Crisp multiple values), or carry the returned bits and compare them as an integer.
+
+[ ] 113 SMALL UNEXPLAINED MATMUL SLOWDOWNS AFTER 184 STEP 3 (allocas in the entry block).
+
+        MEASURED 2026-10-11.  Step 3 removed all stack traffic from these kernels yet they got slightly slower:
+          H100 PCIe (main vs cas-lowering, iters 20):  chap2_tiling 0.97x / 0.98x,  chap3_async 0.98x / 0.98x
+          BMG Docker (A/B of the step-3 block, iters 5):  sec2_top_fp16 Crisp_V_wg256xe -3.1% / -3.4%
+        Register pressure is REFUTED for chap2/3: ptxas -v gives 254 -> 250 and 254 -> 254 registers, and no
+        stack either way.  Everything else step 3 touched got faster (chap1_handrolled_mma 1.5-1.7x on H100;
+        BMG sec2_top fp32 +26%, sec3 tuned +13-17%).  Data: put_temp_files_here/184/findings.md.
+
+        NEXT: re-measure with more iterations before believing it; if it holds, diff the SASS / IGC asm.
+

@@ -2521,7 +2521,11 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
   (values (second expr) (third expr) (fourth expr)))
 
 (defun %atomic-binop-expand (expr)
-  "The forward lowering: a bounded CAS retry loop that returns the prior value."
+  "The forward lowering: a bounded CAS retry loop that returns the prior value.
+   Endeavour 184: the loop LEAVES on success with (return-from-loop).  Before 184 it was a dotimes+
+   guarded by (when (= done 0) ...), so every contender ran all global-size + 1 iterations even when it
+   won on the first try.  It is a plain dotimes now: a + loop promises a uniform trip count, which an
+   early exit breaks (184 D2) -- and it always runs inside per-thread code anyway."
   (unless (= (length expr) 4)
     (error 'crisp-compiler-error
            :message (format nil "atomic-binop!: expected 3 arguments (location binop-f arg), got ~a.  The form is (atomic-binop! location #'op arg)."
@@ -2542,20 +2546,19 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          ;; because the assert below refuses to let the loop finish unsuccessfully.
          (let ((,prev (~ ,@(cdr loc))))
            (let ((,done 0))
-             ;; get-global-LINEAR-size, not get-global-size: the latter is named in
-             ;; analysis/core.lisp's builtin list but has no analyzer, so it compiles to
-             ;; "Unsupported form".  The linear form is the total thread count, which is exactly
-             ;; the contender bound wanted here.
-             (dotimes+ (,r (+ (to-int (get-global-linear-size)) 1))
-               (when (= ,done 0)
-                 (let ((,old (~ ,@(cdr loc))))
-                   (let ((,new ,(%175-apply-binop fn old a)))
-                     ;; The success FLAG, not the returned value -- see %atomic-cas-ok!.
-                     (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
-                       ;; On success memory held exactly OLD, which is what we read ourselves,
-                       ;; so the "value before" needs nothing from the CAS itself.
-                       (set! ,prev ,old)
-                       (set! ,done 1))))))
+             ;; The bound is the contender count + 1 (175): a CAS fails only because another
+             ;; thread's CAS succeeded, and each contender succeeds once.  get-global-LINEAR-size:
+             ;; get-global-size has no analyzer.
+             (dotimes (,r (+ (to-int (get-global-linear-size)) 1))
+               (let ((,old (~ ,@(cdr loc))))
+                 (let ((,new ,(%175-apply-binop fn old a)))
+                   ;; The success FLAG, not the returned value -- see %atomic-cas-ok!.
+                   (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
+                     ;; On success memory held exactly OLD, which is what we read ourselves,
+                     ;; so the "value before" needs nothing from the CAS itself.
+                     (set! ,prev ,old)
+                     (set! ,done 1)
+                     (return-from-loop)))))
              (r-t-assert-0 (= ,done 1)
                            "atomic-binop!: the bounded CAS retry loop exhausted without succeeding, so this update was LOST.  The bound is global_size + 1, which is sound when each thread performs the operation once; it can be exceeded if atomic-binop! runs inside a loop, so that total successes on this location exceed the grid size.")
              ,prev))))))
@@ -2570,7 +2573,7 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
 
 (defun %atomic-op-expand (expr)
   "The forward lowering: a bounded CAS retry loop returning the prior value.
-   Mirrors %atomic-binop-expand exactly, minus the value argument."
+   Mirrors %atomic-binop-expand exactly, minus the value argument -- including 184's early exit."
   (unless (= (length expr) 3)
     (error 'crisp-compiler-error
            :message (format nil "atomic-op!: expected 2 arguments (location op-f), got ~a.  The form is (atomic-op! location #'op), and the function is UNARY -- for a two-argument operator use (atomic-binop! location #'op arg)."
@@ -2585,16 +2588,14 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
       ;; No ARG to bind once here -- that is the whole difference from atomic-binop!.
       `(let ((,prev (~ ,@(cdr loc))))
          (let ((,done 0))
-           ;; get-global-LINEAR-size: get-global-size is named in analysis/core.lisp's builtin
-           ;; list but has no analyzer.  See %atomic-binop-expand for why the bound is the
-           ;; contender count rather than a constant.
-           (dotimes+ (,r (+ (to-int (get-global-linear-size)) 1))
-             (when (= ,done 0)
-               (let ((,old (~ ,@(cdr loc))))
-                 (let ((,new ,(%175-apply-unop fn old)))
-                   (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
-                     (set! ,prev ,old)
-                     (set! ,done 1))))))
+           ;; See %atomic-binop-expand for the bound and for why this is a plain dotimes.
+           (dotimes (,r (+ (to-int (get-global-linear-size)) 1))
+             (let ((,old (~ ,@(cdr loc))))
+               (let ((,new ,(%175-apply-unop fn old)))
+                 (when (= (%atomic-cas-ok! ,loc ,old ,new) 1)
+                   (set! ,prev ,old)
+                   (set! ,done 1)
+                   (return-from-loop)))))
            (r-t-assert-0 (= ,done 1)
                          "atomic-op!: the bounded CAS retry loop exhausted without succeeding, so this update was LOST.  The bound is global_size + 1, which is sound when each thread performs the operation once; it can be exceeded if atomic-op! runs inside a loop, so that total successes on this location exceed the grid size.")
            ,prev)))))

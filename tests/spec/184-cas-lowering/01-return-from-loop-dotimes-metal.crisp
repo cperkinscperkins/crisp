@@ -1,0 +1,47 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER s1: 10203
+;; HOIST-EXPECT: BUFFER c1: 4
+;; HOIST-EXPECT: BUFFER c2: 10
+;; HOIST-EXPECT: BUFFER c3: 0
+;; HOIST-EXPECT: BUFFER x4: 99
+;; HOIST-EXPECT: BUFFER c4: 3
+;; SKIP-WITH[--differentiate]: "a loop that can exit early is not differentiable yet (184 D5) -- errors/04 pins the refusal"
+;;
+;; Endeavour 184 ON-METAL: (return-from-loop) leaves the innermost enclosing dotimes (D1).
+;;
+;;   1: exit when i = 3              i = 0 1 2 3   s = s*100 + i = 10203   c = 4
+;;   2: the exit is never taken      the loop runs to its bound            c = 10
+;;   3: exit unconditionally FIRST   nothing after it runs                 c = 0
+;;   4: exit in the middle of a when body: the store BEFORE it lands (x = 99), the store AFTER
+;;      it does not (x would be 77), and the loop stops on that iteration     c = 3
+;;
+;; z = workgroup id = 0 at runtime: keeps the bounds away from the constant folder.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel early_exit_dotimes (&out s1 c1 c2 c3 x4 c4)
+  (declare #'(&out u-c u-c u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ s1) 0ul) (set! (~ c1) 0ul)
+    (set! (~ c2) 0ul) (set! (~ c3) 0ul)
+    (set! (~ x4) 0ul) (set! (~ c4) 0ul)
+    (dotimes (i (+ z 10ul))
+      (set! (~ s1) (+ (* (~ s1) 100ul) i))
+      (set! (~ c1) (+ (~ c1) 1ul))
+      (when (= i 3ul)
+        (return-from-loop)))
+    (dotimes (i (+ z 10ul))
+      (set! (~ c2) (+ (~ c2) 1ul))
+      (when (= i 99ul)
+        (return-from-loop)))
+    (dotimes (i (+ z 10ul))
+      (return-from-loop)
+      (set! (~ c3) (+ (~ c3) 1ul)))
+    (dotimes (i (+ z 10ul))
+      (set! (~ c4) (+ (~ c4) 1ul))
+      (when (= i 2ul)
+        (set! (~ x4) 99ul)
+        (return-from-loop)
+        (set! (~ x4) 77ul)))))

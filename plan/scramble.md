@@ -882,7 +882,7 @@ Reductions
 - - [x] 182 NVIDIA register budget: launch bounds from the profile (:stream-occupancy-target, (declare (occupancy-target N))); 180's unroll constant moved into the profile too (:stream-bytes-in-flight)
 - - [x] 183 last-man fence: BUG 082 fixed; thread 0 releases, the elected group acquires (big win on BMG, ~nil on H100)
 - - [x] BUG 110: FORMAT ~<newline> continuations in CRLF files (24 crashing error messages) + source-hygiene unit test
-- - [ ] CAS lowering (slow on both vendors)
+- - [x] CAS lowering (slow on both vendors)
 - - [ ] move all allocas to function's entry block - POTENTIALLY BIG CHANGE. Might be best to put it behind switch.  
 - - [ ] H100 small-input gap, which needs a genuinely new idea such as the Hopper cluster hierarchy.
 - - [ ] BOTH MMA and reduction benchmarks should both (a) measure/report device compile time for MKL AND (b) note in the report that it uses precompiled kernels. Right now reductions do (a) and MMA (b) which is confusing and possibly misleading.  We want benchmark reports that are "above reproach".  Same for CuBLAS and possibly others. 

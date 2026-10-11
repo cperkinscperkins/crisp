@@ -879,6 +879,18 @@
    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the
    internal %uniform-when form instead, whose analyzer does NOT set this flag.")
 
+;; Endeavour 184 -- (return-from-loop).
+(defvar *loop-exit-context* nil
+  "Endeavour 184: what (return-from-loop) would leave, while a loop body is analysed.
+   NIL    -- no enclosing dotimes-family loop: return-from-loop is refused (D3).
+   :PLAIN -- dotimes or a non-+ 172 variant: return-from-loop is allowed.
+   :PLUS  -- a + loop, which promises a uniform trip count: refused (D2).
+   Bound by %analyze-loop-with-unroll, which every dotimes-family analyser goes through.")
+
+(defvar *in-early-exit-loop* nil
+  "Endeavour 184 D4: T while analysing the body of a loop that can exit early, or anything nested in
+   one.  A barrier there is refused: a thread that has left never reaches a later iteration's barrier.")
+
 (defvar *in-warp-spec-block* nil
         "Endeavor 139 (Chapter 3), decision B: T when analyzing the body of a
    with-warp-specialization role block.  Such a block is warp-DIVERGENT (different warps run
@@ -1010,6 +1022,13 @@
    get their own message: the shared %tlc-check-not-divergent text explains an INTERNAL sync-workgroup
    (load-tile-at's problem), which is not what a barrier is."
   (cond
+    ;; Endeavour 184 D4: a barrier inside a loop that can exit early.  Its own message -- the
+    ;; divergent-conditional one would name if / when / unless / cond, which is not where the problem is.
+    ((and *in-early-exit-loop*
+          (not (member builtin-kw '(:mem-fence :mem-fence-workgroup))))
+     (error 'crisp-compiler-error
+       :message (format nil "~a cannot appear inside a loop that can exit early (one containing return-from-loop).  A thread that has left the loop never reaches this barrier on a later iteration, so the threads still inside wait for it forever.  Move the barrier out of the loop, or end the loop by its bound instead of by return-from-loop." name-str)
+       :source-location location))
     (*in-warp-spec-block*
      (when (member builtin-kw '(:sync-workgroup :sync-cluster))
        (error 'crisp-compiler-error
@@ -2128,16 +2147,89 @@
 (defun %analyze-loop-with-unroll (analyzer expr env context location)
   "Endeavour 180.  Runs the counted-loop ANALYZER on EXPR with its body's leading declarations
    stripped, then records the unroll request on the node it returns.  The loop's own analysis
-   never sees a declaration."
-  (multiple-value-bind (body spec)
-      (%split-loop-body-declarations (cddr expr) (car expr) location)
-    (let ((node (funcall analyzer
-                         (if (eq body (cddr expr)) expr (list* (car expr) (cadr expr) body))
-                         env context location)))
-      (when (and spec (semantic-dotimes-p node))
-        (setf (semantic-dotimes-unroll node)
-              (%resolve-unroll-spec spec node (car expr) env context location)))
-      node)))
+   never sees a declaration.
+   Endeavour 184: every dotimes-family loop comes through here, so this is also where
+   return-from-loop learns which loop it is in.
+     D2 -- a + loop whose own body exits early is refused: a + loop promises a uniform trip count.
+     D4 -- a loop whose own body exits early is analysed as DIVERGENT: a thread that has left never
+           reaches a later iteration's barrier, so barriers and collectives inside are refused."
+  (let ((plus-p (%rfl-plus-loop-p expr))
+        (exits-p (%rfl-free-in-forms-p (cddr expr))))
+    (log:debug "184 loop ~a: plus-p=~a exits-early=~a" (%rfl-head-name expr) plus-p exits-p)
+    (when (and plus-p exits-p)
+      (error 'crisp-compiler-error
+        :message (format nil "return-from-loop cannot appear in ~(~a~).  A + loop promises a uniform trip count -- every thread of the workgroup runs the same iterations -- and an early exit taken per thread breaks that promise.  Use the plain form, ~(~a~), for a loop that may end early."
+                         (%rfl-head-name expr)
+                         (subseq (%rfl-head-name expr) 0 (1- (length (%rfl-head-name expr)))))
+        :source-location location))
+    (let ((*loop-exit-context* (if plus-p :plus :plain))
+          (*in-early-exit-loop* (or *in-early-exit-loop* exits-p))
+          (*in-divergent-conditional* (or *in-divergent-conditional* exits-p))
+          (*divergent-scope-depth* (if exits-p (1+ *divergent-scope-depth*) *divergent-scope-depth*)))
+      (multiple-value-bind (body spec)
+          (%split-loop-body-declarations (cddr expr) (car expr) location)
+        (let ((node (funcall analyzer
+                             (if (eq body (cddr expr)) expr (list* (car expr) (cadr expr) body))
+                             env context location)))
+          (when (and spec (semantic-dotimes-p node))
+            (setf (semantic-dotimes-unroll node)
+                  (%resolve-unroll-spec spec node (car expr) env context location)))
+          node)))))
+
+(defun %rfl-head-name (form)
+  "The SYMBOL-NAME of FORM's head when FORM is a cons headed by a symbol, else NIL.  Endeavour 184."
+  (and (consp form) (symbolp (car form)) (symbol-name (car form))))
+
+(defun %rfl-free-in-forms-p (forms)
+  "Endeavour 184: T when the SURFACE forms FORMS contain a (return-from-loop) that belongs to the loop
+   whose body they are -- one not inside a nested dotimes-family loop, which would own it instead.
+   Lexical, like the construct: it does not look inside called functions.  Quoted data is skipped."
+  (labels ((walk (x)
+             (let ((h (%rfl-head-name x)))
+               (cl:cond
+                 ((not (consp x)) nil)
+                 ((and h (string= h "RETURN-FROM-LOOP")) t)
+                 ((and h (string= h "QUOTE")) nil)
+                 ((and h (member h *dotimes-family-names* :test #'string=)) nil)
+                 (t (loop for tail on x thereis (walk (car tail))))))))
+    (some #'walk forms)))
+
+(defun %rfl-plus-loop-p (expr)
+  "T when EXPR is headed by a + loop (dotimes+, dec-times+, ...).  Endeavour 184 D2."
+  (let ((h (%rfl-head-name expr)))
+    (and h (plusp (length h)) (char= (cl:char h (1- (length h))) #\+))))
+
+(defun analyze-return-from-loop-expression (expr env context location)
+  "Analyzes (return-from-loop).  Endeavour 184 D1-D3: legal only in the body of a dotimes or a non-+
+   172 variant, lexically.  Returns a semantic-return-from-loop node (type void)."
+  (declare (ignore env context))
+  (unless (= (length expr) 1)
+    (error 'crisp-compiler-error
+      :message (format nil "return-from-loop takes no arguments, got ~a.  It leaves the loop and yields no value -- store a result in a variable before leaving." (1- (length expr)))
+      :source-location location))
+  (cl:case *loop-exit-context*
+    (:plain
+     (make-semantic-return-from-loop :type 'void :source-location location))
+    (:plus
+     ;; Normally refused at the loop by %analyze-loop-with-unroll; this is the backstop.
+     (error 'crisp-compiler-error
+       :message "return-from-loop cannot appear in a + loop.  A + loop promises a uniform trip count, and an early exit taken per thread breaks that promise.  Use the plain form for a loop that may end early."
+       :source-location location))
+    (t
+     (error 'crisp-compiler-error
+       :message "return-from-loop has no enclosing loop.  It leaves the innermost dotimes-family loop (dotimes, dec-times, do-power-step, ...) that LEXICALLY contains it.  A function called from inside a loop cannot leave its caller's loop."
+       :source-location location))))
+
+(defun %rfl-wrap-stride-analyzer (name analyzer)
+  "Endeavour 184 D3: wraps the analyser of the stride loop NAME so that a return-from-loop belonging to
+   it is refused.  A stride loop expands into a hidden dotimes; without this, return-from-loop would
+   silently leave that hidden loop."
+  (lambda (expr env context location)
+    (when (%rfl-free-in-forms-p (cdr expr))
+      (error 'crisp-compiler-error
+        :message (format nil "return-from-loop cannot leave a stride loop (~(~a~)).  The stride loop decides which elements each thread visits, and leaving it early would silently skip elements.  To stop early over part of the work, write a dotimes inside the stride body and leave that." name)
+        :source-location location))
+    (funcall analyzer expr env context location)))
 
 (defun analyze-dotimes-expression (expr env context location)
   "Analyzes (dotimes (var limit [stride]) body...).
@@ -5264,7 +5356,24 @@
         (sym-cc (intern "%SPIRV-ASYNC-COPY" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%spirv-async-copy-expression)
     (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%spirv-async-copy-expression))))
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%spirv-async-copy-expression)))
+  ;; Endeavour 184: return-from-loop, and the D3 check on every *-STRIDE loop -- a stride loop expands
+  ;; into a hidden dotimes, which return-from-loop must not silently leave.
+  (dolist (pkg (list (find-package :crisp-language) (find-package :crisp.compiler)))
+    (when pkg
+      (setf (gethash (intern "RETURN-FROM-LOOP" pkg) *expression-analyzers*)
+            #'analyze-return-from-loop-expression)))
+  (let ((wrapped '()))
+    (maphash (lambda (sym fn)
+               (declare (ignore fn))
+               (let ((n (symbol-name sym)))
+                 (when (and (> (length n) 7) (string= "-STRIDE" n :start2 (- (length n) 7)))
+                   (push sym wrapped))))
+             *expression-analyzers*)
+    (dolist (sym wrapped)
+      (setf (gethash sym *expression-analyzers*)
+            (%rfl-wrap-stride-analyzer (symbol-name sym) (gethash sym *expression-analyzers*))))
+    (log:debug "184: return-from-loop registered; stride analysers wrapped: ~a" wrapped)))
 
 ;;;; ============================================================================================
 ;;;; Folded in from overlays/crisp-compiler-overlay.lisp on 2026-08-26.

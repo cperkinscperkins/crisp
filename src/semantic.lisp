@@ -605,6 +605,13 @@ DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
   body
   source-location)
 
+;;;; Endeavour 184 -- (return-from-loop).
+(defstruct semantic-return-from-loop
+  "Represents (return-from-loop): leave the innermost lexically enclosing dotimes-family loop.
+   Endeavour 184.  Takes no value and yields none (type void)."
+  type
+  source-location)
+
 
 ;;;; Endeavour 175 — atomic compare-and-swap.  A SEPARATE node rather than an :op :cas on
 ;;;; semantic-atomic-rmw, because CAS takes THREE operands and that struct has room for two.

@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "cannot leave a stride loop"
+;; Endeavour 184 D3: a stride loop's own loop is hidden from the author, so return-from-loop may not
+;; leave it.
+
+(def-type vec-t (vector int :address-space :global :align :compact))
+
+(def-kernel k_e (A &out B)
+  (declare #'(vec-t &out vec-t => nil))
+  (loop-vector-stride A (i)
+    (set! (~ B i) (~ A i))
+    (when (= i 3)
+      (return-from-loop))))

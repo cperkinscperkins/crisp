@@ -31,6 +31,16 @@
 ;;;  collecting DEFVAR/DEFPARAMETER -- so the list here and the rows of
 ;;;  docs/globals_matrix.csv are drawn from one source of truth.
 ;;;
+;;;  THE TAIL
+;;;  --------
+;;;  Everything after ";;;; end of generated file" in src/specials.lisp is HAND-FOLDED code
+;;;  (endeavour 155's defvars / defparameters / defconstants, among others) that is defined
+;;;  NOWHERE else.  This generator CARRIES IT OVER unchanged, and re-reads its own output to
+;;;  prove it did: if the tail did not survive, the original file is written back and the
+;;;  run fails.  Before 184 the generator rewrote the whole file and dropped the tail, which
+;;;  broke CI (2026-10-11: *KNOWN-MMA-LOWERINGS* unbound in initialize-compiler) the first time
+;;;  the generator was run as part of the definition of done.
+;;;
 
 (require :asdf)
 
@@ -92,10 +102,32 @@
       (maphash (lambda (k v) (push (cons k (sort v #'string<)) out)) table)
       (sort out #'string< :key #'car))))
 
-(defun emit (grouped path)
-  "Write the declaim file.  Output is sorted so regeneration produces a stable diff."
+(defparameter +end-marker+ ";;;; end of generated file"
+  "The line that ends the generated part of src/specials.lisp.  Everything after it is the
+   hand-folded TAIL, which this generator carries over unchanged.")
+
+(defun read-file-text (path)
+  "The whole of PATH as a string (UTF-8), or NIL if PATH does not exist."
+  (with-open-file (in path :direction :input :if-does-not-exist nil :external-format :utf-8)
+    (when in
+      (let* ((text (make-string (file-length in)))
+             (n    (read-sequence text in)))
+        (subseq text 0 n)))))
+
+(defun tail-of (text)
+  "Everything after the end-marker LINE of TEXT -- the hand-folded tail.  Empty when TEXT is NIL
+   or has no marker (a first generation)."
+  (let ((k (and text (search +end-marker+ text))))
+    (if (null k)
+        ""
+        (let ((eol (position #\Newline text :start k)))
+          (if eol (subseq text (1+ eol)) "")))))
+
+(defun emit (grouped path tail)
+  "Write the declaim file, then TAIL -- the hand-folded forms after the end marker, verbatim.
+   Output is sorted so regeneration produces a stable diff."
   (with-open-file (out path :direction :output :if-exists :supersede
-                            :if-does-not-exist :create)
+                            :if-does-not-exist :create :external-format :utf-8)
     (format out ";;;; src/specials.lisp -- GENERATED FILE, DO NOT EDIT BY HAND.~%")
     (format out ";;;;~%")
     (format out ";;;; Regenerate with:  sbcl --script ./scripts/gen-specials.lisp~%")
@@ -114,7 +146,8 @@
       (dolist (name (cdr entry))
         (format out "          ~a~%" name))
       (format out "          ))~%~%"))
-    (format out ";;;; end of generated file~%")))
+    (format out "~a~%" +end-marker+)
+    (write-string tail out)))
 
 (defun asd-component-files ()
   "The .lisp files that are actually COMPONENTS of the `crisp` system, in load order.
@@ -140,10 +173,20 @@
 
 (defun main ()
   (load-project)
-  (let* ((src-files (asd-component-files))
-         (grouped (merge-alists (mapcar #'collect-from-file src-files))))
-    (emit grouped "src/specials.lisp")
-    (format t "~&Wrote src/specials.lisp~%")
+  (let* ((path      "src/specials.lisp")
+         (src-files (asd-component-files))
+         (grouped   (merge-alists (mapcar #'collect-from-file src-files)))
+         (original  (read-file-text path))
+         (tail      (tail-of original)))
+    (emit grouped path tail)
+    ;; Prove the tail survived.  If it did not, put the original back and fail loudly -- a silently
+    ;; dropped tail is an unbound global at the next initialize-compiler (see THE TAIL above).
+    (unless (string= tail (tail-of (read-file-text path)))
+      (when original
+        (with-open-file (out path :direction :output :if-exists :supersede :external-format :utf-8)
+          (write-string original out)))
+      (error "gen-specials: the hand-folded tail of ~a did not survive regeneration.  The original file has been written back unchanged." path))
+    (format t "~&Wrote ~a (hand-folded tail carried over: ~d characters)~%" path (length tail))
     (dolist (entry grouped)
       (format t "  ~a: ~a globals~%" (car entry) (length (cdr entry))))
     (format t "  TOTAL: ~a~%" (reduce #'+ grouped :key (lambda (e) (length (cdr e)))))))

@@ -23,5 +23,7 @@ For any new feature, or refactoring, be sure to go through this checklist.
 - [ ] Regenerate reference.md with scripts/generate-reference.lisp
 - [ ] Regenerate call tree scripts/call-graph.lisp
 - [ ] Regenerate table of globals.  scripts/map-globals.lisp
+- [ ] Regenerate specials scripts/gen-specials.lisp
+- [ ] use extract status script to measure progress: python .\scripts\extract_status.py   
 - [ ] push branch, run-on-pod.sh for CUDA.  bench-on-pod.sh
 - [ ] run and record benchmarks

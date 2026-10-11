@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "can exit early"
+;; Endeavour 184 D4: a barrier inside a loop that can exit early is refused -- a thread that has
+;; left never reaches the next iteration's barrier, and the threads still inside wait forever.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel k_c (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 4))
+  (let ((g (get-global-id 0)))
+    (dotimes (i 10)
+      (set! (~ out g) (+ (~ out g) 1u))
+      (sync-workgroup)
+      (when (= i g)
+        (return-from-loop)))))
