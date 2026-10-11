@@ -5509,6 +5509,40 @@ This is the form to reach for in a tree reduction where the strides must be powe
 even when the element count is not — `dec-times-by-half` would give you 100, 50, 25 ... instead.
 
 
+#### return-from-loop ✅
+```
+(dotimes (i n)
+  (when (= (~ keys i) target)
+    (set! found i)
+    (return-from-loop)))
+```
+Leaves the innermost enclosing loop at once: nothing after it in the body runs, and no further
+iterations happen.  It takes no value -- store a result in a variable before leaving.
+
+Crisp has no unbounded loop, and `return-from-loop` does not add one.  The loop is still bounded by its
+count; it can only end sooner.  That is exactly what a bounded search or a bounded retry needs.
+
+Each of these is a compile error:
+
+- **It is lexical.**  It leaves the innermost `dotimes`-family loop that encloses it in the source.
+  Outside any loop it is refused, and a function called from inside a loop cannot leave its caller's loop.
+- **Not in a `+` loop.**  `dotimes+`, `dec-times+` and the other `+` forms promise a uniform trip
+  count -- every thread of the workgroup runs the same iterations -- and an exit taken per thread breaks
+  that promise.  Use the plain form.
+- **Not out of a stride loop.**  `loop-vector-stride`, `tile-stride` and the other stride loops decide
+  which elements each thread visits, so leaving one early would silently skip elements.  Put the early
+  exit in a `dotimes` inside the stride body.
+- **No barrier inside the loop.**  A loop that can exit early is divergent: each thread leaves on its
+  own iteration.  A thread that has left never reaches a later iteration's `sync-workgroup` (or any
+  other collective), so the threads still inside would wait forever.  A `mem-fence` is allowed -- it
+  waits for no one.
+- **Not differentiable yet.**  Under `--differentiate`, a loop containing `return-from-loop` is
+  refused.  The backward pass replays the loop in reverse and needs each thread's trip count, which an
+  early exit makes data-dependent.  `atomic-binop!` and `atomic-op!` use it internally but have their
+  own derivative rules, so they are unaffected.
+
+
+
 ### Grid Level Operations ✅
 
 Grid-level operations are primitives that orchestrate work across the entire grid of threads. A fundamental rule in Crisp is that 
@@ -8488,6 +8522,16 @@ atomic operations performed. The compiler will warn you if it detects this situa
 In some languages, atomics are a variable type, but in Crisp, it's simply an operation that can be coordinated
 on any variable that has possible contention. 
 
+**Atomics order nothing.**  A Crisp atomic is *atomic* -- its read-modify-write is indivisible -- and
+that is all: it is relaxed, at device scope.  It does not make this thread's other writes visible to
+anyone, and it does not order them.  When an atomic is used as a SIGNAL ("my partial result is in
+memory, and this increment says so"), the ordering comes from an explicit `mem-fence`: one after the
+writes and before the atomic on the publishing side, and one after seeing the atomic and before the
+reads on the receiving side.  `grid-reduce!`'s `:last-man-standing` strategy is built exactly that way.
+Keeping the ordering in a fence you can see, instead of inside every atomic, keeps the common case
+cheap -- accumulation, where only atomicity matters.  (On NVIDIA a sequentially consistent CAS costs a
+system-wide fence on every attempt.)
+
 
 ### Atomic Operations ⚠️
 Crisp provides a number of built-in atomic operations that perform their work on shared memory locations. Each function is guaranteed to be a single, indivisible transaction.  Each one updates some variable in place and returns the value at the location BEFORE the modification occured.
@@ -8564,13 +8608,14 @@ Example:
 
 ```
 ; IMPLEMENTATION NOTES
-;; The macro generates a BOUNDED loop to guarantee termination.
-(dotimes+ (retry-count 1000) ; Use a generous but finite limit
+;; A BOUNDED retry loop.  The bound is the number of contenders + 1: a CAS fails only because another
+;; thread's CAS succeeded, and each contender succeeds once.  It leaves as soon as its own CAS succeeds.
+(dotimes (retry (+ contenders 1))
   (let ((old-val (~ global-result 0)))
     (let ((new-val (funcall #'+ old-val my-partial-sum)))
-      (when (atomic-cas! (~ global-result 0) old-val new-val)
-        ;; If the CAS succeeded, break the loop.
+      (when (= (%atomic-cas-ok! (~ global-result 0) old-val new-val) 1)
         (return-from-loop)))))
+;; ...followed by a runtime assert that it succeeded: an exhausted retry would be a LOST update.
 ```
 
 #### atomic-op! ✅

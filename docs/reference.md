@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-10T23:40:31.882899Z
+Generated on 2026-10-11T18:19:37.891293Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -227,6 +227,18 @@ Generated on 2026-10-10T23:40:31.882899Z
 ### DEFVAR `*IN-DIVERGENT-CONDITIONAL*`
 
   > T when the analyzer is currently inside a thread-divergent if/when/unless/cond  >    branch (i.e. the conditional's test was not constant-folded).  Used by the  >    load-tile-at / store-tile-at analyzers to reject placement that  >    would deadlock at their internal sync-workgroups.  >   >    Compiler-generated workgroup-uniform whens (e.g. the per-dim bounds check  >    that wraps tile-stride / hardware-stride :workgroup-idx bodies) use the  >    internal %uniform-when form instead, whose analyzer does NOT set this flag.
+
+
+---
+### DEFVAR `*LOOP-EXIT-CONTEXT*`
+
+  > Endeavour 184: what (return-from-loop) would leave, while a loop body is analysed.  >    NIL    -- no enclosing dotimes-family loop: return-from-loop is refused (D3).  >    :PLAIN -- dotimes or a non-+ 172 variant: return-from-loop is allowed.  >    :PLUS  -- a + loop, which promises a uniform trip count: refused (D2).  >    Bound by %analyze-loop-with-unroll, which every dotimes-family analyser goes through.
+
+
+---
+### DEFVAR `*IN-EARLY-EXIT-LOOP*`
+
+  > Endeavour 184 D4: T while analysing the body of a loop that can exit early, or anything nested in  >    one.  A barrier there is refused: a thread that has left never reaches a later iteration's barrier.
 
 
 ---
@@ -576,7 +588,42 @@ Generated on 2026-10-10T23:40:31.882899Z
 ### DEFUN `%ANALYZE-LOOP-WITH-UNROLL`
 - **Args**: `(ANALYZER EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 180.  Runs the counted-loop ANALYZER on EXPR with its body's leading declarations  >    stripped, then records the unroll request on the node it returns.  The loop's own analysis  >    never sees a declaration.
+  > Endeavour 180.  Runs the counted-loop ANALYZER on EXPR with its body's leading declarations  >    stripped, then records the unroll request on the node it returns.  The loop's own analysis  >    never sees a declaration.  >    Endeavour 184: every dotimes-family loop comes through here, so this is also where  >    return-from-loop learns which loop it is in.  >      D2 -- a + loop whose own body exits early is refused: a + loop promises a uniform trip count.  >      D4 -- a loop whose own body exits early is analysed as DIVERGENT: a thread that has left never  >            reaches a later iteration's barrier, so barriers and collectives inside are refused.
+
+
+---
+### DEFUN `%RFL-HEAD-NAME`
+- **Args**: `(FORM)`
+
+  > The SYMBOL-NAME of FORM's head when FORM is a cons headed by a symbol, else NIL.  Endeavour 184.
+
+
+---
+### DEFUN `%RFL-FREE-IN-FORMS-P`
+- **Args**: `(FORMS)`
+
+  > Endeavour 184: T when the SURFACE forms FORMS contain a (return-from-loop) that belongs to the loop  >    whose body they are -- one not inside a nested dotimes-family loop, which would own it instead.  >    Lexical, like the construct: it does not look inside called functions.  Quoted data is skipped.
+
+
+---
+### DEFUN `%RFL-PLUS-LOOP-P`
+- **Args**: `(EXPR)`
+
+  > T when EXPR is headed by a + loop (dotimes+, dec-times+, ...).  Endeavour 184 D2.
+
+
+---
+### DEFUN `ANALYZE-RETURN-FROM-LOOP-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (return-from-loop).  Endeavour 184 D1-D3: legal only in the body of a dotimes or a non-+  >    172 variant, lexically.  Returns a semantic-return-from-loop node (type void).
+
+
+---
+### DEFUN `%RFL-WRAP-STRIDE-ANALYZER`
+- **Args**: `(NAME ANALYZER)`
+
+  > Endeavour 184 D3: wraps the analyser of the stride loop NAME so that a return-from-loop belonging to  >    it is refused.  A stride loop expands into a hidden dotimes; without this, return-from-loop would  >    silently leave that hidden loop.
 
 
 ---
@@ -2709,7 +2756,7 @@ Generated on 2026-10-10T23:40:31.882899Z
 ### DEFUN `%ATOMIC-BINOP-EXPAND`
 - **Args**: `(EXPR)`
 
-  > The forward lowering: a bounded CAS retry loop that returns the prior value.
+  > The forward lowering: a bounded CAS retry loop that returns the prior value.  >    Endeavour 184: the loop LEAVES on success with (return-from-loop).  Before 184 it was a dotimes+  >    guarded by (when (= done 0) ...), so every contender ran all global-size + 1 iterations even when it  >    won on the first try.  It is a plain dotimes now: a + loop promises a uniform trip count, which an  >    early exit breaks (184 D2) -- and it always runs inside per-thread code anyway.
 
 
 ---
@@ -2730,7 +2777,7 @@ Generated on 2026-10-10T23:40:31.882899Z
 ### DEFUN `%ATOMIC-OP-EXPAND`
 - **Args**: `(EXPR)`
 
-  > The forward lowering: a bounded CAS retry loop returning the prior value.  >    Mirrors %atomic-binop-expand exactly, minus the value argument.
+  > The forward lowering: a bounded CAS retry loop returning the prior value.  >    Mirrors %atomic-binop-expand exactly, minus the value argument -- including 184's early exit.
 
 
 ---
@@ -5427,6 +5474,13 @@ Generated on 2026-10-10T23:40:31.882899Z
 
 
 ---
+### DEFUN `%184-DEVICE-SYNC-SCOPE`
+- **Args**: `(MODULE)`
+
+  > The sync-scope ID of "device" in MODULE's context -- the scope every Crisp atomic uses (184).  >    DEVICE is the floor, not a preference: fence-fence synchronisation with a relaxed atomic needs the  >    atomic's scope to include the fences' (mem-fence is device scope on both backends).  Spelled  >    "device" because both NVPTX and llvm-spirv honour it; llvm-spirv silently turns "agent" into  >    CrossDevice.
+
+
+---
 ### DEFUN `%SV-TO-I64`
 - **Args**: `(BUILDER VAL)`
 
@@ -5626,6 +5680,19 @@ Generated on 2026-10-10T23:40:31.882899Z
 - **Args**: `(BUILDER VALUE LLVM-TYPE)`
 
   > Zero-extends or truncates the unsigned integer VALUE to LLVM-TYPE (the loop variable's type).
+
+
+---
+### DEFVAR `*LOOP-EXIT-TARGETS*`
+
+  > Endeavour 184: a stack of one-element boxes, one per dotimes-family loop being generated, innermost  >    first.  The first (return-from-loop) in a loop creates that loop's early-exit block and stores it  >    in the box; the loop's :around method then branches that block to the loop's exit.
+
+
+---
+### DEFUN `%184-CALL-WITH-LOOP-EXIT-TARGET`
+- **Args**: `(BUILDER THUNK)`
+
+  > Endeavour 184: generates a dotimes-family loop by calling THUNK with a fresh box pushed on  >    *loop-exit-targets*.  If the body used (return-from-loop), the box holds the early-exit block;  >    once the loop is generated -- the builder then sits at the loop's exit block -- that block is  >    branched to the exit.  Returns THUNK's values.
 
 
 ---
@@ -8163,6 +8230,13 @@ Generated on 2026-10-10T23:40:31.882899Z
 ---
 ### DEFUN `LLVM-TYPE-KIND-IS-POINTER?`
 - **Args**: `(TY)`
+
+---
+### DEFUN `LLVM-BUILD-ALLOCA`
+- **Args**: `(BUILDER TYPE NAME)`
+
+  > Builds a static alloca of TYPE at the TOP of the ENTRY block of the function BUILDER is in, and  >    leaves BUILDER where it was.  Endeavour 184: SROA and mem2reg promote only entry-block allocas,  >    so an alloca built at the insert point inside a branch or loop stayed in memory after -O3.  This  >    is where clang puts them too.  >    Moving a static alloca to the entry block does not change what it means: it never had a fresh  >    address per execution on our GPU targets -- the backends give a non-entry static alloca one fixed  >    frame slot -- and every caller stores its initial value at the original point, after the alloca.
+
 
 ---
 ### DEFCONSTANT `+LLVM-INT-EQ+`
@@ -11274,6 +11348,12 @@ Generated on 2026-10-10T23:40:31.882899Z
 ### DEFSTRUCT `SEMANTIC-WHILE`
 
   > Represents (while condition body...).  >    Returns void.
+
+
+---
+### DEFSTRUCT `SEMANTIC-RETURN-FROM-LOOP`
+
+  > Represents (return-from-loop): leave the innermost lexically enclosing dotimes-family loop.  >    Endeavour 184.  Takes no value and yields none (type void).
 
 
 ---

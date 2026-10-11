@@ -218,3 +218,37 @@ This is the form to reach for in a tree reduction where the strides must be powe
 even when the element count is not — `dec-times-by-half` would give you 100, 50, 25 ... instead.
 
 
+#### return-from-loop ✅
+```
+(dotimes (i n)
+  (when (= (~ keys i) target)
+    (set! found i)
+    (return-from-loop)))
+```
+Leaves the innermost enclosing loop at once: nothing after it in the body runs, and no further
+iterations happen.  It takes no value -- store a result in a variable before leaving.
+
+Crisp has no unbounded loop, and `return-from-loop` does not add one.  The loop is still bounded by its
+count; it can only end sooner.  That is exactly what a bounded search or a bounded retry needs.
+
+Each of these is a compile error:
+
+- **It is lexical.**  It leaves the innermost `dotimes`-family loop that encloses it in the source.
+  Outside any loop it is refused, and a function called from inside a loop cannot leave its caller's loop.
+- **Not in a `+` loop.**  `dotimes+`, `dec-times+` and the other `+` forms promise a uniform trip
+  count -- every thread of the workgroup runs the same iterations -- and an exit taken per thread breaks
+  that promise.  Use the plain form.
+- **Not out of a stride loop.**  `loop-vector-stride`, `tile-stride` and the other stride loops decide
+  which elements each thread visits, so leaving one early would silently skip elements.  Put the early
+  exit in a `dotimes` inside the stride body.
+- **No barrier inside the loop.**  A loop that can exit early is divergent: each thread leaves on its
+  own iteration.  A thread that has left never reaches a later iteration's `sync-workgroup` (or any
+  other collective), so the threads still inside would wait forever.  A `mem-fence` is allowed -- it
+  waits for no one.
+- **Not differentiable yet.**  Under `--differentiate`, a loop containing `return-from-loop` is
+  refused.  The backward pass replays the loop in reverse and needs each thread's trip count, which an
+  early exit makes data-dependent.  `atomic-binop!` and `atomic-op!` use it internally but have their
+  own derivative rules, so they are unaffected.
+
+
+

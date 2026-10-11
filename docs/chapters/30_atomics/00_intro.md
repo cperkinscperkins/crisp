@@ -13,4 +13,14 @@ atomic operations performed. The compiler will warn you if it detects this situa
 In some languages, atomics are a variable type, but in Crisp, it's simply an operation that can be coordinated
 on any variable that has possible contention. 
 
+**Atomics order nothing.**  A Crisp atomic is *atomic* -- its read-modify-write is indivisible -- and
+that is all: it is relaxed, at device scope.  It does not make this thread's other writes visible to
+anyone, and it does not order them.  When an atomic is used as a SIGNAL ("my partial result is in
+memory, and this increment says so"), the ordering comes from an explicit `mem-fence`: one after the
+writes and before the atomic on the publishing side, and one after seeing the atomic and before the
+reads on the receiving side.  `grid-reduce!`'s `:last-man-standing` strategy is built exactly that way.
+Keeping the ordering in a fence you can see, instead of inside every atomic, keeps the common case
+cheap -- accumulation, where only atomicity matters.  (On NVIDIA a sequentially consistent CAS costs a
+system-wide fence on every attempt.)
+
 

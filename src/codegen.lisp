@@ -3278,13 +3278,24 @@
 
 
 
+(defun %184-device-sync-scope (module)
+  "The sync-scope ID of \"device\" in MODULE's context -- the scope every Crisp atomic uses (184).
+   DEVICE is the floor, not a preference: fence-fence synchronisation with a relaxed atomic needs the
+   atomic's scope to include the fences' (mem-fence is device scope on both backends).  Spelled
+   \"device\" because both NVPTX and llvm-spirv honour it; llvm-spirv silently turns \"agent\" into
+   CrossDevice."
+  (let ((name "device"))
+    (crisp.llvm-bindings::llvm-get-sync-scope-id
+     (crisp.llvm-bindings::llvm-get-module-context module) name (length name))))
+
 (defmethod generate-node-ir ((node semantic-atomic-rmw) builder module var-env
                               di-builder di-scope location-map)
   "Generates IR for atomic RMW operations (atomic-add!, atomic-sub!, etc.).
 Returns the old value at the target location (fetch-and-op semantics).
 LLVM AtomicRMWBinOp enum: xchg=0 add=1 sub=2 max=7 min=8 umax=9 umin=10
                            fadd=11 fsub=12 fmax=13 fmin=14
-LLVMAtomicOrdering SequentiallyConsistent = 7"
+Endeavour 184: RELAXED (monotonic) at DEVICE scope -- see %184-device-sync-scope.  Ordering is
+never implied by an atomic; it comes only from an explicit mem-fence."
   (let* ((target-aref     (semantic-atomic-rmw-target-node node))
          (delta-node      (semantic-atomic-rmw-delta-node node))
          (op              (semantic-atomic-rmw-op node))
@@ -3323,10 +3334,10 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
         (log:info "atomic-rmw: op=~a elem-type=~a is-float=~a is-unsigned=~a rmw-op=~a"
                   op elem-type is-float is-unsigned rmw-op)
 
-        (let ((result (crisp.llvm-bindings::llvm-build-atomic-rmw
+        (let ((result (crisp.llvm-bindings::llvm-build-atomic-rmw-sync-scope
                        builder rmw-op ptr delta-val
-                       7  ;; LLVMAtomicOrderingSequentiallyConsistent
-                       0))) ;; single-thread=0 (multi-threaded GPU)
+                       2  ;; Endeavour 184: LLVMAtomicOrderingMonotonic (relaxed)
+                       (%184-device-sync-scope module))))
           (values result nil))))))
 
 
@@ -4317,6 +4328,59 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                                           module (semantic-loop-variant-unroll node))))
         (llvm-position-builder-at-end builder exit-block)
         (values nil nil)))))
+
+;;; Endeavour 184 -- (return-from-loop).
+(defvar *loop-exit-targets* nil
+  "Endeavour 184: a stack of one-element boxes, one per dotimes-family loop being generated, innermost
+   first.  The first (return-from-loop) in a loop creates that loop's early-exit block and stores it
+   in the box; the loop's :around method then branches that block to the loop's exit.")
+
+(defun %184-call-with-loop-exit-target (builder thunk)
+  "Endeavour 184: generates a dotimes-family loop by calling THUNK with a fresh box pushed on
+   *loop-exit-targets*.  If the body used (return-from-loop), the box holds the early-exit block;
+   once the loop is generated -- the builder then sits at the loop's exit block -- that block is
+   branched to the exit.  Returns THUNK's values."
+  (let* ((box (list nil))
+         (*loop-exit-targets* (cons box *loop-exit-targets*)))
+    (multiple-value-prog1 (funcall thunk)
+      (let ((early (car box)))
+        (when early
+          (let ((exit (llvm-get-insert-block builder)))
+            (log:debug "184: loop has an early exit; joining it to the loop exit")
+            (llvm-position-builder-at-end builder early)
+            (llvm-build-br builder exit)
+            (llvm-position-builder-at-end builder exit)))))))
+
+(defmethod generate-node-ir :around ((node semantic-dotimes) builder module var-env
+                                     di-builder di-scope location-map)
+  "Endeavour 184: gives (return-from-loop) in this loop's body a target.  See
+   %184-call-with-loop-exit-target."
+  (declare (ignore module var-env di-builder di-scope location-map))
+  (%184-call-with-loop-exit-target builder (lambda () (call-next-method))))
+
+(defmethod generate-node-ir :around ((node semantic-loop-variant) builder module var-env
+                                     di-builder di-scope location-map)
+  "Endeavour 184: gives (return-from-loop) in this loop's body a target.  See
+   %184-call-with-loop-exit-target."
+  (declare (ignore module var-env di-builder di-scope location-map))
+  (%184-call-with-loop-exit-target builder (lambda () (call-next-method))))
+
+(defmethod generate-node-ir ((node semantic-return-from-loop) builder module var-env
+                             di-builder di-scope location-map)
+  "Generates (return-from-loop): an unconditional branch to the innermost loop's early-exit block
+   (created on first use), then a fresh block with no predecessors for whatever the body emits after
+   it -- so every later `terminator-p` check in the loop codegen still sees an open block, and the
+   dead code is removed by the optimiser.  Endeavour 184."
+  (declare (ignore module var-env di-builder di-scope location-map))
+  (let ((box (first *loop-exit-targets*)))
+    (unless box
+      (error "Compiler error: return-from-loop reached codegen outside any loop (the analyser should have refused it)."))
+    (let ((fn (llvm-get-basic-block-parent (llvm-get-insert-block builder))))
+      (unless (car box)
+        (setf (car box) (llvm-append-basic-block fn "loop_early_exit")))
+      (llvm-build-br builder (car box))
+      (llvm-position-builder-at-end builder (llvm-append-basic-block fn "after_return_from_loop"))
+      (values nil nil))))
 
 (defmethod generate-node-ir ((node semantic-while) builder module var-env di-builder di-scope location-map)
   "Generates IR for (while condition body...)."
@@ -6986,8 +7050,10 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
                              di-builder di-scope location-map)
   "Generates a cmpxchg for atomic-cas!, yielding either the PRIOR value or the success flag
    according to the node's RESULT-MODE.
-   LLVMAtomicOrdering SequentiallyConsistent = 7 for success; 2 (monotonic) on failure, which is
-   the strongest ordering LLVM permits there when the success ordering is seq_cst."
+   Endeavour 184: monotonic (relaxed) on both success and failure, at DEVICE scope -- see
+   %184-device-sync-scope.  Ordering is never implied by an atomic; it comes only from an explicit
+   mem-fence.  (Before 184: seq_cst at system scope, which NVPTX lowers to a fence.sc.sys before
+   every attempt.)"
   (let* ((target-aref (semantic-atomic-cas-target-node node))
          (mode        (semantic-atomic-cas-result-mode node))
          ;; For :success the node's TYPE is int (the Crisp boolean); the memory element type has
@@ -7020,11 +7086,11 @@ LLVMAtomicOrdering SequentiallyConsistent = 7"
              (exp-i (if int-ty (llvm-build-bit-cast builder exp-val int-ty "cas_exp_i") exp-val))
              (des-i (if int-ty (llvm-build-bit-cast builder des-val int-ty "cas_des_i") des-val)))
         (log:info "atomic-cas!: elem-type=~a int-width=~a mode=~a" elem-type int-width mode)
-        (let ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg
+        (let ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg-sync-scope
                      builder ptr exp-i des-i
-                     7   ;; success: SequentiallyConsistent
+                     2   ;; success: Monotonic (Endeavour 184: relaxed)
                      2   ;; failure: Monotonic
-                     0))) ;; single-thread=0 (multi-threaded GPU)
+                     (%184-device-sync-scope module))))
           (if (eq mode :success)
               ;; Field 1 is the i1 "swap happened" flag; widen it to Crisp's int.
               (let ((flag (llvm-build-extract-value builder pair 1 "cas_ok")))

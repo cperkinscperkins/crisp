@@ -74,13 +74,14 @@ Example:
 
 ```
 ; IMPLEMENTATION NOTES
-;; The macro generates a BOUNDED loop to guarantee termination.
-(dotimes+ (retry-count 1000) ; Use a generous but finite limit
+;; A BOUNDED retry loop.  The bound is the number of contenders + 1: a CAS fails only because another
+;; thread's CAS succeeded, and each contender succeeds once.  It leaves as soon as its own CAS succeeds.
+(dotimes (retry (+ contenders 1))
   (let ((old-val (~ global-result 0)))
     (let ((new-val (funcall #'+ old-val my-partial-sum)))
-      (when (atomic-cas! (~ global-result 0) old-val new-val)
-        ;; If the CAS succeeded, break the loop.
+      (when (= (%atomic-cas-ok! (~ global-result 0) old-val new-val) 1)
         (return-from-loop)))))
+;; ...followed by a runtime assert that it succeeded: an exhausted retry would be a LOST update.
 ```
 
 #### atomic-op! ✅
