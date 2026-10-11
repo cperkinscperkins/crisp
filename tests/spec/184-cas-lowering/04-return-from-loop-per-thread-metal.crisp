@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER out: 1 2 3 4
+;; SKIP-WITH[--differentiate]: "a loop that can exit early is not differentiable yet (184 D5) -- errors/04 pins the refusal"
+;;
+;; Endeavour 184 ON-METAL: each thread leaves the loop on its OWN iteration.  This is the case that
+;; matters on a GPU, and the reason a loop that can exit early is treated as divergent (D4): thread g
+;; exits when i = g, so the four threads run 1, 2, 3 and 4 iterations of the same loop.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel early_exit_per_thread (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 4))
+  (let ((g (get-global-id 0)))
+    (set! (~ out g) 0u)
+    (dotimes (i 10ul)
+      (set! (~ out g) (+ (~ out g) 1u))
+      (when (= i g)
+        (return-from-loop)))))

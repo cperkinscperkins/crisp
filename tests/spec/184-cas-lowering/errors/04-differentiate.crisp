@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "per-thread trip count"
+;; CHECK-FAIL: "per-thread trip count"
+;; CHECK-FAIL-FLAGS: --differentiate
+;; Endeavour 184 D5: the forward kernel compiles; under the differentiate flag a loop that can exit early is refused.  The backward
+;; pass replays the loop in reverse, and for that it needs each thread's trip count, which an early
+;; exit makes data-dependent.  A real gap, refused rather than differentiated wrongly.
+
+(def-type fvec-t (vector float :address-space :global :align :compact))
+
+(def-kernel k_d (A &out B)
+  (declare #'(fvec-t &out fvec-t => nil)
+           (global-size :set-to 4))
+  (let ((g (get-global-id 0)))
+    (set! (~ B g) 0.0)
+    (dotimes (i 4)
+      (set! (~ B g) (+ (~ B g) (~ A i)))
+      (when (> (~ A i) 2.0)
+        (return-from-loop)))))

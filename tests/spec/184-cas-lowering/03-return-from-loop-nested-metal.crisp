@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER co1: 3
+;; HOIST-EXPECT: BUFFER ci1: 9
+;; HOIST-EXPECT: BUFFER co2: 2
+;; HOIST-EXPECT: BUFFER ci2: 8
+;; SKIP-WITH[--differentiate]: "a loop that can exit early is not differentiable yet (184 D5) -- errors/04 pins the refusal"
+;;
+;; Endeavour 184 ON-METAL: (return-from-loop) leaves only the INNERMOST enclosing loop (D1).
+;;
+;;   1: exit the INNER loop at i = 2: every outer pass still runs.
+;;        outer j = 0 1 2 -> co = 3;  inner i = 0 1 2 per pass -> ci = 3 * 3 = 9
+;;   2: exit the OUTER loop at j = 1, after its inner loop has run in full.
+;;        outer j = 0 1   -> co = 2;  inner i = 0 1 2 3 per pass -> ci = 2 * 4 = 8
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel early_exit_nested (&out co1 ci1 co2 ci2)
+  (declare #'(&out u-c u-c u-c u-c => nil)
+           (global-size :set-to 1))
+  (let ((z (get-workgroup-id 0)))
+    (set! (~ co1) 0ul) (set! (~ ci1) 0ul)
+    (set! (~ co2) 0ul) (set! (~ ci2) 0ul)
+    (dotimes (j (+ z 3ul))
+      (set! (~ co1) (+ (~ co1) 1ul))
+      (dotimes (i (+ z 10ul))
+        (set! (~ ci1) (+ (~ ci1) 1ul))
+        (when (= i 2ul)
+          (return-from-loop))))
+    (dotimes (j (+ z 5ul))
+      (set! (~ co2) (+ (~ co2) 1ul))
+      (dotimes (i (+ z 4ul))
+        (set! (~ ci2) (+ (~ ci2) 1ul)))
+      (when (= j 1ul)
+        (return-from-loop)))))

@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "no enclosing loop"
+;; Endeavour 184 D3: return-from-loop outside any loop is refused.
+
+(def-type u-c (cell ulong :address-space :global))
+
+(def-kernel k_a (&out out)
+  (declare #'(&out u-c => nil)
+           (global-size :set-to 1))
+  (set! (~ out) 1ul)
+  (return-from-loop))
