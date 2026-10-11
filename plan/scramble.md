@@ -894,6 +894,18 @@ Reductions
 - [ ] ibid "Sum Vector using Shuffles"
 - [ ] when-thread-in-warp-is / when-thread-in-group-is  <-- may have compile-time divergence requirmenets inside reductions.
 
+NEXT
+====
+- [ ] some of the tasks from Reductions above
+- [ ] set up Claude with runpod.io MCP, so it can reserve and release machines itself.
+- [ ] adversarial tests. Address.
+- [ ] review bugs.md
+- [ ] refactor
+- [ ] things in ./scripts that should be in put_temp_files_here?
+- [ ] clear out a lot of stuff from put_temp_files_here. It's like 6GB
+- [ ] make new prerelease 
+- [ ] Start AG on contest submissions
+
 
 Async Ops \ Named Barriers \ Rings
 ===================================
