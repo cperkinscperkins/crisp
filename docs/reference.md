@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-11T19:23:11.141792Z
+Generated on 2026-10-11T19:36:03.707225Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -11391,6 +11391,78 @@ Generated on 2026-10-11T19:23:11.141792Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\specials.lisp`
 
+### DEFVAR `*REGISTER-TILE-ELEMS*`
+
+  > Endeavour 155: alist (SYM . ELEM) of the ELEMENT TYPE of every register tile / tile-ring bound  >    by the LET currently being exploded.  %emit-per-frag-block-load reads it so a load-tile  >    expansion walks the operand at ITS element type's native K (8 for a 32-bit operand, 16 for a  >    16-bit one) rather than at the profile's first shape.  Bound by %explode-register-tiles; NIL  >    elsewhere, in which case FLOAT is assumed — exactly the pre-155 behaviour.
+
+
+---
+### DEFVAR `*WARP-GRID*`
+
+  > Endeavour 155: (GM . GN) warp grid of the LET currently being exploded, derived from its  >    accumulator register-tile's fragment grid and warp count, or NIL when there is no distributed  >    accumulator.  Read by the operand-slicing paths so A/B, C and the loads all agree on which warp  >    owns what.  Bound by %explode-register-tiles; NIL elsewhere, in which case operands are  >    allocated whole -- the pre-Step-2 behaviour.
+
+
+---
+### DEFCONSTANT `+LLVM-OPCODE-ADD+`
+
+  > LLVMOpcode enum value for the integer Add instruction.
+
+
+---
+### DEFCONSTANT `+LLVM-OPCODE-MUL+`
+
+  > LLVMOpcode enum value for the integer Mul instruction.
+
+
+---
+### DEFCONSTANT `+LLVM-OPCODE-SEXT+`
+
+  > LLVMOpcode enum value for the SExt cast instruction.
+
+
+---
+### DEFCONSTANT `+SPIRV-EXECUTION-MODE-SUBGROUP-SIZE+`
+
+  > SPIR-V ExecutionMode SubgroupSize.  Takes one literal operand: the required size.
+
+
+---
+### DEFPARAMETER `*KNOWN-MMA-LOWERINGS*`
+
+  > Every MMA lowering NAME the compiler understands, whether or not a given backend implements it.  >   >    :coop-matrix  SPV_KHR_cooperative_matrix / the portable path.  Implemented; the default.  >    :xe-native    Intel Xe: inline-assembly DPAS + the Block2D address-payload load convention.  >                  NAMED but NOT YET IMPLEMENTED -- no profile lists it, so requesting it is refused  >                  with the profile's actual offering.  It is named here so the value type validates  >                  and so the intent is documented in one place.  >   >    A profile's :mma-lowerings is checked against this list, which turns a typo into an error at  >    def-hardware-profile time rather than a kernel that silently never selects its lowering.
+
+
+---
+### DEFVAR `*MMA-LOWERING*`
+
+  > The MMA lowering in force while generating the current kernel's IR.  >   >    Bound per kernel by GENERATE-LLVM-IR from that kernel's (mma-lowering ...) declaration, which  >    the analyzer has already validated against the active hardware profile.  Defaults to  >    :coop-matrix so any code path reached outside a kernel -- and every existing kernel, which  >    declares nothing -- behaves exactly as before.
+
+
+---
+### DEFCONSTANT `+XE-NATIVE-OPERANDS-BF16+`
+
+  > MatrixABf16 | MatrixBBf16 for SubgroupMatrixMultiplyAccumulateINTEL.
+
+
+---
+### DEFCONSTANT `+XE-NATIVE-OPERANDS-FP16+`
+
+  > MatrixAFp16 | MatrixBFp16 for SubgroupMatrixMultiplyAccumulateINTEL.
+
+
+---
+### DEFVAR `*XE-NATIVE-OPERAND-ELEM*`
+
+  > The element kind (:bf16 / :fp16) of the A/B fragments built so far in this kernel, or NIL.  >   >    Recorded by %coop-type-impl for :xe-native and read by %coop-mma-impl, which cannot recover it  >    from its own arguments -- see the header above.  Bound per kernel by GENERATE-LLVM-IR.
+
+
+---
+### DEFVAR `*SPLIT-BARRIER-DEPTH*`
+
+  > How many split-barrier windows are open in the kernel currently being analysed, or NIL outside  >    one.  Bound per kernel by INTERNAL-DEF-FUNCTION and stepped by %ANALYZE-GPU-BUILTIN.  >   >    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the  >    second :arrive sees a non-zero depth and refuses.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\struct-definitions.lisp`
 
 ### DEFSTRUCT `CRISP-STRUCT-DEFINITION`
