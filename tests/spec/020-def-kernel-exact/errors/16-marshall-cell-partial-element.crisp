@@ -1,0 +1,16 @@
+;;
+;; CHECK-FAIL: "is a storage handle of the incomplete type"
+;;
+;; 08 covers an incomplete CELL spec, (cell int).  Here the cell spec is complete but its element
+;; is not: my-cfg's :exec has no default, so the kernel boundary has no single layout contract.
+;; Graduated from tests/adversarial (ADV-020).
+
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t))
+
+(def-type out-c (cell my-cfg :address-space :global))
+
+(def-kernel-exact marshall_target (byte-size ptr offset)
+  (declare #'(ulong voidp ulong))
+  (let ((c (marshall-cell out-c byte-size ptr offset)))
+    (return)))

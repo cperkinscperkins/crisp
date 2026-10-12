@@ -1,0 +1,22 @@
+;;
+;; CHECK-FAIL: "Could not resolve all struct definitions. cycles or unknown types detected"
+;;
+
+;; A struct cannot reach itself through a storage handle either.  In C a pointer
+;; breaks the cycle; in Crisp a cell is a typed handle whose layout depends on its
+;; element type, so (cell list-node) inside list-node is still a cycle.
+;; (Forward-referencing a LATER, non-recursive struct through def-type is fine.)
+;; Graduated from tests/adversarial (ADV-009).
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-type list-node-cell (cell list-node :address-space :global))
+
+(def-struct list-node
+  (val float)
+  (next list-node-cell))
+
+(def-kernel self_ref_kernel (node &out out-res)
+  (declare #'(list-node &out cell-float => nil))
+  (let ((n (next~ node)))
+    (set! (~ out-res) (val~ (~ n)))))

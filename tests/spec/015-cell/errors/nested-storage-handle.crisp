@@ -1,0 +1,13 @@
+;;
+;; CHECK-FAIL: "storage handles cannot be nested"
+;;
+;; A cell whose element is itself a cell would have the host marshal a device pointer INTO device
+;; memory; nothing in the design defines that, so a storage handle of a storage handle is refused
+;; at the kernel boundary.  Pass the inner handle as its own kernel parameter.
+;; Graduated from tests/adversarial (ADV-015), where it crashed deep in codegen.
+
+(def-type my-nested-cell (cell (cell float :address-space :global) :address-space :global))
+
+(def-kernel cell_of_cell (in_val &out out_res)
+  (declare #'(float &out my-nested-cell => nil))
+  (set! (~ (~ out_res)) in_val))

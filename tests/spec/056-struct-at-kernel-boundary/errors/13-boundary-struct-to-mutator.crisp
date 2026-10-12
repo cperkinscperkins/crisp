@@ -1,4 +1,9 @@
-;; KNOWN-ISSUE: ADV-008
+;; CHECK-FAIL: "immutable"
+;;
+;; A def-struct passed directly at the kernel boundary is read-only, so handing it
+;; to a function that set!s one of its fields is a compile error -- here with an
+;; &out output alongside, and the struct read back after the call.
+;; Graduated from tests/adversarial (ADV-008).
 
 (def-type cell-float (cell float :address-space :global))
 
@@ -6,14 +11,11 @@
   (x float)
   (y float))
 
-;; A thread-level function that mutates a point
 (def-function mutate-point (p)
   (declare #'(point => nil))
   (set! (x~ p) 100.0)
   nil)
 
-;; Kernel that takes a struct DIRECTLY (carved in constant memory)
-;; Passing it to mutate-point should be a compiler error!
 (def-kernel kernel_struct_mutator (my_point &out out_res)
   (declare #'(point &out cell-float => nil))
   (mutate-point my_point)

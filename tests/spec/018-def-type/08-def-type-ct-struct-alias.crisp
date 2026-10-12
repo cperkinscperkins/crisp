@@ -1,0 +1,39 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "AD does not yet differentiate through a c-t-qualified struct parameter (BUG 117)"
+;;
+;; A struct whose :c-t member has NO default is incomplete as a bare name, and complete once the
+;; property is given: (my-cfg :exec :fast).  def-type can name that complete type.  All of this
+;; must work on such a value -- it did not until ADV-018 (graduated from tests/adversarial):
+;;   - make-my-cfg :exec :fast produces a (my-cfg :exec :fast), not the bare, incomplete my-cfg
+;;   - it is accepted by a fast-cfg parameter (the alias) and by a bare my-cfg parameter (which is
+;;     polymorphic: one instance per :exec value)
+;;   - runtime accessors read, and set! through an accessor writes, on the alias type
+;; The :exec value is compile-time only, so every one of these is a plain {float}.
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t))
+
+(def-type fast-cfg (my-cfg :exec :fast))
+
+(def-function use-cfg (c)
+  (declare #'(fast-cfg => float))
+  (val~ c))
+
+(def-function bump (c)
+  (declare #'(fast-cfg => fast-cfg))
+  (let ((d c))
+    (set! (val~ d) (* (val~ d) 3.0))
+    d))
+
+(def-function use-any (c)
+  (declare #'(my-cfg => float))
+  (val~ c))
+
+(def-kernel def_type_ct_alias (in_val &out out_res)
+  (declare #'(float &out cell-float => nil))
+  (let ((fast (make-my-cfg :val in_val :exec :fast))
+        (slow (make-my-cfg :val in_val :exec :slow)))
+    (set! (~ out_res) (+ (use-cfg (bump fast))
+                         (+ (use-any fast) (use-any slow))))))

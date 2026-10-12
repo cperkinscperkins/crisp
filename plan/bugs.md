@@ -3981,3 +3981,42 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         NEXT: re-measure with more iterations before believing it; if it holds, diff the SASS / IGC asm.
 
+[ ] 114 c-t-assert INSIDE A FUNCTION BODY NEVER CHECKS ANYTHING -- (c-t-assert (equal 1 2) "x") compiles.
+
+        FOUND 2026-10-12 (adversarial sweep).  c-t-assert expands to (eval-when (...) (unless cond (error ..))).
+        At TOP LEVEL that eval-when runs, so the assert works.  Inside a def-function body the analyzer's
+        analyze-eval-when (src/analysis/control.lisp) turns the form into a void literal and never evaluates it.
+        Chapter 41 marks c-t-assert as implemented and says a false test "errors and ceases compilation".
+        Consequence: every in-function c-t-assert in the spine is VACUOUS -- 009/05, 010/11, 015/cell-02-props,
+        064/tensor-02-props, 066/02 and 066/06 -- and 008/errors/c-t-assert-fail passes only because its
+        CHECK-FAIL was set to an unrelated type-mismatch message.
+        WHY NOT FIXED: making it loud needs a decision on what "compile-time evaluable" means in a body.  Those
+        specs ask about variables' TYPES -- (element-type~ c), (address-space~ v), (exec-mode~ config) -- which
+        only analysis knows; a macro-expansion-time EVAL cannot see them, and a naive fix turns ~6 specs red.
+        Adversarial spec: tests/adversarial/compile-time/adv-022-ct-assert-in-body.crisp (KNOWN-ISSUE ADV-022).
+
+[ ] 115 022-def-kernel/errors/06 AND 08 ("voidp is not a legal return type") PASS FOR AN UNRELATED REASON.
+
+        FOUND 2026-10-12.  Both define (def-function () ...) -- a function with NO NAME -- and have no
+        CHECK-FAIL, so any error passes them.  Whether a def-function may return voidp is therefore untested;
+        base-ptr~ already returns voidp.  022/errors/04 (voidp PARAMETER illegal) is a commented-out TODO and
+        its premise was overtaken by endeavour 122 (see 122-ffi/08).  Decide the return rule, then give 06/08
+        a name and a CHECK-FAIL (or delete them).
+
+[ ] 116 011-incomplete-types/01-incomplete-declarations IS VACUOUS: its functions are never instantiated.
+
+        FOUND 2026-10-12.  five-shirts / five-pants take incomplete types, so they become implicit templates;
+        nothing calls them, so nothing is analyzed or emitted (the module holds only accessors).  The spec says
+        "each of these five type declarations should compile correctly" and proves nothing about it.  Writing
+        the equivalent with a COMPLETE type exposed ADV-018 (accessors on c-t-qualified structs did not work at
+        all).  Give the spec a kernel that calls each function.
+
+[ ] 117 AD REFUSES A c-t-QUALIFIED STRUCT PARAMETER: "Function USE-CFG is not differentiable."
+
+        FOUND 2026-10-12, right after ADV-018 made such values usable at all.  A sub-function taking
+        (my-cfg :exec :fast) -- or a def-type alias of it, fast-cfg -- is refused under --differentiate,
+        while the same function over a plain (no c-t member) struct differentiates fine.  The AD walk runs on
+        raw forms; %crisp-struct-type-p (src/autodiff.lisp) takes the head of a list but not an alias symbol,
+        and the shadow-struct naming (%shadow-type-name-for -> NAME_ADJ) would need the struct NAME, not the
+        alias.  Loud, not silent.  Not a regression: before ADV-018 these values did not compile forward.
+        Spec: tests/spec/018-def-type/08-def-type-ct-struct-alias.crisp carries a SKIP-WITH[--differentiate].

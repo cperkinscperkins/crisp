@@ -817,7 +817,9 @@ including the ones required for the Crisp debug logging and scratch memory.
 `def-kernel-exact` is provided for users who have less control over how their kernel is hoisted and may have to instead adapt to some existing interface.
 
 ##### voidp type and marshall-vector
-`def-kernel-exact` can use the `voidp` type for its arguments, but this type cannot be used in other contexts.  It can also call the `marshall-XXXX` function
+`def-kernel-exact` can use the `voidp` type for its arguments.  `voidp` is an untyped pointer: it can also appear in
+ordinary `def-function` signatures and in foreign-function signatures (see the FFI chapter), and it is the type of
+`base-ptr~`.  It cannot be a `def-kernel` parameter, and nothing can be cast to it.  A `def-kernel-exact` can also call the `marshall-XXXX` function
 which is a function Crisp provides for making Crisp vectors from `void` pointers and byte counts. This function cannot be used in other contexts.
 
 ```
@@ -1008,6 +1010,17 @@ A default value can follow the `:c-t` key.  This default will be used if a call 
             (return-type nil))
    ...)
 ```
+
+A `make-XXXX` call gives its value the complete type: when `address-space` has no default,
+`(make-addressable :value 10 :address-space :global)` is an `(addressable :address-space :global)`.
+Such a value can be passed to a parameter declared with that complete type, with a `def-type` alias of it
+(`(def-type global-addr (addressable :address-space :global))`), or with the bare, incomplete `addressable` --
+in which case the function is instantiated once per distinct set of compile-time values.  Runtime members are
+read, and `set!` through their accessors, on any of these.
+
+> **Implementation status**: a property that HAS a default (`access` above) is not yet carried into the type
+> when `make-XXXX` overrides it -- the value keeps the default's type, and its `access~` answers the default
+> (adversarial ADV-023, together with ADV-012 / ADV-013).
 <!-- 
 
 THIS IMPLEMENTATION DETAIL IS BEING REALIZED
@@ -1316,7 +1329,7 @@ Incomplete types allow for polymorphism in internal functions. You can write a f
 
 #### Rules for Incomplete Types:
 1. **Allowed in `def-function` and `def-grid-function`**: You may declare parameters with incomplete types in standard functions.
-2. **Forbidden in `def-kernel` and `def-kernel-exact`**: Kernel parameters (the boundary between host and device) MUST have fully specified complete types. The host must know the exact layout and semantics of the data it is passing. Incomplete types cannot be used there.  Note that  `gen-XXXXX`, which can be used to generate a kernel from a grid function, when encountering an incomplete type will use its default value (if specified) or emit a compile error (if no default was specified)
+2. **Forbidden in `def-kernel` and `def-kernel-exact`**: Kernel parameters (the boundary between host and device) MUST have fully specified complete types. This includes the element type of a storage handle: `(cell my-struct :address-space :global)` is incomplete when `my-struct` is, so it cannot be a kernel parameter or a `marshall-cell` / `marshall-tensor` target.  (A storage handle's element cannot itself be a storage handle.) The host must know the exact layout and semantics of the data it is passing. Incomplete types cannot be used there.  Note that  `gen-XXXXX`, which can be used to generate a kernel from a grid function, when encountering an incomplete type will use its default value (if specified) or emit a compile error (if no default was specified)
 3. **Compile Time Properties Only**: Runtime member fields are not required in the type declaration anyway, so the question of "complete" vs "incomplete" does not apply to them.
 
 This question of "complete" vs "incomplete" matters because if a `:c-t` property
@@ -3623,6 +3636,16 @@ global default namespace. ( And we don't support namespaces ).
 
 Using `def-enumeration` automatically generates `is-XXXX?` for that enumeration name, which can be used as a type constraint function
 in `with-template-type`.  See the discussion of type constraints in `with-template-type` for more information.
+
+#### Using enumeration values ✅
+
+- Compare enumeration values with `=` (and `!=`): `(if (= mode :mul) ...)`.  Crisp has one equality; there is no `eq`.
+- An `if` whose branches are keywords of the same enumeration has that enumeration's type: `(if (> v 0.0) :mul :add)`.
+- A bare keyword passed to a template function makes the template parameter the enumeration that contains the keyword.
+  If the keyword belongs to several enumerations (a conflicting key), that is a compile error: pass it through a parameter
+  declared with the enumeration you mean.
+- Under `--differentiate` an enumeration value carries no gradient; a function that returns one is differentiated like one
+  that returns an `int`.
 
 
 
@@ -10573,7 +10596,10 @@ access to stdout or the file system. This makes debugging and logging challengin
 "c-t" stands for "compile time".  This variadic macro just takes a series of expressions and it will evaluate them at compile time and output them when compiling.   This can be particularly handy when used with `macroexpand` or `macroexpand-1`. A space character is inserted between each expression. If any of the expressions is
 not evaluable at compile time that will merely be noted. 
 
-#### `c-t-assert` ✅
+#### `c-t-assert` ⚠️
+
+> **Implementation status**: enforced at top level.  Inside a function body the assertion is currently **not evaluated** (BUG 114), so a false test there compiles silently.
+
 
 `(c-t-assert <testExpression>  <expr1> ... <exprN>)`
 This is akin to `static_assert` from C. The `<testExpression>` will be evaluated by the compiler. If it is true then

@@ -11,8 +11,9 @@ NEXT  (housekeeping-oct)
 - [x] audit scramble.md -> this file + scramble-archive.md
 - [x] clear out put_temp_files_here (7.5 GB -> 0.3 GB; cited evidence promoted to research/)
 - [x] retire endeavour-numbered pod scripts (moved to put_temp_files_here/pod-scripts/)
-- [ ] adversarial tests: 22 KNOWN-FAIL.  ADV-008/009 look like tests missing CHECK-FAIL;
-      then the forward crashes (018, 005, 007, 010, 015), then the silent ones (001, 002, 014, 020, 019)
+- [x] adversarial tests: 22 KNOWN-FAIL -> 5 open issues (2026-10-12; put_temp_files_here/adversarial-overnight.md)
+- [ ] adversarial follow-ups: c-t default override + type-aware XXX~ (ADV-012/013/023), c-t-assert in a body
+      (ADV-022 / BUG 114), AD through implicit templates (ADV-003/004/011/017), BUG 115-117
 - [ ] review bugs.md (44 open + 4 partial; most don't bite -- prune stale, close what's fixed)
 - [ ] docs for AI: agent entry point (ANTIGRAVITY.md?), crisp-curios.md, stale reduction docs (see Docs)
 - [ ] revisit docs/criticsms.md: addressed / partly / still-true table

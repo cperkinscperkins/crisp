@@ -1,0 +1,17 @@
+;; VERIFY-AUTODIFF: input=2.0 atol=1e-3 expect.input=12.0
+;;
+;; A let in a SUB-FUNCTION that shadows the function's own parameter: f(x) = (let ((x (* x x)))
+;; (* 3.0 x)) = 3x^2, so f'(2) = 12.  The renaming rule that covers this is "the binding's own
+;; initial value mentions the name" -- ANF never sees the parameter list.  (Companion of
+;; 20 / 21; found while fixing ADV-001.)
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-function f (x)
+  (declare #'(float => float))
+  (let ((x (* x x)))
+    (* 3.0 x)))
+
+(def-kernel shadowed_param_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  (set! (~ out-res) (f (~ input))))

@@ -1,0 +1,16 @@
+;;
+;; CHECK-FAIL: "whose element type"
+;;
+;; A storage handle is only complete if its ELEMENT is complete.  my-cfg's :exec has no default,
+;; so (cell my-cfg ...) leaves the kernel polymorphic in :exec -- not allowed at the boundary
+;; (chapter 21, rule 2).  Give the element its c-t values: (cell (my-cfg :exec :fast) ...).
+;; Graduated from tests/adversarial (ADV-014).
+
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t))
+
+(def-type my-cell-type (cell my-cfg :address-space :global))
+
+(def-kernel cell_param_kernel (in_val &out out_res)
+  (declare #'(float &out my-cell-type => nil))
+  (set! (~ out_res) (make-my-cfg :val in_val :exec :fast)))

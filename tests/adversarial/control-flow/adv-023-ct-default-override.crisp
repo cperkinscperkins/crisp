@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; KNOWN-ISSUE: ADV-023
+;;
+;; exec has a DEFAULT (:slow), so the bare my-cfg is the complete type (my-cfg :exec :slow).
+;; make-my-cfg is given :exec :fast -- an override of that default -- and the result is stored
+;; into a cell of (default, :slow) my-cfg.  That should be a type error: a :fast config is not
+;; a :slow one.  Today the override is silently DROPPED: the constructed value is typed as the
+;; bare my-cfg, the store is accepted, and (exec~ v) -- a constant macro -- answers :slow.
+;; (Originally ADV-014, whose premise was that my-cfg here is incomplete; it is not.)
+
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t :slow))
+
+(def-type my-cell-type (cell my-cfg :address-space :global))
+
+(def-kernel ct_default_override (in_val &out out_res)
+  (declare #'(float &out my-cell-type => nil))
+  (set! (~ out_res) (make-my-cfg :val in_val :exec :fast)))

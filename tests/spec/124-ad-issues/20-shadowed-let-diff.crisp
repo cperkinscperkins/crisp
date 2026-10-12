@@ -1,0 +1,21 @@
+;; VERIFY-AUTODIFF: input=4.0 atol=1e-3 expect.input=4.0
+;;
+;; A let that SHADOWS an outer binding in a differentiated body: out = 2x + 2(x + 1.5) = 4x + 3.
+;; ANF flattens nested lets into one binding list, so the inner x used to become a second binding
+;; of the same symbol and the AD walk (adjoints keyed by name, X_ADJ) merged the two: it
+;; reported 6.0 where the true derivative is 4.0 -- silently.  Shadowing bindings are now
+;; alpha-renamed before ANF.  Graduated from tests/adversarial (ADV-001).
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-function sub-calc (val i)
+  (declare #'(float int => float))
+  (* val i))
+
+(def-kernel shadowing_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (let ((y (sub-calc x 2)))
+      (let ((x (+ x 1.5)))
+        (let ((z (sub-calc x 2)))
+          (set! (~ out-res) (+ y z)))))))

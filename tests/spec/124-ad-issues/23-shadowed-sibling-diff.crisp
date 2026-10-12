@@ -1,0 +1,16 @@
+;; VERIFY-AUTODIFF: input=3.0 atol=1e-3 expect.input=7.0
+;;
+;; Shadowing WITHOUT self-reference: the inner x's initial value does not mention x, so only the
+;; "already bound by an enclosing let" rule renames it.  y and w capture the OUTER x first:
+;;   y = input,  w = 4*input,  inner x = 2*y = 2*input,  out = x + y + w = 7*input
+;; so d/dinput = 7.  (Companion of 20 / 21 / 22.)
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel shadowed_sibling_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (let ((y x)
+          (w (* x 4.0)))
+      (let ((x (* y 2.0)))
+        (set! (~ out-res) (+ (+ x y) w))))))

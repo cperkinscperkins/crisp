@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;;
+;; voidp is an untyped pointer, usable beyond def-kernel-exact since endeavour 122 (FFI): a
+;; foreign function takes one, base-ptr~ returns one, and an ordinary def-function may take one
+;; as a parameter.  What stays forbidden is a voidp def-kernel parameter and a cast to voidp
+;; (both covered by negative specs).
+;; Graduated from tests/adversarial (ADV-021), which assumed the pre-122 rule that voidp is
+;; confined to def-kernel-exact.  (Whether a def-function may RETURN voidp is left open:
+;; 022/errors/06 and 08 say no, but they fail for an unrelated reason -- see bugs.md.)
+
+(def-function takes-void (p n)
+  (declare #'(voidp ulong => ulong))
+  n)
+
+(def-kernel-exact test_void_param (byte-size ptr offset)
+  (declare #'(ulong voidp ulong))
+  (let ((n (takes-void ptr byte-size)))
+    (return)))

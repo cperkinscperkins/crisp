@@ -70,7 +70,9 @@ including the ones required for the Crisp debug logging and scratch memory.
 `def-kernel-exact` is provided for users who have less control over how their kernel is hoisted and may have to instead adapt to some existing interface.
 
 ##### voidp type and marshall-vector
-`def-kernel-exact` can use the `voidp` type for its arguments, but this type cannot be used in other contexts.  It can also call the `marshall-XXXX` function
+`def-kernel-exact` can use the `voidp` type for its arguments.  `voidp` is an untyped pointer: it can also appear in
+ordinary `def-function` signatures and in foreign-function signatures (see the FFI chapter), and it is the type of
+`base-ptr~`.  It cannot be a `def-kernel` parameter, and nothing can be cast to it.  A `def-kernel-exact` can also call the `marshall-XXXX` function
 which is a function Crisp provides for making Crisp vectors from `void` pointers and byte counts. This function cannot be used in other contexts.
 
 ```
