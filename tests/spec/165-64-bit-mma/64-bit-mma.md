@@ -605,7 +605,7 @@ CUTLASS peer early, which endeavour 159 taught us to do.
   - `cutlass_peer_f64.cu` — CUTLASS **2.x** `device::Gemm` on `arch::Sm80`.  NOT a typedef swap
     on the tf32 peer: that one is 3.x `CollectiveBuilder` on `arch::Sm90`, which is wgmma-based,
     and there is no fp64 wgmma, so the Sm90 builder has no dispatch policy for `double`.
-  - `scripts/165-pod-sec2.sh` — the whole session as one batched command, `SMOKE=1` first.  Needs
+  - `165-pod-sec2.sh` (one-off pod script, since retired) — the whole session as one batched command, `SMOKE=1` first.  Needs
     only nvcc and the CUTLASS headers; no SBCL, no compiler build, so it is a cheap rental.
 - [x] **Run it** — H100 NVL, 2026-09-07.  See "Section 2 measured".  Raw `results.jsonl` was not
       pulled before the pod was released; the per-point summary tables in that section (GFLOPS,

@@ -93,7 +93,7 @@ Plan
 - [x] docs: ideal_001.md (mem-fence in divergent code, sync-workgroup must be reached, last-man phases),
       reductions-excerpt.md; BUG 082 closed with the corrected diagnosis
 - [x] full gate: unit, E2E 1434/1434, negative 331/331, six last-man VERIFY-AUTODIFF specs (BMG)
-- [x] H100 SXM (fb35b716, `scripts/183-pod-fence.sh`; 33/33 CUDA specs, stale demo caught 2/2): the fence
+- [x] H100 SXM (fb35b716, `183-pod-fence.sh`; 33/33 CUDA specs, stale demo caught 2/2): the fence
       was NOT NVIDIA's cost.  last-man 1 / 16 / 64 / 256 MiB = 12.7 / 15.6 / 39.2 / 103.2 us, against the
       pre-183 canonical 13.0 / 16.0 / 39.6 / 103.9 -- ~0.4 us; `:atomic` same session 6.7 / 8.5 / 28.4 /
       92.2.  On BMG 16 subgroups per group each issued a device-scope fence (the 40-80 us at R=4); on

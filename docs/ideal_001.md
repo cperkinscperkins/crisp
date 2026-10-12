@@ -11924,7 +11924,7 @@ declaration under the kernel declarations); a kernel's own declaration always wi
 It is a MEASURED key: no query can answer it, so sweep it or leave it out.  Absent means no bound --
 the backend compiler's default.  On an H100 SXM 1024 took every streaming reduction to 96-97% of the
 measured read peak (last-man sum from 75%, argmax from 80%, Welford from 78%); see
-`tests/spec/182-nvidia-register-budget/` for the sweep and `scripts/182-pod-budget.sh` for the method.
+`tests/spec/182-nvidia-register-budget/` for the sweep and the method.
 
 A profile is selected at the command line with
 `--hardware-profile=<NAME>`, or named by a `compute-unit` in a

@@ -17,7 +17,7 @@
    The name carries a _use_rows_cols suffix for the same reason the Load/Store builtins do:
    %coop-call reuses a declaration by NAME, so two different coop types under one name would
    collide on the second call's signature.  The translator matches on the prefix — verified
-   by spike2 in put_temp_files_here/150-spv/, which emits the real instruction."
+   by a one-off spike during endeavour 150, which emitted the real instruction."
   (%coop-call builder module
               (format nil "__spirv_CooperativeMatrixLengthKHR_~d_~d_~d" use rows cols)
               (crisp.llvm-bindings::llvm-int32-type)

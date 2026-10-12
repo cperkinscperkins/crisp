@@ -312,7 +312,7 @@
 ;; the canonical 056/01 case wrote {4.0, 4.0} instead of the IR-correct
 ;; {4.0, 3.0}.  The same LLVM IR translated to PTX (NVPTX backend) produces
 ;; the correct output, so the IR itself is well-formed — see
-;; put_temp_files_here/igc-bug-report/ for the minimal reproducer.
+;; research/igc-sroa-alias-030/ for the minimal reproducer.
 ;;
 ;; Workaround: emit each leaf adjoint read in the shadow-write as
 ;; `load volatile`, which inhibits SROA promotion of the alloca and avoids

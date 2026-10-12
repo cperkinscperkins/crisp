@@ -63,11 +63,11 @@ Probe mechanism (temporary -- REMOVED 2026-10-08 once the real mechanism landed)
 `CRISP_PROBE_PTX_MAXNTID`, default 256) set, compile-to-ptx inserts the two directives into every
 `.entry`.  Inert when unset.  NOT the feature -- it goes when the real mechanism lands.
 
-Pod script: `scripts/182-pod-budget.sh` -- one build, the Crisp sweep at minCTA none / 6 / 5 / 4 over
+Pod script: `182-pod-budget.sh` (one-off, since retired) -- one build, the Crisp sweep at minCTA none / 6 / 5 / 4 over
 `rollup/wg_atomic, step5_reduce_vec, workloads`, 64 MiB - 4 GiB, scratch; SUMMARY.txt is a compact table.
 
 
-H100 measurement (2026-10-08, H100 SXM, `scripts/182-pod-budget.sh`)
+H100 measurement (2026-10-08, H100 SXM, `182-pod-budget.sh`)
 ---------------------------------------------------------------------
 
 % of the SXM's measured 3178.6 GB/s, 4 GiB; all 96 points verified; JSON in `benchmarks/results/scratch/`;
@@ -151,14 +151,14 @@ Plan
       redefinitions; 181 10/10 + 182 16/16; folded CUDA launcher identical to the overlay one but paths;
       chapters / reference / call graph / globals regenerated
 - [x] canonical benchmark runs from the folded commit -- BMG (Docker, 4d2a91de) and H100 SXM (75d13e22,
-      `scripts/182-pod-canonical.sh`, ceiling 3178.5 GB/s) -- and REPORT-reduction.md regenerated.  4 GiB, % of
+      `182-pod-canonical.sh`, ceiling 3178.5 GB/s) -- and REPORT-reduction.md regenerated.  4 GiB, % of
       peak, SXM: every streaming Crisp row 95.5-98.0% (last-man sum 96.1, argmax 96.6, Welford 96.1,
       sum+sumsq 95.5) vs CUB 98-100%.  The remaining gap is at SMALL sizes (1-256 MiB), where Crisp's
       last-man carries a fixed per-launch cost (~13 us at 1 MiB vs `:atomic` 6.8 us) -- the fence and
       election (181 follow-up 3).
 
 
-Verification -- the real mechanism (2026-10-08, a different H100 SXM, `scripts/182-pod-verify.sh`)
+Verification -- the real mechanism (2026-10-08, a different H100 SXM, `182-pod-verify.sh`)
 -------------------------------------------------------------------------------------------------
 
 All 26 CUDA specs on metal (182: 16/16, 181: 10/10); every bench point verified; profile

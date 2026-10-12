@@ -1,0 +1,13 @@
+;; PROBE A: a careless port — every `float` swapped for `double`, tf32 shape left alone.
+;; What does the compiler do TODAY?
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel via_tile_f64 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile double (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B)
+    (store-tile C-tile C (0 0))))

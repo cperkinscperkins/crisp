@@ -236,8 +236,7 @@ store+load round-trip:
    plugin), it conservatively propagates poison and marks the entire
    entry block unreachable.
 
-**Attempted fix** (overlay sketch in `put_temp_files_here/` for next-time
-reference): bypass the alloca round-trip for aggregate parameters and
+**Attempted fix** (an overlay sketch, not kept): bypass the alloca round-trip for aggregate parameters and
 aggregate let-bindings, storing the imploded SSA value directly in a
 new `*param-direct-values*` hash; have `semantic-var-read` check that
 hash first.  The fix successfully removes the alloca round-trip in the

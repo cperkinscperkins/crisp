@@ -406,7 +406,7 @@ the same way and one fix corrects both.
 
 ## Ready for hardware
 
-`scripts/159-pod-batch.sh` runs the whole session as one command; `scripts/verify-16bit-cuda.py`
+`159-pod-batch.sh` (a one-off pod script, since retired) ran the whole session as one command; `scripts/verify-16bit-cuda.py`
 does the correctness check and emits one JSON object. Everything that can be checked without a GPU
 has been: the fixture COMPILES under `nvcc -O3 -arch=sm_90 -lcuda` in docker, and its entire
 binding path is validated by a `CRISP_MATMUL_DRYRUN` mode that resolves argument slots, scratch

@@ -1,0 +1,13 @@
+;; Step 3 probe: a real fp64 MMA. C[8x8] = A[8x4] . B[4x8], one warp, m8n8k4.
+(def-hardware-profile h100d :simd-width 32 :mma-shapes ((8 8 4)))
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel f64_mma (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile double (8 8) 0.0d)))
+    (mma-accumulate-via-tile (8 8 4) C-tile A B)
+    (store-tile C-tile C (0 0))))
