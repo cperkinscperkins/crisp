@@ -1,0 +1,8 @@
+;;
+;; CHECK-FAIL: "logand: operands must be integers"
+;;
+;; The bit operations (chapter 32/05) are integer-only.
+
+(def-function f (a b)
+  (declare #'(float float => float))
+  (logand a b))

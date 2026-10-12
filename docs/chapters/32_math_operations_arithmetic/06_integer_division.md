@@ -6,6 +6,12 @@ There are four  integer divison functions: `/`, `ceil` ,  `floor` and `round`.
 All four of them return both the quotient and remainder and differ only 
 in how the results are rounded.
 
+The remainder is available where you bind it -- `(let ((q r (floor a b))) ...)`; used as an ordinary
+expression, `(floor a b)` is the quotient.  Both operands must be the same integer type (an integer literal
+is converted).  On floats the two-argument forms are a compile error; with ONE argument,
+`(floor x)` / `(ceil x)` / `(round x)` / `(truncate x)` convert a float to an `int` (round: ties to even).
+Unsigned operands divide unsigned.
+
 `#(divisor divident => quotient remainder)`
 
 

@@ -14,6 +14,8 @@ NEXT  (housekeeping-oct)
 - [x] adversarial tests: 22 KNOWN-FAIL -> 5 open issues (2026-10-12; put_temp_files_here/adversarial-overnight.md)
 - [ ] adversarial follow-ups: c-t default override + type-aware XXX~ (ADV-012/013/023), c-t-assert in a body
       (ADV-022 / BUG 114), AD through implicit templates (ADV-003/004/011/017), BUG 115-117
+- [x] 185 math-ops: chapter 32 made real (integer division, sqrt/rsqrt/abs/clamp/*!, bit ops, tanh/erf/exp2,
+      AD); 3 silent bugs fixed; BUG 062/119 closed, BUG 120 opened -- 2026-10-12
 - [ ] review bugs.md (44 open + 4 partial; most don't bite -- prune stale, close what's fixed)
 - [ ] docs for AI: agent entry point (ANTIGRAVITY.md?), crisp-curios.md, stale reduction docs (see Docs)
 - [ ] revisit docs/criticsms.md: addressed / partly / still-true table
@@ -27,11 +29,9 @@ OPEN
 ====
 
 ### Docs
-- [ ] warp-size not get-warp-size, warp-id not get-warp-id, get-workgroup-id not get-group-id
-      (get-warp-size still in 7 doc files, get-group-id in 7) (L892)
-- [ ] "Sum Vector Using Local Memory" and "Sum Vector using Shuffles" need updating (L893, L894)
-- [ ] --binary-gpu-target is documented (chapter 63, output targeting) but does not exist in src:
-      implement, rename, or drop from the docs (L322, L972)
+- [x] warp-size not get-warp-size, warp-id not get-warp-id, get-workgroup-id not get-group-id (L892) -- 2026-10-12
+- [x] "Sum Vector Using Local Memory" and "Sum Vector using Shuffles" rewritten from compiled code (L893, L894) -- 2026-10-12
+- [x] --binary-gpu-target: already marked planned; its usage example now says aspirational (L322, L972) -- 2026-10-12
 - [ ] synchronous load-tile / store-tile FASTER than async for very small tiles (L629)
 - [ ] tile oversubscribe-and-assert behaviour (L636-638, see Tiles)
 - [ ] scan design doc for :size :length :extent on vectors -- c-t or not? (L601)

@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER s: 1.5 0.25 2 3
+;; HOIST-EXPECT: BUFFER rs: 0.25 2 0.5 4
+;;
+;; Endeavour 185 P1 -- sqrt / rsqrt on float, chapter 32/02 (ieee: llvm.sqrt, correctly rounded;
+;; rsqrt = 1/sqrt).  Exactly representable inputs and results, so the expectations are exact:
+;;   s : sqrt 2.25 -> 1.5   sqrt 0.0625 -> 0.25   sqrt 4 -> 2      sqrt 9 -> 3
+;;   rs: rsqrt 16 -> 0.25   rsqrt 0.25 -> 2       rsqrt 4 -> 0.5   rsqrt 0.0625 -> 4
+;; Operands are built on the run-time 0 from (get-workgroup-id 0) so nothing constant-folds.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel sqrt_rsqrt (&out s rs)
+  (declare #'(&out f-vec f-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-float (get-workgroup-id 0))))
+    (set! (~ s 0) (sqrt (+ z 2.25)))
+    (set! (~ s 1) (sqrt (+ z 0.0625)))
+    (set! (~ s 2) (sqrt (+ z 4.0)))
+    (set! (~ s 3) (sqrt (+ z 9.0)))
+    (set! (~ rs 0) (rsqrt (+ z 16.0)))
+    (set! (~ rs 1) (rsqrt (+ z 0.25)))
+    (set! (~ rs 2) (rsqrt (+ z 4.0)))
+    (set! (~ rs 3) (rsqrt (+ z 0.0625)))))

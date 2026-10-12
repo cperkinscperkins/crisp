@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER bi: 8 14 6 -6
+;; HOIST-EXPECT: BUFFER bu: 255 257 4294967294 4294967295
+;;
+;; Endeavour 185 P2 -- logand / logior / logxor / lognot, chapter 32/05:
+;;   bi: (logand 12 10) 8   (logior 12 10) 14   (logxor 12 10) 6   (lognot 5) -6
+;;   bu: (logand 4294967295u 255u) 255   (logior 256u 1u) 257
+;;       (logxor 4294967295u 1u) 4294967294   (lognot 0u) 4294967295
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel bitops (&out bi bu)
+  (declare #'(&out i-vec u-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0)))
+        (zu (to-uint (get-workgroup-id 0))))
+    (set! (~ bi 0) (logand (+ z 12) 10))
+    (set! (~ bi 1) (logior (+ z 12) 10))
+    (set! (~ bi 2) (logxor (+ z 12) 10))
+    (set! (~ bi 3) (lognot (+ z 5)))
+    (set! (~ bu 0) (logand (+ zu 4294967295u) 255u))
+    (set! (~ bu 1) (logior (+ zu 256u) 1u))
+    (set! (~ bu 2) (logxor (+ zu 4294967295u) 1u))
+    (set! (~ bu 3) (lognot (+ zu 0u)))))

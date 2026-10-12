@@ -3,10 +3,10 @@
 
 These operations are available for both floating point and integer values.
 
-- `abs`  
+- `abs`   ; for a signed integer, `(abs most-negative)` is itself (two's complement); for unsigned, the value
 - `min`   => `(min a b)`
 - `max`
-- `clamp` => `(clamp x min-val max-val)`
+- `clamp` => `(clamp x min-val max-val)` -- `(min (max x min-val) max-val)`; all three the same type (a literal is converted)
 - `+`
 - `-`
 - `*`

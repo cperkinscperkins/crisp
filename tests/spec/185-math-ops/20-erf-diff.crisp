@@ -1,0 +1,10 @@
+;; VERIFY-AUTODIFF: input=0.5 atol=1e-3 expect.input=0.8787826
+;;
+;; Endeavour 185 P3 -- autodiff of erf: d/dx erf x = 2/sqrt(pi) exp(-x^2) = 0.8787826 at 0.5.
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel erf_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out) (erf x))))

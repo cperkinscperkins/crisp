@@ -1,0 +1,33 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER q: 4 -3 -3 4
+;; HOIST-EXPECT: BUFFER r: -2 -1 1 2
+;; HOIST-EXPECT: BUFFER qs: 4 -3 -3 4
+;;
+;; Endeavour 185 P0 -- (ceil a b) on int, chapter 32/06, all four sign combinations:
+;;   (10 3)  (-10 3)  (10 -3)  (-10 -3)
+;; q / r come from a multiple-value binding (let ((q r (ceil a b))) ...); qs uses (ceil a b) as an
+;; ordinary single-value expression, which must give the same quotient (decision D1).
+;; ceil rounds toward +infinity.
+;; The operands are built on (get-workgroup-id 0) -- 0 at run time, unknown to the compiler -- so the
+;; division really runs on the device instead of being constant-folded.
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+
+(def-function div-case (a b)
+  (declare #'(int int => int int))
+  (let ((q r (ceil a b)))
+    (return q r)))
+
+(def-kernel int_div_ceil (&out q r qs)
+  (declare #'(&out i-vec i-vec i-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0))))
+    (let ((q0 r0 (div-case (+ z 10)  (+ z 3))))  (set! (~ q 0) q0) (set! (~ r 0) r0))
+    (let ((q1 r1 (div-case (+ z -10) (+ z 3))))  (set! (~ q 1) q1) (set! (~ r 1) r1))
+    (let ((q2 r2 (div-case (+ z 10)  (+ z -3)))) (set! (~ q 2) q2) (set! (~ r 2) r2))
+    (let ((q3 r3 (div-case (+ z -10) (+ z -3)))) (set! (~ q 3) q3) (set! (~ r 3) r3))
+    (set! (~ qs 0) (ceil (+ z 10)  (+ z 3)))
+    (set! (~ qs 1) (ceil (+ z -10) (+ z 3)))
+    (set! (~ qs 2) (ceil (+ z 10)  (+ z -3)))
+    (set! (~ qs 3) (ceil (+ z -10) (+ z -3)))))

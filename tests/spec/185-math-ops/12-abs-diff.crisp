@@ -1,0 +1,10 @@
+;; VERIFY-AUTODIFF: input=-2.0 atol=1e-3 expect.input=-3.0
+;;
+;; Endeavour 185 P1 -- autodiff of abs: d/dx 3|x| = 3 sign(x) = -3 at x = -2.
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel abs_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out) (* 3.0 (abs x)))))

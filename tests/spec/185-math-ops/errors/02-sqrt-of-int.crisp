@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "sqrt: operand must be float or double"
+;;
+;; sqrt / rsqrt are floating-point operations (chapter 32/02).  Crisp does not convert an integer
+;; silently; write (sqrt (to-float n)).
+
+(def-function f (n)
+  (declare #'(int => float))
+  (sqrt n))

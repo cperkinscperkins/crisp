@@ -9097,7 +9097,7 @@ The `--denormal-handling` compiler flag acts as a global control for subnormal n
 - `ftz` (Flush-to-Zero): A performance optimization. Proper hardware handling of subnormals can demand significant extra cycles or microcode fallbacks. Setting this to `ftz` instructs the hardware to immediately flush any subnormal value to zero, reclaiming performance at the cost of strict precision at the bottom of the floating-point scale.
 
 
-### Floating Point Only Operations ⚠️
+### Floating Point Only Operations ✅
 
 Crisp provides the following operations for floating point numbers:
 
@@ -9109,8 +9109,8 @@ Example:
 (sqrt x)
 ```
 
-- `sqrt`  📝 *not yet implemented* (BUG 119)
-- `rsqrt` 📝 *not yet implemented* (BUG 119) -- `op-rsqrt-approx` exists (hardware-supported math operations)
+- `sqrt`  ; under `ieee` correctly rounded (`llvm.sqrt`, no libdevice on PTX); under `fast` the approximate instruction
+- `rsqrt` ; $1/\sqrt{x}$ -- under `ieee` computed as `1/sqrt`; under `fast` the approximate hardware instruction (same as `op-rsqrt-approx`)
 - `exp`   ; `(exp x)` calculates $e^x$
 - `log`
 - `log2`
@@ -9143,6 +9143,9 @@ Crisp supports a standard set of transcendental functions. These are the floatin
 | `asin`   | arcsine        |
 | `acos`   | arccosine      |
 | `atan`   | arctangent     |
+| `tanh`   | hyperbolic tangent |
+| `erf`    | error function |
+| `exp2`   | $2^x$          |
 
 **Binary**
 
@@ -9186,10 +9189,10 @@ Denormal handling (`--denormal-handling`) is orthogonal: it selects the flush-to
 
 These operations are available for both floating point and integer values.
 
-- `abs`  
+- `abs`   ; for a signed integer, `(abs most-negative)` is itself (two's complement); for unsigned, the value
 - `min`   => `(min a b)`
 - `max`
-- `clamp` => `(clamp x min-val max-val)`
+- `clamp` => `(clamp x min-val max-val)` -- `(min (max x min-val) max-val)`; all three the same type (a literal is converted)
 - `+`
 - `-`
 - `*`
@@ -9210,7 +9213,7 @@ like Quantized Integers and MicroFloat Blocks.
 
 - `*!`  => `#'(T T => (accum T))`  widening multiplication.
 
-### Integer Only Operations 📝
+### Integer Only Operations ✅
 
 - `ash`   ;; arithmetic shift `(ash I count)`
 - `logand`
@@ -9219,12 +9222,32 @@ like Quantized Integers and MicroFloat Blocks.
 - `lognot`
 - `popcount`
 
+`ash` follows Common Lisp and is defined for EVERY count, identically on every GPU: a positive count shifts
+left, a negative count shifts right -- arithmetic (sign fill) for signed types, logical for unsigned -- and a
+shift by at least the bit width gives 0 (left), or 0 / -1 (right, -1 for a negative signed value).  A literal
+count compiles to a single shift; a run-time count adds a select or two, branch-free.
+```
+(ash 1 3)    => 8
+(ash -16 -2) => -4
+(ash 5 40)   => 0     ; on an int
+(ash -5 -40) => -1
+```
+`popcount` counts the set bits of the two's-complement representation, so `(popcount -1)` on an `int` is 32
+(Common Lisp's `logcount` would count the zero bits of a negative number instead).
+`logand` / `logior` / `logxor` take two operands of the same integer type; `lognot` one.
+
 ### Integer Division ✅
 
 There are four  integer divison functions: `/`, `ceil` ,  `floor` and `round`.
 
 All four of them return both the quotient and remainder and differ only 
 in how the results are rounded.
+
+The remainder is available where you bind it -- `(let ((q r (floor a b))) ...)`; used as an ordinary
+expression, `(floor a b)` is the quotient.  Both operands must be the same integer type (an integer literal
+is converted).  On floats the two-argument forms are a compile error; with ONE argument,
+`(floor x)` / `(ceil x)` / `(round x)` / `(truncate x)` convert a float to an `int` (round: ties to even).
+Unsigned operands divide unsigned.
 
 `#(divisor divident => quotient remainder)`
 

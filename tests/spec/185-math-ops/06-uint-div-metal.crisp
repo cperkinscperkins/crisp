@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER q: 613566755 2147483647 3 0
+;; HOIST-EXPECT: BUFFER r: 5 1 1 4000000000
+;; HOIST-EXPECT: BUFFER rm: 5 1 1 4000000000
+;;
+;; Endeavour 185 P0 + BUG 062 -- UNSIGNED / and rem must use an unsigned divide (udiv / urem).
+;; A signed divide reads 4294967290u as -6 and gives (/ -6 7) = 0, r -6.
+;;   (4294967290 7)          -> 613566755, 5
+;;   (4294967295 2)          -> 2147483647, 1
+;;   (10 3)                  -> 3, 1
+;;   (4000000000 4000000001) -> 0, 4000000000
+;; q / r come from (let ((q r (/ a b))) ...); rm from (rem a b).
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel uint_div (&out q r rm)
+  (declare #'(&out u-vec u-vec u-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-uint (get-workgroup-id 0))))
+    (let ((q0 r0 (/ (+ z 4294967290u) (+ z 7u))))          (set! (~ q 0) q0) (set! (~ r 0) r0))
+    (let ((q1 r1 (/ (+ z 4294967295u) (+ z 2u))))          (set! (~ q 1) q1) (set! (~ r 1) r1))
+    (let ((q2 r2 (/ (+ z 10u) (+ z 3u))))                  (set! (~ q 2) q2) (set! (~ r 2) r2))
+    (let ((q3 r3 (/ (+ z 4000000000u) (+ z 4000000001u)))) (set! (~ q 3) q3) (set! (~ r 3) r3))
+    (set! (~ rm 0) (rem (+ z 4294967290u) (+ z 7u)))
+    (set! (~ rm 1) (rem (+ z 4294967295u) (+ z 2u)))
+    (set! (~ rm 2) (rem (+ z 10u) (+ z 3u)))
+    (set! (~ rm 3) (rem (+ z 4000000000u) (+ z 4000000001u)))))

@@ -2312,7 +2312,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         the 054 specs are forward-only.)
         SPECS WAITING ON IT: 170/05 (SKIP-WITH[--differentiate] citing this bug).
 
-[ ] 062 UNSIGNED INTEGER DIVISION (AND rem) EMITS A SIGNED DIVIDE.  `(/ a b)` on uint emits `sdiv i32`;
+[x] 062 UNSIGNED INTEGER DIVISION (AND rem) EMITS A SIGNED DIVIDE.  `(/ a b)` on uint emits `sdiv i32`;
+        FIXED 2026-10-12 (endeavour 185 P0): semantic-div uses udiv for unsigned; rem / mod expand through /.  Spec 185/06 on the BMG.
         `(rem a b)` on ulong lowers through `sdiv i64`.  Wrong answers for any operand >= 2^(bits-1): e.g.
         (/ 4000000000 2) on uint reads the dividend as -294967296.  Found 2026-09-15 (endeavour 170 night
         run), following the note in 059 (`srem` on ulong) and the 060 follow-up.  NOT FIXED -- it touches
@@ -3577,6 +3578,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         sizes (:match-total-threads, :match-warp-size, :match-total-warps, :match-grid-size).
 
 [ ] 095 ONE-ARGUMENT MINUS, (- x), IS NOT IMPLEMENTED -- though the design doc uses it.
+        NOTE 2026-10-12: appears FIXED -- (- x) on a float compiles to fmul x, -1.0.  Confirm and close.
 
         SYMPTOM.  (- (type-infinity float)) -- or any (- x):
 
@@ -4029,7 +4031,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (warp-size); the literal 16 compiles.  The chapter used to claim the declaration "follows it
         automatically".  Loud, not silent.  The chapter now uses a literal and cites this bug.
 
-[ ] 119 sqrt AND rsqrt ARE DOCUMENTED (chapter 32/02, marked implemented) BUT ARE "Unsupported form".
+[x] 119 sqrt AND rsqrt ARE DOCUMENTED (chapter 32/02, marked implemented) BUT ARE "Unsupported form".
+        FIXED 2026-10-12 (endeavour 185): sqrt rsqrt abs clamp *! tanh erf exp2 + ash logand logior logxor lognot popcount, with AD; integer division per chapter 32/06.
 
         FOUND 2026-10-12 while verifying the agent guide.  Checked on spv and ptx:
           work:     exp log log2 sin cos tan asin acos atan pow atan2 max min  (PTX transcendentals need libdevice)
@@ -4037,3 +4040,25 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
                     (not documented, but layernorm / softmax / GELU-style contest kernels reach for them at once)
         op-rsqrt-approx exists.  Most map straight onto LLVM intrinsics (llvm.sqrt / fabs / floor / ceil / trunc /
         minnum / maxnum) on both backends; each also needs an AD rule.  Chapter 32/02 now marks sqrt / rsqrt 📝.
+
+[ ] 120 BMG: FOUR INLINE INTEGER floor / round DIVISIONS IN ONE KERNEL RUN AND STORE NOTHING.
+
+        FOUND 2026-10-12 (endeavour 185 P0).  Kernel with four (let ((q r (round (+ z 5) (+ z 2)))) ...) stores
+        inline: Level Zero reports success, the output buffers keep their initial contents.  The pre-opt IR is
+        correct, the SPIR-V is correct (all 8 OpStores present, unconditional).  The failing kernels are the only
+        ones -O3 SLP-vectorized: <4 x i32> SDiv/SRem plus <4 x i1> INotEqual / LogicalAnd / Select.  The same
+        division through a function call is correct; inline truncating / and rem (left scalar) are correct.
+        Rewriting the corrections as shift/mask integer arithmetic did not help (InstCombine re-forms the
+        selects).  An attempt to switch SLP off for SPIR-V did not take effect (*target-backend* is probably not
+        :spirv when opt runs) -- inconclusive.
+        WORKAROUND (agreed): integer floor / ceil / round lower to a call to an internal noinline helper
+        (__crisp_idiv_<mode>_<type>[_qr]).  STILL OPEN: is this an IGC bug with SLP-vectorized integer / i1
+        vectors in general?  If so it reaches beyond 185.  Probes: put_temp_files_here/185/probes/ (05c fails,
+        05b / 05d / 05e pass).
+        UPDATE (P2, same day): it is NOT vectorization.  With SLP + loop vectorization forced off (no vectors in
+        the SPIR-V at all) inline popcount still returned a wrong lane 0 (16 for popcount 0) and inline ash
+        still made zeModuleCreate fail (0x70000004, module build failure).  All three -- divmod, popcount,
+        ash -- are right once moved behind an internal noinline helper (%185-helper-call).  So the common
+        factor is integer code INLINE IN A KERNEL BODY on SPIR-V / BMG.  Suspects: IGC, or something about how
+        Crisp emits kernel bodies (the entry wrapper calls the body function; attributes; the BUG 030 volatile
+        workaround?).  Probes 17b (passes) / 17c (fails) differ only in an extra store of z.

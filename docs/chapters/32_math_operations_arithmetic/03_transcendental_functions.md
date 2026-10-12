@@ -16,6 +16,9 @@ Crisp supports a standard set of transcendental functions. These are the floatin
 | `asin`   | arcsine        |
 | `acos`   | arccosine      |
 | `atan`   | arctangent     |
+| `tanh`   | hyperbolic tangent |
+| `erf`    | error function |
+| `exp2`   | $2^x$          |
 
 **Binary**
 
