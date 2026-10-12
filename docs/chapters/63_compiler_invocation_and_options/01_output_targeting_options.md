@@ -120,6 +120,10 @@ v_add.spv
 v_add_hoist_L0.cpp
 ```
 
+The next example is **aspirational**: `--binary-gpu-target`, the PyLevelZero hoist and per-orchestration
+output are planned (📝), not implemented.  Today, produce PTX or SPIR-V with `--ir-target` and hoist with
+`--hoist=L0` or `--hoist=CUDA`.
+
 ```
 $ crisp.exe  --binary-gpu-target=sm_90 --binary-gpu-target=pvc --hoist=CUDA --hoist=PyLevelZero --metadata ../reduce-vector.crisp
 $ ls

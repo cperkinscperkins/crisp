@@ -18,7 +18,7 @@ same workgroup — typically a **producer** warp that does nothing but fetch til
 warps that do nothing but compute on them.
 
 In the example above one warp runs the `:producer` body and two run the `:consumer` body, so the
-workgroup must be sized to 3 × `(get-warp-size)`.  You may declare as many roles as you like, so
+workgroup must be sized to 3 × `(warp-size)`.  You may declare as many roles as you like, so
 long as the workgroup is a multiple of their sum.  With `--runtime-checks` the compiler inserts a
 check that the workgroup size actually matches.
 

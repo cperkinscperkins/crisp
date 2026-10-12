@@ -3045,7 +3045,7 @@ Possible Implemenation
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common
 usage pattern when working with matrices is to use local memory tiles.
-These are typically `32x32` (ie `(get-warp-size)` squared ).
+These are typically `32x32` (ie `(warp-size)` squared ).
 
 If using the `tile-stride` macro, then stride aware `load-tile` and `store-tile` helpers
 are availalable in the body of the `tile-stride` (along with async variants). See [load-tile / store-tile](#load-tile) for a full discussion.
@@ -3086,7 +3086,7 @@ not necessarily like we want them to be.
 ;; (make-tile-scratch-vector T)
 ;; (make-tile dim T)
 
-(def-const TILE_DIM:ulong (get-warp-size))
+(def-const TILE_DIM:ulong (warp-size))
 
 ;; -- convert-layout --
 ;; THIS IS OUTDATED. REWRITE ONCE tile-stride, load-tile, workgroup-stride and store-tile are 
@@ -4106,7 +4106,7 @@ Example:
 `when-thread-in-group-is` is much like `when-thread-is` except that instead of using the global thread id,
 the local id is used instead.  In other words, there is an implicit `(when (= someId (get-local-id 0)) ...)`
 
-Similarly, `when-group-is` is akin to those except that the group id is used instead.  In other words, there is an implicit `(when (= someId (get-group-id 0)) ...)`
+Similarly, `when-group-is` is akin to those except that the group id is used instead.  In other words, there is an implicit `(when (= someId (get-workgroup-id 0)) ...)`
 
 ```
 (when-thread-in-group-is id <expr>)
@@ -5082,7 +5082,7 @@ With `:workgroup-idx`, the tensor is chunked by the workgroup dimensions. The ar
 
 ##### `:warp-idx` ✅
 
-With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware warp width. Note that if using `:warp-idx`, it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise, operations like warp-level reductions could end up deadlocking.
+With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware warp width. Note that if using `:warp-idx`, it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(warp-size)`. Otherwise, operations like warp-level reductions could end up deadlocking.
 
 Note that `hardware-stride :warp-idx` can be used with any global size arity, but it iterates over the flattened, global execution space by the hardware warp width.
 
@@ -5096,7 +5096,7 @@ from within a `:warp-idx` hardware-stride.
 
 ```
 
-> Implementation Note: Unlike `tensor-stride`, the chunking variants (`tile-stride` and `hardware-stride`) do not evaluate their bodies per-element. They stride the problem space in block-sized steps. For `hardware-stride`, those steps are driven dynamically by `(get-local-size)` or `(get-warp-size)`. Any element-level computation must be done in an inner loop (like `workgroup-stride`) inside the body.
+> Implementation Note: Unlike `tensor-stride`, the chunking variants (`tile-stride` and `hardware-stride`) do not evaluate their bodies per-element. They stride the problem space in block-sized steps. For `hardware-stride`, those steps are driven dynamically by `(get-local-size)` or `(warp-size)`. Any element-level computation must be done in an inner loop (like `workgroup-stride`) inside the body.
 
 #### Helper Macros ✅
 
@@ -5693,87 +5693,64 @@ was published (the acquire). `grid-reduce-last-man!` is built this way.
 
 ### Sum a Vector using Local Memory ✅
 
-Earlier we demonstrated a simple `vector_add` using grid strides. 
-This example is slighly more complicated and uses several of the control flow 
-constructs that have been covered so far.  
+Earlier we demonstrated a simple `vector_add` using grid strides.
+This example is slightly more complicated and uses several of the control flow
+constructs that have been covered so far.
 
-We can easily use multiple threads to stride through a vector summing it as they go. 
-But if we have 1024 threads, we'll end up with a 1024 different sums that, in turn,
-need to be summed.  
+We can easily use multiple threads to stride through a vector summing it as they go.
+But if we have 1024 threads, we'll end up with 1024 different sums that, in turn,
+need to be summed.
 
-To then sum those up we COULD use a block of global memory that is 1024 element long.
-Each thread could write its sum in it, and then one thread could sum them,
-or it could be transferred back to the host and it could finish summing them. 
-But this both takes a lot of memory and is the slowest type of memory. 
-So we will not do that. 
+We COULD write all 1024 into global memory and sum them from one thread, or on the host.
+But that is a lot of the slowest kind of memory, so we will not do that.
 
-Instead, we'll use two smaller scratch pads.  One is local memory that has the
-same number of entries as the local_work_size of the kernel.  Local memory is fast, 
-but limited to the threads in the same workgroup.  The second scratch pad
-is global memory, and it is M entries wide, where M = NUM_THREADS / WORKGROUP_SIZE, 
-or  M = global_work_size / local_work_size.  This the same as the number of workgroups.
-
-The routine will use a tree reduce pattern so that half the threads in the workgroup 
-add their sum to the comparable in the other half. And then repeat, halving the 
-number of threads each time. This reduction is on the local scratchpad.
-
-Lastly one thread in each work group writes its sum to the global scratchpad.
-
-After this, we could use a global barrier and then sum that scratchpad.
-But since the global scratchpad needs to be prepared by the host anyway,
-it's simpler to just end the operation and enqueue a second operation to 
-complete the sum.  Or sum it on the host, if that is your preference.
-
-In our `sum_vector` routine, the host will supply the vector it wants
-to be summed, plus the result vector (which is also that global scratchpad).
-We could also have it provide the local scratchpad as a vector too. That 
-would make the routine more flexible. But in this case, we are just
-going to agree on a convention that the local_work_size is 64.
-
-
+Instead, each workgroup reduces its own threads' sums in **local memory**, which is fast but
+shared only within a workgroup, using a tree: half the threads add the other half's value to
+their own, then half again, until one value is left.  One thread per workgroup then writes that
+value to the result vector `Res`, which has one element per workgroup
+(global_work_size / local_work_size of them).
 
 ```
-;; the result vector should be size M, where M = global_work_size / local_work_size
-;; aka num-groups.
-(def-type result-vec (vector long :align :compact :address-space :global :size (get-num-groups)) 
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type res-vec (vector float :address-space :global :align :compact))
 
-;; -- sum_vector_first_stage --
+;; Res needs one element per workgroup.
 (def-kernel sum_vector_first_stage (A &out Res)
-  ;; A can be any size, but Res should be num-groups
-  (declare #'((in-vec long) => result-vec)) 
-           (global-size :derive-from A :strategy :strided))
-                                     
-   (let ((sum 0))
-     ;; Stride the vector, summing it up. Each thread has its own value in 'sum'
-     (loop-vector-stride A (i)
-        (inc! sum (~ A i)))
-    
-    ;; Prepare local memory and store sum in it. 
-    (let ((slm (make-scratch-vector long :match-workgroup-size)))
-      (in-each-thread-in-group (local-idx)
-        (set! (~ slm local-idx) sum)
-        
-        ;; tree reduce
-        (dec-times-by-half* (s (/ (get-local-size) 2))  s is 32, then 16, 8, 4, 2, 1
-          (sync-workgroup)
-          (when (< local-idx s)
-            (inc! (~ slm local-idx) (~ slm (+ local-idx s))))))
+  (declare #'(in-vec &out res-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 64))
+  (let ((sum 0.0))
+    ;; Stride the vector. Each thread accumulates its own partial sum.
+    (loop-vector-stride A (i)
+      (set! sum (+ sum (~ A i))))
 
-      ;; move sums to global 
-      (when-thread-in-group-is (0)
-        (let ((wg-idx (get-workgroup-id 0)))
-          (set! (~ Res wg-idx) (~ slm 0))))))) 
+    ;; One slot per thread of the workgroup, in fast local memory.
+    (let ((slm (make-scratch-vector float :match-workgroup-size))
+          (lid (get-local-linear-id)))
+      (set! (~ slm lid) sum)
+
+      ;; Tree reduce (lid is a ulong, hence 32ul): s is 32, 16, 8, 4, 2, 1.  The barrier at the
+      ;; top of each step makes the previous step's writes visible.  The + variant proves the
+      ;; loop is uniform, which a barrier inside a loop requires.
+      (dec-times-by-half+ (s 32ul)
+        (sync-workgroup)
+        (when (< lid s)
+          (set! (~ slm lid) (+ (~ slm lid) (~ slm (+ lid s))))))
+
+      ;; Thread 0 wrote the last step itself, so it can read slot 0 without another barrier.
+      (when (= lid 0ul)
+        (set! (~ Res (get-workgroup-id 0)) (~ slm 0))))))
 ```
 
-This example is provided so that you can see several "Crisp-ish" constructs used together, 
-like the tree reduce `dec-time-by-half` and its `*` variant, the scratch vector creation 
-all applied to the topic of a workgroup sized reduction using local memory and a local barrier. 
+This example shows several "Crisp-ish" constructs working together: a vector stride, a scratch
+vector sized by `:match-workgroup-size`, the halving loop `dec-times-by-half+`, and
+`sync-workgroup`.  Note the literal suffixes: Crisp does not silently convert integer types, so a
+literal compared with the `ulong` from `get-local-linear-id` is written `32ul` / `0ul`.
 
-But, again, the vector is not fully summed. That'll require a second kernel pass. 
- The simplest solution there is to make another kernel that
-employs `grid-reduce-second-stage!` (see below) and then you'll have a two step solution. If you would
-like to see the hoisting code in action, then use either a continuation kernel (see above) 
-or  `def-orchestration` (see below).
+The vector is not fully summed yet -- `Res` holds one partial sum per workgroup and needs a second
+pass.  **In practice you do not write any of this by hand**: `(reduce-vec #'+ A 0.0 out)` does the
+whole reduction, including the cross-workgroup step, and picks the strategy for the hardware (see
+*The Vector API*).
 
 
 ### Warps & Shuffles ✅
@@ -5993,78 +5970,53 @@ Would you like to calculate the sum of a vector without needing any local shared
 and without needing any barriers? Just a drop of blood is all we need, use it to sign the
 contract below.
 
-This version starts out the same as the last one. The grid stride legerdemain is used and
-each of the threads holds its own copy of a sum. Then, as before, we reduce. Half the warp
-uses a shuffle and an XOR mask to fetch the sum from another thread and add it. Then half
-again, and so on. And then we record the results into the same Result vector.
+This version starts out the same as the last one: each thread strides the vector and keeps its
+own sum.  Then, instead of local memory, the warp reduces with **shuffles**: each lane fetches
+another lane's sum with an XOR mask and adds it -- 16 apart, then 8, 4, 2, 1 -- a butterfly in
+which every lane both gives and receives.  Lane 0 then records the warp's total in `Res`.
 
-The result vector should be size M, where M = global_work_size / local_work_size. This is
-the same size as the number of workgroups.
-
-Note that this version ties the workgroup size to the size of a single warp. Doing so might
-limit the latency-hiding opportunities, because there are no "extra" warps to fill in if
-this one stalls on a memory access. But that potential penalty is offset by the use of
-shuffles instead of local memory and barriers. Shuffles, used correctly, are wicked fast —
-they just cannot reach outside a single warp.
-
-This version of vector summing is likely faster than the last one.
+The workgroup is exactly one warp, so `Res` has one element per workgroup.  That ties the
+workgroup size to the warp size, which can limit latency hiding (there are no "extra" warps to
+run while this one stalls on memory).  The payoff is no local memory and no barriers.  Shuffles,
+used correctly, are wicked fast -- they just cannot reach outside a single warp.
 
 ```
-;; the source vector can be any size.
-(def-type source-vec (in-vec long :compact))
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type res-vec (vector float :address-space :global :align :compact))
 
-;; the result vector should be size M, where M = global_work_size / local_work_size
-;; aka num-groups
-(def-type result-vec (vector long :align :compact :address-space :global :size (get-num-groups)))
-
-
-;; -- calculate-this-thread-sum --
-(def-function calculate-this-thread-sum (A)
-  (declare #(source-vec -> long))
-  (let ((sum 0))
+;; One warp per workgroup; Res needs one element per workgroup.
+(def-kernel sum_vector_warp_first_stage (A &out Res)
+  (declare #'(in-vec &out res-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 32))          ; one warp -- see the note below
+  (let ((sum 0.0))
     (loop-vector-stride A (i)
-      (inc! sum (~ A i))))) ; <-- inc! implicitly returns final sum
+      (set! sum (+ sum (~ A i))))
 
+    ;; Butterfly: s is 16, 8, 4, 2, 1 on a 32-lane warp; every lane gives and receives.
+    ;; The + variant proves the loop runs uniformly, which is what makes the shuffle
+    ;; inside it a legal warp collective.
+    (dec-times-by-half+ (s (/ (warp-size) 2u))
+      (set! sum (+ sum (shuffle-xor sum s))))
 
-;; -- sum_vector_warp_first_stage --
-(def-kernel sum_vector_warp_first_stage (A Res)
-    (declare #'(source-vec result-vec => nil)
-             (local-size :set-to (warp-size)
-                         :msg "this kernel requires the local work size to equal the warp size")
-             (global-size :derive-from A :strategy :strided))
-  ;; Stride the vector, summing it up. Each thread has its own value in 'sum'
-  (let ((sum (calculate-this-thread-sum A)))
-
-    ;; Reduce. `s` descends 16, 8, 4, 2, 1 on a 32-lane warp, and every lane both gives
-    ;; and receives at each step -- a butterfly. The `+` form is not decoration: it is
-    ;; what proves the loop runs uniformly, which is what makes the shuffle inside it a
-    ;; legal warp collective.
-    (dec-times-by-half+ (s (/ (warp-size) 2))
-       (inc! sum (shuffle-xor sum s)))
-
-    ;; move sum to global
-    (when-thread-in-group-is (0)
-      (let ((wg-idx (get-workgroup-id 0)))
-          (set! (~ Res wg-idx) sum)))))
+    (when (= (warp-lane) 0u)
+      (set! (~ Res (get-workgroup-id 0)) sum))))
 ```
 
-Two things worth noticing, because they are the difference between this compiling
-everywhere and this working only on the machine you wrote it on.
+Things worth noticing:
 
-First, nothing here says 32. `(warp-size)` is a compile-time constant that comes from the
-active hardware profile, so the same source reduces over 32 lanes on NVIDIA and 16 on a
-`:simd-width 16` Intel part, and the `local-size` declaration follows it automatically.
+- `(warp-size)` comes from the active hardware profile, so the loop reduces over 32 lanes on
+  NVIDIA and 16 on a `:simd-width 16` Intel part.  It is a `uint`, hence `2u` and `0u`.
+- The `local-size` must equal one warp.  On NVIDIA that is 32.  On Intel (SPIR-V) compile with a
+  hardware profile (e.g. `--hardware-profile=bmg`) and give `local-size` that profile's
+  `:simd-width` (16 for BMG): Crisp refuses to compile a warp collective for SPIR-V unless it can
+  pin the subgroup size, rather than guess.  `(local-size :set-to (warp-size))` is the intended
+  spelling, but it is not yet resolved when the SPIR-V subgroup size is pinned (BUG 118).
+- A `float` accumulator moves 32 bits per shuffle; a `long` or `double` moves two 32-bit halves.
 
-Second, `sum` is a `long`. Each `shuffle-xor` therefore moves 64 bits as two 32-bit halves
-(see **Supported Types**). That is real instruction count, and if you do not need the range
-a `float` or `int` accumulator halves it.
-
-Like the previous sum_vector demonstration, this example is provided so that you can see
-"Crisp-ish" constructs used together, this time with shuffles and warps. The vector is not
-fully summed. That requires a second kernel pass. Most expedient is to make another kernel
-that employs `grid-reduce-second-stage!` (see below) and then you will have a two step
-solution. If you would like to see the hoisting code in action, then use either a
-continuation kernel (see above) or `def-orchestration` (see below).
+As before, `Res` holds one partial sum per workgroup.  And as before, **in practice use
+`(reduce-vec #'+ A 0.0 out)`**, which chooses warp shuffles where the hardware supports them and
+finishes the cross-workgroup step for you.
 
 ## Bit Twiddling Operations 📝
 
@@ -6529,7 +6481,7 @@ These are your workhorses. They take a variable (like `<someVar>`) and a commuta
 
 ### `reduce-warp` ✅
 
-`(reduce-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)))`
+`(reduce-warp someFunction <someVar> identity &optional (active-threads (warp-size)))`
 
 The warp shuffle is the undisputed king of speed. `reduce-warp` iteratively applies `someFunction` using register shuffles (`shuffle-xor`), entirely bypassing local memory and barriers.
 
@@ -6539,7 +6491,7 @@ The warp shuffle is the undisputed king of speed. `reduce-warp` iteratively appl
 **Mechanics & Constraints:**
 `reduce-warp` applies `someFunction` to the `<someVar>` expression in the current thread and another thread in the same warp. It combines the values of every lane whose lane ID is less than `active-threads`; lanes at or past `active-threads` contribute the identity, and every lane of the warp -- active or not -- ends up holding the result.
 
-* **Thread Limit:** Using a value for `active-threads` that is GREATER than the warp size for the GPU hardware results in undefined behavior. This reduction cannot reduce more than `+warp-size+` threads.
+* **Thread Limit:** Using a value for `active-threads` that is GREATER than the warp size for the GPU hardware results in undefined behavior. This reduction cannot reduce more than `(warp-size)` threads.
 * **Scope:** While `reduce-warp` coordinates other threads at the warp level, it is not a grid-level operation. This makes it highly versatile—it can be nested and used in a wide variety of contexts and applications.
 * **Workgroup Considerations:** You could configure a kernel to run exactly one warp per workgroup via `(declare (local-size :set-to 32))`. While this fits many problems perfectly, a workgroup consisting of multiple warps is often better for hiding latency; if one warp pauses to fetch memory, another warp in the same workgroup can execute in its stead.
 
@@ -6581,13 +6533,13 @@ Functionally, `reduce-workgroup` is much the same as `reduce-warp` but expands i
 * `<someVar>`: The variable being reduced.
 * `identity`: The identity value for `someFunction`.
 * `:return-vec`: (Optional) A vector to store the final results. This vector must have the same element type as `<someVar>` and its address space MUST be `:global`. Its size should be the number of workgroups (calculated as `M = global_work_size / local_work_size`). If not provided, the result is simply kept in `<someVar>` for subsequent in-workgroup operations.
-* `:local-scratch-vec`: (Optional) Writeable local memory used to bridge the warps. Its size must equal the number of warps in a single workgroup (`local_work_size / get-warp-size`). If omitted, Crisp allocates this scratchpad for you, typed from the identity (see *Full Reductions Made Easy* below).
+* `:local-scratch-vec`: (Optional) Writeable local memory used to bridge the warps. Its size must equal the number of warps in a single workgroup (`(/ (get-local-work-size) (warp-size))`). If omitted, Crisp allocates this scratchpad for you, typed from the identity (see *Full Reductions Made Easy* below).
 * `:message`: (Optional, reserved) A string saying why Crisp generated scratch memory on your behalf. It is accepted today but not yet attached to the implicit allocations.
 
 **Post-Conditions & Return:**
 
 * **Variable State:** `<someVar>` in *all* threads of the workgroup will be bound to the final value of the reduction.
-* **Memory State:** `:return-vec` (if provided) will store the result of this specific workgroup's reduction at index `(get-group-id)`.
+* **Memory State:** `:return-vec` (if provided) will store the result of this specific workgroup's reduction at index `(get-workgroup-id)`.
 * **Scratch State:** The contents of `local-scratch-vec` are indeterminate after completion.
 * **Returns:** `nil`.
 
@@ -7531,7 +7483,7 @@ What could be simpler?
     (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
     (loop-vector-stride input-vec (i)
       (let ((val (~ input-vec i))
-            (prefix (~ block-sums (get-group-id 0))))
+            (prefix (~ block-sums (get-workgroup-id 0))))
           (set! (~ output-vec i) (+ val prefix))))))
 
 
@@ -8960,7 +8912,7 @@ the hardware accellerated types that have a widened accumulator, quantized integ
     (let ((tile-A (make-tile TILE_DIM T))
           (tile-B (make-tile TILE_DIM T))
           (local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
-          (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1))
+          (group-id-x (get-workgroup-id 0)) (group-id-y (get-workgroup-id 1))
           (acc 0.0)) ; Per-thread accumulator register
 
       ;; main loop over the tiles in the inner dimension
@@ -9157,8 +9109,8 @@ Example:
 (sqrt x)
 ```
 
-- `sqrt`
-- `rsqrt`
+- `sqrt`  📝 *not yet implemented* (BUG 119)
+- `rsqrt` 📝 *not yet implemented* (BUG 119) -- `op-rsqrt-approx` exists (hardware-supported math operations)
 - `exp`   ; `(exp x)` calculates $e^x$
 - `log`
 - `log2`
@@ -10318,7 +10270,7 @@ Now using soa-vector for better performance
       (sync-workgroup) ; Ensure loading is done
 
       (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
-            (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1)))
+            (group-id-x (get-workgroup-id 0)) (group-id-y (get-workgroup-id 1)))
 
         ;; LOOP OVER WORK BLOCKS (If workgroup handles multiple butterflies)
         ;; This part depends on how work is assigned (e.g., each thread doing multiple butterflies)
@@ -12546,7 +12498,7 @@ same workgroup — typically a **producer** warp that does nothing but fetch til
 warps that do nothing but compute on them.
 
 In the example above one warp runs the `:producer` body and two run the `:consumer` body, so the
-workgroup must be sized to 3 × `(get-warp-size)`.  You may declare as many roles as you like, so
+workgroup must be sized to 3 × `(warp-size)`.  You may declare as many roles as you like, so
 long as the workgroup is a multiple of their sum.  With `--runtime-checks` the compiler inserts a
 check that the workgroup size actually matches.
 
@@ -13823,6 +13775,10 @@ v_add.spv
 v_add_hoist_L0.cpp
 ```
 
+The next example is **aspirational**: `--binary-gpu-target`, the PyLevelZero hoist and per-orchestration
+output are planned (📝), not implemented.  Today, produce PTX or SPIR-V with `--ir-target` and hoist with
+`--hoist=L0` or `--hoist=CUDA`.
+
 ```
 $ crisp.exe  --binary-gpu-target=sm_90 --binary-gpu-target=pvc --hoist=CUDA --hoist=PyLevelZero --metadata ../reduce-vector.crisp
 $ ls
@@ -14298,7 +14254,7 @@ These dot product and matmul implementations work for ALL types.
     (let ((tile-A (make-tile TILE_DIM (base T)))
           (tile-B (make-tile TILE_DIM (base T)))
           (local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
-          (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1))
+          (group-id-x (get-workgroup-id 0)) (group-id-y (get-workgroup-id 1))
           (acc (identity-of #'+ (accum T)))
       (declare (type acc (accum T)))
 

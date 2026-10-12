@@ -426,8 +426,32 @@
     (%multicast-axis-plan dims grid-list location :errorp t)))
 
 
+;;; ADV-007 (adversarial, 2026-10-12): two enum-valued if branches unify to their single common enumeration.
+(defun %enum-type-for-branch (type)
+  "The set of enumerations a branch of TYPE could belong to: for (keyword :k) every enum
+   holding :k; for an enumeration name, just that name; otherwise NIL."
+  (let ((resolved (if (symbolp type) (resolve-type-alias type) type)))
+    (cond
+      ((and (consp resolved) (eq (first resolved) 'keyword) (keywordp (second resolved)))
+       (%enumerations-containing-keyword (second resolved)))
+      ((and (symbolp resolved) (gethash resolved *crisp-enums*))
+       (list resolved)))))
+
 (defun ensure-branch-compatibility (then-node else-node location)
-  "Unifies types of then/else branches. Returns (values unified-type new-then new-else)."
+  "Unifies types of then/else branches. Returns (values unified-type new-then new-else).
+   ADV-007: two enum-valued branches -- e.g. (if c :mul :add), whose keyword literals each
+   have their own singleton type -- unify to their single common enumeration."
+  (when else-node
+    (let ((t-single (get-single-value-type then-node))
+          (e-single (get-single-value-type else-node)))
+      (unless (equal t-single e-single)
+        (let* ((t-enums (%enum-type-for-branch t-single))
+               (e-enums (%enum-type-for-branch e-single))
+               (common (and t-enums e-enums (intersection t-enums e-enums))))
+          (when (= (length common) 1)
+            (log:debug "ensure-branch-compatibility: ~s / ~s unify to enum ~s" t-single e-single (first common))
+            (return-from ensure-branch-compatibility
+              (values (first common) then-node else-node)))))))
   (let ((t-type (semantic-node-type then-node)))
     (unless else-node
       ;; Propagate THEN type if no ELSE (implicitly returns void/nil or 0? 

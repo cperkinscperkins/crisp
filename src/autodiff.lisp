@@ -1054,8 +1054,9 @@
    literal cases plus compound value exprs (if / let), recursing; leaf exprs
    (math, ~, calls, accessors) delegate to %handle-single-value-backward."
   (cond
-   ;; copy: v <- s  =>  s_adj += v_adj  (skip self-copy)
-   ((symbolp expr)
+   ;; copy: v <- s  =>  s_adj += v_adj  (skip self-copy).  ADV-007: not a keyword (an enum
+   ;; literal) -- that is a constant, handled by the literal clause below.
+   ((and (symbolp expr) (not (keywordp expr)))
      (unless (eq expr v)
        (funcall emit-fn `(set! ,(funcall local-adj-fn expr)
                                (+ ,(funcall local-adj-fn expr) ,(funcall local-adj-fn v))))))
@@ -3672,9 +3673,18 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
         (list (nth 0 canonical) float-elem :address-space addr))
       type-spec))
 
+;;; ADV-007 (adversarial, 2026-10-12): an enum is an i32; its adjoint slot is a float, like an int's.
+(defun %ad-enum-type-p (type-spec)
+  "T if TYPE-SPEC (after alias resolution) names a def-enumeration, or is a keyword
+   literal's singleton type (keyword :k).  ADV-007."
+  (let ((resolved (if (symbolp type-spec) (resolve-type-alias type-spec) type-spec)))
+    (or (and (symbolp resolved) (gethash resolved *crisp-enums*) t)
+        (and (consp resolved) (eq (first resolved) 'keyword)))))
+
 (defun %promote-to-float-adjoint (type-spec)
   "Generalised float-adjoint type promotion for AD output gradient slots.
    - integer scalar      → float / double scalar
+   - enum scalar         → float (an enum is an i32; ADV-007)
    - integer tensor      → float / double tensor (element-type promoted)
    - integer cell        → cell of float / double
    - everything else     → unchanged (already float, or non-numeric)
@@ -3684,6 +3694,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    ((%crisp-integer-tensor-type-p type-spec) (%integer-tensor-elem-to-float type-spec))
    ((%crisp-integer-cell-type-p type-spec) (%integer-cell-elem-to-float type-spec))
    ((%crisp-integer-scalar-type-p type-spec) (%integer-scalar-to-float-scalar type-spec))
+   ((%ad-enum-type-p type-spec) 'float)
    (t type-spec)))
 
 ;;; ===================================================================

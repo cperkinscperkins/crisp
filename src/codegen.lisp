@@ -2566,7 +2566,8 @@
               (values nil nil)))))))
 
 (defmethod generate-node-ir ((node semantic-struct-construction) builder module var-env di-builder di-scope location-map)
-  (let* ((type-name (semantic-struct-construction-type node))
+  ;; ADV-018: the node's type may be c-t-qualified, (NAME :k v ...); the LLVM layout is NAME's.
+  (let* ((type-name (%member-access-struct-name (semantic-struct-construction-type node)))
          (struct-def (lookup-struct-definition type-name))
          (llvm-type (ensure-struct-llvm-type type-name))
          (agg-val (llvm-get-undef llvm-type))

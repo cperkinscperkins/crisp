@@ -17,13 +17,13 @@ Functionally, `reduce-workgroup` is much the same as `reduce-warp` but expands i
 * `<someVar>`: The variable being reduced.
 * `identity`: The identity value for `someFunction`.
 * `:return-vec`: (Optional) A vector to store the final results. This vector must have the same element type as `<someVar>` and its address space MUST be `:global`. Its size should be the number of workgroups (calculated as `M = global_work_size / local_work_size`). If not provided, the result is simply kept in `<someVar>` for subsequent in-workgroup operations.
-* `:local-scratch-vec`: (Optional) Writeable local memory used to bridge the warps. Its size must equal the number of warps in a single workgroup (`local_work_size / get-warp-size`). If omitted, Crisp allocates this scratchpad for you, typed from the identity (see *Full Reductions Made Easy* below).
+* `:local-scratch-vec`: (Optional) Writeable local memory used to bridge the warps. Its size must equal the number of warps in a single workgroup (`(/ (get-local-work-size) (warp-size))`). If omitted, Crisp allocates this scratchpad for you, typed from the identity (see *Full Reductions Made Easy* below).
 * `:message`: (Optional, reserved) A string saying why Crisp generated scratch memory on your behalf. It is accepted today but not yet attached to the implicit allocations.
 
 **Post-Conditions & Return:**
 
 * **Variable State:** `<someVar>` in *all* threads of the workgroup will be bound to the final value of the reduction.
-* **Memory State:** `:return-vec` (if provided) will store the result of this specific workgroup's reduction at index `(get-group-id)`.
+* **Memory State:** `:return-vec` (if provided) will store the result of this specific workgroup's reduction at index `(get-workgroup-id)`.
 * **Scratch State:** The contents of `local-scratch-vec` are indeterminate after completion.
 * **Returns:** `nil`.
 

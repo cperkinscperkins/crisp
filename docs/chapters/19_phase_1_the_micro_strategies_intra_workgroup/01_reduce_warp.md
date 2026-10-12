@@ -1,7 +1,7 @@
 # `reduce-warp` ✅
 
 
-`(reduce-warp someFunction <someVar> identity &optional (active-threads (get-warp-size)))`
+`(reduce-warp someFunction <someVar> identity &optional (active-threads (warp-size)))`
 
 The warp shuffle is the undisputed king of speed. `reduce-warp` iteratively applies `someFunction` using register shuffles (`shuffle-xor`), entirely bypassing local memory and barriers.
 
@@ -11,7 +11,7 @@ The warp shuffle is the undisputed king of speed. `reduce-warp` iteratively appl
 **Mechanics & Constraints:**
 `reduce-warp` applies `someFunction` to the `<someVar>` expression in the current thread and another thread in the same warp. It combines the values of every lane whose lane ID is less than `active-threads`; lanes at or past `active-threads` contribute the identity, and every lane of the warp -- active or not -- ends up holding the result.
 
-* **Thread Limit:** Using a value for `active-threads` that is GREATER than the warp size for the GPU hardware results in undefined behavior. This reduction cannot reduce more than `+warp-size+` threads.
+* **Thread Limit:** Using a value for `active-threads` that is GREATER than the warp size for the GPU hardware results in undefined behavior. This reduction cannot reduce more than `(warp-size)` threads.
 * **Scope:** While `reduce-warp` coordinates other threads at the warp level, it is not a grid-level operation. This makes it highly versatile—it can be nested and used in a wide variety of contexts and applications.
 * **Workgroup Considerations:** You could configure a kernel to run exactly one warp per workgroup via `(declare (local-size :set-to 32))`. While this fits many problems perfectly, a workgroup consisting of multiple warps is often better for hiding latency; if one warp pauses to fetch memory, another warp in the same workgroup can execute in its stead.
 

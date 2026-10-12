@@ -4020,3 +4020,20 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         and the shadow-struct naming (%shadow-type-name-for -> NAME_ADJ) would need the struct NAME, not the
         alias.  Loud, not silent.  Not a regression: before ADV-018 these values did not compile forward.
         Spec: tests/spec/018-def-type/08-def-type-ct-struct-alias.crisp carries a SKIP-WITH[--differentiate].
+
+[ ] 118 (local-size :set-to (warp-size)) IS NOT RESOLVED WHEN PINNING THE SPIR-V SUBGROUP SIZE.
+
+        FOUND 2026-10-12 while rewriting the "Sum a Vector using Warps and Shuffles" doc example.  A kernel
+        with a warp collective, compiled --ir-target=spv --hardware-profile=bmg, is refused ("its SPIR-V
+        subgroup size cannot be pinned ... needs ... a compile-time (local-size :set-to N)") when N is
+        (warp-size); the literal 16 compiles.  The chapter used to claim the declaration "follows it
+        automatically".  Loud, not silent.  The chapter now uses a literal and cites this bug.
+
+[ ] 119 sqrt AND rsqrt ARE DOCUMENTED (chapter 32/02, marked implemented) BUT ARE "Unsupported form".
+
+        FOUND 2026-10-12 while verifying the agent guide.  Checked on spv and ptx:
+          work:     exp log log2 sin cos tan asin acos atan pow atan2 max min  (PTX transcendentals need libdevice)
+          missing:  sqrt rsqrt (documented)  ...  tanh abs/fabs floor ceil trunc fmin fmax exp2 log10 sinh cosh erf
+                    (not documented, but layernorm / softmax / GELU-style contest kernels reach for them at once)
+        op-rsqrt-approx exists.  Most map straight onto LLVM intrinsics (llvm.sqrt / fabs / floor / ceil / trunc /
+        minnum / maxnum) on both backends; each also needs an AD rule.  Chapter 32/02 now marks sqrt / rsqrt 📝.

@@ -11,8 +11,8 @@ Example:
 (sqrt x)
 ```
 
-- `sqrt`
-- `rsqrt`
+- `sqrt`  📝 *not yet implemented* (BUG 119)
+- `rsqrt` 📝 *not yet implemented* (BUG 119) -- `op-rsqrt-approx` exists (hardware-supported math operations)
 - `exp`   ; `(exp x)` calculates $e^x$
 - `log`
 - `log2`
