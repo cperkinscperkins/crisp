@@ -4062,3 +4062,12 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         factor is integer code INLINE IN A KERNEL BODY on SPIR-V / BMG.  Suspects: IGC, or something about how
         Crisp emits kernel bodies (the entry wrapper calls the body function; attributes; the BUG 030 volatile
         workaround?).  Probes 17b (passes) / 17c (fails) differ only in an extra store of z.
+
+[ ] 121 A SCALAR bfloat16 LITERAL CRASHES THE COMPILER ON SPIR-V; to-bfloat16 DOES NOT EXIST.
+
+        FOUND 2026-10-12 while verifying docs/writing-crisp.md.
+          (def-function f () (declare #'(=> bfloat16)) 1.0bf)   --ir-target=spv -> crisp-compile.exe dies with
+          "Illegal instruction" (exit 132).  The same file compiles to LLVM IR and to PTX.
+          (to-bfloat16 1.0) -> "Unsupported form 'TO-BFLOAT16'" on every target, though the AD code names
+          TO-BFLOAT16 as a widening conversion (%ad-widening-conversion-form-p).
+        bfloat16 inside the MMA paths is unaffected (the 159 specs); this is the scalar path.

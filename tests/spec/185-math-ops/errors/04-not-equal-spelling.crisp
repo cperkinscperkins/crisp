@@ -1,0 +1,8 @@
+;;
+;; CHECK-FAIL: "Crisp has no /=: not-equal is !="
+;;
+;; Crisp spells not-equal !=.  The Common Lisp /= gets an error that names the Crisp spelling.
+
+(def-function f (a b)
+  (declare #'(int int => int))
+  (if (/= a b) 1 0))

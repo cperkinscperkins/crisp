@@ -49,3 +49,23 @@
 ;;;;                                  (src/mma.lisp)
 
 (in-package :crisp.compiler)
+
+;; src/errors.lisp -- adds "/=" (not-equal is !=), found while writing docs/writing-crisp.md
+(defparameter *unsupported-form-hints*
+  '(("EQ" . "compare values, including enum keywords, with =")
+    ("EQL" . "compare values, including enum keywords, with =")
+    ("EQUAL" . "compare values, including enum keywords, with =")
+    ("EQUALP" . "compare values, including enum keywords, with =")
+    ("/=" . "not-equal is !=")
+    ("SETF" . "assign with set!, e.g. (set! x v) or (set! (~ v i) x)")
+    ("SETQ" . "assign with set!")
+    ("AREF" . "index a storage handle with ~, e.g. (~ v i)")
+    ("DEFUN" . "define functions at top level with def-function")
+    ("LET*" . "Crisp's let is already sequential; use let")
+    ("PROGN" . "a function or let body is already a sequence of forms")
+    ("INCF" . "write (set! x (+ x 1))")
+    ("DECF" . "write (set! x (- x 1))")
+    ("DOLIST" . "loop with dotimes or one of the stride macros")
+    ("LOOP" . "loop with dotimes or one of the stride macros"))
+  "Common Lisp operator name -> what to write in Crisp instead.  Appended to the
+   unsupported-form error (ADV-007).")
