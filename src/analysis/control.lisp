@@ -1617,9 +1617,11 @@
                                     (unwind-protect
                                         ;; Endeavor 120 gap #4: permit to-*-uniform only when it
                                         ;; is the direct initializer of this binding.
-                                        (let ((*to-uniform-allowed* (%to-uniform-form-p init-form)))
-                                          (analyze-expression init-form current-env context
-                                                              (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
+                                        (let ((*to-uniform-allowed* (%to-uniform-form-p init-form))
+                                              (init-loc (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
+                                          ;; Endeavour 185 D1: (q r (floor a b)) etc. -> quotient AND remainder.
+                                          (or (%185-maybe-divmod-node init-form binding-vars current-env context init-loc)
+                                              (analyze-expression init-form current-env context init-loc)))
                                       (when current-binding-name
                                             (setf (compiler-context-current-binding-name context) old-name)))))
                                  (init-node-types (semantic-node-type init-node))
