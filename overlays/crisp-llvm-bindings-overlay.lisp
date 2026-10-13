@@ -28,3 +28,5 @@
   (name :string) (slen :size))
 (cffi:defcfun ("LLVMCreateEnumAttribute" llvm-create-enum-attribute) :pointer
   (context :pointer) (kind-id :unsigned-int) (val :uint64))
+(cffi:defcfun ("LLVMBuildFRem" llvm-build-frem) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))

@@ -1176,3 +1176,138 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
   "exp2 (endeavour 185 P3)."
   (declare (ignore result-type))
   (%185-transcendental-call builder module (first arg-vals) (first arg-types) "exp2"))
+
+;;; =====================================================================================
+;;; Endeavour 185 -- mod and rem as the Common Lisp pair (decided with Chris 2026-10-12):
+;;;   rem = remainder of TRUNCATING division (C++ %), mod = remainder of FLOOR division (sign of the
+;;;   divisor; (mod -1 4) = 3).  Before 185 both were x - (x/y)*y, which is also WRONG for floats:
+;;;   / on floats is exact, so float mod / rem were always about 0.
+;;;   Integers: rem keeps the old expansion (correct for unsigned since BUG 062); mod is the
+;;;   remainder of (floor x y), via the multiple-value binding (and so the BMG-safe helper).
+;;;   Floats: rem is frem (C fmod); mod is frem plus y when the signs of r and y differ.
+;;;   AD is unchanged: %ad-handle-rem-backward already serves both.
+;;; =====================================================================================
+
+;; src/analysis/ops.lisp
+(defun %185-trunc-rem-expansion (expr env context location)
+  "Endeavour 185: the pre-185 analyze-mod-expression body, kept for INTEGER rem.
+   Analyzes (rem x y) as  Expands to (- x (* (/ x y) y)) with x and y bound
+   to gensyms first, then delegates to analyze-expression.  Works for any
+   numeric type via the standard +/-/*/ analyzers."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+           :message (format nil "mod: expected (mod x y), got ~A arg(s)" (1- (length expr)))
+           :source-location location))
+  (let* ((x-form (second expr))
+         (y-form (third expr))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (sub-sym (intern "-" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (div-sym (intern "/" cl-pkg))
+         (x-tmp (gensym "MOD-X"))
+         (y-tmp (gensym "MOD-Y")))
+    ;; Endeavor 146: make the docstring's promise true for a LITERAL divisor.
+    ;;
+    ;; The expansion below runs through the ordinary +/-/*/ analyzers, and those refuse an
+    ;; unpromotable pair — get-promoted-type returns NIL for ULONG vs INT, deliberately, since
+    ;; mixing signedness silently is worse than refusing.  A Lisp integer literal reads as INT,
+    ;; so `(mod <ulong> 2)` died with
+    ;;     Type mismatch for operator '/'. Cannot operate on ULONG and INT.
+    ;; even though every operand the user wrote was consistent.  This is a FORWARD bug, not an
+    ;; AD one: it reproduces in a plain kernel with no --differentiate (endeavour 146 found it
+    ;; via 142/12, whose forward escapes it only because the ring index is unrolled at compile
+    ;; time so the mod never reaches this analyzer).
+    ;;
+    ;; Coercing only a LITERAL keeps the language's strictness where it earns its keep: two
+    ;; mismatched VARIABLES still error, because that is where a silent signedness change would
+    ;; actually surprise someone.  A literal has no independent type worth defending — it is
+    ;; INT only because that is how the reader spells it.
+    (let* ((x-node (when (integerp y-form)
+                     (analyze-expression x-form env context (append location '(1)))))
+           (x-type (when x-node (get-single-value-type x-node)))
+           ;; NB: `to-ulong` and friends are ANALYZER-handled forms, not Lisp functions, so
+           ;; find-symbol is the right existence check here — an fboundp guard silently never
+           ;; fires and the coercion does nothing.
+           (coerce-fn (when (and x-type (symbolp x-type)
+                                 (not (string= (symbol-name x-type) "INT")))
+                        (find-symbol (format nil "TO-~A" (symbol-name x-type)) cl-pkg)))
+           (y-form (if coerce-fn (list coerce-fn y-form) y-form))
+           (expansion (list let-sym
+                            (list (list x-tmp x-form)
+                                  (list y-tmp y-form))
+                            (list sub-sym x-tmp
+                                  (list mul-sym (list div-sym x-tmp y-tmp) y-tmp)))))
+      (analyze-expression expansion env context location))))
+
+(defun %185-rem-or-mod (expr env context location mode)
+  "Shared analyzer for (rem x y) / (mod x y), MODE :rem or :mod (endeavour 185)."
+  (let ((name (if (eq mode :mod) "mod" "rem")))
+    (unless (= (length expr) 3)
+      (error 'crisp-compiler-error
+             :message (format nil "~a: expected (~a x y), got ~a arg(s)" name name (1- (length expr)))
+             :source-location location))
+    (let* ((x-form (second expr)) (y-form (third expr))
+           (x-node (analyze-expression x-form env context (append location '(1))))
+           (x-type (get-single-value-type x-node)))
+      (cond
+        ((%185-float-category-p x-type)
+         (let* ((y-node (%185-coerce-literal-node y-form (analyze-expression y-form env context (append location '(2)))
+                                                  x-type env context location 2)))
+           (unless (eq (get-single-value-type y-node) x-type)
+             (error 'crisp-compiler-error
+                    :message (format nil "~a: x and y must have the same type; got ~(~a~) and ~(~a~)"
+                                     name x-type (get-single-value-type y-node))
+                    :source-location location))
+           (make-semantic-hw-op :op (if (eq mode :mod) '%185-fmod '%185-frem)
+                                :type x-type :args (list x-node y-node) :source-location location)))
+        ((eq mode :rem)
+         (%185-trunc-rem-expansion expr env context location))
+        (t
+         ;; integer mod: the remainder of floor division (D1's binding gives both values)
+         (let* ((cl-pkg (find-package :crisp-language))
+                (q (gensym "MOD-Q")) (r (gensym "MOD-R")))
+           (analyze-expression (list (intern "LET" cl-pkg)
+                                     (list (list q r (list (intern "FLOOR" cl-pkg) x-form y-form)))
+                                     r)
+                               env context location)))))))
+
+;; src/analysis/ops.lisp
+(defun analyze-mod-expression (expr env context location)
+  "Analyzes (mod x y): the remainder of FLOOR division -- its sign follows the divisor, so
+   (mod -1 4) is 3 (Common Lisp mod; endeavour 185).  Integers and floats."
+  (%185-rem-or-mod expr env context location :mod))
+
+;; src/analysis/ops.lisp
+(defun analyze-rem-expression (expr env context location)
+  "Analyzes (rem x y): the remainder of TRUNCATING division -- its sign follows the dividend,
+   like C++ % (Common Lisp rem; endeavour 185).  Integers and floats."
+  (%185-rem-or-mod expr env context location :rem))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql '%185-frem)) builder module arg-vals arg-types result-type)
+  "Float rem (endeavour 185): LLVM frem, i.e. C fmod -- truncating, sign of the dividend."
+  (declare (ignore module arg-types result-type))
+  (%apply-precision-fmf (crisp.llvm-bindings::llvm-build-frem builder (first arg-vals) (second arg-vals) "frem")))
+
+(defun %185-fmod-body (builder module x y type-name)
+  "Float mod: r = frem(x, y); r + y when r /= 0 and r, y differ in sign."
+  (let* ((zero (%hw-float-const builder module type-name 0.0))
+         (r (crisp.llvm-bindings::llvm-build-frem builder x y "fmod_r"))
+         (r-nonzero (llvm-build-fcmp builder 6 r zero "fmod_nz"))           ; ONE: ordered, not equal
+         (signs-differ (crisp.llvm-bindings::llvm-build-xor
+                        builder
+                        (llvm-build-fcmp builder +llvm-real-olt+ r zero "fmod_rneg")
+                        (llvm-build-fcmp builder +llvm-real-olt+ y zero "fmod_yneg") "fmod_x")))
+    (crisp.llvm-bindings::llvm-build-select
+     builder (crisp.llvm-bindings::llvm-build-and builder r-nonzero signs-differ "fmod_fix")
+     (llvm-build-fadd builder r y "fmod_ry") r "fmod")))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql '%185-fmod)) builder module arg-vals arg-types result-type)
+  "Float mod (endeavour 185): see %185-fmod-body.  Behind a noinline helper (BUG 120 family)."
+  (declare (ignore result-type))
+  (let ((type-name (first arg-types)))
+    (%185-helper-call builder module (format nil "__crisp_fmod_~(~a~)" type-name)
+                      (crisp-type-to-llvm-type type-name module) arg-vals
+                      (lambda (b params) (%185-fmod-body b module (first params) (second params) type-name)))))

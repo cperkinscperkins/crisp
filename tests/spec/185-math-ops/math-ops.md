@@ -69,9 +69,9 @@ widening forms belong to the quantized / microfloat rework.
 
 ## Open questions for Chris
 
-- **`mod` is truncating, like `rem`** (endeavour 109).  Common Lisp's `mod` is floor-based: `(mod -1 4)` is 3
-  there, -1 in Crisp.  Harmless for non-negative coordinates; surprising otherwise.  Now that `floor` divides
-  properly, `mod` could be the floor remainder.  Not changed.
+- ~~`mod` is truncating, like `rem`~~ -- RESOLVED 2026-10-12 with Chris: Crisp offers both.  `rem` = truncating
+  remainder (C++ %), `mod` = floor remainder ((mod -1 4) = 3).  Also fixed: float mod / rem were x - (x/y)*y with
+  EXACT division, i.e. always about 0 (silent).  Spec 22 on the BMG, 23 VERIFY-AUTODIFF.
 - **BUG 120** is open: inline integer code in a kernel body misbehaving on the BMG; three ops now use helpers.
 
 ## Phases
