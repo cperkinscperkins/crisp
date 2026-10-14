@@ -23,6 +23,8 @@ Testing high-performance kernels requires running code on specific hardware (e.g
 
 * **Releases**:
   * `package_prerelease.py`: Gathers the necessary binaries, source files, and licenses, and packages them into a distributable zip file (e.g., `crisp-prerelease-XXX.zip`).
+  * `build-linux-release.sh`: builds the Linux release binaries in Docker (`Dockerfile.linux-release`) into `dist/`.
+  * The full sequence -- version bump, both builds, packaging, tag, GitHub release, verification -- is in [docs/releases/HOW-TO-RELEASE.md](releases/HOW-TO-RELEASE.md).
 * **Documentation**:
   * `split_docs.py` & `split-docs.lisp`: Crisp's design spec (`ideal_001.md`) is maintained as a single file. These scripts split it into multiple pages for the MkDocs static site generator.
   * `extract_status.py`: Parses the specification to extract the implementation status (✅ ⚠️ 📝) of various features for reporting.

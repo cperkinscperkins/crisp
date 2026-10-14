@@ -9,8 +9,9 @@ import argparse
 # --- CONFIGURATION ---
 TOOLS_DIR = "tools"
 BIN_DIR = "bin"
-ZIP_URL = "https://github.com/cperkinscperkins/crisp/releases/download/prerelease-001/crisp-prerelease-001.zip"
-ZIP_FILENAME = "crisp-prerelease-001.zip"
+RELEASE = "002"   # the prerelease this checkout installs; bump with each release
+ZIP_URL = f"https://github.com/cperkinscperkins/crisp/releases/download/prerelease-{RELEASE}/crisp-prerelease-{RELEASE}.zip"
+ZIP_FILENAME = f"crisp-prerelease-{RELEASE}.zip"
 
 WINDOWS_MAPPING = [
     ("crisp-compile-windows.exe", "crisp-compile.exe"),

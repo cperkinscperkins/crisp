@@ -16,6 +16,9 @@ Or those same chapters are on disk under @crisp/docs/chapters/
 #### Things about Crisp
 @crisp/docs/crisp-curios.md  has a very short list of things about Crisp that are NOT like other languages and other compilers. 
 
+@crisp/docs/writing-crisp.md  is the guide to WRITING Crisp kernels (as opposed to developing the compiler): toolchain,
+idioms, the rules that trip people up, and exactly what math / builtins exist today.  Every example in it compiles.
+
 
 
 

@@ -22,8 +22,13 @@ python init_bin.py
 ```
 *(Alternatively, you can run `init_bin.bat` on Windows or `./init_bin.sh` on Linux).*
 
+On Linux the bundled LLVM library needs two system libraries that a minimal install may lack:
+```
+sudo apt-get install -y libedit2 libxml2
+```
+
 This script will:
-- Download **Crisp Prerelease 001** (`crisp-prerelease-001.zip`) from GitHub Releases.
+- Download **Crisp Prerelease 002** (`crisp-prerelease-002.zip`) from GitHub Releases -- the release matching this checkout (`RELEASE` in `init_bin.py`).
 - Extract the platform tools into `./tools/`.
 - Automatically create `./bin/` and populate it with the Crisp compiler (`crisp-compile`), hoisting applications (`crisp-hoist-l0`, `crisp-hoist-cuda`), and required LLVM supporting tools (`LLVM-C`, `llc`, `llvm-as`, `llvm-spirv`) configured for your operating system.
 
@@ -32,10 +37,10 @@ This script will:
 Test that the Crisp compiler is working:
 ```
 # Windows
-.\bin\crisp-compile.exe ./tests/return_7.crisp
+.\bin\crisp-compile.exe ./tests/spec/001-def-function/01-return_7.crisp
 
 # Linux
-./bin/crisp-compile ./tests/return_7.crisp
+./bin/crisp-compile ./tests/spec/001-def-function/01-return_7.crisp
 ```
 
 You are ready to compile kernels and generate hoisting C++ code! Skip down to **INVOKING THE COMPILER** below.
@@ -130,7 +135,7 @@ INVOKING THE COMPILER
 ---------------------
 Let's try out the compiler
 ```
-$   ./bin/crisp-compile.exe ./tests/return_7.crisp
+$   ./bin/crisp-compile.exe ./tests/spec/001-def-function/01-return_7.crisp
     -- come and see --
 
 ```

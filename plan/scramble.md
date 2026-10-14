@@ -17,9 +17,14 @@ NEXT  (housekeeping-oct)
 - [x] 185 math-ops: chapter 32 made real (integer division, sqrt/rsqrt/abs/clamp/*!, bit ops, tanh/erf/exp2,
       AD); 3 silent bugs fixed; BUG 062/119 closed, BUG 120 opened -- 2026-10-12
 - [ ] review bugs.md (44 open + 4 partial; most don't bite -- prune stale, close what's fixed)
-- [ ] docs for AI: agent entry point (ANTIGRAVITY.md?), crisp-curios.md, stale reduction docs (see Docs)
-- [ ] revisit docs/criticsms.md: addressed / partly / still-true table
+- [x] docs for AI: docs/writing-crisp.md (linked from README, CLAUDE.md, ANTIGRAVITY.md); stale reduction docs fixed -- 2026-10-13
+- [x] revisit docs/criticsms.md: status table added at the top -- 2026-10-13
 - [ ] refactor (narrow: specials.lisp tail, build warnings; long functions after the first contest)
+- [ ] debugging: (1) --debug also writes a listing (myfile.crisp.dbg) whose line N is virtual line N --
+      the s-expression path and its form -- and the DWARF file entry points at it (today DWARF 'lines' are a
+      pre-order count of tree paths, so a debugger would show the wrong line of the .crisp); (2) cuda-gdb smoke
+      test on the next pod rental (break / step / print in a Crisp kernel), alongside the 185 PTX libdevice check
+      (tanh / erf / exp2); (3) gdb-oneapi on the BMG once it is not driving the display (iGPU for the monitor?) (L339)
 - [ ] make new prerelease (see Release)
 - [ ] set up Claude with runpod.io MCP -- needs guardrails first (spend cap, auto-kill TTL)
 - [ ] Start AG on contest submissions -- spike the submission format first (PTX + cupy/cuda-python loader?)
@@ -37,12 +42,13 @@ OPEN
 - [ ] scan design doc for :size :length :extent on vectors -- c-t or not? (L601)
 - [ ] make-scratch-XXXX in doc vs as realized: in sync? need :contiguous-term? (L602)
 - [ ] LLVM can only bitcast same size: (as-ulong 12345) fails, (to-ulong 12345) works. Decide + document (L481)
-- [ ] how to tag the repo to match a release; how to contribute / PR cycle (L931, L932)
+- [x] how to tag the repo to match a release: docs/releases/HOW-TO-RELEASE.md (L931) -- 2026-10-13
+- [ ] how to contribute / PR cycle (L932)
 - [ ] split-docs.lisp -- less granular, simplify? (L859)
 
 ### Release / distribution
-- [ ] opt-windows.exe and opt-linux in the tools distro (L728)
-- [ ] script for bundling a release (L937)
+- [x] opt-windows.exe / opt-linux: OBSOLETE -- opt runs in-process via libLLVM (%opt-available-p is never called) (L728)
+- [x] script for bundling a release: package_prerelease.py --version + build-linux-release.sh (L937) -- 2026-10-13
 - [ ] Quicklisp distribution (L22, L67)
 - [ ] SEO: logo; confirm discoverable at https://cperkinscperkins.github.io/crisp/ ; search console (L1186-1190)
 - [ ] proper bug tracker -- GitHub Issues? (L1200)
