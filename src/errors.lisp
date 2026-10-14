@@ -68,6 +68,7 @@
     ("EQL" . "compare values, including enum keywords, with =")
     ("EQUAL" . "compare values, including enum keywords, with =")
     ("EQUALP" . "compare values, including enum keywords, with =")
+    ("/=" . "not-equal is !=")
     ("SETF" . "assign with set!, e.g. (set! x v) or (set! (~ v i) x)")
     ("SETQ" . "assign with set!")
     ("AREF" . "index a storage handle with ~, e.g. (~ v i)")

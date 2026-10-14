@@ -12,7 +12,7 @@ The descriptions below were written by whoever found the issue.  Treat the *obse
 
 ### ADV-003 / ADV-004 / ADV-011 / ADV-017 (template half): AD through an implicitly instantiated template function
 * **Location:** `templates/adv-003-template-mvb.crisp`, `autodiff/adv-004-differentiate-template-branches.crisp`, `templates/adv-011-macro-template.crisp`, `templates/adv-017-scratch-template.crisp`
-* **Description:** A plain kernel that calls a `(<T> (def-function ...))` template is refused under `--differentiate`: "Function MY-TEMP-CALC is not differentiable".  The simplest case -- one call, no branch, no mvb, no macro -- fails the same way, so these four are ONE gap.  Cause (verified 2026-10-12): the AD walk runs on raw forms before semantic analysis, so it sees a template, not an instantiation, and has no typed signature to build a `_GRAD` from.  A *templated kernel* instantiated with `gen-` differentiates fine (052/13), because the whole template is instantiated first.  ADV-004 also uses one-argument `(- x)`, which is BUG 095.
+* **Description:** A plain kernel that calls a `(<T> (def-function ...))` template is refused under `--differentiate`: "Function MY-TEMP-CALC is not differentiable".  The simplest case -- one call, no branch, no mvb, no macro -- fails the same way, so these four are ONE gap.  Cause (verified 2026-10-12): the AD walk runs on raw forms before semantic analysis, so it sees a template, not an instantiation, and has no typed signature to build a `_GRAD` from.  A *templated kernel* instantiated with `gen-` differentiates fine (052/13), because the whole template is instantiated first.  (ADV-004's one-argument `(- x)` was BUG 095, fixed.)
 * **Scope:** `[differentiate]` -- loud refusal, not a wrong answer.
 
 ### ADV-012 / ADV-013 / ADV-023: overriding a DEFAULTED compile-time property in make-XXXX
@@ -27,7 +27,7 @@ The descriptions below were written by whoever found the issue.  Treat the *obse
 
 ### ADV-017: Autodiff over a function that allocates a scratch cell
 * **Location:** `autodiff/adv-017-autodiff-scratch.crisp` (the template twin is listed under ADV-003)
-* **Description:** "Function MY-SCRATCH-FUNC is not differentiable".  Related to bugs.md BUG 047.  The claimed SBCL teardown fault is unverified.
+* **Description:** "Function MY-SCRATCH-FUNC is not differentiable".  BUG 047 (fixed 2026-10-13) was a scratch cell in a def-KERNEL `let`; this is one inside a def-FUNCTION, still refused.  The claimed SBCL teardown fault is unverified.
 * **Scope:** `[differentiate]`
 
 ### ADV-022: c-t-assert inside a function body is never evaluated

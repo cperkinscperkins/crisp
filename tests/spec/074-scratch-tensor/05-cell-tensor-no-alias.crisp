@@ -1,12 +1,8 @@
 ;; TEST-HOIST[L0]: validate-l0-host-run
 ;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-EXPECT: BUFFER c: 7 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
-;; SKIP-WITH[--differentiate]: "BUG 047 -- %promote-scratch-init-for-ad assumes a scratch
-;; initialiser is a TENSOR, so (make-scratch-cell float) makes it construct the incomplete type
-;; (tensor float) and the compiler dies with CRISP-INCOMPLETE-TYPE-ERROR.  Pre-existing and
-;; unrelated to BUG 046: it fires in the AD walk, not the hoister.  This spec is simply the first
-;; to bind a scratch CELL in a def-kernel let under --differentiate, which is why it was never
-;; hit before.  Remove this skip when 047 is fixed."
+;; (Its --differentiate skip for BUG 047 -- a scratch CELL in a def-kernel let crashed the AD
+;; walk -- was removed 2026-10-13: %promote-scratch-init-for-ad now handles make-scratch-cell.)
 ;;
 ;; BUG 046 REGRESSION — a scratch CELL and a scratch TENSOR must not share storage.
 ;;

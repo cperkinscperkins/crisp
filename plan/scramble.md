@@ -16,7 +16,9 @@ NEXT  (housekeeping-oct)
       (ADV-022 / BUG 114), AD through implicit templates (ADV-003/004/011/017), BUG 115-117
 - [x] 185 math-ops: chapter 32 made real (integer division, sqrt/rsqrt/abs/clamp/*!, bit ops, tanh/erf/exp2,
       AD); 3 silent bugs fixed; BUG 062/119 closed, BUG 120 opened -- 2026-10-12
-- [ ] review bugs.md (44 open + 4 partial; most don't bite -- prune stale, close what's fixed)
+- [x] review bugs.md -- 2026-10-13: closed 024 047 056 060 090-093 095 096 (fixed + folded, never ticked);
+      094 106 now partial; 018 022 059 068 108 re-verified open.  059 (float into a half element, silent)
+      matters for fp16 contest work.
 - [x] docs for AI: docs/writing-crisp.md (linked from README, CLAUDE.md, ANTIGRAVITY.md); stale reduction docs fixed -- 2026-10-13
 - [x] revisit docs/criticsms.md: status table added at the top -- 2026-10-13
 - [ ] refactor (narrow: specials.lisp tail, build warnings; long functions after the first contest)

@@ -69,7 +69,6 @@ The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative
 | `(set! x v)`, `(set! (~ v i) x)` | `setf`, `setq`, `incf` | Assignment is `set!`. |
 | `(~ v i)` | `aref` | Indexing a storage handle. |
 | `(cond (... ) (t default))` | `(cond ... (true default))` | In `cond` the catch-all clause is `t`.  There is no boolean literal (`true` / `false` are not values yet). |
-| `(if (< a b) x y)` | using `(and x y)` as a VALUE | `and` / `or` are fine as conditions; their value is unreliable (BUG 092). |
 | `(* 2.0 x)` | `(* 2 x)` with a float `x` | No implicit int/float mixing — use float literals, or `(to-float n)`. |
 | `(< lid 32ul)` | `(< lid 32)` with a `ulong` | Integer literals are `int`; a literal compared with a `ulong` needs `ul` (see §4). |
 | `def-function` at top level | `defun`, nested functions | Functions are top-level forms; no closures, no recursion. |
@@ -77,6 +76,9 @@ The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative
 
 When you write a Common Lisp form Crisp does not have, the error says what to write instead
 (e.g. "Crisp has no EQ: compare values, including enum keywords, with =").
+
+Kernel names come out **lower-cased**: `(def-kernel MyKernel ...)` is the symbol `mykernel` in the SPIR-V /
+PTX and the `.metacrisp` (BUG 018).  Look kernels up by the lower-case name, or just name them in lower case.
 
 ---
 
@@ -102,7 +104,9 @@ Builtins have fixed types worth knowing: `get-global-id`, `get-local-linear-id`,
 `warp-id` return `uint`.
 
 Avoid scalar `bfloat16` arithmetic on SPIR-V for now (BUG 121); `bfloat16` / `half` are well supported
-inside the MMA paths.
+inside the MMA paths.  **Never `set!` a `float` value into a `half` / `bfloat16` element**: it stores 4
+bytes into a 2-byte slot, silently (BUG 059), and `to-half` does not exist in a kernel body yet.  A `half`
+literal (`1.5h`) or a `half`-typed value stores correctly.
 
 ---
 

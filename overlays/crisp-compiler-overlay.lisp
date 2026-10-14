@@ -5,7 +5,8 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
-;;;; EMPTY as of 2026-10-12 (later) -- endeavour 185 (math-ops) folded into src/:
+;;;; EMPTY as of 2026-10-13 -- the "/=" entry in *unsupported-form-hints* folded into src/errors.lisp.
+;;;; Before that, 2026-10-12 (later) -- endeavour 185 (math-ops) folded into src/:
 ;;;;   * overrides          -> analyze-let-expression (src/analysis/control.lisp); register-ops-analyzers,
 ;;;;                           analyze-mod-expression, analyze-rem-expression (src/analysis/ops.lisp);
 ;;;;                           %handle-single-value-backward (src/autodiff.lisp); semantic-div written out
@@ -49,23 +50,3 @@
 ;;;;                                  (src/mma.lisp)
 
 (in-package :crisp.compiler)
-
-;; src/errors.lisp -- adds "/=" (not-equal is !=), found while writing docs/writing-crisp.md
-(defparameter *unsupported-form-hints*
-  '(("EQ" . "compare values, including enum keywords, with =")
-    ("EQL" . "compare values, including enum keywords, with =")
-    ("EQUAL" . "compare values, including enum keywords, with =")
-    ("EQUALP" . "compare values, including enum keywords, with =")
-    ("/=" . "not-equal is !=")
-    ("SETF" . "assign with set!, e.g. (set! x v) or (set! (~ v i) x)")
-    ("SETQ" . "assign with set!")
-    ("AREF" . "index a storage handle with ~, e.g. (~ v i)")
-    ("DEFUN" . "define functions at top level with def-function")
-    ("LET*" . "Crisp's let is already sequential; use let")
-    ("PROGN" . "a function or let body is already a sequence of forms")
-    ("INCF" . "write (set! x (+ x 1))")
-    ("DECF" . "write (set! x (- x 1))")
-    ("DOLIST" . "loop with dotimes or one of the stride macros")
-    ("LOOP" . "loop with dotimes or one of the stride macros"))
-  "Common Lisp operator name -> what to write in Crisp instead.  Appended to the
-   unsupported-form error (ADV-007).")

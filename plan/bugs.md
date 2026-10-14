@@ -61,6 +61,7 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
         But note that this is "__storage". . That's wrong.  I suspect this is a consequence of bug 015, and may not be an independent bug. 
 
 [ ] 018 - kernel names are being lower cased, not case preserved. 
+        RE-VERIFIED 2026-10-13 (housekeeping review): still true (MyCamelKernel -> define @mycamelkernel, :name "mycamelkernel"). Now noted in docs/writing-crisp.md.
         THere may not be a simple fix for this. Kernel names are most definitely interned as symbols now
         and used in tons of lookups.  Changing to string will mean touching a lot of code. 
         Decide what to do. Having lower-case is not world ending.
@@ -83,6 +84,7 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
           >>  I suspect valid-type-p returns nil for list-based types like (cell ...) when checked in this context, causing the parser to miss the type binding entirely.
 
 [ ] 022 - (LOW)  seeing extra output from CL when running compiler.  
+        RE-VERIFIED 2026-10-13 (housekeeping review): still present (the redefining ... in DEFMACRO warnings print on every compile).
 
         .\bin\crisp-compile.exe --log-level=off --ir-target=ptx --metadata .\tests\spec\029-hoist-l0\07-basic-cell.crisp
         ; --- Starting Pass for Target: PTX ---
@@ -94,9 +96,11 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
         redefining CRISP.COMPILER::MAKE-CELL_INT_GLOBAL_READ-WRITE in DEFMACRO
         ; ...All compilation passes finished.
 
-[/] 023 - is build.lisp returning non zero even when successful?
+[x] 023 - is build.lisp returning non zero even when successful?
+        CLOSED 2026-10-13 (housekeeping review): no -- build.lisp exits 0 on success, on Windows and in the Linux release Docker build.
 
-[ ] 024 - ALL TESTS PASSED is always output from unit tests. Even when there are failures.
+[x] 024 - ALL TESTS PASSED is always output from unit tests. Even when there are failures.
+        CLOSED 2026-10-13 (housekeeping review): tests/run-ci.lisp exits 1 (or errors, under *no-quit*) on a failed report BEFORE it reaches the banner, so the banner now prints only on a pass.
 
 [x] 025 - spec unit tests/validators were broken during last feature, and 028-metadata\18-implicit-scratch-cell-signature.crisp regressed but was not caught. 
 The .metacrisp names the implicit scratch cell "__storage" which is likely wrong.
@@ -1642,7 +1646,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         REGRESSION: tests/spec/074-scratch-tensor/05-cell-tensor-no-alias.crisp (metal, both
         vendors).  Verified failing before the fix and passing after, on an H100.
 
-[ ] 047 - A scratch CELL bound in a def-kernel `let` crashes the compiler under --differentiate.
+[x] 047 - A scratch CELL bound in a def-kernel `let` crashes the compiler under --differentiate.
+        CLOSED 2026-10-13 (housekeeping review): fixed in src/autodiff.lisp -- %promote-scratch-init-for-ad handles MAKE-SCRATCH-CELL directly (its docstring cites 047).  The BUG 047 SKIP-WITH on 074-scratch-tensor/05-cell-tensor-no-alias was removed; that spec passes under --differentiate.
 
         FOUND BY: writing BUG 046's regression spec, which is the first spec to bind a
         make-scratch-cell inside a def-kernel let and then differentiate it.
@@ -1975,7 +1980,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
               a documented limitation rather than a bug.
         Do (a) first regardless: it is correct under either outcome.
 
-[ ] 056 --debug --differentiate ON A 16-BIT KERNEL DIES IN llvm-as: "Metadata id is already
+[x] 056 --debug --differentiate ON A 16-BIT KERNEL DIES IN llvm-as: "Metadata id is already
+        CLOSED 2026-10-13 (housekeeping review): the repro below now compiles (rc=0) and writes the _grad.spv -- most likely cured by the BUG 107 metadata-id fix (endeavour 180).
         used".  Found 2026-09-03 (endeavour 163 defect C).  NEWLY REACHABLE, NOT NEWLY BROKEN --
         before 054 was fixed the 16-bit backward never compiled far enough to reach llvm-as.
 
@@ -2182,6 +2188,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         look correct against half the cases).
 
 [ ] 059 set! OF A float VALUE INTO A half / bfloat16 TENSOR ELEMENT STORES A 4-BYTE FLOAT INTO A
+        RE-VERIFIED 2026-10-13 (housekeeping review): still SILENT -- (set! (~ B i) 1.5) into a (vector half ...) emits `store float 1.5, ..., align 4`.
         2-BYTE ELEMENT.  Silent: no compile error, no warning, and the kernel runs and writes garbage.
         Found 2026-09-13 while writing benchmarks/matmul/common/fill.crisp (the device-side operand
         fill for the L0 benchmark fixture).  Same class as BUG 057, on a different path: 057 was
@@ -2241,7 +2248,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY SPEC HOMES: a negative spec refusing the implicit narrowing store (tests/spec/.../errors),
         plus a positive spec that the explicit form stores a correct half / bf16 value on metal.
 
-[ ] 060 ARITHMETIC ON FLOATING-POINT HARDWARE VECTORS (float4 etc.) EMITS INTEGER INSTRUCTIONS.
+[x] 060 ARITHMETIC ON FLOATING-POINT HARDWARE VECTORS (float4 etc.) EMITS INTEGER INSTRUCTIONS.
+        CLOSED 2026-10-13 (housekeeping review): the fix below (%arith-category) is folded into src/codegen.lisp; 170/05 and 170/08 run in the E2E suite.
         `(* a b)` on float4 emits `mul <4 x float>`, `(+ ...)` emits `add <4 x float>`: invalid IR.
         crisp-compile --ir-target=llvmir exits 0 anyway; --ir-target=spv fails.  Found 2026-09-14
         writing endeavour 170 (op-fma on float4).  OLD: the dispatch dates to 2025-12-19; the only
@@ -2450,6 +2458,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         out in the header and should be restored when the runner grows an 8-byte path.
 
 [ ] 068 (hardware-stride :warp-idx ...) HARDCODES A WARP OF 32 AND IS WRONG ON INTEL.
+        RE-VERIFIED 2026-10-13 (housekeeping review): still open -- src/analysis/control.lisp still says "hardcoded to 32".
         src/analysis/control.lisp says so in its own docstring -- the chunk size is "currently
         hardcoded to 32 as a placeholder for (get-warp-size)".  Under a profile with
         :simd-width 16 it strides by 32 over 16-lane warps.
@@ -3318,7 +3327,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Reading the emitted PTX on the pod -- four ssh round-trips and one compile, no
         suite run.
 
-[ ] 090 LAZY &optional / &key FUNCTION VARIANTS ARE ANALYZED BUT NEVER CODE-GENERATED -- the call
+[x] 090 LAZY &optional / &key FUNCTION VARIANTS ARE ANALYZED BUT NEVER CODE-GENERATED -- the call
+        CLOSED 2026-10-13 (housekeeping review): the fix below is folded (%generate-lazy-variant-ir, %lazy-variant-name in src/); 016/07-10 run on metal in the E2E suite.
         is emitted against a bare `declare`, the SPIR-V carries an unresolved Import, and the
         compiler exits 0.
 
@@ -3395,7 +3405,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         scratch defaults.  Probe: put_temp_files_here/176/g-p1a-optional-default.crisp.
 
 
-[ ] 091 PARAMETERS AFTER `&out ... &optional` ARE TREATED AS &out, contradicting the design doc.
+[x] 091 PARAMETERS AFTER `&out ... &optional` ARE TREATED AS &out, contradicting the design doc.
+        CLOSED 2026-10-13 (housekeeping review): the fix below is folded into src/ (analyze-environment-from-spec); 016/09-out-then-optional-metal is in the E2E suite.
 
         SYMPTOM.
 
@@ -3428,7 +3439,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 176 Phase 0, probe put_temp_files_here/176/p1f.
 
 
-[ ] 092 `(and X Y)` LEAVES ITS RESULT UNSTORED WHEN X IS FALSE -- -O3 then deletes X outright.
+[x] 092 `(and X Y)` LEAVES ITS RESULT UNSTORED WHEN X IS FALSE -- -O3 then deletes X outright.
+        CLOSED 2026-10-13 (housekeeping review): the IF-analyzer fix below is folded into src/; 006/07-10 (metal) and 006/and-result-stored.unit.lisp guard it.
         Silent wrong answers, including in the tile bounds checks.
 
         SYMPTOM.  `(if (and (> a b) (< a 10.0)) 1 0)`.  Unoptimized IR:
@@ -3487,7 +3499,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         p3-ragged-2d.crisp (+ .O3.ll, p3.run.out).
 
 
-[ ] 093 AN IF WHOSE BRANCHES EACH RETURN MULTIPLE VALUES IS TYPED AS ITS FIRST VALUE ONLY --
+[x] 093 AN IF WHOSE BRANCHES EACH RETURN MULTIPLE VALUES IS TYPED AS ITS FIRST VALUE ONLY --
+        CLOSED 2026-10-13 (housekeeping review): the fix below (%if-result-llvm-type, src/codegen.lisp) is folded; 001/05-mv-return-per-branch-metal guards it.
         llvm-as rejects the module.
 
         SYMPTOM.
@@ -3535,7 +3548,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 176 probe (tests/spec/176-reduce-multi/01-probe-mv-binop-butterfly-metal.crisp,
         lines 38-40), reproduced in Phase 0: put_temp_files_here/176/p2a-if-mv-return.crisp.
 
-[ ] 094 MOST SYMBOLIC SCRATCH SIZES IN THE DESIGN ARE NOT IMPLEMENTED, AND GLOBAL SCRATCH ACCEPTS NONE.
+[/] 094 MOST SYMBOLIC SCRATCH SIZES IN THE DESIGN ARE NOT IMPLEMENTED, AND GLOBAL SCRATCH ACCEPTS NONE.
+        PARTIAL 2026-10-13 (housekeeping review): the rank-1 symbolic global-scratch part (%l0-emit-symbolic-global-scratch-arg) is folded into src/hoist-l0/main.lisp; the rest below is still open.
 
         THE DESIGN (tests/spec/074-scratch-tensor/scratch-tensor.md, lines ~50-62) names these
         :size-expr keywords: :match-workgroup-size, :match-num-workgroups, :match-total-threads,
@@ -3577,7 +3591,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         62 pass on BMG.  STILL OPEN: :match-num-workgroups (both hoisters) and the other design-doc
         sizes (:match-total-threads, :match-warp-size, :match-total-warps, :match-grid-size).
 
-[ ] 095 ONE-ARGUMENT MINUS, (- x), IS NOT IMPLEMENTED -- though the design doc uses it.
+[x] 095 ONE-ARGUMENT MINUS, (- x), IS NOT IMPLEMENTED -- though the design doc uses it.
+        CLOSED 2026-10-13 (housekeeping review): confirmed -- (- x) compiles, and (- (type-infinity float)) folds to ret float -inf (%analyze-sub-binary, src/analysis/ops.lisp).
         NOTE 2026-10-12: appears FIXED -- (- x) on a float compiles to fmul x, -1.0.  Confirm and close.
 
         SYMPTOM.  (- (type-infinity float)) -- or any (- x):
@@ -3599,7 +3614,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Endeavour 176, spec 046/05, 2026-09-30.
 
-[ ] 096 THE ANF TRANSFORM MISSED CL:LET, SO (or X Y) CRASHED UNDER --differentiate.
+[x] 096 THE ANF TRANSFORM MISSED CL:LET, SO (or X Y) CRASHED UNDER --differentiate.
+        CLOSED 2026-10-13 (housekeeping review): the fix below (match LET by name in anf-normalize / flatten-anf-body) is folded into src/anf-transform.lisp; 006/09 differentiates in CI.
 
         SYMPTOM.  Any (or X Y) in a differentiated kernel (CI, 006/09):
 
@@ -3619,6 +3635,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
 
 [ ] 097 &optional / &key FUNCTIONS HAVE NO _GRAD COMPANION, so they cannot be differentiated through.
+        NOTE 2026-10-13 (housekeeping review): the stopgap below (%lambda-list-generic-p, loud refusal) is folded into src/analysis/core.lisp; the GAP -- no _GRAD for &optional / &key variants -- remains, and 016/07-08 still skip under --differentiate citing it.
 
         SYMPTOM (CI --differentiate, 016/07-09): "Unsupported form 'ADD-K_GRAD' found in function body."
 
@@ -3838,7 +3855,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         SPEC.  178/errors/09 pins the refusal.
 
-[ ] 106 VERIFY-AUTODIFF ON CUDA CANNOT ALLOCATE :global IMPLICIT SCRATCH -- and the refusal CRASHED the runner.
+[/] 106 VERIFY-AUTODIFF ON CUDA CANNOT ALLOCATE :global IMPLICIT SCRATCH -- and the refusal CRASHED the runner.
+        PARTIAL 2026-10-13 (housekeeping review): the runner CRASH is fixed (below); the gap -- :global implicit scratch on the CUDA VERIFY-AUTODIFF path -- remains.
 
         MEASURED, A100 pod, 2026-10-03 (branch reduce-vec).  178/13 (reduce-vec, default :last-man-standing,
         VERIFY-AUTODIFF[CUDA]) reached %vad-global-scratch-unsupported (tests/verify-autodiff-runner.lisp).  The
@@ -3872,6 +3890,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         -- %max-metadata-id.
 
 [ ] 108 A LET SILENTLY DROPS A DECLARATION IT DOES NOT KNOW.
+        RE-VERIFIED 2026-10-13 (housekeeping review): still silent -- (declare (gird-level)) in a let compiles with rc=0.
 
         MEASURED 2026-10-07 (found during endeavour 180).  analyze-let-expression strips every leading
         (declare ...) and %check-context-declarations looks only for grid-level and workgroup-level.  Any
