@@ -16,6 +16,9 @@ Or those same chapters are on disk under @crisp/docs/chapters/
 #### Things about Crisp
 @crisp/docs/crisp-curios.md  has a very short list of things about Crisp that are NOT like other languages and other compilers. 
 
+@crisp/docs/writing-crisp.md  is the guide to WRITING Crisp kernels (as opposed to developing the compiler): toolchain,
+idioms, the rules that trip people up, and exactly what math / builtins exist today.  Every example in it compiles.
+
 
 
 
@@ -275,7 +278,9 @@ These are some notes that Gemini has left for future instances of Gemini.
 Tooling Strategy (Agent Notes)
 ------------------------------
 1. **Patching Lisp Code**: The `replace_file_content` tool often struggles with Lisp S-expressions due to strict whitespace/indentation matching.
-   - **Preferred**: Use `scripts/patcher.lisp` for logic changes.
+   - **Preferred (updated 2026-10-12)**: APPEND a full new definition to the package's overlay file (see "APPEND? : yes!" above) -- do not edit `src/`.
+     When appending a NEW helper, grep `src/` for its name first: an overlay definition silently REPLACES a same-named `src/` function.
+   - `scripts/patcher.lisp` still exists for one-off edits.
    - **Fallback**: If the patcher or tool fails, use PowerShell directly.
      - Simple Regex: `(Get-Content file.lisp) -replace 'Old', 'New' | Set-Content file.lisp`
      - File Reconstruction: Read file parts into variables (using array slicing), concatenate with new lines, and write back. This prevents "phantom duplicates" and indentation errors.
@@ -319,6 +324,7 @@ Connecting to Lisp MCP & Safe Loading (Agent Notes)
 ---------------------------------------------------
 1. **Connection**:
    - The MCP server is configured in `mcp_config.json` to launch automatically via stdio transport using `start-mcp.bat`.
+   - **Note (2026-10-12)**: `start-mcp.bat` still loads `c:/Users/cperk/Documents/crisp/start-mcp-stdio.lisp` -- the OLD repo path (the repo is now `crisp-man`).  If the server will not start, that path is the first suspect.
    - **Do not** manually run `start-mcp.bat` or `launch-mcp.bat` unless debugging a connection failure.
    - If connection is lost, reload the AntiGravity window to restart the server process.
 
@@ -365,7 +371,7 @@ Here is the breakdown of what I did differently:
 ### 2. Immediate & Continuous Verification
 *   **Last Time**: I probably did a lot of edits and then tried to build/test at the end.
 *   **This Time**:
-    *   I ran [scripts/check-syntax.lisp](cci:7://file:///c:/Users/cperk/Documents/crisp/scripts/check-syntax.lisp:0:0-0:0) immediately after creating *each* new file ([environment.lisp](cci:7://file:///c:/Users/cperk/Documents/crisp/src/environment.lisp:0:0-0:0), [type-checker.lisp](cci:7://file:///c:/Users/cperk/Documents/crisp/src/type-checker.lisp:0:0-0:0)) to catch copy-paste errors instantly.
+    *   (`scripts/check-syntax.lisp` no longer exists; use `scripts/check-parens.lisp`.)  I ran [scripts/check-syntax.lisp](cci:7://file:///c:/Users/cperk/Documents/crisp/scripts/check-syntax.lisp:0:0-0:0) immediately after creating *each* new file ([environment.lisp](cci:7://file:///c:/Users/cperk/Documents/crisp/src/environment.lisp:0:0-0:0), [type-checker.lisp](cci:7://file:///c:/Users/cperk/Documents/crisp/src/type-checker.lisp:0:0-0:0)) to catch copy-paste errors instantly.
     *   I updated the build system ([crisp.asd](cci:7://file:///c:/Users/cperk/Documents/crisp/crisp.asd:0:0-0:0)) and ran `make build` *before* the final cleanup of [analysis.lisp](cci:7://file:///c:/Users/cperk/Documents/crisp/src/analysis.lisp:0:0-0:0) was even finished, ensuring the new code was loadable.
 ### 3. Precise Tooling (PowerShell Slicing)
 *   **Last Time**: I relied on `replace_file_content` to find/replace large blocks of Lisp code, which is notoriously fragile with Lisp's heavy use of parentheses and indentation.

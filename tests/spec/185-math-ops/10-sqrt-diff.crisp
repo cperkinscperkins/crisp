@@ -1,0 +1,10 @@
+;; VERIFY-AUTODIFF: input=4.0 atol=1e-3 expect.input=0.25
+;;
+;; Endeavour 185 P1 -- autodiff of sqrt: d/dx sqrt(x) = 1/(2 sqrt x) = 0.25 at x = 4.
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel sqrt_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out) (sqrt x))))

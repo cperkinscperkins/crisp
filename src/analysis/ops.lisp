@@ -439,64 +439,15 @@ set!  analyzer's behavior in analysis/structs.lisp."
 
 ;; src/analysis/ops.lisp
 (defun analyze-mod-expression (expr env context location)
-  "Analyzes (mod x y).  Expands to (- x (* (/ x y) y)) with x and y bound
-   to gensyms first, then delegates to analyze-expression.  Works for any
-   numeric type via the standard +/-/*/ analyzers."
-  (unless (= (length expr) 3)
-    (error 'crisp-compiler-error
-           :message (format nil "mod: expected (mod x y), got ~A arg(s)" (1- (length expr)))
-           :source-location location))
-  (let* ((x-form (second expr))
-         (y-form (third expr))
-         (cl-pkg (find-package :crisp-language))
-         (let-sym (intern "LET" cl-pkg))
-         (sub-sym (intern "-" cl-pkg))
-         (mul-sym (intern "*" cl-pkg))
-         (div-sym (intern "/" cl-pkg))
-         (x-tmp (gensym "MOD-X"))
-         (y-tmp (gensym "MOD-Y")))
-    ;; Endeavor 146: make the docstring's promise true for a LITERAL divisor.
-    ;;
-    ;; The expansion below runs through the ordinary +/-/*/ analyzers, and those refuse an
-    ;; unpromotable pair — get-promoted-type returns NIL for ULONG vs INT, deliberately, since
-    ;; mixing signedness silently is worse than refusing.  A Lisp integer literal reads as INT,
-    ;; so `(mod <ulong> 2)` died with
-    ;;     Type mismatch for operator '/'. Cannot operate on ULONG and INT.
-    ;; even though every operand the user wrote was consistent.  This is a FORWARD bug, not an
-    ;; AD one: it reproduces in a plain kernel with no --differentiate (endeavour 146 found it
-    ;; via 142/12, whose forward escapes it only because the ring index is unrolled at compile
-    ;; time so the mod never reaches this analyzer).
-    ;;
-    ;; Coercing only a LITERAL keeps the language's strictness where it earns its keep: two
-    ;; mismatched VARIABLES still error, because that is where a silent signedness change would
-    ;; actually surprise someone.  A literal has no independent type worth defending — it is
-    ;; INT only because that is how the reader spells it.
-    (let* ((x-node (when (integerp y-form)
-                     (analyze-expression x-form env context (append location '(1)))))
-           (x-type (when x-node (get-single-value-type x-node)))
-           ;; NB: `to-ulong` and friends are ANALYZER-handled forms, not Lisp functions, so
-           ;; find-symbol is the right existence check here — an fboundp guard silently never
-           ;; fires and the coercion does nothing.
-           (coerce-fn (when (and x-type (symbolp x-type)
-                                 (not (string= (symbol-name x-type) "INT")))
-                        (find-symbol (format nil "TO-~A" (symbol-name x-type)) cl-pkg)))
-           (y-form (if coerce-fn (list coerce-fn y-form) y-form))
-           (expansion (list let-sym
-                            (list (list x-tmp x-form)
-                                  (list y-tmp y-form))
-                            (list sub-sym x-tmp
-                                  (list mul-sym (list div-sym x-tmp y-tmp) y-tmp)))))
-      (analyze-expression expansion env context location))))
+  "Analyzes (mod x y): the remainder of FLOOR division -- its sign follows the divisor, so
+   (mod -1 4) is 3 (Common Lisp mod; endeavour 185).  Integers and floats."
+  (%185-rem-or-mod expr env context location :mod))
 
 ;; src/analysis/ops.lisp
 (defun analyze-rem-expression (expr env context location)
-  "Analyzes (rem x y).  Currently identical to mod — both match C % / LLVM
-   srem.  Split semantics later if needed."
-  (let* ((x-form (second expr))
-         (y-form (third expr))
-         (cl-pkg (find-package :crisp-language))
-         (mod-sym (intern "MOD" cl-pkg)))
-    (analyze-mod-expression (list mod-sym x-form y-form) env context location)))
+  "Analyzes (rem x y): the remainder of TRUNCATING division -- its sign follows the dividend,
+   like C++ % (Common Lisp rem; endeavour 185).  Integers and floats."
+  (%185-rem-or-mod expr env context location :rem))
 
 
 ;;; ---------------------------------------------------------------------------------------------
@@ -831,6 +782,315 @@ set!  analyzer's behavior in analysis/structs.lisp."
                                       sb-ext:single-float-positive-infinity)
                            :source-location location)))
 
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 185 (math-ops): chapter 32 made real -- integer division (floor / ceil / round with
+;;; quotient AND remainder in a multiple-value binding, D1; one-argument float -> int, D2), mod / rem as
+;;; the Common Lisp pair, sqrt rsqrt abs clamp *!, the bit operations (ash with defined CL semantics, D3),
+;;; tanh erf exp2.  Each is one semantic-hw-op (the endeavour-170 node), registered BY NAME under both
+;;; packages from register-ops-analyzers.  See tests/spec/185-math-ops/math-ops.md.
+;;; ---------------------------------------------------------------------------------------------
+
+(defparameter *185-divmod-ops*
+  '(("/" . :trunc) ("FLOOR" . :floor) ("CEIL" . :ceil) ("ROUND" . :round))
+  "Crisp operator name -> integer division rounding mode (endeavour 185).")
+
+(defun %185-int-category-p (type-name)
+  "T when TYPE-NAME is a signed or unsigned integer SCALAR type."
+  (multiple-value-bind (cat bits lanes) (%hw-type-parts type-name)
+    (declare (ignore bits))
+    (and (member cat '(:signed-int :unsigned-int)) (null lanes) t)))
+
+(defun %185-float-category-p (type-name)
+  "T when TYPE-NAME is a floating-point SCALAR type."
+  (multiple-value-bind (cat bits lanes) (%hw-type-parts type-name)
+    (declare (ignore bits))
+    (and (eq cat :float) (null lanes) t)))
+
+(defun %185-analyze-int-operands (op-name a-form b-form env context location)
+  "Analyzes the two operands of integer division OP-NAME and returns (values a-node b-node type).
+   Both must be the same integer scalar type; an integer LITERAL operand is coerced to the other
+   operand's type (as mod does), since a literal is INT only because of how the reader spells it.
+   Float operands are an error: two-argument floor / ceil / round are integer division."
+  (let* ((cl-pkg (find-package :crisp-language))
+         (a-node (analyze-expression a-form env context (append location '(1))))
+         (b-node (analyze-expression b-form env context (append location '(2))))
+         (a-type (get-single-value-type a-node))
+         (b-type (get-single-value-type b-node)))
+    (when (or (%185-float-category-p a-type) (%185-float-category-p b-type))
+      (error 'crisp-compiler-error
+             :message (format nil "Two-argument ~(~a~) is integer division (chapter 32/06), but got ~(~a~) and ~(~a~).  For a float quotient rounded to an integer, write (~(~a~) (/ a b))"
+                              op-name a-type b-type (if (string= op-name "/") "truncate" op-name))
+             :source-location location))
+    (flet ((coerce-literal (form node to-type pos)
+             (let ((fn (find-symbol (format nil "TO-~a" (symbol-name to-type)) cl-pkg)))
+               (if (and (integerp form) fn)
+                   (analyze-expression (list fn form) env context (append location (list pos)))
+                   node))))
+      (unless (eq a-type b-type)
+        (cond ((integerp b-form) (setf b-node (coerce-literal b-form b-node a-type 2) b-type a-type))
+              ((integerp a-form) (setf a-node (coerce-literal a-form a-node b-type 1) a-type b-type)))))
+    (unless (and (%185-int-category-p a-type) (eq a-type b-type))
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~): both operands must be the same integer type; got ~(~a~) and ~(~a~)"
+                              op-name a-type b-type)
+             :source-location location))
+    (values a-node b-node a-type)))
+
+(defun analyze-rounding-division-expression (expr env context location)
+  "Analyzes floor / ceil / round (endeavour 185, decision D2):
+     (floor x)    float x -> int, rounded toward -infinity (ceil: +infinity; round: nearest, ties even);
+                  an integer x is returned unchanged
+     (floor a b)  integer division, chapter 32/06 -- the QUOTIENT here; the remainder is available
+                  through a multiple-value binding (see %185-maybe-divmod-node)."
+  (let* ((op-name (symbol-name (first expr)))
+         (mode (cdr (assoc op-name *185-divmod-ops* :test #'string=)))
+         (args (rest expr)))
+    (case (length args)
+      (1 (let* ((x-node (analyze-expression (first args) env context (append location '(1))))
+                (x-type (get-single-value-type x-node)))
+           (cond ((%185-int-category-p x-type) x-node)
+                 ((%185-float-category-p x-type)
+                  (make-semantic-hw-op :op (ecase mode (:floor '%185-fp-floor-int) (:ceil '%185-fp-ceil-int)
+                                                  (:round '%185-fp-round-int))
+                                       :type 'int :args (list x-node) :source-location location))
+                 (t (error 'crisp-compiler-error
+                           :message (format nil "(~(~a~) x): x must be a float or integer scalar; got ~(~a~)" op-name x-type)
+                           :source-location location)))))
+      (2 (multiple-value-bind (a-node b-node type)
+             (%185-analyze-int-operands op-name (first args) (second args) env context location)
+           (make-semantic-hw-op :op (ecase mode (:floor '%185-idiv-floor) (:ceil '%185-idiv-ceil)
+                                           (:round '%185-idiv-round))
+                                :type type :args (list a-node b-node) :source-location location)))
+      (t (error 'crisp-compiler-error
+                :message (format nil "~(~a~) takes one argument (float -> int) or two (integer division); got ~a"
+                                 op-name (length args))
+                :source-location location)))))
+
+(defun %185-maybe-divmod-node (init-form binding-vars env context location)
+  "D1: when a let binds TWO OR MORE variables to (/ a b), (floor a b), (ceil a b) or (round a b),
+   returns the two-value quotient / remainder node; otherwise NIL (the caller analyzes INIT-FORM
+   normally).  Float operands of / are refused here: float division has no second value."
+  (when (and (> (length binding-vars) 1)
+             (consp init-form) (symbolp (first init-form)) (= (length init-form) 3))
+    (let ((mode (cdr (assoc (symbol-name (first init-form)) *185-divmod-ops* :test #'string=))))
+      (when mode
+        (multiple-value-bind (a-node b-node type)
+            (%185-analyze-int-operands (symbol-name (first init-form)) (second init-form) (third init-form)
+                                       env context location)
+          (log:debug "%185-maybe-divmod-node: ~a ~a -> (~a ~a)" (first init-form) mode type type)
+          (make-semantic-hw-op :op (ecase mode (:trunc '%185-idivmod-trunc) (:floor '%185-idivmod-floor)
+                                          (:ceil '%185-idivmod-ceil) (:round '%185-idivmod-round))
+                               :type (list type type) :args (list a-node b-node) :source-location location))))))
+
+(defparameter *185-math-op-names* '("SQRT" "RSQRT" "ABS" "CLAMP" "*!" "TANH" "ERF" "EXP2")
+  "Endeavour 185 P1: the math operator names analyzed by analyze-185-math-op.")
+
+(defun %185-op-named-p (sym name)
+  "T when SYM is a symbol whose name is NAME (any package)."
+  (and (symbolp sym) (string= (symbol-name sym) name)))
+
+(defun %185-crisp-sym (name)
+  "The :crisp-language symbol NAME -- what the AD walk must emit so the backward source reads
+   like user source."
+  (intern name (find-package :crisp-language)))
+
+(defun %185-coerce-literal-node (form node to-type env context location pos)
+  "If FORM is a numeric literal whose node type is not TO-TYPE, re-analyze it as (TO-<TO-TYPE> FORM);
+   otherwise return NODE.  A literal has no independent type worth defending."
+  (let ((fn (and (numberp form) (symbolp to-type)
+                 (find-symbol (format nil "TO-~a" (symbol-name to-type)) (find-package :crisp-language)))))
+    (if (and fn (not (eq (get-single-value-type node) to-type)))
+        (analyze-expression (list fn form) env context (append location (list pos)))
+        node)))
+
+(defun analyze-185-math-op (expr env context location)
+  "Analyzes sqrt / rsqrt / abs / clamp / *! (endeavour 185 P1)."
+  (let* ((name (symbol-name (first expr)))
+         (args (rest expr))
+         (want (cond ((member name '("SQRT" "RSQRT" "ABS" "TANH" "ERF" "EXP2") :test #'string=) 1)
+                     ((string= name "CLAMP") 3)
+                     (t 2))))
+    (unless (= (length args) want)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~) takes ~a argument~:p; got ~a" name want (length args))
+             :source-location location))
+    (if (string= name "*!")
+        ;; D6: for the basic types (accum T) is T, so *! is *.
+        (analyze-expression (list (%185-crisp-sym "*") (first args) (second args)) env context location)
+        (let* ((nodes (loop for a in args for i from 1
+                            collect (analyze-expression a env context (append location (list i)))))
+               (x-type (get-single-value-type (first nodes))))
+          (multiple-value-bind (cat bits lanes) (%hw-type-parts x-type)
+            (cond
+              ((member name '("SQRT" "RSQRT" "TANH" "ERF" "EXP2") :test #'string=)
+               (unless (and (eq cat :float) (member bits '(32 64)) (null lanes))
+                 (error 'crisp-compiler-error
+                        :message (format nil "~(~a~): operand must be float or double; got ~(~a~).  Write (~(~a~) (to-float x)) for an integer."
+                                         name x-type name)
+                        :source-location location))
+               (make-semantic-hw-op :op (cond ((string= name "SQRT") '%185-sqrt) ((string= name "RSQRT") '%185-rsqrt)
+                                              ((string= name "TANH") '%185-tanh) ((string= name "ERF") '%185-erf)
+                                              (t '%185-exp2))
+                                    :type x-type :args nodes :source-location location))
+              ((string= name "ABS")
+               (unless (member cat '(:float :signed-int :unsigned-int))
+                 (error 'crisp-compiler-error
+                        :message (format nil "abs: operand must be numeric; got ~(~a~)" x-type)
+                        :source-location location))
+               (make-semantic-hw-op :op '%185-abs :type x-type :args nodes :source-location location))
+              (t ; CLAMP
+               (unless (member cat '(:float :signed-int :unsigned-int))
+                 (error 'crisp-compiler-error
+                        :message (format nil "clamp: x must be numeric; got ~(~a~)" x-type)
+                        :source-location location))
+               (let ((nodes (list (first nodes)
+                                  (%185-coerce-literal-node (second args) (second nodes) x-type env context location 2)
+                                  (%185-coerce-literal-node (third args) (third nodes) x-type env context location 3))))
+                 (unless (every (lambda (n) (eq (get-single-value-type n) x-type)) (rest nodes))
+                   (error 'crisp-compiler-error
+                          :message (format nil "clamp: x, min-val and max-val must have the same type; got ~(~{~a~^, ~}~)"
+                                           (mapcar #'get-single-value-type nodes))
+                          :source-location location))
+                 (make-semantic-hw-op :op '%185-clamp :type x-type :args nodes :source-location location)))))))))
+
+(defparameter *185-bit-op-names* '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT")
+  "Endeavour 185 P2: the integer bit operator names analyzed by analyze-185-bit-op.")
+
+(defun %185-register-math-op-analyzers ()
+  "Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language
+   and :crisp.compiler.  Called from register-ops-analyzers."
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (name *185-math-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-math-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-math-op))
+    ;; P2: the integer bit operations
+    (dolist (name *185-bit-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-bit-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-bit-op))))
+
+(defun analyze-185-bit-op (expr env context location)
+  "Analyzes ash / logand / logior / logxor / lognot / popcount (endeavour 185 P2)."
+  (let* ((name (symbol-name (first expr)))
+         (args (rest expr))
+         (want (if (member name '("LOGNOT" "POPCOUNT") :test #'string=) 1 2)))
+    (unless (= (length args) want)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~) takes ~a argument~:p; got ~a" name want (length args))
+             :source-location location))
+    (let* ((nodes (loop for a in args for i from 1
+                        collect (analyze-expression a env context (append location (list i)))))
+           (x-type (get-single-value-type (first nodes))))
+      (unless (%185-int-category-p x-type)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): operands must be integers (chapter 32/05); got ~(~a~)" name x-type)
+               :source-location location))
+      (cond
+        ((string= name "ASH")
+         ;; the count may be any integer type; codegen converts it to x's type
+         (unless (%185-int-category-p (get-single-value-type (second nodes)))
+           (error 'crisp-compiler-error
+                  :message (format nil "ash: the count must be an integer; got ~(~a~)" (get-single-value-type (second nodes)))
+                  :source-location location))
+         (make-semantic-hw-op :op '%185-ash :type x-type :args nodes :source-location location))
+        ((= want 1)
+         (make-semantic-hw-op :op (if (string= name "LOGNOT") '%185-lognot '%185-popcount)
+                              :type x-type :args nodes :source-location location))
+        (t
+         (let ((b (%185-coerce-literal-node (second args) (second nodes) x-type env context location 2)))
+           (unless (eq (get-single-value-type b) x-type)
+             (error 'crisp-compiler-error
+                    :message (format nil "~(~a~): both operands must be the same integer type; got ~(~a~) and ~(~a~)"
+                                     name x-type (get-single-value-type b))
+                    :source-location location))
+           (make-semantic-hw-op :op (cond ((string= name "LOGAND") '%185-logand)
+                                          ((string= name "LOGIOR") '%185-logior)
+                                          (t '%185-logxor))
+                                :type x-type :args (list (first nodes) b) :source-location location)))))))
+
+(defun %185-trunc-rem-expansion (expr env context location)
+  "Endeavour 185: the pre-185 analyze-mod-expression body, kept for INTEGER rem.
+   Analyzes (rem x y) as  Expands to (- x (* (/ x y) y)) with x and y bound
+   to gensyms first, then delegates to analyze-expression.  Works for any
+   numeric type via the standard +/-/*/ analyzers."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error
+           :message (format nil "mod: expected (mod x y), got ~A arg(s)" (1- (length expr)))
+           :source-location location))
+  (let* ((x-form (second expr))
+         (y-form (third expr))
+         (cl-pkg (find-package :crisp-language))
+         (let-sym (intern "LET" cl-pkg))
+         (sub-sym (intern "-" cl-pkg))
+         (mul-sym (intern "*" cl-pkg))
+         (div-sym (intern "/" cl-pkg))
+         (x-tmp (gensym "MOD-X"))
+         (y-tmp (gensym "MOD-Y")))
+    ;; Endeavor 146: make the docstring's promise true for a LITERAL divisor.
+    ;;
+    ;; The expansion below runs through the ordinary +/-/*/ analyzers, and those refuse an
+    ;; unpromotable pair — get-promoted-type returns NIL for ULONG vs INT, deliberately, since
+    ;; mixing signedness silently is worse than refusing.  A Lisp integer literal reads as INT,
+    ;; so `(mod <ulong> 2)` died with
+    ;;     Type mismatch for operator '/'. Cannot operate on ULONG and INT.
+    ;; even though every operand the user wrote was consistent.  This is a FORWARD bug, not an
+    ;; AD one: it reproduces in a plain kernel with no --differentiate (endeavour 146 found it
+    ;; via 142/12, whose forward escapes it only because the ring index is unrolled at compile
+    ;; time so the mod never reaches this analyzer).
+    ;;
+    ;; Coercing only a LITERAL keeps the language's strictness where it earns its keep: two
+    ;; mismatched VARIABLES still error, because that is where a silent signedness change would
+    ;; actually surprise someone.  A literal has no independent type worth defending — it is
+    ;; INT only because that is how the reader spells it.
+    (let* ((x-node (when (integerp y-form)
+                     (analyze-expression x-form env context (append location '(1)))))
+           (x-type (when x-node (get-single-value-type x-node)))
+           ;; NB: `to-ulong` and friends are ANALYZER-handled forms, not Lisp functions, so
+           ;; find-symbol is the right existence check here — an fboundp guard silently never
+           ;; fires and the coercion does nothing.
+           (coerce-fn (when (and x-type (symbolp x-type)
+                                 (not (string= (symbol-name x-type) "INT")))
+                        (find-symbol (format nil "TO-~A" (symbol-name x-type)) cl-pkg)))
+           (y-form (if coerce-fn (list coerce-fn y-form) y-form))
+           (expansion (list let-sym
+                            (list (list x-tmp x-form)
+                                  (list y-tmp y-form))
+                            (list sub-sym x-tmp
+                                  (list mul-sym (list div-sym x-tmp y-tmp) y-tmp)))))
+      (analyze-expression expansion env context location))))
+
+(defun %185-rem-or-mod (expr env context location mode)
+  "Shared analyzer for (rem x y) / (mod x y), MODE :rem or :mod (endeavour 185)."
+  (let ((name (if (eq mode :mod) "mod" "rem")))
+    (unless (= (length expr) 3)
+      (error 'crisp-compiler-error
+             :message (format nil "~a: expected (~a x y), got ~a arg(s)" name name (1- (length expr)))
+             :source-location location))
+    (let* ((x-form (second expr)) (y-form (third expr))
+           (x-node (analyze-expression x-form env context (append location '(1))))
+           (x-type (get-single-value-type x-node)))
+      (cond
+        ((%185-float-category-p x-type)
+         (let* ((y-node (%185-coerce-literal-node y-form (analyze-expression y-form env context (append location '(2)))
+                                                  x-type env context location 2)))
+           (unless (eq (get-single-value-type y-node) x-type)
+             (error 'crisp-compiler-error
+                    :message (format nil "~a: x and y must have the same type; got ~(~a~) and ~(~a~)"
+                                     name x-type (get-single-value-type y-node))
+                    :source-location location))
+           (make-semantic-hw-op :op (if (eq mode :mod) '%185-fmod '%185-frem)
+                                :type x-type :args (list x-node y-node) :source-location location)))
+        ((eq mode :rem)
+         (%185-trunc-rem-expansion expr env context location))
+        (t
+         ;; integer mod: the remainder of floor division (D1's binding gives both values)
+         (let* ((cl-pkg (find-package :crisp-language))
+                (q (gensym "MOD-Q")) (r (gensym "MOD-R")))
+           (analyze-expression (list (intern "LET" cl-pkg)
+                                     (list (list q r (list (intern "FLOOR" cl-pkg) x-form y-form)))
+                                     r)
+                               env context location)))))))
+
 (defun register-ops-analyzers ()
   "Registers all expression analyzer functions.
 Redefined for 082-atomics to add atomic RMW op analyzers.
@@ -932,9 +1192,13 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
 
   ;; Float-to-int
   (setf (gethash 'truncate *expression-analyzers*) #'analyze-truncate-expression)
-  (setf (gethash 'floor *expression-analyzers*) #'analyze-cast-expression)
-  (setf (gethash 'ceil *expression-analyzers*) #'analyze-cast-expression)
-  (setf (gethash 'round *expression-analyzers*) #'analyze-cast-expression)
+  ;; Endeavour 185: floor / ceil / round are float -> int rounding (one argument) AND integer
+  ;; division (two arguments); they were the cast analyzer, which ignored a second argument.
+  (setf (gethash 'floor *expression-analyzers*) 'analyze-rounding-division-expression)
+  (setf (gethash 'ceil *expression-analyzers*) 'analyze-rounding-division-expression)
+  (setf (gethash 'round *expression-analyzers*) 'analyze-rounding-division-expression)
+  ;; Endeavour 185 P1: sqrt / rsqrt / abs / clamp / *!, by name in both packages.
+  (%185-register-math-op-analyzers)
 
   ;; ---- Endeavour 175: reductions, atomics, and the warp-collective check ----
   ;; Registered under BOTH packages by name, which is why none of these needed a

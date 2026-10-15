@@ -570,8 +570,8 @@ from a fixed !100."
 ;; insertvalue-from-undef chain in accessor functions, etc.) all turned
 ;; out to be downstream noise: the destruction happens with just
 ;; InstCombine on raw IR, no SROA needed, and reproduces on a hand-written
-;; minimal repro with no aggregates at all (see put_temp_files_here/
-;; test-bisect-min2.sh, T6).
+;; minimal repro with no aggregates at all (see research/
+;; spv-call-conv-bisect/test-bisect-min2.sh, T6).
 ;;
 ;; Fix: after every `llvm-build-call2`, copy the callee's CC onto the
 ;; call instruction.  This matches Clang's behaviour and is what

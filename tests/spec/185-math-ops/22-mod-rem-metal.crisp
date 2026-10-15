@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER mi: 3 -2 1 0
+;; HOIST-EXPECT: BUFFER ri: -1 1 1 0
+;; HOIST-EXPECT: BUFFER mf: 2.5 1.5 -0.5 -0
+;; HOIST-EXPECT: BUFFER rf: -1.5 1.5 1.5 -0
+;;
+;; Endeavour 185 -- mod and rem, the Common Lisp pair (decided with Chris 2026-10-12):
+;;   rem: remainder of TRUNCATING division -- sign follows the dividend (C++ %).
+;;   mod: remainder of FLOOR division -- sign follows the divisor; (mod -1 4) is 3, which is what
+;;        wrap-around indexing wants.  (They agree when both operands are non-negative.)
+;;   mi: (mod -1 4) 3      (mod 7 -3) -2     (mod 7 3) 1       (mod -8 4) 0
+;;   ri: (rem -1 4) -1     (rem 7 -3) 1      (rem 7 3) 1       (rem -8 4) 0
+;;   mf: (mod -1.5 4.0) 2.5   (mod 7.5 2.0) 1.5   (mod 7.5 -2.0) -0.5   (mod -8.0 4.0) 0
+;;   rf: (rem -1.5 4.0) -1.5  (rem 7.5 2.0) 1.5   (rem 7.5 -2.0) 1.5    (rem -8.0 4.0) 0
+;; A zero float remainder keeps the dividend's sign (IEEE fmod), hence -0 for -8.0 by 4.0.
+;; Before 185, float mod / rem expanded to x - (x/y)*y with EXACT division -- always about 0.
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel mod_rem (&out mi ri mf rf)
+  (declare #'(&out i-vec i-vec f-vec f-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0)))
+        (zf (to-float (get-workgroup-id 0))))
+    (set! (~ mi 0) (mod (+ z -1) 4))
+    (set! (~ mi 1) (mod (+ z 7) -3))
+    (set! (~ mi 2) (mod (+ z 7) 3))
+    (set! (~ mi 3) (mod (+ z -8) 4))
+    (set! (~ ri 0) (rem (+ z -1) 4))
+    (set! (~ ri 1) (rem (+ z 7) -3))
+    (set! (~ ri 2) (rem (+ z 7) 3))
+    (set! (~ ri 3) (rem (+ z -8) 4))
+    (set! (~ mf 0) (mod (+ zf -1.5) 4.0))
+    (set! (~ mf 1) (mod (+ zf 7.5) 2.0))
+    (set! (~ mf 2) (mod (+ zf 7.5) -2.0))
+    (set! (~ mf 3) (mod (+ zf -8.0) 4.0))
+    (set! (~ rf 0) (rem (+ zf -1.5) 4.0))
+    (set! (~ rf 1) (rem (+ zf 7.5) 2.0))
+    (set! (~ rf 2) (rem (+ zf 7.5) -2.0))
+    (set! (~ rf 3) (rem (+ zf -8.0) 4.0))))

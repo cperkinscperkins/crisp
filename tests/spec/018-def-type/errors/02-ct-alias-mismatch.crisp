@@ -1,0 +1,18 @@
+;;
+;; CHECK-FAIL: "No matching function overload found for 'USE-SLOW'"
+;;
+;; A (my-cfg :exec :fast) is not a slow-cfg: the compile-time property is part of the type, so
+;; the call has no matching overload.  (Companion of 08-def-type-ct-struct-alias.)
+
+(def-enumeration mode :fast :slow)
+(def-struct my-cfg (val float) (exec mode :c-t))
+
+(def-type slow-cfg (my-cfg :exec :slow))
+
+(def-function use-slow (c)
+  (declare #'(slow-cfg => float))
+  (val~ c))
+
+(def-function caller (v)
+  (declare #'(float => float))
+  (use-slow (make-my-cfg :val v :exec :fast)))

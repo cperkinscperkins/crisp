@@ -1799,9 +1799,9 @@ def main():
             # failure endeavour 141 had to unpick.
             #
             # The competitors are registered here too so section 2 comes out of the SAME sweep as
-            # the Crisp column.  They were first measured by scripts/165-pod-sec2.sh, a standalone
-            # script written before any Crisp fp64 kernel existed; that script stays as the
-            # apparatus-proving path, but a published table should not be assembled by hand from
+            # the Crisp column.  They were first measured by a standalone pod script (165-pod-sec2.sh,
+            # since retired) written before any Crisp fp64 kernel existed; that script proved the
+            # apparatus, but a published table should not be assembled by hand from
             # two different runs.
             #
             # cuBLAS gets BOTH compute types.  64F may use the fp64 tensor cores; 64F_PEDANTIC is

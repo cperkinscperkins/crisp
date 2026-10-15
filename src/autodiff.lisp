@@ -864,6 +864,69 @@
            (error "~(~a~): no backward rule yet (endeavour 170 gap -- see the endeavour doc)." op)))))
     t))
 
+;;; Endeavour 185: backward rules for the math-ops, matched by NAME (see %handle-single-value-backward).
+
+(defun %185-math-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of
+   them (the clause handled it), else NIL."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x))
+         (sym (n) (%185-crisp-sym n)))
+    (let ((op (car expr)))
+      (cond
+        ((%185-op-named-p op "SQRT")            ; d/da sqrt(a) = 0.5 / sqrt(a)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 0.5 (,(sym "SQRT") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "RSQRT")           ; d/da a^-1/2 = -0.5 rsqrt(a) / a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* -0.5 (/ (,(sym "RSQRT") ,a) ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "TANH")            ; d/da tanh(a) = 1 - tanh(a)^2
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (- 1.0 (* (,(sym "TANH") ,a) (,(sym "TANH") ,a))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ERF")             ; d/da erf(a) = 2/sqrt(pi) exp(-a^2)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 1.1283791670955126 (exp (- 0.0 (* ,a ,a)))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "EXP2")            ; d/da 2^a = ln2 2^a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 0.6931471805599453 (,(sym "EXP2") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ABS")             ; d/da |a| = sign(a)  (0 at 0)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a)
+                                            (* (- (to-float (> ,a 0.0)) (to-float (< ,a 0.0))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "CLAMP")           ; x passes through inside [lo,hi]; lo below; hi above
+         (destructuring-bind (x lo hi) (cdr expr)
+           (let ((v-adj (local-adj v)))
+             (when (symbolp x)
+               (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (to-float (* (>= ,x ,lo) (<= ,x ,hi))) ,v-adj)))))
+             (when (symbolp lo)
+               (emit `(set! ,(local-adj lo) (+ ,(local-adj lo) (* (to-float (< ,x ,lo)) ,v-adj)))))
+             (when (symbolp hi)
+               (emit `(set! ,(local-adj hi) (+ ,(local-adj hi) (* (to-float (> ,x ,hi)) ,v-adj)))))
+             t)))
+        ((%185-op-named-p op "*!")              ; D6: *! is *
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))
+           t))
+        ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
+        ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
+        ((some (lambda (n) (%185-op-named-p op n))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND"))
+         t)
+        (t nil)))))
+
 (defun %handle-single-value-backward (v expr adjoint-map emit-fn local-adj-fn
                                         &key hof-handler-fn (error-on-unknown t)
                                         tensor-inputs-ht
@@ -921,6 +984,8 @@
    ((and (consp expr) (symbolp (car expr))
          (string-equal (symbol-name (car expr)) "RING-GET"))
      nil)
+   ;; Endeavour 185: sqrt / rsqrt / abs / clamp / *! (and the zero-gradient integer ops), by name.
+   ((and (consp expr) (%185-math-backward v expr emit-fn local-adj-fn)) t)
    ((and (consp expr) (member (car expr)
                               ;; Endeavor 128: transcendentals join the math/trig backward.
                               '(+ - * / sin cos exp log log2 tan asin acos atan pow atan2)
@@ -1054,8 +1119,9 @@
    literal cases plus compound value exprs (if / let), recursing; leaf exprs
    (math, ~, calls, accessors) delegate to %handle-single-value-backward."
   (cond
-   ;; copy: v <- s  =>  s_adj += v_adj  (skip self-copy)
-   ((symbolp expr)
+   ;; copy: v <- s  =>  s_adj += v_adj  (skip self-copy).  ADV-007: not a keyword (an enum
+   ;; literal) -- that is a constant, handled by the literal clause below.
+   ((and (symbolp expr) (not (keywordp expr)))
      (unless (eq expr v)
        (funcall emit-fn `(set! ,(funcall local-adj-fn expr)
                                (+ ,(funcall local-adj-fn expr) ,(funcall local-adj-fn v))))))
@@ -3672,9 +3738,18 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
         (list (nth 0 canonical) float-elem :address-space addr))
       type-spec))
 
+;;; ADV-007 (adversarial, 2026-10-12): an enum is an i32; its adjoint slot is a float, like an int's.
+(defun %ad-enum-type-p (type-spec)
+  "T if TYPE-SPEC (after alias resolution) names a def-enumeration, or is a keyword
+   literal's singleton type (keyword :k).  ADV-007."
+  (let ((resolved (if (symbolp type-spec) (resolve-type-alias type-spec) type-spec)))
+    (or (and (symbolp resolved) (gethash resolved *crisp-enums*) t)
+        (and (consp resolved) (eq (first resolved) 'keyword)))))
+
 (defun %promote-to-float-adjoint (type-spec)
   "Generalised float-adjoint type promotion for AD output gradient slots.
    - integer scalar      → float / double scalar
+   - enum scalar         → float (an enum is an i32; ADV-007)
    - integer tensor      → float / double tensor (element-type promoted)
    - integer cell        → cell of float / double
    - everything else     → unchanged (already float, or non-numeric)
@@ -3684,6 +3759,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    ((%crisp-integer-tensor-type-p type-spec) (%integer-tensor-elem-to-float type-spec))
    ((%crisp-integer-cell-type-p type-spec) (%integer-cell-elem-to-float type-spec))
    ((%crisp-integer-scalar-type-p type-spec) (%integer-scalar-to-float-scalar type-spec))
+   ((%ad-enum-type-p type-spec) 'float)
    (t type-spec)))
 
 ;;; ===================================================================

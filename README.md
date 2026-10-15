@@ -30,6 +30,8 @@ Crisp has moved far beyond the initial design phase. The core architecture—inc
 
 Crisp can be downloaded as a release, or built from source. For either see [INSTALL](./INSTALL.md)
 
+To start writing kernels, read [Writing Crisp](./docs/writing-crisp.md): the toolchain, a first kernel, the rules that trip people up, and what the language provides today.
+
 ### The Specification
 
 The complete, in-progress design document can be found in the docs directory. Each feature is tagged with an emoji indicating its implementation status (✅ Completed, ⚠️ Partially Implemented, 📝 Planned).

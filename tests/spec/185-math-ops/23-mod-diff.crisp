@@ -1,0 +1,11 @@
+;; VERIFY-AUTODIFF: input=-1.5 atol=1e-3 expect.input=3.0
+;;
+;; Endeavour 185 -- autodiff of float mod: d/dx (mod x 4.0) = 1 almost everywhere, so
+;; d/dx 3*(mod x 4) = 3 at x = -1.5 (mod -1.5 4.0 = 2.5).
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel mod_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out) (* 3.0 (mod x 4.0)))))

@@ -1,0 +1,10 @@
+;; VERIFY-AUTODIFF: input=3.0 atol=1e-3 expect.input=5.5451774
+;;
+;; Endeavour 185 P3 -- autodiff of exp2: d/dx 2^x = ln2 2^x = 5.5451774 at 3.
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel exp2_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out) (exp2 x))))

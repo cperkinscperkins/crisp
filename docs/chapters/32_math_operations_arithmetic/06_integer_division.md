@@ -6,6 +6,25 @@ There are four  integer divison functions: `/`, `ceil` ,  `floor` and `round`.
 All four of them return both the quotient and remainder and differ only 
 in how the results are rounded.
 
+The remainder is available where you bind it -- `(let ((q r (floor a b))) ...)`; used as an ordinary
+expression, `(floor a b)` is the quotient.  Both operands must be the same integer type (an integer literal
+is converted).  On floats the two-argument forms are a compile error; with ONE argument,
+`(floor x)` / `(ceil x)` / `(round x)` / `(truncate x)` convert a float to an `int` (round: ties to even).
+Unsigned operands divide unsigned.
+
+#### `rem` and `mod` ✅
+The remainders on their own, for integers and floats:
+- `(rem a b)` -- remainder of truncating division; its sign follows the dividend, like C++ `%`.
+- `(mod a b)` -- remainder of `floor` division; its sign follows the divisor, which is what wrap-around
+  indexing wants: `(mod (- i 1) n)` is `n-1` at `i = 0`.
+```
+(rem -1 4) => -1      (mod -1 4) => 3
+(rem 7 -3) =>  1      (mod 7 -3) => -2
+(mod -1.5 4.0) => 2.5
+```
+They agree when both operands are non-negative.  A zero float remainder keeps the dividend's sign (IEEE
+`fmod`), so `(rem -8.0 4.0)` is `-0.0`.
+
 `#(divisor divident => quotient remainder)`
 
 

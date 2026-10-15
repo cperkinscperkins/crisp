@@ -214,7 +214,7 @@ Now using soa-vector for better performance
       (sync-workgroup) ; Ensure loading is done
 
       (let ((local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
-            (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1)))
+            (group-id-x (get-workgroup-id 0)) (group-id-y (get-workgroup-id 1)))
 
         ;; LOOP OVER WORK BLOCKS (If workgroup handles multiple butterflies)
         ;; This part depends on how work is assigned (e.g., each thread doing multiple butterflies)

@@ -101,11 +101,16 @@
   (values))
 
 (defmacro c-t-output (&rest args)
-  "Compile-Time Output. Evaluates arguments at macro-expansion time and prints them."
+  "Compile-Time Output. Evaluates arguments at macro-expansion time and prints them.
+   An argument that cannot be evaluated at compile time (e.g. a runtime variable) is
+   noted in place, per chapter 41, instead of aborting compilation (ADV-006)."
   (let ((output-string
          (with-output-to-string (s)
            (dolist (arg args)
-             (let ((val (eval arg)))
+             (let ((val (handler-case (eval arg)
+                          (error (e)
+                            (log:debug "c-t-output: ~s is not compile-time evaluable: ~a" arg e)
+                            (format nil "<~(~a~) is not known at compile time>" arg)))))
                (format s "~a " val))))))
     (format *standard-output* "~&~a~%" output-string)
     ;; Return a no-op form for the compiler to process (and ignore)
@@ -485,9 +490,91 @@
     type-map))
 
 
+;;; ADV-014 / ADV-015 / ADV-020 (adversarial, 2026-10-12): kernel-boundary checks on the ELEMENT of
+;;; a storage handle -- it must be complete, and it must not itself be a storage handle.
+(defun %storage-handle-incomplete-element (type-spec)
+  "If TYPE-SPEC (after alias resolution; an (&out T) wrapper is looked through) is a storage
+   handle -- cell / vector / matrix / tensor -- whose element type is an incomplete struct or
+   record, returns that element type; otherwise NIL.  ADV-014 / ADV-020."
+  (let* ((unwrapped (if (and (consp type-spec) (symbolp (car type-spec))
+                             (string-equal (symbol-name (car type-spec)) "&OUT"))
+                        (second type-spec)
+                        type-spec))
+         (resolved (if (symbolp unwrapped) (resolve-type-alias unwrapped) unwrapped)))
+    (when (and (consp resolved) (symbolp (car resolved))
+               (member (symbol-name (car resolved)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+      (let* ((element (second resolved))
+             (element-resolved (if (symbolp element) (resolve-type-alias element) element))
+             (struct-name (cond ((symbolp element-resolved) element-resolved)
+                                ((and (consp element-resolved) (symbolp (car element-resolved)))
+                                 (car element-resolved)))))
+        (when (and struct-name
+                   (lookup-struct-definition struct-name)
+                   (incomplete-type-p element-resolved))
+          (log:debug "%storage-handle-incomplete-element ~s -> ~s" type-spec element-resolved)
+          element-resolved)))))
+
+(defun %alias-resolved-storage-handle-p (type-spec)
+  "T if TYPE-SPEC (after alias resolution) is a cell / vector / matrix / tensor spec."
+  (let ((resolved (if (symbolp type-spec) (resolve-type-alias type-spec) type-spec)))
+    (and (consp resolved) (symbolp (car resolved))
+         (member (symbol-name (car resolved)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)
+         t)))
+
+(defun %storage-handle-nested-element (type-spec)
+  "If TYPE-SPEC is a storage handle whose element type is itself a storage handle, returns
+   that element type; otherwise NIL.  ADV-015."
+  (let* ((unwrapped (if (and (consp type-spec) (symbolp (car type-spec))
+                             (string-equal (symbol-name (car type-spec)) "&OUT"))
+                        (second type-spec)
+                        type-spec))
+         (resolved (if (symbolp unwrapped) (resolve-type-alias unwrapped) unwrapped)))
+    (when (%alias-resolved-storage-handle-p resolved)
+      (let ((element (second resolved)))
+        (when (%alias-resolved-storage-handle-p element) element)))))
+
+(defun %refuse-incomplete-marshall-target (macro-name type-alias)
+  "ADV-020: signals an error when TYPE-ALIAS -- the type argument of marshall-cell /
+   marshall-tensor -- is a storage handle whose element is an incomplete struct or record."
+  (let ((element (and type-alias (%storage-handle-incomplete-element type-alias))))
+    (when element
+      (error "~(~a~): ~(~a~) is a storage handle of the incomplete type ~(~a~); a kernel boundary needs a complete type, so give every :c-t property of the element a value."
+             macro-name type-alias element))))
+
+(defun %ensure-storage-struct-instantiated (base params)
+  "Instantiates the storage-handle struct template BASE for PARAMS (e.g. CELL (DOUBLE :GLOBAL)
+   or STORAGE (:GLOBAL)) unless this compilation has already done so, and returns the mangled
+   struct name (CELL_DOUBLE_GLOBAL).  The marshal macros expand once per kernel parameter per
+   pass; re-evaluating the def-struct each time redefined its MAKE-* constructor macro and SBCL
+   printed a redefinition warning for every one (BUG 022).
+   The guard is *crisp-structs*, not MACRO-FUNCTION: initialize-compiler clears the registry
+   but never CL macros, so a constructor left over from an earlier compilation in the same
+   process must not stop this one from registering the struct."
+  (let ((mangled (mangle-template-struct-name base params)))
+    (if (gethash mangled *crisp-structs*)
+        (log:debug "%ensure-storage-struct-instantiated: ~a already instantiated" mangled)
+        (progn
+          (log:debug "%ensure-storage-struct-instantiated: instantiating ~a" mangled)
+          (eval (instantiate-template base params))))
+    mangled))
+
 (defun %validate-kernel-parameters (params type-map name)
   "Helper: Validates that kernel parameters are complete, not voidp,
-   and that records do not appear in &out position."
+   and that records do not appear in &out position.
+   ADV-015: a storage handle's element may not itself be a storage handle.
+   ADV-014: a storage handle's element must be complete (chapter 21, rule 2)."
+  ;; ADV-015 / ADV-014: checks on the ELEMENT of a storage-handle parameter.
+  (dolist (p params)
+    (let ((t-spec (and (symbolp p) (gethash p type-map))))
+      (when t-spec
+        (let ((nested (%storage-handle-nested-element t-spec)))
+          (when nested
+            (error "def-kernel ~(~a~) parameter '~(~a~)' has type ~(~a~), a storage handle whose element ~(~a~) is itself a storage handle; storage handles cannot be nested.  Pass the inner handle as its own kernel parameter."
+                   name p t-spec nested)))
+        (let ((element (%storage-handle-incomplete-element t-spec)))
+          (when element
+            (error "def-kernel ~(~a~) parameter '~(~a~)' has type ~(~a~), whose element type ~(~a~) is incomplete: kernel parameters must be complete, so give every :c-t property of the element a value (e.g. (cell (my-struct :prop :value) ...))."
+                   name p t-spec element))))))
   (dolist (p params)
     (let ((t-spec (gethash p type-map)))
       (when (and t-spec (%incomplete-storage-handle-p t-spec))
@@ -1414,9 +1501,21 @@ processes float inputs — integer tensor inputs contribute zero gradient."
        (values nil runtime-index))
      ;; Runtime member -> function accessor
      (t
-       (let ((idx runtime-index))
-         (values `(def-function ,accessor-name ((obj ,name))
-                                (return (%extract-struct-member obj ,idx)))
+       (let* ((idx runtime-index)
+              ;; ADV-018: when NAME has a c-t member with no default, the bare NAME is an
+              ;; incomplete type, so this accessor becomes an implicit template -- and an
+              ;; implicit template instantiates with an EMPTY return type unless one is declared
+              ;; ("Expected (NIL) but inferred (INT)").  Declare the member's type in that case
+              ;; only; every other struct keeps the accessor form it always had.
+              (sd (lookup-struct-definition name))
+              (incomplete-p (and sd (some (lambda (m) (and (consp m) (eq (third m) :c-t) (null (fourth m))))
+                                          (crisp-struct-definition-members sd)))))
+         (values (if incomplete-p
+                     `(def-function ,accessor-name ((obj ,name))
+                                    (declare (function ((,name) => ,(second member-spec))))
+                                    (return (%extract-struct-member obj ,idx)))
+                     `(def-function ,accessor-name ((obj ,name))
+                                    (return (%extract-struct-member obj ,idx))))
            (1+ runtime-index)))))))
 
 (defun %generate-raw-accessor (member-spec name pkg runtime-index)
@@ -1747,6 +1846,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 (defmacro marshall-cell (type-alias byte-size ptr offset)
   "Marshals raw kernel arguments into a Cell struct.
    Usage: (marshall-cell out-c byte-size ptr offset)"
+  (%refuse-incomplete-marshall-target 'marshall-cell type-alias)   ; ADV-020
   (when (and (consp type-alias)
              (symbolp (first type-alias))
              (string-equal (symbol-name (first type-alias)) "CELL")
@@ -1761,25 +1861,19 @@ processes float inputs — integer tensor inputs contribute zero gradient."
          (constructor-name (intern (format nil "MAKE-~a" mangled-symbol) (symbol-package base))))
 
     ;; Ensure the specific Cell struct is instantiated in the compiler environment
-    ;; so that the constructor macro (make-cell_...) is defined.
-    (let ((code (instantiate-template base params)))
-      (eval code))
+    ;; so that the constructor macro (make-cell_...) is defined.  Once per compilation (BUG 022).
+    (%ensure-storage-struct-instantiated base params)
 
     (let* ((as (if (consp canonical) (nth 2 canonical) :global))
            ;; Instantiate STORAGE template for the specific address space
            (storage-base 'storage)
            (storage-params (list as))
-           (storage-mangled (mangle-template-struct-name storage-base storage-params))
+           (storage-mangled (%ensure-storage-struct-instantiated storage-base storage-params))
            (storage-constructor (intern (format nil "MAKE-~a" storage-mangled) (symbol-package base)))
-
-           ;; Ensure storage template is instantiated
-           (ignored (let ((code (instantiate-template storage-base storage-params)))
-                      (eval code)))
 
            (result `(,constructor-name
                       :parent (,storage-constructor :address (as (c-pointer :address-space ,as) ,ptr) :byte-size ,byte-size)
                       :offset ,offset)))
-      (declare (ignore ignored))
       (log:warn "MARSHALL-CELL EXPANSION: ~S. Macro? ~a" result (macro-function constructor-name))
       result)))
 
@@ -1810,9 +1904,9 @@ processes float inputs — integer tensor inputs contribute zero gradient."
              (storage-params (list as))
              (stor-mangled (mangle-template-struct-name storage-base storage-params))
              (stor-ctor (intern (format nil "MAKE-~a" stor-mangled) (symbol-package base))))
-        ;; Ensure templates are instantiated so constructors are available
-        (eval (instantiate-template base params))
-        (eval (instantiate-template storage-base storage-params))
+        ;; Ensure templates are instantiated so constructors are available (once per compilation, BUG 022)
+        (%ensure-storage-struct-instantiated base params)
+        (%ensure-storage-struct-instantiated storage-base storage-params)
         (log:debug "%MARSHALL-TENSOR: type=~a mangled=~a ctor=~a N=~a" type-alias mangled ctor n)
         `(,ctor
            :parent (,stor-ctor
@@ -1837,6 +1931,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
    type-alias must be a fully-specified tensor (or expanded vector/matrix) type.
    Each sublist must contain exactly N elements matching the tensor arity.
    All four keywords are required."
+  (%refuse-incomplete-marshall-target 'marshall-tensor type-alias)   ; ADV-020
   (let* ((canonical (canonicalize-type-specifier type-alias))
          (base (first canonical)))
     (unless (and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
@@ -1950,8 +2045,10 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   (declare (ignore mode))
   0)
 
-(defmacro make-arrival-sync-handle (counter count)
-  `(%construct-struct crisp-language:arrival-sync-handle ,counter ,count))
+;; make-arrival-sync-handle is the keyword constructor generated by the def-struct of
+;; arrival-sync-handle in initialize-compiler (src/compiler.lisp).  A positional hand-written
+;; copy used to sit here; nothing could call it (make-arrival-sync passes :counter / :count) and
+;; initialize-compiler redefined it on every start-up, with a warning (BUG 022).
 
 (defmacro arrival-sync-handle-counter (obj)
   `(progn (declare (crisp-system-generated))

@@ -152,7 +152,7 @@ With `:workgroup-idx`, the tensor is chunked by the workgroup dimensions. The ar
 
 ##### `:warp-idx` ✅
 
-With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware warp width. Note that if using `:warp-idx`, it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(get-warp-size)`. Otherwise, operations like warp-level reductions could end up deadlocking.
+With `:warp-idx`, the tensor is chunked into 1D segments equal to the hardware warp width. Note that if using `:warp-idx`, it is extremely important that the kernel is hoisted with a `local_work_size` that is a multiple of `(warp-size)`. Otherwise, operations like warp-level reductions could end up deadlocking.
 
 Note that `hardware-stride :warp-idx` can be used with any global size arity, but it iterates over the flattened, global execution space by the hardware warp width.
 
@@ -166,7 +166,7 @@ from within a `:warp-idx` hardware-stride.
 
 ```
 
-> Implementation Note: Unlike `tensor-stride`, the chunking variants (`tile-stride` and `hardware-stride`) do not evaluate their bodies per-element. They stride the problem space in block-sized steps. For `hardware-stride`, those steps are driven dynamically by `(get-local-size)` or `(get-warp-size)`. Any element-level computation must be done in an inner loop (like `workgroup-stride`) inside the body.
+> Implementation Note: Unlike `tensor-stride`, the chunking variants (`tile-stride` and `hardware-stride`) do not evaluate their bodies per-element. They stride the problem space in block-sized steps. For `hardware-stride`, those steps are driven dynamically by `(get-local-size)` or `(warp-size)`. Any element-level computation must be done in an inner loop (like `workgroup-stride`) inside the body.
 
 #### Helper Macros ✅
 

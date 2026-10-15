@@ -1,0 +1,10 @@
+;;
+;; CHECK-FAIL: "is integer division"
+;;
+;; Two-argument floor / ceil / round are INTEGER division (chapter 32/06).  On floats they are a
+;; compile error -- before endeavour 185 this compiled and silently ignored the divisor.  For a
+;; float quotient rounded down, write (floor (/ a b)).
+
+(def-function f (a b)
+  (declare #'(float float => int))
+  (floor a b))

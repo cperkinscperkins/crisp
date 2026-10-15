@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER la: 8 -4 0 -1
+;; HOIST-EXPECT: BUFFER ra: 48 -8 0 -1
+;; HOIST-EXPECT: BUFFER ua: 1 0 2147483648 0
+;;
+;; Endeavour 185 P2 -- ash with Common Lisp semantics (decision D3): positive count shifts left,
+;; negative shifts right (arithmetic for signed, logical for unsigned), and a shift by at least
+;; the bit width is DEFINED: left -> 0, right -> 0, or -1 for a negative signed value.
+;;   la (literal counts):  (ash 1 3) 8   (ash -16 -2) -4   (ash 5 40) 0   (ash -5 -40) -1
+;;   ra (run-time counts): (ash 3 4) 48  (ash -64 -3) -8   (ash 7 32) 0   (ash -7 -33) -1
+;;   ua (uint):  (ash 4294967295u -31) 1   (ash 4294967295u -40) 0   (ash 1u 31) 2147483648
+;;               (ash 1u 35, run-time count) 0
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel ash_semantics (&out la ra ua)
+  (declare #'(&out i-vec i-vec u-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0)))
+        (zu (to-uint (get-workgroup-id 0))))
+    (set! (~ la 0) (ash (+ z 1) 3))
+    (set! (~ la 1) (ash (+ z -16) -2))
+    (set! (~ la 2) (ash (+ z 5) 40))
+    (set! (~ la 3) (ash (+ z -5) -40))
+    (set! (~ ra 0) (ash 3 (+ z 4)))
+    (set! (~ ra 1) (ash -64 (+ z -3)))
+    (set! (~ ra 2) (ash 7 (+ z 32)))
+    (set! (~ ra 3) (ash -7 (+ z -33)))
+    (set! (~ ua 0) (ash (+ zu 4294967295u) -31))
+    (set! (~ ua 1) (ash (+ zu 4294967295u) -40))
+    (set! (~ ua 2) (ash (+ zu 1u) 31))
+    (set! (~ ua 3) (ash 1u (+ z 35)))))

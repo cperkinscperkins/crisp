@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER w: 42 -42 0 12
+;;
+;; Endeavour 185 P1 -- *! (widening multiplication, chapter 32/04).  For the basic types (accum T)
+;; is T, so (*! a b) is (* a b) (decision D6); the widening forms belong to the quantized rework.
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+
+(def-kernel widening_mul (&out w)
+  (declare #'(&out i-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0))))
+    (set! (~ w 0) (*! (+ z 6) (+ z 7)))
+    (set! (~ w 1) (*! (+ z -6) (+ z 7)))
+    (set! (~ w 2) (*! (+ z 0) (+ z 7)))
+    (set! (~ w 3) (*! (+ z 3) (+ z 4)))))

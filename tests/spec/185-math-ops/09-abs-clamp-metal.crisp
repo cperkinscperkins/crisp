@@ -1,0 +1,37 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER ai: 5 7 0 3
+;; HOIST-EXPECT: BUFFER ci: 0 10 4 -2
+;; HOIST-EXPECT: BUFFER af: 2.5 0.75 0 1
+;; HOIST-EXPECT: BUFFER cf: 1 0 0.5 -1
+;;
+;; Endeavour 185 P1 -- abs and clamp, chapter 32/04, on int and float:
+;;   ai: (abs -5) 5   (abs 7) 7   (abs 0) 0   (abs -3) 3
+;;   ci: (clamp -3 0 10) 0   (clamp 15 0 10) 10   (clamp 4 0 10) 4   (clamp -7 -2 2) -2
+;;   af: (abs -2.5) 2.5   (abs 0.75) 0.75   (abs 0.0) 0   (abs -1.0) 1
+;;   cf: (clamp 2.5 0 1) 1   (clamp -0.5 0 1) 0   (clamp 0.5 0 1) 0.5   (clamp -3.0 -1 1) -1
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel abs_clamp (&out ai ci af cf)
+  (declare #'(&out i-vec i-vec f-vec f-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0)))
+        (zf (to-float (get-workgroup-id 0))))
+    (set! (~ ai 0) (abs (+ z -5)))
+    (set! (~ ai 1) (abs (+ z 7)))
+    (set! (~ ai 2) (abs (+ z 0)))
+    (set! (~ ai 3) (abs (+ z -3)))
+    (set! (~ ci 0) (clamp (+ z -3) 0 10))
+    (set! (~ ci 1) (clamp (+ z 15) 0 10))
+    (set! (~ ci 2) (clamp (+ z 4) 0 10))
+    (set! (~ ci 3) (clamp (+ z -7) -2 2))
+    (set! (~ af 0) (abs (+ zf -2.5)))
+    (set! (~ af 1) (abs (+ zf 0.75)))
+    (set! (~ af 2) (abs (+ zf 0.0)))
+    (set! (~ af 3) (abs (+ zf -1.0)))
+    (set! (~ cf 0) (clamp (+ zf 2.5) 0.0 1.0))
+    (set! (~ cf 1) (clamp (+ zf -0.5) 0.0 1.0))
+    (set! (~ cf 2) (clamp (+ zf 0.5) 0.0 1.0))
+    (set! (~ cf 3) (clamp (+ zf -3.0) -1.0 1.0))))

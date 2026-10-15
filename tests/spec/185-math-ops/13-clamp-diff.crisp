@@ -1,0 +1,10 @@
+;; VERIFY-AUTODIFF: input=0.5 atol=1e-3 expect.input=2.0
+;;
+;; Endeavour 185 P1 -- autodiff of clamp: x inside [0,1] passes 2x through (2.0); below [2,3] the second clamp is flat (0).
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel clamp_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out) (+ (* 2.0 (clamp x 0.0 1.0)) (clamp x 2.0 3.0)))))

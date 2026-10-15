@@ -32,3 +32,7 @@ coverage-report/
 
 # External Benchmark Dependencies (Header-only libraries)
 third_party/
+
+# release staging (scripts/build-linux-release.sh, package_prerelease.py)
+dist/
+crisp-prerelease-*.zip

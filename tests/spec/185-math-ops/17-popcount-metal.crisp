@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER pc: 0 8 32 16
+;;
+;; Endeavour 185 P2 -- popcount: the number of set bits in the two's-complement representation
+;; (so (popcount -1) on an int is 32 -- unlike Common Lisp's logcount, which counts the ZERO bits
+;; of a negative number).  (popcount 0) 0   (popcount 255) 8   (popcount -1) 32
+;; (popcount #x55555555 = 1431655765) 16
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+
+(def-kernel popcount_k (&out pc)
+  (declare #'(&out i-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0))))
+    (set! (~ pc 0) (popcount (+ z 0)))
+    (set! (~ pc 1) (popcount (+ z 255)))
+    (set! (~ pc 2) (popcount (+ z -1)))
+    (set! (~ pc 3) (popcount (+ z 1431655765)))))

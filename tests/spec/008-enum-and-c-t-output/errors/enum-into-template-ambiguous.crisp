@@ -1,0 +1,17 @@
+;;
+;; CHECK-FAIL: "it is a value of several enumerations"
+;;
+;; :up is a value of two enumerations, so a template parameter inferred from the bare keyword
+;; has no single answer.  Pass it through a parameter declared with the enumeration you mean.
+
+(def-enumeration lift :up :down)
+(def-enumeration quark :up :charm)
+
+(<T>
+ (def-function id-temp (val)
+   (declare #'(T => T))
+   val))
+
+(def-function caller ()
+  (declare #'(=> lift))
+  (id-temp :up))

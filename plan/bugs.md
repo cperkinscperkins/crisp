@@ -61,6 +61,7 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
         But note that this is "__storage". . That's wrong.  I suspect this is a consequence of bug 015, and may not be an independent bug. 
 
 [ ] 018 - kernel names are being lower cased, not case preserved. 
+        RE-VERIFIED 2026-10-13 (housekeeping review): still true (MyCamelKernel -> define @mycamelkernel, :name "mycamelkernel"). Now noted in docs/writing-crisp.md.
         THere may not be a simple fix for this. Kernel names are most definitely interned as symbols now
         and used in tons of lookups.  Changing to string will mean touching a lot of code. 
         Decide what to do. Having lower-case is not world ending.
@@ -82,7 +83,17 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
 [x] 021 - def-kernel supports arrow type declarations, but not (type a b int) style 
           >>  I suspect valid-type-p returns nil for list-based types like (cell ...) when checked in this context, causing the parser to miss the type binding entirely.
 
-[ ] 022 - (LOW)  seeing extra output from CL when running compiler.  
+[x] 022 - (LOW)  seeing extra output from CL when running compiler.
+        FIXED 2026-10-14: two sources, both redefining identical MAKE-* constructor macros.
+        (1) marshall-cell / %marshall-tensor eval'd instantiate-template on EVERY expansion -- now
+        %ensure-storage-struct-instantiated (src/macros.lisp) instantiates once per compilation, guarded
+        on *crisp-structs* (cleared by initialize-compiler; CL macros are not).  (2) an :analyzed template
+        is deliberately re-instantiated when compilation starts; ensure-template-instantiation
+        (src/templates.lisp) muffles sb-kernel:redefinition-warning on that re-run only.  Also deleted the
+        dead positional make-arrival-sync-handle (the def-struct's keyword constructor replaced it at
+        start-up, with a warning).  8 specs byte-identical IR/SPIR-V before and after; unit 389/389,
+        E2E 1490/1490, negative 350/350, adversarial 13 true + 10 known.  
+        RE-VERIFIED 2026-10-13 (housekeeping review): still present (the redefining ... in DEFMACRO warnings print on every compile).
 
         .\bin\crisp-compile.exe --log-level=off --ir-target=ptx --metadata .\tests\spec\029-hoist-l0\07-basic-cell.crisp
         ; --- Starting Pass for Target: PTX ---
@@ -94,9 +105,11 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
         redefining CRISP.COMPILER::MAKE-CELL_INT_GLOBAL_READ-WRITE in DEFMACRO
         ; ...All compilation passes finished.
 
-[/] 023 - is build.lisp returning non zero even when successful?
+[x] 023 - is build.lisp returning non zero even when successful?
+        CLOSED 2026-10-13 (housekeeping review): no -- build.lisp exits 0 on success, on Windows and in the Linux release Docker build.
 
-[ ] 024 - ALL TESTS PASSED is always output from unit tests. Even when there are failures.
+[x] 024 - ALL TESTS PASSED is always output from unit tests. Even when there are failures.
+        CLOSED 2026-10-13 (housekeeping review): tests/run-ci.lisp exits 1 (or errors, under *no-quit*) on a failed report BEFORE it reaches the banner, so the banner now prints only on a pass.
 
 [x] 025 - spec unit tests/validators were broken during last feature, and 028-metadata\18-implicit-scratch-cell-signature.crisp regressed but was not caught. 
 The .metacrisp names the implicit scratch cell "__storage" which is likely wrong.
@@ -1642,7 +1655,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         REGRESSION: tests/spec/074-scratch-tensor/05-cell-tensor-no-alias.crisp (metal, both
         vendors).  Verified failing before the fix and passing after, on an H100.
 
-[ ] 047 - A scratch CELL bound in a def-kernel `let` crashes the compiler under --differentiate.
+[x] 047 - A scratch CELL bound in a def-kernel `let` crashes the compiler under --differentiate.
+        CLOSED 2026-10-13 (housekeeping review): fixed in src/autodiff.lisp -- %promote-scratch-init-for-ad handles MAKE-SCRATCH-CELL directly (its docstring cites 047).  The BUG 047 SKIP-WITH on 074-scratch-tensor/05-cell-tensor-no-alias was removed; that spec passes under --differentiate.
 
         FOUND BY: writing BUG 046's regression spec, which is the first spec to bind a
         make-scratch-cell inside a def-kernel let and then differentiate it.
@@ -1975,7 +1989,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
               a documented limitation rather than a bug.
         Do (a) first regardless: it is correct under either outcome.
 
-[ ] 056 --debug --differentiate ON A 16-BIT KERNEL DIES IN llvm-as: "Metadata id is already
+[x] 056 --debug --differentiate ON A 16-BIT KERNEL DIES IN llvm-as: "Metadata id is already
+        CLOSED 2026-10-13 (housekeeping review): the repro below now compiles (rc=0) and writes the _grad.spv -- most likely cured by the BUG 107 metadata-id fix (endeavour 180).
         used".  Found 2026-09-03 (endeavour 163 defect C).  NEWLY REACHABLE, NOT NEWLY BROKEN --
         before 054 was fixed the 16-bit backward never compiled far enough to reach llvm-as.
 
@@ -2182,6 +2197,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         look correct against half the cases).
 
 [ ] 059 set! OF A float VALUE INTO A half / bfloat16 TENSOR ELEMENT STORES A 4-BYTE FLOAT INTO A
+        RE-VERIFIED 2026-10-13 (housekeeping review): still SILENT -- (set! (~ B i) 1.5) into a (vector half ...) emits `store float 1.5, ..., align 4`.
         2-BYTE ELEMENT.  Silent: no compile error, no warning, and the kernel runs and writes garbage.
         Found 2026-09-13 while writing benchmarks/matmul/common/fill.crisp (the device-side operand
         fill for the L0 benchmark fixture).  Same class as BUG 057, on a different path: 057 was
@@ -2241,7 +2257,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY SPEC HOMES: a negative spec refusing the implicit narrowing store (tests/spec/.../errors),
         plus a positive spec that the explicit form stores a correct half / bf16 value on metal.
 
-[ ] 060 ARITHMETIC ON FLOATING-POINT HARDWARE VECTORS (float4 etc.) EMITS INTEGER INSTRUCTIONS.
+[x] 060 ARITHMETIC ON FLOATING-POINT HARDWARE VECTORS (float4 etc.) EMITS INTEGER INSTRUCTIONS.
+        CLOSED 2026-10-13 (housekeeping review): the fix below (%arith-category) is folded into src/codegen.lisp; 170/05 and 170/08 run in the E2E suite.
         `(* a b)` on float4 emits `mul <4 x float>`, `(+ ...)` emits `add <4 x float>`: invalid IR.
         crisp-compile --ir-target=llvmir exits 0 anyway; --ir-target=spv fails.  Found 2026-09-14
         writing endeavour 170 (op-fma on float4).  OLD: the dispatch dates to 2025-12-19; the only
@@ -2312,7 +2329,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         the 054 specs are forward-only.)
         SPECS WAITING ON IT: 170/05 (SKIP-WITH[--differentiate] citing this bug).
 
-[ ] 062 UNSIGNED INTEGER DIVISION (AND rem) EMITS A SIGNED DIVIDE.  `(/ a b)` on uint emits `sdiv i32`;
+[x] 062 UNSIGNED INTEGER DIVISION (AND rem) EMITS A SIGNED DIVIDE.  `(/ a b)` on uint emits `sdiv i32`;
+        FIXED 2026-10-12 (endeavour 185 P0): semantic-div uses udiv for unsigned; rem / mod expand through /.  Spec 185/06 on the BMG.
         `(rem a b)` on ulong lowers through `sdiv i64`.  Wrong answers for any operand >= 2^(bits-1): e.g.
         (/ 4000000000 2) on uint reads the dividend as -294967296.  Found 2026-09-15 (endeavour 170 night
         run), following the note in 059 (`srem` on ulong) and the 060 follow-up.  NOT FIXED -- it touches
@@ -2449,6 +2467,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         out in the header and should be restored when the runner grows an 8-byte path.
 
 [ ] 068 (hardware-stride :warp-idx ...) HARDCODES A WARP OF 32 AND IS WRONG ON INTEL.
+        RE-VERIFIED 2026-10-13 (housekeeping review): still open -- src/analysis/control.lisp still says "hardcoded to 32".
         src/analysis/control.lisp says so in its own docstring -- the chunk size is "currently
         hardcoded to 32 as a placeholder for (get-warp-size)".  Under a profile with
         :simd-width 16 it strides by 32 over 16-lane warps.
@@ -3317,7 +3336,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Reading the emitted PTX on the pod -- four ssh round-trips and one compile, no
         suite run.
 
-[ ] 090 LAZY &optional / &key FUNCTION VARIANTS ARE ANALYZED BUT NEVER CODE-GENERATED -- the call
+[x] 090 LAZY &optional / &key FUNCTION VARIANTS ARE ANALYZED BUT NEVER CODE-GENERATED -- the call
+        CLOSED 2026-10-13 (housekeeping review): the fix below is folded (%generate-lazy-variant-ir, %lazy-variant-name in src/); 016/07-10 run on metal in the E2E suite.
         is emitted against a bare `declare`, the SPIR-V carries an unresolved Import, and the
         compiler exits 0.
 
@@ -3394,7 +3414,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         scratch defaults.  Probe: put_temp_files_here/176/g-p1a-optional-default.crisp.
 
 
-[ ] 091 PARAMETERS AFTER `&out ... &optional` ARE TREATED AS &out, contradicting the design doc.
+[x] 091 PARAMETERS AFTER `&out ... &optional` ARE TREATED AS &out, contradicting the design doc.
+        CLOSED 2026-10-13 (housekeeping review): the fix below is folded into src/ (analyze-environment-from-spec); 016/09-out-then-optional-metal is in the E2E suite.
 
         SYMPTOM.
 
@@ -3427,7 +3448,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 176 Phase 0, probe put_temp_files_here/176/p1f.
 
 
-[ ] 092 `(and X Y)` LEAVES ITS RESULT UNSTORED WHEN X IS FALSE -- -O3 then deletes X outright.
+[x] 092 `(and X Y)` LEAVES ITS RESULT UNSTORED WHEN X IS FALSE -- -O3 then deletes X outright.
+        CLOSED 2026-10-13 (housekeeping review): the IF-analyzer fix below is folded into src/; 006/07-10 (metal) and 006/and-result-stored.unit.lisp guard it.
         Silent wrong answers, including in the tile bounds checks.
 
         SYMPTOM.  `(if (and (> a b) (< a 10.0)) 1 0)`.  Unoptimized IR:
@@ -3486,7 +3508,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         p3-ragged-2d.crisp (+ .O3.ll, p3.run.out).
 
 
-[ ] 093 AN IF WHOSE BRANCHES EACH RETURN MULTIPLE VALUES IS TYPED AS ITS FIRST VALUE ONLY --
+[x] 093 AN IF WHOSE BRANCHES EACH RETURN MULTIPLE VALUES IS TYPED AS ITS FIRST VALUE ONLY --
+        CLOSED 2026-10-13 (housekeeping review): the fix below (%if-result-llvm-type, src/codegen.lisp) is folded; 001/05-mv-return-per-branch-metal guards it.
         llvm-as rejects the module.
 
         SYMPTOM.
@@ -3534,7 +3557,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 176 probe (tests/spec/176-reduce-multi/01-probe-mv-binop-butterfly-metal.crisp,
         lines 38-40), reproduced in Phase 0: put_temp_files_here/176/p2a-if-mv-return.crisp.
 
-[ ] 094 MOST SYMBOLIC SCRATCH SIZES IN THE DESIGN ARE NOT IMPLEMENTED, AND GLOBAL SCRATCH ACCEPTS NONE.
+[/] 094 MOST SYMBOLIC SCRATCH SIZES IN THE DESIGN ARE NOT IMPLEMENTED, AND GLOBAL SCRATCH ACCEPTS NONE.
+        PARTIAL 2026-10-13 (housekeeping review): the rank-1 symbolic global-scratch part (%l0-emit-symbolic-global-scratch-arg) is folded into src/hoist-l0/main.lisp; the rest below is still open.
 
         THE DESIGN (tests/spec/074-scratch-tensor/scratch-tensor.md, lines ~50-62) names these
         :size-expr keywords: :match-workgroup-size, :match-num-workgroups, :match-total-threads,
@@ -3576,7 +3600,9 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         62 pass on BMG.  STILL OPEN: :match-num-workgroups (both hoisters) and the other design-doc
         sizes (:match-total-threads, :match-warp-size, :match-total-warps, :match-grid-size).
 
-[ ] 095 ONE-ARGUMENT MINUS, (- x), IS NOT IMPLEMENTED -- though the design doc uses it.
+[x] 095 ONE-ARGUMENT MINUS, (- x), IS NOT IMPLEMENTED -- though the design doc uses it.
+        CLOSED 2026-10-13 (housekeeping review): confirmed -- (- x) compiles, and (- (type-infinity float)) folds to ret float -inf (%analyze-sub-binary, src/analysis/ops.lisp).
+        NOTE 2026-10-12: appears FIXED -- (- x) on a float compiles to fmul x, -1.0.  Confirm and close.
 
         SYMPTOM.  (- (type-infinity float)) -- or any (- x):
 
@@ -3597,7 +3623,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Endeavour 176, spec 046/05, 2026-09-30.
 
-[ ] 096 THE ANF TRANSFORM MISSED CL:LET, SO (or X Y) CRASHED UNDER --differentiate.
+[x] 096 THE ANF TRANSFORM MISSED CL:LET, SO (or X Y) CRASHED UNDER --differentiate.
+        CLOSED 2026-10-13 (housekeeping review): the fix below (match LET by name in anf-normalize / flatten-anf-body) is folded into src/anf-transform.lisp; 006/09 differentiates in CI.
 
         SYMPTOM.  Any (or X Y) in a differentiated kernel (CI, 006/09):
 
@@ -3617,6 +3644,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
 
 [ ] 097 &optional / &key FUNCTIONS HAVE NO _GRAD COMPANION, so they cannot be differentiated through.
+        NOTE 2026-10-13 (housekeeping review): the stopgap below (%lambda-list-generic-p, loud refusal) is folded into src/analysis/core.lisp; the GAP -- no _GRAD for &optional / &key variants -- remains, and 016/07-08 still skip under --differentiate citing it.
 
         SYMPTOM (CI --differentiate, 016/07-09): "Unsupported form 'ADD-K_GRAD' found in function body."
 
@@ -3836,7 +3864,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         SPEC.  178/errors/09 pins the refusal.
 
-[ ] 106 VERIFY-AUTODIFF ON CUDA CANNOT ALLOCATE :global IMPLICIT SCRATCH -- and the refusal CRASHED the runner.
+[/] 106 VERIFY-AUTODIFF ON CUDA CANNOT ALLOCATE :global IMPLICIT SCRATCH -- and the refusal CRASHED the runner.
+        PARTIAL 2026-10-13 (housekeeping review): the runner CRASH is fixed (below); the gap -- :global implicit scratch on the CUDA VERIFY-AUTODIFF path -- remains.
 
         MEASURED, A100 pod, 2026-10-03 (branch reduce-vec).  178/13 (reduce-vec, default :last-man-standing,
         VERIFY-AUTODIFF[CUDA]) reached %vad-global-scratch-unsupported (tests/verify-autodiff-runner.lisp).  The
@@ -3870,6 +3899,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         -- %max-metadata-id.
 
 [ ] 108 A LET SILENTLY DROPS A DECLARATION IT DOES NOT KNOW.
+        RE-VERIFIED 2026-10-13 (housekeeping review): still silent -- (declare (gird-level)) in a let compiles with rc=0.
 
         MEASURED 2026-10-07 (found during endeavour 180).  analyze-let-expression strips every leading
         (declare ...) and %check-context-declarations looks only for grid-level and workgroup-level.  Any
@@ -3981,3 +4011,91 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         NEXT: re-measure with more iterations before believing it; if it holds, diff the SASS / IGC asm.
 
+[ ] 114 c-t-assert INSIDE A FUNCTION BODY NEVER CHECKS ANYTHING -- (c-t-assert (equal 1 2) "x") compiles.
+
+        FOUND 2026-10-12 (adversarial sweep).  c-t-assert expands to (eval-when (...) (unless cond (error ..))).
+        At TOP LEVEL that eval-when runs, so the assert works.  Inside a def-function body the analyzer's
+        analyze-eval-when (src/analysis/control.lisp) turns the form into a void literal and never evaluates it.
+        Chapter 41 marks c-t-assert as implemented and says a false test "errors and ceases compilation".
+        Consequence: every in-function c-t-assert in the spine is VACUOUS -- 009/05, 010/11, 015/cell-02-props,
+        064/tensor-02-props, 066/02 and 066/06 -- and 008/errors/c-t-assert-fail passes only because its
+        CHECK-FAIL was set to an unrelated type-mismatch message.
+        WHY NOT FIXED: making it loud needs a decision on what "compile-time evaluable" means in a body.  Those
+        specs ask about variables' TYPES -- (element-type~ c), (address-space~ v), (exec-mode~ config) -- which
+        only analysis knows; a macro-expansion-time EVAL cannot see them, and a naive fix turns ~6 specs red.
+        Adversarial spec: tests/adversarial/compile-time/adv-022-ct-assert-in-body.crisp (KNOWN-ISSUE ADV-022).
+
+[ ] 115 022-def-kernel/errors/06 AND 08 ("voidp is not a legal return type") PASS FOR AN UNRELATED REASON.
+
+        FOUND 2026-10-12.  Both define (def-function () ...) -- a function with NO NAME -- and have no
+        CHECK-FAIL, so any error passes them.  Whether a def-function may return voidp is therefore untested;
+        base-ptr~ already returns voidp.  022/errors/04 (voidp PARAMETER illegal) is a commented-out TODO and
+        its premise was overtaken by endeavour 122 (see 122-ffi/08).  Decide the return rule, then give 06/08
+        a name and a CHECK-FAIL (or delete them).
+
+[ ] 116 011-incomplete-types/01-incomplete-declarations IS VACUOUS: its functions are never instantiated.
+
+        FOUND 2026-10-12.  five-shirts / five-pants take incomplete types, so they become implicit templates;
+        nothing calls them, so nothing is analyzed or emitted (the module holds only accessors).  The spec says
+        "each of these five type declarations should compile correctly" and proves nothing about it.  Writing
+        the equivalent with a COMPLETE type exposed ADV-018 (accessors on c-t-qualified structs did not work at
+        all).  Give the spec a kernel that calls each function.
+
+[ ] 117 AD REFUSES A c-t-QUALIFIED STRUCT PARAMETER: "Function USE-CFG is not differentiable."
+
+        FOUND 2026-10-12, right after ADV-018 made such values usable at all.  A sub-function taking
+        (my-cfg :exec :fast) -- or a def-type alias of it, fast-cfg -- is refused under --differentiate,
+        while the same function over a plain (no c-t member) struct differentiates fine.  The AD walk runs on
+        raw forms; %crisp-struct-type-p (src/autodiff.lisp) takes the head of a list but not an alias symbol,
+        and the shadow-struct naming (%shadow-type-name-for -> NAME_ADJ) would need the struct NAME, not the
+        alias.  Loud, not silent.  Not a regression: before ADV-018 these values did not compile forward.
+        Spec: tests/spec/018-def-type/08-def-type-ct-struct-alias.crisp carries a SKIP-WITH[--differentiate].
+
+[ ] 118 (local-size :set-to (warp-size)) IS NOT RESOLVED WHEN PINNING THE SPIR-V SUBGROUP SIZE.
+
+        FOUND 2026-10-12 while rewriting the "Sum a Vector using Warps and Shuffles" doc example.  A kernel
+        with a warp collective, compiled --ir-target=spv --hardware-profile=bmg, is refused ("its SPIR-V
+        subgroup size cannot be pinned ... needs ... a compile-time (local-size :set-to N)") when N is
+        (warp-size); the literal 16 compiles.  The chapter used to claim the declaration "follows it
+        automatically".  Loud, not silent.  The chapter now uses a literal and cites this bug.
+
+[x] 119 sqrt AND rsqrt ARE DOCUMENTED (chapter 32/02, marked implemented) BUT ARE "Unsupported form".
+        FIXED 2026-10-12 (endeavour 185): sqrt rsqrt abs clamp *! tanh erf exp2 + ash logand logior logxor lognot popcount, with AD; integer division per chapter 32/06.
+
+        FOUND 2026-10-12 while verifying the agent guide.  Checked on spv and ptx:
+          work:     exp log log2 sin cos tan asin acos atan pow atan2 max min  (PTX transcendentals need libdevice)
+          missing:  sqrt rsqrt (documented)  ...  tanh abs/fabs floor ceil trunc fmin fmax exp2 log10 sinh cosh erf
+                    (not documented, but layernorm / softmax / GELU-style contest kernels reach for them at once)
+        op-rsqrt-approx exists.  Most map straight onto LLVM intrinsics (llvm.sqrt / fabs / floor / ceil / trunc /
+        minnum / maxnum) on both backends; each also needs an AD rule.  Chapter 32/02 now marks sqrt / rsqrt 📝.
+
+[ ] 120 BMG: FOUR INLINE INTEGER floor / round DIVISIONS IN ONE KERNEL RUN AND STORE NOTHING.
+
+        FOUND 2026-10-12 (endeavour 185 P0).  Kernel with four (let ((q r (round (+ z 5) (+ z 2)))) ...) stores
+        inline: Level Zero reports success, the output buffers keep their initial contents.  The pre-opt IR is
+        correct, the SPIR-V is correct (all 8 OpStores present, unconditional).  The failing kernels are the only
+        ones -O3 SLP-vectorized: <4 x i32> SDiv/SRem plus <4 x i1> INotEqual / LogicalAnd / Select.  The same
+        division through a function call is correct; inline truncating / and rem (left scalar) are correct.
+        Rewriting the corrections as shift/mask integer arithmetic did not help (InstCombine re-forms the
+        selects).  An attempt to switch SLP off for SPIR-V did not take effect (*target-backend* is probably not
+        :spirv when opt runs) -- inconclusive.
+        WORKAROUND (agreed): integer floor / ceil / round lower to a call to an internal noinline helper
+        (__crisp_idiv_<mode>_<type>[_qr]).  STILL OPEN: is this an IGC bug with SLP-vectorized integer / i1
+        vectors in general?  If so it reaches beyond 185.  Probes: put_temp_files_here/185/probes/ (05c fails,
+        05b / 05d / 05e pass).
+        UPDATE (P2, same day): it is NOT vectorization.  With SLP + loop vectorization forced off (no vectors in
+        the SPIR-V at all) inline popcount still returned a wrong lane 0 (16 for popcount 0) and inline ash
+        still made zeModuleCreate fail (0x70000004, module build failure).  All three -- divmod, popcount,
+        ash -- are right once moved behind an internal noinline helper (%185-helper-call).  So the common
+        factor is integer code INLINE IN A KERNEL BODY on SPIR-V / BMG.  Suspects: IGC, or something about how
+        Crisp emits kernel bodies (the entry wrapper calls the body function; attributes; the BUG 030 volatile
+        workaround?).  Probes 17b (passes) / 17c (fails) differ only in an extra store of z.
+
+[ ] 121 A SCALAR bfloat16 LITERAL CRASHES THE COMPILER ON SPIR-V; to-bfloat16 DOES NOT EXIST.
+
+        FOUND 2026-10-12 while verifying docs/writing-crisp.md.
+          (def-function f () (declare #'(=> bfloat16)) 1.0bf)   --ir-target=spv -> crisp-compile.exe dies with
+          "Illegal instruction" (exit 132).  The same file compiles to LLVM IR and to PTX.
+          (to-bfloat16 1.0) -> "Unsupported form 'TO-BFLOAT16'" on every target, though the AD code names
+          TO-BFLOAT16 as a widening conversion (%ad-widening-conversion-form-p).
+        bfloat16 inside the MMA paths is unaffected (the 159 specs); this is the scalar path.

@@ -414,10 +414,84 @@ Pre-strips execution-context declares so anf-normalize never sees them."
         `(let ,bindings ,normalized)
         normalized)))
 
+;;; ---------------------------------------------------------------------------
+;;; ADV-001 / ADV-002 (adversarial, 2026-10-12): SILENTLY WRONG GRADIENTS when a let rebinds a name
+;;; already in scope inside a differentiated body.  %anf-normalize-let FLATTENS nested lets into one
+;;; binding list, so an inner x became a second binding of the SAME symbol, and the AD walk -- which
+;;; keys adjoints by name (X_ADJ) -- merged the two variables' adjoints (6.0 for a true 4.0; 0.0 for
+;;; 4.0).  anf-transform therefore alpha-renames every let / counted-loop binding that would collide:
+;;;   - its name is already bound by an enclosing let / loop in this form, or
+;;;   - its own initial value mentions that name (shadowing a PARAMETER, which ANF cannot see).
+;;; The new name is NAME%SHn.  Renaming preserves semantics; only the AD pipeline consumes this.
+;;; Specs: tests/spec/124-ad-issues/20..23 (VERIFY-AUTODIFF).
+;;; ---------------------------------------------------------------------------
+(defvar *ad-shadow-rename-counter* 0
+  "Counter for the NAME%SHn symbols minted by %alpha-rename-shadowed-lets (ADV-001).")
+
+(defun %fresh-shadow-name (sym)
+  "A fresh symbol NAME%SHn in SYM's package, for a renamed shadowing binding."
+  (intern (format nil "~a%SH~d" (symbol-name sym) (incf *ad-shadow-rename-counter*))
+          (or (symbol-package sym) *package*)))
+
+(defun %renamable-var-p (sym)
+  "T for a symbol that names a lexical variable: not a keyword, not NIL / T."
+  (and (symbolp sym) sym (not (eq sym t)) (not (keywordp sym))))
+
+(defun %alpha-rename-shadowed-lets (form &optional env bound)
+  "Returns FORM with shadowing let / counted-loop bindings alpha-renamed (ADV-001).
+   ENV is an alist old-symbol -> new-symbol for renamings in scope; BOUND lists the names bound
+   by enclosing lets / loops of this form.  Operator positions are never renamed."
+  (labels ((ren (f env bound) (%alpha-rename-shadowed-lets f env bound))
+           (ren-args (args env bound) (mapcar (lambda (a) (ren a env bound)) args))
+           (bind-var (var init env bound)
+             ;; Returns (values new-var env bound) for one binder.
+             (if (and (%renamable-var-p var)
+                      ;; src/analysis/control.lisp's helper; argument order is (form sym)
+                      (or (member var bound) (%form-mentions-symbol-p init var)))
+                 (let ((new (%fresh-shadow-name var)))
+                   (log:debug "alpha-rename: shadowing binding ~a -> ~a" var new)
+                   (values new (acons var new env) (cons new bound)))
+                 (values var
+                         (if (assoc var env) (acons var var env) env) ; un-shadow an outer renaming
+                         (cons var bound)))))
+    (cond
+      ((symbolp form) (let ((hit (assoc form env))) (if hit (cdr hit) form)))
+      ((atom form) form)
+      ((and (symbolp (car form)) (member (symbol-name (car form)) '("QUOTE" "FUNCTION") :test #'string=))
+       form)
+      ;; (let (BIND...) BODY...)  -- sequential; BIND is (var val), (v1 v2 ... val) or ((v1 v2) val)
+      ((and (symbolp (car form)) (string-equal (symbol-name (car form)) "LET") (listp (second form)))
+       (let ((new-binds '()))
+         (dolist (b (second form))
+           (if (and (consp b) (cdr b))
+               (let* ((listy (listp (car b)))
+                      (vars (if listy (car b) (butlast b)))
+                      (init (if listy (second b) (car (last b))))
+                      (new-init (ren init env bound))
+                      (new-vars '()))
+                 (dolist (v vars)
+                   (multiple-value-bind (nv nenv nbound) (bind-var v init env bound)
+                     (push nv new-vars) (setf env nenv bound nbound)))
+                 (setf new-vars (nreverse new-vars))
+                 (push (if listy (list new-vars new-init) (append new-vars (list new-init))) new-binds))
+               (push b new-binds)))
+         `(,(car form) ,(nreverse new-binds) ,@(ren-args (cddr form) env bound))))
+      ;; counted loops: (HEAD (VAR OPERAND...) BODY...)
+      ((and (%dotimes-family-head-p (car form)) (consp (second form)) (symbolp (car (second form))))
+       (let* ((var (car (second form)))
+              (operands (ren-args (cdr (second form)) env bound)))
+         (multiple-value-bind (nv nenv nbound) (bind-var var nil env bound)
+           `(,(car form) (,nv ,@operands) ,@(ren-args (cddr form) nenv nbound)))))
+      ;; anything else: keep the operator, rename inside the arguments
+      ((symbolp (car form)) `(,(car form) ,@(ren-args (cdr form) env bound)))
+      (t (ren-args form env bound)))))
+
 (defun anf-transform (expr)
-  "Transforms a Crisp expression into A-Normal Form."
+  "Transforms a Crisp expression into A-Normal Form.
+   ADV-001: first alpha-renames let bindings that shadow a name in scope, because ANF flattens
+   nested lets and the AD walk keys adjoints by name (see %alpha-rename-shadowed-lets)."
   (let ((*anf-counter* 0))
-    (%anf-transform expr)))
+    (%anf-transform (%alpha-rename-shadowed-lets expr))))
 
 
 (defun anf-transform-module (forms)

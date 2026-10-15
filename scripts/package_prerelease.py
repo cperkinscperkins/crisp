@@ -2,12 +2,12 @@
 """
 Crisp Prerelease Packaging Script
 
-Workflow for creating a new release:
-1. Update `OUTPUT_ZIP` and the tag names at the bottom of this script to reflect the new version (e.g. 002).
-2. Build the Linux binaries (typically via Docker or a Linux VM) and place them in `tools/` or `bin/`.
+Workflow for creating a new release (see docs/releases/HOW-TO-RELEASE.md):
+1. Pick the version, e.g. 002 (also update RELEASE in init_bin.py and the version in INSTALL.md).
+2. Build the Linux binaries: `bash scripts/build-linux-release.sh` (Docker) -> dist/.
 3. Build the Windows binaries (`sbcl --non-interactive --load .\\build\\build.lisp`) and ensure they are also in `tools/` or `bin/`.
    Ensure the build processes do not clobber each other's output.
-4. Run this script from the project root: `python .\\scripts\\package_prerelease.py`
+4. Run this script from the project root: `python .\\scripts\\package_prerelease.py --version 002`
 5. Upload the resulting zip file to the GitHub Release.
 """
 
@@ -15,7 +15,12 @@ import os
 import sys
 import zipfile
 import shutil
-OUTPUT_ZIP = "crisp-prerelease-001.zip"
+import argparse
+
+_args = argparse.ArgumentParser(description="Package a Crisp prerelease zip.")
+_args.add_argument("--version", required=True, help="three-digit prerelease number, e.g. 002")
+VERSION = _args.parse_args().version
+OUTPUT_ZIP = f"crisp-prerelease-{VERSION}.zip"
 
 REQUIRED_TOOLS = [
     "LICENSE-llc.txt",
@@ -77,7 +82,7 @@ CRISP_BINARIES = {
 }
 
 def find_tool_file(filename):
-    for dir_name in ["tools", "bin", "dist", "."]:
+    for dir_name in ["dist", "tools", "bin", "."]:
         path = os.path.join(dir_name, filename)
         if os.path.exists(path):
             return path
@@ -137,7 +142,7 @@ def main():
 
     total_mb = os.path.getsize(OUTPUT_ZIP) / (1024 * 1024)
     print(f"\n[SUCCESS] Successfully created '{OUTPUT_ZIP}' ({total_mb:.2f} MB)!")
-    print(f"Ready to upload to GitHub Release 'Crisp Prerelease 001' (tag: 'prerelease-001').")
+    print(f"Ready to upload to GitHub Release 'Crisp Prerelease {VERSION}' (tag: 'prerelease-{VERSION}').")
 
 if __name__ == "__main__":
     main()

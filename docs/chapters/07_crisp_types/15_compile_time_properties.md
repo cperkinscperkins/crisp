@@ -27,6 +27,17 @@ A default value can follow the `:c-t` key.  This default will be used if a call 
             (return-type nil))
    ...)
 ```
+
+A `make-XXXX` call gives its value the complete type: when `address-space` has no default,
+`(make-addressable :value 10 :address-space :global)` is an `(addressable :address-space :global)`.
+Such a value can be passed to a parameter declared with that complete type, with a `def-type` alias of it
+(`(def-type global-addr (addressable :address-space :global))`), or with the bare, incomplete `addressable` --
+in which case the function is instantiated once per distinct set of compile-time values.  Runtime members are
+read, and `set!` through their accessors, on any of these.
+
+> **Implementation status**: a property that HAS a default (`access` above) is not yet carried into the type
+> when `make-XXXX` overrides it -- the value keeps the default's type, and its `access~` answers the default
+> (adversarial ADV-023, together with ADV-012 / ADV-013).
 <!-- 
 
 THIS IMPLEMENTATION DETAIL IS BEING REALIZED

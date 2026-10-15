@@ -1,0 +1,10 @@
+;; VERIFY-AUTODIFF: input=0.5 atol=1e-3 expect.input=0.7864477
+;;
+;; Endeavour 185 P3 -- autodiff of tanh: d/dx tanh x = 1 - tanh^2 x = 0.7864477 at 0.5.
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel tanh_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (set! (~ out) (tanh x))))

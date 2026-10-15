@@ -1,0 +1,11 @@
+;;
+;; CHECK-FAIL: "Crisp has no EQ: compare values, including enum keywords, with ="
+;;
+;; Crisp has one equality, =, and it compares enum values too.  A Common Lisp habit like eq gets
+;; an error that names the Crisp spelling.  (ADV-007)
+
+(def-enumeration my-mode :add :mul)
+
+(def-function is-mul (m)
+  (declare #'(my-mode => int))
+  (if (eq m :mul) 1 0))

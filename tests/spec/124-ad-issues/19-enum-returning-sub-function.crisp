@@ -1,0 +1,24 @@
+;; VERIFY-AUTODIFF: input=1.5 atol=1e-3 expect.input=2.0
+;;
+;; A sub-function that RETURNS AN ENUM, used to choose a branch.  The enum carries no gradient,
+;; but its _GRAD companion still takes a return-adjoint slot, and that slot must be a float
+;; like an int return's -- it was typed as the enum, (FLOAT MY-MODE => FLOAT), so the call
+;; "No matching function overload found for 'GET-MODE_GRAD' with argument types (FLOAT FLOAT)".
+;; Also covers an IF whose branches are two keywords of one enum (:mul / :add), which used to be
+;; a "Branch type mismatch" between their singleton types.  Enums compare with =.
+;; At input 1.5 the mode is :mul, so y = 2x and dy/dx = 2.
+;; Graduated from tests/adversarial (ADV-007), which used eq and expected 4.0.
+
+(def-type cell-float (cell float :address-space :global))
+(def-enumeration my-mode :add :sub :mul :div)
+
+(def-function get-mode (val)
+  (declare #'(float => my-mode))
+  (if (> val 0.0) :mul :add))
+
+(def-kernel enum_branching_kernel (input &out out-res)
+  (declare #'(cell-float &out cell-float))
+  (let ((x (~ input)))
+    (let ((mode (get-mode x)))
+      (let ((y (if (= mode :mul) (* x 2.0) (+ x 2.0))))
+        (set! (~ out-res) y)))))

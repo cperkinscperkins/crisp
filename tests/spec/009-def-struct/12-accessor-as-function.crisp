@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;;
+;; A struct accessor is an ordinary function: #'x~ can be passed where a
+;; #'(record-point => float) is expected.  apply-accessor is monomorphized per
+;; function literal (apply_accessor_function_literal_x__record_point), which calls
+;; the generated accessor @x__record_point directly -- an extractvalue of field 0.
+;;
+;; The parameter's type is spelled #'(record-point => float) and it is called with
+;; funcall.  A bare template parameter (<F>) is a TYPE parameter, not a function
+;; parameter, so (declare #'(F record-point => float)) is "Unknown type 'F'".
+;; Graduated from tests/adversarial (ADV-010), whose original used that spelling.
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-struct record-point
+  (x float)
+  (y float))
+
+(def-function apply-accessor (f p)
+  (declare #'(#'(record-point => float) record-point => float))
+  (funcall f p))
+
+(def-kernel accessor_hof_kernel (in_p &out out_res)
+  (declare #'(record-point &out cell-float => nil))
+  (let ((val (apply-accessor #'x~ in_p)))
+    (set! (~ out_res) val)))

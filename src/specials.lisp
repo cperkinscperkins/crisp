@@ -399,7 +399,7 @@
 ;;;;   C / D     <8 x float>   f32 accumulator
 ;;;;   Operands  i32 LITERAL   bf16 0x3000, fp16 0xC00
 ;;;;
-;;;; Verified emission (put_temp_files_here/tune/madprobe2.spt):
+;;;; Verified emission (a one-off probe kernel, disassembled to .spt):
 ;;;;   2 Capability SubgroupMatrixMultiplyAccumulateINTEL
 ;;;;   8 SubgroupMatrixMultiplyAccumulateINTEL 33 51 50 27 32 37 12288
 ;;;; -- a real SPIR-V INSTRUCTION with zero imports, and the translator declares the capability

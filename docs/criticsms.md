@@ -3,6 +3,47 @@ Why Crisp Sux
 
 Criticisms of Crisp. Fair and unfair.
 
+Status, 2026-10-13
+==================
+
+Each criticism below, re-read against the compiler as it is now.  **Addressed** = the criticism no longer
+holds; **Partly** = real progress, still a gap; **By design** = a deliberate choice the critic disagrees with;
+**Still fair** = the criticism stands.  Evidence points at specs, benchmarks and endeavour docs.
+
+| # | Criticism | Verdict | What changed / why |
+|---|---|---|---|
+| 1 | The kernel interface (side channels, exploded args) makes the real enqueue unrecognizable | **By design, mitigated** | Still true that `cell` is 3 physical args and scratch is implicit.  But every kernel's physical signature is written to `.metacrisp`, `--hoist` generates the enqueue code from it, and `def-kernel-exact` gives a signature you control. |
+| 2 | Hoisting: a lot of work nobody asked for | **Addressed in practice** | Hoisting became the on-hardware test harness (`TEST-HOIST[L0]` / `[CUDA]`) and the benchmark harness: every correctness claim on the BMG and the H100 runs through it.  End-user demand is still unproven. |
+| 3 | "Drop in" interop is not realizable | **Partly** | `def-kernel-exact` + metadata + the FFI (endeavours 122/123: Crisp calls C and libdevice, with AD across the boundary).  Not yet demonstrated inside PyTorch / cupy -- the contest work will be that test. |
+| 4a | MORE performance? No | **Addressed** | Reductions: 99% of measured read peak on Intel (oneDPL 95-96%); 96-97% on H100 (CUB 98-100%).  bf16 matmul: BMG 98-102% of oneMKL, 1.2x SYCL-TLA; H100 0.96-1.01x CUTLASS, 69-73% of cuBLAS.  Compiles 3-19x faster than the peers.  (`benchmarks/REPORT*.md`) |
+| 4b | EASIER? Arguable, also Lisp | **Partly** | `--differentiate` produces the gradient of any kernel, verified against finite differences on hardware -- built into the language, where CUDA / SYCL users reach for an external tool (e.g. the Enzyme LLVM plugin) or write the backward pass by hand.  One-line `reduce-vec`, stride and matmul macros.  "Lisp" remains taste. |
+| 4c | SAFER? No | **Partly** | Compile-time refusals: unprovable-uniform barriers and warp collectives, unpinned SPIR-V subgroup sizes, incomplete types at the boundary, unbounded loops.  But the 2026-10 sweeps also found SILENT wrong answers (shadowed lets in AD, integer `floor`, float `mod`) -- fixed and now spec'd -- and BUG 120 is open. |
+| 4d | BETTER debugging? No; tools speak CUDA/C | **Partly, untested** | `--debug` emits DWARF, so in principle a GPU debugger (oneapi-gdb, cuda-gdb) can step Crisp kernels -- but it has never been tried (the only BMG drives the display), and the DWARF line numbers are VIRTUAL: a pre-order count of s-expression nodes, not source lines, so a debugger would show the wrong line of the file.  Logging is controllable (log4cl). |
+| 5 | "Not Turing complete" | **By design** | Bounded loops, no recursion.  What it was blamed for -- no CAS -- is gone (row 21). |
+| 6 | No grounded evidence for thread/grid/dispatch contexts | **Still fair (no proof)** | Practical evidence only: the whole spec spine and the tuned kernels live within it.  No formal argument has been written. |
+| 7 | Not all races are bad (B[7]) | **By design** | Unchanged stance. |
+| 8 | Side channels rewrite every signature in the call tree; what does the debugger show? | **By design, still fair** | Same as row 1. |
+| 9 | Numeric types incomplete (qint8, fp4, fp8) | **Partly** | half / bfloat16 / tf32 / fp64 MMA paths are real (endeavours 159, 165).  Quantized ints and microfloats are still 📝 (their rework is open). |
+| 10 | No `to-int` from float; what does `(to T x)` do? | **Partly** | Still a choice: float -> int is `truncate` / `floor` / `ceil` / `round`, which name the rounding.  Those were silently broken until endeavour 185 and are now verified on hardware. |
+| 11 | Ten ways to declare types | **Still fair (reduced)** | In practice two: `(declare #'(T T => R))` and `(declare (type ...) (return-type ...))`. |
+| 12 | Function overloading oversimplified | **Addressed** | Overloads, templates and implicit templates are exercised across the spine. |
+| 13 | `:std140` / C++ structs will not just copy over | **Partly** | `def-struct` at the kernel boundary works (read-only, endeavour 056) and its layout is in the metadata; no C++-header import. |
+| 14 | Vector views: unsafe like `ptr++`, and slower | **Partly** | `:align :compact` skips offset/stride arithmetic (the fast path); mutation checks under `:compact` and `--runtime-checks` coverage are still open. |
+| 15 | `:constant` should be the host's call; `in-vec` stuck on `:global` | **Changed** | `in-vec` / `out-vec` are gone; the address space is part of every storage-handle type, `:constant` included. |
+| 16 | `make-implicit-vector` helps people hurt themselves | **By design, renamed** | Now `make-scratch-vector` / `-matrix` / `-cell`, sized by `:match-*` keywords. |
+| 17 | Derived types feel weird | **By design** | Units-of-measure safety (meters vs yards). |
+| 18 | Continuation kernels are contrived | **Still 📝** | Not implemented; superseded in spirit by `def-orchestration`, also 📝. |
+| 19 | Maybe type: goodbye performance | **Still 📝** | Not implemented. |
+| 20 | What is `prepare-for-scan`? | **Still 📝** | The scan chapter (27) is unimplemented; so are gather/scatter, sorting and FFT. |
+| 21 | atomic-binop but no CAS -- whole categories unwritable | **Addressed** | Endeavour 184: CAS lowering, `return-from-loop`, relaxed / device-scope atomics (H100 CAS 36x faster than before). |
+| 22 | Logging/debugging is over-engineered | **Partly** | `c-t-output` / logging work; `c-t-assert` inside a function body is never evaluated (BUG 114); the static-analysis checks (`check-coalesce`, ...) are 📝. |
+| 23 | `def-orchestration` papers over Crisp's own problems | **Still fair** | Still 📝 / deferred. |
+| 24 | In-memory compilation API: over-engineered, speculative | **Still fair** | Still 📝. |
+
+The original text follows, unchanged.
+
+---
+
 Kernel Interface
 ================
 

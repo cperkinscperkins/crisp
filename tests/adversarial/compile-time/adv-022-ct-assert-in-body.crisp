@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; KNOWN-ISSUE: ADV-022
+;;
+;; A FALSE compile-time assertion inside a function body must stop compilation.  Today it is
+;; silently ignored: c-t-assert expands to an eval-when, and inside a body the analyzer turns
+;; eval-when into a void literal without evaluating it (BUG 114).  At top level the same
+;; assertion does fire.
+
+(def-function k (v)
+  (declare #'(float => float))
+  (c-t-assert (equal 1 2) "one is not two")
+  v)

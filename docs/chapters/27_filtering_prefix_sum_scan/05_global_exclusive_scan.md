@@ -48,7 +48,7 @@ What could be simpler?
     (r-t-assert-0 (= (length~ input-vec) (length~ output-vec)) "in/out vec lengths don't match")
     (loop-vector-stride input-vec (i)
       (let ((val (~ input-vec i))
-            (prefix (~ block-sums (get-group-id 0))))
+            (prefix (~ block-sums (get-workgroup-id 0))))
           (set! (~ output-vec i) (+ val prefix))))))
 
 

@@ -52,7 +52,7 @@ These dot product and matmul implementations work for ALL types.
     (let ((tile-A (make-tile TILE_DIM (base T)))
           (tile-B (make-tile TILE_DIM (base T)))
           (local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
-          (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1))
+          (group-id-x (get-workgroup-id 0)) (group-id-y (get-workgroup-id 1))
           (acc (identity-of #'+ (accum T)))
       (declare (type acc (accum T)))
 

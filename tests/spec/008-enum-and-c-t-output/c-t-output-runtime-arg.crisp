@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;;
+;; c-t-output evaluates its arguments at compile time.  One that cannot be -- here val, a runtime
+;; parameter of a template function -- is noted in place ("<val is not known at compile time>")
+;; and compilation continues, as chapter 41 says.  Before ADV-006 (graduated from
+;; tests/adversarial) it aborted with "The variable VAL is unbound."
+
+(<T>
+ (def-function poly-cto-func (val)
+   (declare #'(T => T))
+   (c-t-output "Instantiating poly-cto-func with template parameter!" val)
+   val))
+
+(def-function use-poly-cto-func ()
+  (declare #'(=> float))
+  (poly-cto-func 3.14))

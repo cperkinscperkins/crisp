@@ -31,7 +31,16 @@
      (t nil))))
 
 (defun get-struct-member-index (struct-type-name member-name)
-  "Helper to find the physical index of a struct member, accounting for padding."
+  "Helper to find the physical index of a struct member, accounting for padding.
+   ADV-018: a def-type alias of a c-t-qualified struct, (def-type fast-cfg (my-cfg :exec :fast)),
+   is resolved to the qualified type first, so set! through an accessor works on it."
+  ;; ADV-018: resolve a def-type alias first (it may resolve to a symbol or a (NAME :k v) list).
+  (when (and (symbolp struct-type-name)
+             (not (lookup-struct-definition struct-type-name)))
+    (let ((resolved (resolve-type-alias struct-type-name)))
+      (unless (eq resolved struct-type-name)
+        (log:debug "get-struct-member-index: alias ~a -> ~s" struct-type-name resolved)
+        (setf struct-type-name resolved))))
   ;; Resolve derived types to their base type first
   (let ((original-type struct-type-name)
         (struct-type-name (if (symbolp struct-type-name)
@@ -85,8 +94,14 @@
    Uses get-single-value-type to normalize function-call return type lists
    (e.g. ((STORAGE GLOBAL)) -> (STORAGE GLOBAL)) before type comparison."
   (let* ((type-name (second expr))
-         (args (cddr expr))
+         (raw-args (cddr expr))
+         ;; ADV-018: a trailing :%ct-props :k v ... is not runtime arguments; it makes the
+         ;; constructed value's type the complete (NAME :k v ...).
+         (ct-tail (nth-value 1 (%split-ct-props-args raw-args)))
+         (args (values (%split-ct-props-args raw-args)))
+         (result-type (if ct-tail (cons type-name ct-tail) type-name))
          (struct-def (lookup-struct-definition type-name)))
+    (log:debug "analyze-struct-construction ~a: ct-tail ~s -> result type ~s" type-name ct-tail result-type)
     (unless struct-def
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
 
@@ -139,7 +154,7 @@
                                node)))))
 
         (make-semantic-struct-construction
-         :type type-name
+         :type result-type
          :args arg-nodes
          :source-location location)))))
 
@@ -150,11 +165,12 @@
          (index (third expr)) ;; Expecting a raw integer literal from the macro expansion
          (obj-type (semantic-node-type obj-node)))
 
-    (unless (symbolp obj-type)
+    ;; ADV-018: resolve a def-type alias / c-t-qualified type to the struct NAME first.
+    (unless (symbolp (%member-access-struct-name obj-type))
       (error "Cannot extract member from non-struct type ~a" obj-type))
 
     ;; Lookup struct definition (handles derived types and package issues)
-    (let* ((struct-def (lookup-struct-definition obj-type)))
+    (let* ((struct-def (lookup-struct-definition (%member-access-struct-name obj-type))))
       (unless struct-def
         (error "Unknown struct type ~a in extraction." obj-type))
 
@@ -195,10 +211,12 @@
          (value-node (analyze-expression (fourth expr) env context (append location '(3))))
          (obj-type (semantic-node-type obj-node)))
 
-    (unless (symbolp obj-type)
+    ;; ADV-018: resolve a def-type alias / c-t-qualified type to the struct NAME first.
+    ;; The node's own :type stays OBJ-TYPE (the qualified type is still the value's type).
+    (unless (symbolp (%member-access-struct-name obj-type))
       (error "Cannot insert member into non-struct type ~a" obj-type))
 
-    (let ((struct-def (lookup-struct-definition obj-type)))
+    (let ((struct-def (lookup-struct-definition (%member-access-struct-name obj-type))))
       (unless struct-def
         (error "Unknown struct type ~a in insertion." obj-type))
 

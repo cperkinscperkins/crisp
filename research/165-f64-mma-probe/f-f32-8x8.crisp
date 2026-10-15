@@ -1,0 +1,13 @@
+;; PROBE D: is the empty kernel the TILE or the MMA WALK?
+;; Same f64 register-tile, but NO mma — just fill and store.  If this also emits nothing,
+;; the fp64 register-tile itself has no fields (no f64 fragment record).  If it emits f64
+;; stores, the tile is fine and the mma-accumulate-via-tile walk is what produced nothing.
+(def-hardware-profile h100f64f :simd-width 32 :mma-shapes ((8 8 4)))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel store_only_f32_8x8 (&out C)
+  (declare #'(&out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile float (8 8) 2.5)))
+    (store-tile C-tile C (0 0))))

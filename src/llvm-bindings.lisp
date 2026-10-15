@@ -334,6 +334,31 @@
 (defcfun ("LLVMBuildShl" llvm-build-shl) :pointer
          (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
 
+;;; ---------------------------------------------------------------------------
+;;; Endeavour 185 (math-ops): instruction builders the integer division / bit-op lowerings need.
+;;; FROM: src/llvm-bindings.lisp (append beside LLVMBuildAnd / LLVMBuildOr / LLVMBuildShl).
+;;; Referenced from the compiler as crisp.llvm-bindings::NAME (no export change needed).
+;;; ---------------------------------------------------------------------------
+(cffi:defcfun ("LLVMBuildSelect" llvm-build-select) :pointer
+  (builder :pointer) (if-val :pointer) (then-val :pointer) (else-val :pointer) (name :string))
+(cffi:defcfun ("LLVMBuildXor" llvm-build-xor) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(cffi:defcfun ("LLVMBuildSRem" llvm-build-srem) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(cffi:defcfun ("LLVMBuildURem" llvm-build-urem) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(cffi:defcfun ("LLVMBuildAShr" llvm-build-a-shr) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+(cffi:defcfun ("LLVMBuildNot" llvm-build-not) :pointer
+  (builder :pointer) (val :pointer) (name :string))
+(cffi:defcfun ("LLVMGetEnumAttributeKindForName" llvm-get-enum-attribute-kind-for-name) :unsigned-int
+  (name :string) (slen :size))
+(cffi:defcfun ("LLVMCreateEnumAttribute" llvm-create-enum-attribute) :pointer
+  (context :pointer) (kind-id :unsigned-int) (val :uint64))
+(cffi:defcfun ("LLVMBuildFRem" llvm-build-frem) :pointer
+  (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
+
+
 (defcfun ("LLVMBuildFAdd" llvm-build-fadd) :pointer
          (builder :pointer)
          (lhs :pointer)
@@ -885,7 +910,7 @@
 ;;; IGC SROA-aliasing workaround (endeavor 103 phase B, 2026-05-16).
 ;;; Needed by the var-read codegen overlay to mark adjoint-scalar loads
 ;;; `volatile`, inhibiting the SROA-promotion miscompilation observed on
-;;; Intel Arc / IGC.  See put_temp_files_here/igc-bug-report/ for the
+;;; Intel Arc / IGC.  See research/igc-sroa-alias-030/ for the
 ;;; minimal reproducer and bug report.
 (cffi:defcfun ("LLVMSetVolatile" llvm-set-volatile) :void
   (memory-access-inst :pointer)

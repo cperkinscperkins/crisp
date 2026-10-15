@@ -1,0 +1,13 @@
+;; PROBE B: the REAL fp64 shape (8 8 4), declared in a profile that says so.
+(def-hardware-profile h100f64 :simd-width 32 :mma-shapes ((8 8 4)))
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel via_tile_884 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-tile (make-register-tile double (8 8) 0.0)))
+    (mma-accumulate-via-tile (8 8 4) C-tile A B)
+    (store-tile C-tile C (0 0))))

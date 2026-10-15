@@ -61,11 +61,40 @@
                (arity-error-inferred condition)
                (arity-error-expected condition)))))
 
+;;; ADV-007 (adversarial, 2026-10-12): Crisp has one equality, =.  The unsupported-form error names the
+;;; Crisp spelling for the Common Lisp forms an author (or an agent) is most likely to reach for.
+(defparameter *unsupported-form-hints*
+  '(("EQ" . "compare values, including enum keywords, with =")
+    ("EQL" . "compare values, including enum keywords, with =")
+    ("EQUAL" . "compare values, including enum keywords, with =")
+    ("EQUALP" . "compare values, including enum keywords, with =")
+    ("/=" . "not-equal is !=")
+    ("SETF" . "assign with set!, e.g. (set! x v) or (set! (~ v i) x)")
+    ("SETQ" . "assign with set!")
+    ("AREF" . "index a storage handle with ~, e.g. (~ v i)")
+    ("DEFUN" . "define functions at top level with def-function")
+    ("LET*" . "Crisp's let is already sequential; use let")
+    ("PROGN" . "a function or let body is already a sequence of forms")
+    ("INCF" . "write (set! x (+ x 1))")
+    ("DECF" . "write (set! x (- x 1))")
+    ("DOLIST" . "loop with dotimes or one of the stride macros")
+    ("LOOP" . "loop with dotimes or one of the stride macros"))
+  "Common Lisp operator name -> what to write in Crisp instead.  Appended to the
+   unsupported-form error (ADV-007).")
+
+(defun %unsupported-form-hint (form)
+  "The Crisp alternative for FORM's operator name, or NIL."
+  (let ((name (cond ((symbolp form) (symbol-name form))
+                    ((and (consp form) (symbolp (car form))) (symbol-name (car form))))))
+    (and name (cdr (assoc name *unsupported-form-hints* :test #'string-equal)))))
+
 (define-condition crisp-unsupported-form-error (crisp-compiler-error)
     ((form :initarg :form :reader unsupported-form))
   (:report (lambda (condition stream)
              (format stream "Unsupported form '~a' found in function body."
-               (unsupported-form condition)))))
+               (unsupported-form condition))
+             (let ((hint (%unsupported-form-hint (unsupported-form condition))))
+               (when hint (format stream "  Crisp has no ~a: ~a." (unsupported-form condition) hint))))))
 
 (define-condition crisp-recursion-error (crisp-compiler-error)
     ((form :initarg :form :reader recursive-form))

@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;;
+;; A keyword literal passed to a template function: T is inferred as the def-enumeration that
+;; contains the keyword (:forward -> dummy-mode).  Before ADV-005 (graduated from
+;; tests/adversarial) T was inferred as the literal's own singleton type (keyword :forward),
+;; which is not a declarable type: "Unknown type '(KEYWORD FORWARD)'".
+;; A keyword that belongs to no enumeration, or to several, is an error -- see
+;; errors/enum-into-template-ambiguous.
+
+(def-enumeration dummy-mode :forward :backward)
+
+(<T>
+ (def-function test-enum-temp (val)
+   (declare #'(T => T))
+   val))
+
+(def-function use-enum-temp ()
+  (declare #'(=> dummy-mode))
+  (test-enum-temp :forward))

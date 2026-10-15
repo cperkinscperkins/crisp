@@ -4,109 +4,52 @@ This file tracks bugs and edge-case failures discovered by the adversarial testi
 
 When an issue is added here, the corresponding adversarial test should be tagged with `;; KNOWN-ISSUE: <ID>`. The spec runner will intercept failures for this test and mark them as `KNOWN-FAIL` (allowing CI to pass). If the test unexpectedly passes, it will mark it as `UNEXPECTED-PASS` (failing the CI), which indicates the bug was fixed and this issue can be closed.
 
+**When an issue is fixed, the test GRADUATES**: it moves into the spine (`tests/spec/NNN-.../`, or its `errors/` folder with a `CHECK-FAIL` for a refusal), and the issue moves to *Resolved* below with a pointer.  The adversarial folder holds only what is still open.
+
+The descriptions below were written by whoever found the issue.  Treat the *observation* as reliable and the stated *cause* as a hypothesis: in the 2026-10-12 sweep, several causes were wrong (see Resolved).
+
 ## Active Issues
 
-### ADV-001: Shadowed Type Promotions (Nested Lets)
-* **Location:** `tests/adversarial/control-flow/adv-001-shadowing-type-promotions.crisp`
-* **Description:** Auto-diff fails when variables are shadowed in nested `let` forms. The adjoint routing gets confused and emits incorrect gradients (e.g., AD returns 4.0 instead of 6.0). 
-* **Scope:** `[verify-autodiff]`
+### ADV-003 / ADV-004 / ADV-011 / ADV-017 (template half): AD through an implicitly instantiated template function
+* **Location:** `templates/adv-003-template-mvb.crisp`, `autodiff/adv-004-differentiate-template-branches.crisp`, `templates/adv-011-macro-template.crisp`, `templates/adv-017-scratch-template.crisp`
+* **Description:** A plain kernel that calls a `(<T> (def-function ...))` template is refused under `--differentiate`: "Function MY-TEMP-CALC is not differentiable".  The simplest case -- one call, no branch, no mvb, no macro -- fails the same way, so these four are ONE gap.  Cause (verified 2026-10-12): the AD walk runs on raw forms before semantic analysis, so it sees a template, not an instantiation, and has no typed signature to build a `_GRAD` from.  A *templated kernel* instantiated with `gen-` differentiates fine (052/13), because the whole template is instantiated first.  (ADV-004's one-argument `(- x)` was BUG 095, fixed.)
+* **Scope:** `[differentiate]` -- loud refusal, not a wrong answer.
 
-### ADV-002: Shadowed Variables in Phi Nodes (Branching)
-* **Location:** `tests/adversarial/control-flow/adv-002-shadowed-phi-node.crisp`
-* **Description:** Auto-diff completely loses the adjoint (returns 0.0 instead of 4.0) when a variable is shadowed inside a branch and then returned via a phi node.
-* **Scope:** `[verify-autodiff]`
+### ADV-012 / ADV-013 / ADV-023: overriding a DEFAULTED compile-time property in make-XXXX
+* **Location:** `compile-time/adv-012-c-t-overload.crisp`, `control-flow/adv-013-phi-unification.crisp`, `control-flow/adv-023-ct-default-override.crisp`
+* **Description:** For `(def-struct my-cfg (val float) (exec mode :c-t :slow))`, `(make-my-cfg :val v :exec :fast)` silently DROPS the override: the value is typed as the bare `my-cfg` (= `:exec :slow`), and `(exec~ v)` -- a constant macro -- answers `:slow`.  So an overload on `(my-cfg :exec :fast)` never matches (012), an `if` over a `:fast` and a `:slow` value does not report the type clash (013), and a `:fast` value stores into a `:slow` cell without complaint (023).  Properties WITHOUT a default are carried into the type since ADV-018; a defaulted one needs a design decision, because the type and a *type-aware* `XXX~` accessor have to change together.  ADV-013's file still says `TEST-EXPECT: PASS`; with the fix it should be a compile error.  ADV-014's file became ADV-023 (its premise -- that the struct was incomplete -- was wrong: the default makes it complete).
+* **Scope:** none (all passes).  ADV-023 is silent.
 
-### ADV-003: Differentiating Templates with Multiple-Value-Bind
-* **Location:** `tests/adversarial/templates/adv-003-template-mvb.crisp`
-* **Description:** The differentiation pass crashes with "Function MY-OUTER-TEMP is not differentiable" when a template function internally uses `let` for multiple-value binding from another template.
+### ADV-016: Autodiff over &optional / &key functions
+* **Location:** `autodiff/adv-016-autodiff-optional.crisp`
+* **Description:** Same gap as bugs.md BUG 097 (no `_GRAD` companion for lazily instantiated &optional / &key variants).  The claimed SBCL teardown fault is unverified.
 * **Scope:** `[differentiate]`
 
-### ADV-004: Differentiating Data-Dependent Template Branches
-* **Location:** `tests/adversarial/autodiff/adv-004-differentiate-template-branches.crisp`
-* **Description:** The compiler fails to differentiate a template function instantiated inside a data-dependent branch. It crashes with "Function MY-TEMP-CALC is not differentiable" and a type mismatch.
+### ADV-017: Autodiff over a function that allocates a scratch cell
+* **Location:** `autodiff/adv-017-autodiff-scratch.crisp` (the template twin is listed under ADV-003)
+* **Description:** "Function MY-SCRATCH-FUNC is not differentiable".  BUG 047 (fixed 2026-10-13) was a scratch cell in a def-KERNEL `let`; this is one inside a def-FUNCTION, still refused.  The claimed SBCL teardown fault is unverified.
 * **Scope:** `[differentiate]`
 
-### ADV-005: Template Type Inference on Enum Values
-* **Location:** `tests/adversarial/templates/adv-005-enum-template.crisp`
-* **Description:** When an enum value (like `:forward`) is passed to a template function, the type inference engine incorrectly infers its type as `(KEYWORD :FORWARD)` instead of the enum type. This crashes the template instantiator with "Unknown type".
-* **Scope:** none (fails on all passes)
+### ADV-022: c-t-assert inside a function body is never evaluated
+* **Location:** `compile-time/adv-022-ct-assert-in-body.crisp`
+* **Description:** `(c-t-assert (equal 1 2) "...")` inside a `def-function` compiles.  Silent.  See bugs.md BUG 114 for why it is not a one-line fix (the spine's in-body asserts ask about variables' TYPES).
+* **Scope:** none (all passes).
 
-### ADV-006: Compile-Time Output of Template Variables
-* **Location:** `tests/adversarial/control-flow/adv-006-poly-c-t-output.crisp`
-* **Description:** Embedding `c-t-output` inside a template function crashes the compiler. The macro tries to `EVAL` the template variable at compile-time, throwing an "unbound variable" error.
-* **Scope:** none (fails on all passes)
+## Resolved (2026-10-12 sweep)
 
-### ADV-007: Auto-Diff Branching with Enums
-* **Location:** `tests/adversarial/autodiff/adv-007-enum-branching.crisp`
-* **Description:** The auto-diff engine crashes when a branch depends on an enum. It first fails because `EQ` is not considered differentiable. Then it fails because `IF` cannot unify the keyword branches to the enum type.
-* **Scope:** none (fails on all passes)
-
-### ADV-008: Kernel-Boundary Struct Mutation Loophole
-* **Location:** `tests/adversarial/structs/adv-008-struct-mutation.crisp`
-* **Description:** The compiler fails to correctly track struct mutability when a `def-struct` passed directly at the kernel boundary is passed to a sub-function that mutates it.
-* **Scope:** none (fails on all passes)
-
-### ADV-009: Poor Error Reporting for Illegal Recursive/Forward Types
-* **Location:** `tests/adversarial/structs/adv-009-struct-self-ref.crisp`
-* **Description:** Crisp intentionally does not support recursive types, containers, or forward declarations. However, the compiler fails to elegantly catch and report this violation. Instead of emitting a clear user-facing error about illegal recursive types, it crashes or throws a generic unknown type error.
-* **Scope:** none (fails on all passes)
-
-### ADV-010: Struct Accessors as Higher-Order Functions
-* **Location:** `tests/adversarial/structs/adv-010-struct-hof.crisp`
-* **Description:** The compiler crashes when attempting to pass a struct accessor (e.g. `#'x~`) as a higher-order function. Struct accessors are not properly registered as functions for template monomorphization.
-* **Scope:** none (fails on all passes)
-
-### ADV-011: Macro-Generated Template Autodiff Loophole
-* **Location:** `tests/adversarial/templates/adv-011-macro-template.crisp`
-* **Description:** The autodiff engine fails to differentiate templates that are generated via top-level macro expansion. Because AD runs before or independently of full macro expansion, it considers the macro-generated template function invisible/non-differentiable.
-* **Scope:** `[differentiate]`
-
-### ADV-012: Compile-Time Property Overload Resolution Failure
-* **Location:** `tests/adversarial/compile-time/adv-012-c-t-overload.crisp`
-* **Description:** The compiler strips `:c-t` compile-time properties during the overload resolution phase. Therefore, it is impossible to overload a function based on different `:c-t` property constraints (e.g., `(:mode :fast)` vs `(:mode :safe)`), resulting in an ambiguous or non-matching overload error.
-* **Scope:** none (fails on all passes)
-
-### ADV-013: Phi-Node Compile-Time Property Stripping
-* **Location:** `tests/adversarial/control-flow/adv-013-phi-unification.crisp`
-* **Description:** A major loophole allows converting complete types into incomplete types at runtime via `IF` branching (phi-nodes). When a true branch produces `(config-rec :mode :fast)` and a false branch produces `(config-rec :mode :slow)`, the phi-node unifies them by simply stripping the `:c-t` property, returning an incomplete type. If this incomplete type is then passed to a helper that enforces a specific `:c-t` property, it crashes the compiler. This circumvents the static safety of complete types.
-* **Scope:** none (fails on all passes)
-
-### ADV-014: Cell of Incomplete Type Loophole
-* **Location:** `tests/adversarial/control-flow/adv-014-cell-incomplete.crisp`
-* **Description:** The compiler successfully compiles a kernel that takes a `cell` whose element type is incomplete (e.g., missing required `:c-t` properties). The type checker should enforce that `cell` element types are complete at the kernel boundary (since pointer arithmetic requires size/layout), but it erroneously permits them, leading to undefined runtime behavior.
-* **Scope:** none (fails on all passes)
-
-### ADV-015: Nested Cell Type Parsing Failure
-* **Location:** `tests/adversarial/types/adv-015-cell-nested.crisp`
-* **Description:** The type-specifier parser for `def-type` crashes when attempting to parse a nested `cell` declaration like `(cell (cell float :address-space :global) :address-space :global)`. The macro expander mangles the nested keyword arguments (stripping the keyword colon or the value itself), leading to a `Missing value for :ADDRESS-SPACE` compilation error.
-* **Scope:** none (fails on all passes)
-
-### ADV-016: Autodiff Over Advanced Signatures
-* **Location:** `tests/adversarial/autodiff/adv-016-autodiff-optional.crisp`
-* **Description:** The differentiation engine crashes with an "Unsupported form" error when attempting to differentiate functions that use advanced signatures like `&optional` (and likely `&key`). The engine fails to handle the `is-set?` special form or the optional parameters themselves, blocking differentiation. Additionally, this seems to cause a memory corruption segfault in SBCL during teardown.
-* **Scope:** differentiate
-
-### ADV-017: Autodiff Over Scratch Cells
-* **Location:** `tests/adversarial/autodiff/adv-017-autodiff-scratch.crisp` and `tests/adversarial/templates/adv-017-scratch-template.crisp`
-* **Description:** The differentiation engine throws a "Function is not differentiable" error when encountering functions that allocate scratch cells via `make-scratch-cell`. This indicates that implicit `scratch-cell` allocation (and SROA) is completely unsupported during backward passes. Like ADV-016, this also appears to trigger an SBCL memory corruption fault at shutdown.
-* **Scope:** differentiate
-
-### ADV-018: Def-Type Struct Alias Accessor Failure
-* **Location:** `tests/adversarial/structs/adv-018-def-type-props.crisp`
-* **Description:** When using `def-type` to alias a `def-struct` (e.g., locking in a compile-time property like `(def-type fast-cfg (my-cfg :exec :fast))`), the struct accessor macros (like `val~`) fail with `Unknown struct type FAST-CFG in extraction.` This means struct accessors do not resolve `def-type` aliases before type-checking, breaking struct field access on aliased types.
-* **Scope:** none (fails on all passes)
-
-### ADV-019: Exact Kernel Name Collision Loophole
-* **Location:** `tests/adversarial/kernel/adv-019-collision.crisp`
-* **Description:** The `gen-XXXX` form for `def-kernel-exact` requires an explicit C-style string for the emitted kernel name. However, the compiler frontend completely fails to validate the uniqueness of these names. If two different templates generate kernels with the same exact string name (e.g., `"my_colliding_kernel"`), the compiler silently emits both into the same IR module, which will cause linker or backend compiler failures later in the pipeline.
-* **Scope:** none (fails on all passes)
-
-### ADV-020: Marshall Cell Accepts Incomplete Types
-* **Location:** `tests/adversarial/control-flow/adv-020-marshall-incomplete.crisp`
-* **Description:** The `marshall-cell` routine is documented to require a fully complete cell type expression. However, the type-checker fails to validate this when a cell type alias (`def-type out-c (cell my-cfg :address-space :global)`) wraps an incomplete struct (`my-cfg` missing its compile-time properties). The kernel compiles without error, bypassing layout safety checks and injecting an incomplete type into the exact kernel boundary.
-* **Scope:** none (fails on all passes)
-
-### ADV-021: Voidp Type Escapes Kernel Constraints
-* **Location:** `tests/adversarial/kernel/adv-021-voidp-escape.crisp`
-* **Description:** The `voidp` type is explicitly documented to be valid *only* in the context of `def-kernel-exact`. However, the type-checker entirely fails to enforce this constraint. It is possible to successfully declare and compile standard `def-function` signatures that accept and return `voidp`. The `voidp` type leaks out of the exact kernel layer and pollutes the general language type system.
-* **Scope:** none (fails on all passes)
+| ID | What it was | Where it went |
+|---|---|---|
+| ADV-001 | Shadowing let in a differentiated body: AD 6.0, true 4.0 (silent) | Fixed (alpha-rename before ANF).  `tests/spec/124-ad-issues/20-shadowed-let-diff` |
+| ADV-002 | Shadowing let inside a value-if branch: AD 0.0, true 4.0 (silent) | Same fix.  `124-ad-issues/21-shadowed-in-branch-diff`; also 22 (parameter shadow), 23 (sibling) |
+| ADV-005 | Keyword passed to a template inferred `T = (keyword :forward)` | Fixed: T is the enumeration holding the keyword.  `008-enum-and-c-t-output/enum-into-template`, `errors/enum-into-template-ambiguous` |
+| ADV-006 | `c-t-output` of a runtime value aborted compilation | Fixed per chapter 41 ("merely noted").  `008-enum-and-c-t-output/c-t-output-runtime-arg` |
+| ADV-007 | Enum-returning sub-function + enum `if` + `eq` | Three fixes (float adjoint slot for an enum return; keyword branches unify to their enum; keyword literals take no adjoint) and a clearer error for `eq` (Crisp compares with `=`).  The test's expectation (4.0) was wrong: it is 2.0.  `124-ad-issues/19-enum-returning-sub-function` (VERIFY-AUTODIFF on BMG), `008-.../errors/enum-compare-with-eq` |
+| ADV-008 | Boundary struct passed to a mutator | Was already a correct compile error; the test lacked CHECK-FAIL.  `056-struct-at-kernel-boundary/errors/13-boundary-struct-to-mutator` |
+| ADV-009 | Recursive struct through a cell | Already a correct error (after fixing the test's malformed `(cell list-node :global)`).  `026-recursive-data/errors/07-no-recursion-through-cell` |
+| ADV-010 | `#'x~` as a higher-order function | Works; the test used a TYPE parameter `(<F>)` where a function type `#'(record-point => float)` belongs.  `009-def-struct/12-accessor-as-function` |
+| ADV-014 | Cell of an "incomplete" struct at the boundary | Premise wrong (the struct had a default).  The real case -- an element with NO default -- is now refused: `022-def-kernel/errors/16-cell-of-partial-struct`.  The file became ADV-023. |
+| ADV-015 | `(cell (cell float ...) ...)` crashed in codegen | Decision: storage handles do not nest; clear error at the boundary.  `015-cell/errors/nested-storage-handle` |
+| ADV-018 | Accessors on a c-t-qualified struct / its def-type alias | Fixed: make-XXXX carries required c-t values into the type; member access resolves aliases.  `018-def-type/08-def-type-ct-struct-alias`, `errors/02-ct-alias-mismatch`.  AD through such a parameter is BUG 117. |
+| ADV-019 | Two instantiations under one explicit kernel name; the second silently replaced the first | Fixed: compile error.  `020-def-kernel-exact/errors/18-duplicate-instantiation-name` |
+| ADV-020 | `marshall-cell` of a cell whose element is incomplete | Premise as ADV-014; real case now refused.  `020-def-kernel-exact/errors/16-marshall-cell-partial-element` |
+| ADV-021 | `voidp` outside def-kernel-exact | Not a bug since endeavour 122 (FFI); docs updated.  `122-ffi/08-voidp-through-def-function` |

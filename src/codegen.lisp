@@ -17,7 +17,7 @@
    The name carries a _use_rows_cols suffix for the same reason the Load/Store builtins do:
    %coop-call reuses a declaration by NAME, so two different coop types under one name would
    collide on the second call's signature.  The translator matches on the prefix — verified
-   by spike2 in put_temp_files_here/150-spv/, which emits the real instruction."
+   by a one-off spike during endeavour 150, which emitted the real instruction."
   (%coop-call builder module
               (format nil "__spirv_CooperativeMatrixLengthKHR_~d_~d_~d" use rows cols)
               (crisp.llvm-bindings::llvm-int32-type)
@@ -1612,10 +1612,28 @@
 (def-binary-op-codegen semantic-add llvm-build-add llvm-build-fadd "SEMANTIC-ADD")
 (def-binary-op-codegen semantic-sub llvm-build-sub llvm-build-fsub "SEMANTIC-SUB")
 (def-binary-op-codegen semantic-mul llvm-build-mul llvm-build-fmul "SEMANTIC-MUL")
-;; Note: Div logic might need special handling for signed/unsigned later (sdiv vs udiv),
-;; but simpler macro assumes sdiv for now or that llvm-build-sdiv is distinct.
-;; Assuming signed integers for now as per initialized types.
-(def-binary-op-codegen semantic-div llvm-build-sdiv llvm-build-fdiv "SEMANTIC-DIV")
+;; Endeavour 185 / BUG 062: semantic-div is written out (not def-binary-op-codegen) so the
+;; integer instruction follows signedness -- udiv for unsigned.
+(defmethod generate-node-ir ((node semantic-div) builder module var-env di-builder di-scope location-map)
+  "Generates IR for SEMANTIC-DIV.  Endeavour 185 / BUG 062: udiv for unsigned integer types."
+  (multiple-value-bind (lhs lhs-loc) (generate-node-ir (semantic-div-left-arg node) builder module var-env di-builder di-scope location-map)
+    (declare (ignore lhs-loc))
+    (multiple-value-bind (rhs rhs-loc) (generate-node-ir (semantic-div-right-arg node) builder module var-env di-builder di-scope location-map)
+      (declare (ignore rhs-loc))
+      (let* ((result-type-name (semantic-div-type node))
+             (lhs-type-name (get-single-value-type (semantic-div-left-arg node)))
+             (rhs-type-name (get-single-value-type (semantic-div-right-arg node)))
+             (lhs-raw (extract-primary-value builder lhs (semantic-node-type (semantic-div-left-arg node))))
+             (rhs-raw (extract-primary-value builder rhs (semantic-node-type (semantic-div-right-arg node))))
+             (casted-lhs (build-cast-if-needed builder module lhs-raw lhs-type-name result-type-name))
+             (casted-rhs (build-cast-if-needed builder module rhs-raw rhs-type-name result-type-name))
+             (category (%arith-category result-type-name))
+             (inst (case category
+                     (:float (%apply-precision-fmf (llvm-build-fdiv builder casted-lhs casted-rhs "fop_tmp")))
+                     (:unsigned-int (llvm-build-udiv builder casted-lhs casted-rhs "iop_tmp"))
+                     (t (llvm-build-sdiv builder casted-lhs casted-rhs "iop_tmp"))))
+             (di-location (%attach-debug-loc inst node module di-builder di-scope location-map)))
+        (values inst di-location)))))
 
 (defmacro def-unary-math-codegen (node-type intrinsic-name &optional native-name libdevice-base libdevice-fast-base)
   "Codegen for a unary FP math intrinsic. INTRINSIC-NAME is the precise `llvm.*`
@@ -2098,6 +2116,393 @@
            (inside (crisp.llvm-bindings::llvm-build-and builder above below "hw_interior")))
       (llvm-build-ui-to-fp builder inside (crisp-type-to-llvm-type result-type module) "hw_mask"))))
 
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 185 (math-ops): lowering.  Integer floor / ceil / round, popcount, ash and float mod go
+;;; through internal noinline helpers (%185-helper-call / %185-divmod-helper): INLINE in a kernel body
+;;; the BMG stored nothing / gave a wrong lane / failed zeModuleCreate -- BUG 120, open.
+;;; ---------------------------------------------------------------------------------------------
+
+(defun %185-int-divmod (builder module mode a b type-name)
+  "Integer division of A by B (both TYPE-NAME) rounded per MODE (:trunc :floor :ceil :round, the
+   last ties-to-even).  Returns (values quotient remainder) with remainder = a - q*b.
+   Branch-free, written as integer arithmetic (sign masks from arithmetic shifts, a borrow bit for
+   the unsigned compare); InstCombine is free to re-form icmp/select from it.
+   OPEN (BUG 120): on the BMG, four of these written INLINE in one kernel and SLP-vectorized at -O3
+   into <4 x i32> / <4 x i1> ran and stored nothing -- the IR and SPIR-V look correct, and the same
+   code through a helper function is right.  Not yet understood."
+  (multiple-value-bind (cat bits) (%hw-type-parts type-name)
+    (let* ((unsigned-p (eq cat :unsigned-int))
+           (ity (crisp-type-to-llvm-type type-name module))
+           (k (lambda (v) (llvm-const-int ity (ldb (byte 64 0) v) (if (minusp v) 1 0))))
+           (zero (funcall k 0))
+           (one (funcall k 1))
+           (top (funcall k (1- bits)))
+           (q0 (if unsigned-p (llvm-build-udiv builder a b "idiv_q0") (llvm-build-sdiv builder a b "idiv_q0")))
+           (r0 (if unsigned-p
+                   (crisp.llvm-bindings::llvm-build-urem builder a b "idiv_r0")
+                   (crisp.llvm-bindings::llvm-build-srem builder a b "idiv_r0"))))
+      (labels ((add (x y) (llvm-build-add builder x y "idiv_add"))
+               (sub (x y) (llvm-build-sub builder x y "idiv_sub"))
+               (bxor (x y) (crisp.llvm-bindings::llvm-build-xor builder x y "idiv_xor"))
+               (band (x y) (crisp.llvm-bindings::llvm-build-and builder x y "idiv_and"))
+               (bor (x y) (crisp.llvm-bindings::llvm-build-or builder x y "idiv_or"))
+               (bnot (x) (crisp.llvm-bindings::llvm-build-not builder x "idiv_not"))
+               (sign-mask (x) (crisp.llvm-bindings::llvm-build-a-shr builder x top "idiv_sm")) ; 0 or -1
+               (top-bit (x) (crisp.llvm-bindings::llvm-build-l-shr builder x top "idiv_tb"))                       ; 0 or 1
+               (nonzero (x) (top-bit (bor x (sub zero x))))                                   ; 1 iff x /= 0
+               (absval (x) (let ((m (sign-mask x))) (sub (bxor x m) m)))
+               (remainder (q) (sub a (llvm-build-mul builder q b "idiv_qb"))))
+        (let ((q (ecase mode
+                   (:trunc q0)
+                   (:floor
+                    (if unsigned-p
+                        q0
+                        ;; r0 /= 0 and sign(r0) /= sign(b): truncation rounded UP, so subtract 1
+                        (sub q0 (band (nonzero r0) (sign-mask (bxor r0 b))))))
+                   (:ceil
+                    (if unsigned-p
+                        (add q0 (nonzero r0))
+                        ;; r0 /= 0 and same signs: truncation rounded DOWN, so add 1
+                        (add q0 (band (nonzero r0) (add (sign-mask (bxor r0 b)) one)))))
+                   (:round
+                    ;; |r0| against |b| - |r0| (no overflow: |r0| < |b|), compared UNSIGNED
+                    (let* ((abs-r (if unsigned-p r0 (absval r0)))
+                           (abs-b (if unsigned-p b (absval b)))
+                           (rest (sub abs-b abs-r))
+                           (diff (sub rest abs-r))
+                           ;; borrow of rest - abs-r, i.e. abs-r > rest (unsigned)
+                           (gt (top-bit (bor (band (bnot rest) abs-r) (band (bnot (bxor rest abs-r)) diff))))
+                           (eq (sub one (nonzero (bxor rest abs-r))))
+                           (up (bor gt (band eq (band q0 one)))))                             ; 0 or 1
+                      (if unsigned-p
+                          (add q0 up)
+                          ;; move AWAY from zero: +up for a non-negative exact quotient, -up otherwise
+                          (let ((s (sign-mask (bxor a b))))
+                            (add q0 (sub (bxor up s) s)))))))))
+          (values q (if (eq mode :trunc) r0 (remainder q))))))))
+
+(defun %185-divmod-helper (module mode type-name two-values-p)
+  "The internal helper function computing integer division MODE on TYPE-NAME, returning the
+   quotient, or {quotient, remainder} when TWO-VALUES-P.  Created on first use in MODULE:
+   internal linkage, noinline, SPIR_FUNC on SPIR-V.  Its body is %185-int-divmod."
+  (let* ((name (format nil "__crisp_idiv_~(~a~)_~(~a~)~:[~;_qr~]" mode type-name two-values-p))
+         (existing (crisp.llvm-bindings::llvm-get-named-function module name)))
+    (if (not (cffi:null-pointer-p existing))
+        existing
+        (let* ((ity (crisp-type-to-llvm-type type-name module))
+               (ret-type (if two-values-p (get-llvm-return-type module (list type-name type-name)) ity))
+               (fn (cffi:with-foreign-objects ((ptypes :pointer 2))
+                     (setf (cffi:mem-aref ptypes :pointer 0) ity
+                           (cffi:mem-aref ptypes :pointer 1) ity)
+                     (crisp.llvm-bindings::llvm-add-function
+                      module name (crisp.llvm-bindings::llvm-function-type ret-type ptypes 2 nil))))
+               (ctx (llvm-get-module-context module))
+               (kind (crisp.llvm-bindings::llvm-get-enum-attribute-kind-for-name "noinline" 8))
+               (tmp (llvm-create-builder)))
+          (log:debug "%185-divmod-helper: creating ~a" name)
+          (crisp.llvm-bindings::llvm-set-linkage fn 8)                 ; LLVMInternalLinkage
+          (llvm-add-attribute-at-index fn +llvm-attribute-function-index+
+                                       (crisp.llvm-bindings::llvm-create-enum-attribute ctx kind 0))
+          (when (eq *target-backend* :spirv)
+            (llvm-set-function-call-conv fn 75))                      ; SPIR_FUNC
+          (unwind-protect
+               (progn
+                 (llvm-position-builder-at-end tmp (llvm-append-basic-block fn "entry"))
+                 (multiple-value-bind (q r)
+                     (%185-int-divmod tmp module mode
+                                      (crisp.llvm-bindings::llvm-get-param fn 0)
+                                      (crisp.llvm-bindings::llvm-get-param fn 1)
+                                      type-name)
+                   (llvm-build-ret tmp (if two-values-p
+                                           (let ((agg (llvm-get-undef ret-type)))
+                                             (setf agg (llvm-build-insert-value tmp agg q 0 "idivmod_q"))
+                                             (llvm-build-insert-value tmp agg r 1 "idivmod_r"))
+                                           q))))
+            (llvm-dispose-builder tmp))
+          fn))))
+
+(defun %185-lower-divmod (builder module mode arg-vals arg-types result-type two-values-p)
+  "Shared %hw-lower body for the endeavour-185 integer division ops.  :trunc is inline; floor /
+   ceil / round call their helper (BUG 120 workaround, see %185-divmod-helper)."
+  (if (eq mode :trunc)
+      (multiple-value-bind (q r) (%185-int-divmod builder module mode (first arg-vals) (second arg-vals) (first arg-types))
+        (if two-values-p
+            (let ((agg (llvm-get-undef (get-llvm-return-type module result-type))))
+              (setf agg (llvm-build-insert-value builder agg q 0 "idivmod_q"))
+              (llvm-build-insert-value builder agg r 1 "idivmod_r"))
+            q))
+      (let* ((fn (%185-divmod-helper module mode (first arg-types) two-values-p))
+             (ret-type (if two-values-p
+                           (get-llvm-return-type module result-type)
+                           (crisp-type-to-llvm-type (first arg-types) module)))
+             (call (cffi:with-foreign-objects ((ptypes :pointer 2) (avals :pointer 2))
+                     (loop for i from 0 for v in arg-vals
+                           do (setf (cffi:mem-aref ptypes :pointer i) (llvm-type-of v)
+                                    (cffi:mem-aref avals :pointer i) v))
+                     (crisp.llvm-bindings::llvm-build-call2
+                      builder (crisp.llvm-bindings::llvm-function-type ret-type ptypes 2 nil)
+                      fn avals 2 "idiv_call"))))
+        (%propagate-callee-cc-to-call call fn)
+        call)))
+
+(defmethod %hw-lower ((op (eql '%185-idiv-floor)) builder module arg-vals arg-types result-type)
+  "(floor a b) on integers, quotient only (endeavour 185)."
+  (%185-lower-divmod builder module :floor arg-vals arg-types result-type nil))
+
+(defmethod %hw-lower ((op (eql '%185-idiv-ceil)) builder module arg-vals arg-types result-type)
+  "(ceil a b) on integers, quotient only (endeavour 185)."
+  (%185-lower-divmod builder module :ceil arg-vals arg-types result-type nil))
+
+(defmethod %hw-lower ((op (eql '%185-idiv-round)) builder module arg-vals arg-types result-type)
+  "(round a b) on integers, quotient only, ties to even (endeavour 185)."
+  (%185-lower-divmod builder module :round arg-vals arg-types result-type nil))
+
+(defmethod %hw-lower ((op (eql '%185-idivmod-trunc)) builder module arg-vals arg-types result-type)
+  "(let ((q r (/ a b))) ...) on integers: quotient and remainder (endeavour 185)."
+  (%185-lower-divmod builder module :trunc arg-vals arg-types result-type t))
+
+(defmethod %hw-lower ((op (eql '%185-idivmod-floor)) builder module arg-vals arg-types result-type)
+  "(let ((q r (floor a b))) ...) on integers (endeavour 185)."
+  (%185-lower-divmod builder module :floor arg-vals arg-types result-type t))
+
+(defmethod %hw-lower ((op (eql '%185-idivmod-ceil)) builder module arg-vals arg-types result-type)
+  "(let ((q r (ceil a b))) ...) on integers (endeavour 185)."
+  (%185-lower-divmod builder module :ceil arg-vals arg-types result-type t))
+
+(defmethod %hw-lower ((op (eql '%185-idivmod-round)) builder module arg-vals arg-types result-type)
+  "(let ((q r (round a b))) ...) on integers, ties to even (endeavour 185)."
+  (%185-lower-divmod builder module :round arg-vals arg-types result-type t))
+
+(defun %185-lower-fp-to-int (builder module base arg-vals arg-types result-type)
+  "llvm.BASE (floor / ceil / rint) on the float argument, then fptosi to RESULT-TYPE."
+  (let ((rounded (%hw-intrinsic builder module base (first arg-types) (first arg-vals))))
+    (llvm-build-fp-to-si builder rounded (crisp-type-to-llvm-type result-type module) "fp_round_int")))
+
+(defmethod %hw-lower ((op (eql '%185-fp-floor-int)) builder module arg-vals arg-types result-type)
+  "(floor x) on a float: toward -infinity, then to int (endeavour 185)."
+  (%185-lower-fp-to-int builder module "floor" arg-vals arg-types result-type))
+
+(defmethod %hw-lower ((op (eql '%185-fp-ceil-int)) builder module arg-vals arg-types result-type)
+  "(ceil x) on a float: toward +infinity, then to int (endeavour 185)."
+  (%185-lower-fp-to-int builder module "ceil" arg-vals arg-types result-type))
+
+(defmethod %hw-lower ((op (eql '%185-fp-round-int)) builder module arg-vals arg-types result-type)
+  "(round x) on a float: nearest, ties to even (llvm.rint in the default rounding mode), then to int."
+  (%185-lower-fp-to-int builder module "rint" arg-vals arg-types result-type))
+
+(defun %185-sqrt-call (builder module x type-name)
+  "sqrt of X (float / double scalar) through the transcendental callee selection: llvm.sqrt under
+   ieee on both backends (NVPTX: sqrt.rn; no libdevice); native_sqrt under fast on SPIR-V; fast
+   flags (afn -> sqrt.approx) under fast on PTX."
+  (multiple-value-bind (cat bits) (%hw-type-parts type-name)
+    (declare (ignore cat))
+    (%apply-precision-fmf
+     (%hw-call builder module (%math-call-name "llvm.sqrt" "native_sqrt" nil nil 1 bits)
+               (crisp-type-to-llvm-type type-name module) (list x) "sqrt_tmp"))))
+
+(defmethod %hw-lower ((op (eql '%185-sqrt)) builder module arg-vals arg-types result-type)
+  "sqrt (endeavour 185): see %185-sqrt-call."
+  (declare (ignore result-type))
+  (%185-sqrt-call builder module (first arg-vals) (first arg-types)))
+
+(defmethod %hw-lower ((op (eql '%185-rsqrt)) builder module arg-vals arg-types result-type)
+  "rsqrt (endeavour 185, D4): ieee -> 1/sqrt(x), each step correctly rounded; fast -> the
+   approximate hardware instruction (op-rsqrt-approx's lowering)."
+  (if (eq *math-precision* :fast)
+      (%hw-lower 'op-rsqrt-approx builder module arg-vals arg-types result-type)
+      (%apply-precision-fmf
+       (llvm-build-fdiv builder (%hw-float-const builder module (first arg-types) 1.0)
+                        (%185-sqrt-call builder module (first arg-vals) (first arg-types)) "rsqrt_tmp"))))
+
+(defmethod %hw-lower ((op (eql '%185-abs)) builder module arg-vals arg-types result-type)
+  "abs (endeavour 185): llvm.fabs for floats, llvm.abs (INT_MIN stays INT_MIN) for signed
+   integers, the value itself for unsigned."
+  (declare (ignore result-type))
+  (let ((x (first arg-vals)) (type-name (first arg-types)))
+    (multiple-value-bind (cat bits lanes) (%hw-type-parts type-name)
+      (ecase cat
+        (:float (%hw-intrinsic builder module "fabs" type-name x))
+        (:signed-int
+         (%hw-call builder module (format nil "llvm.abs.~a" (%hw-intrinsic-suffix cat bits lanes nil))
+                   (%hw-int-llvm-type bits lanes) (list x (llvm-const-int (llvm-int1-type) 0 0)) "abs_tmp"))
+        (:unsigned-int x)))))
+
+(defmethod %hw-lower ((op (eql '%185-clamp)) builder module arg-vals arg-types result-type)
+  "clamp (endeavour 185): min(max(x, lo), hi) -- llvm.maxnum / minnum for floats, smax / smin or
+   umax / umin for integers."
+  (declare (ignore result-type))
+  (destructuring-bind (x lo hi) arg-vals
+    (let ((type-name (first arg-types)))
+      (multiple-value-bind (cat bits lanes) (%hw-type-parts type-name)
+        (if (eq cat :float)
+            (%hw-intrinsic builder module "minnum" type-name
+                           (%hw-intrinsic builder module "maxnum" type-name x lo) hi)
+            (%hw-int-intrinsic builder module "min" cat bits lanes
+                               (%hw-int-intrinsic builder module "max" cat bits lanes x lo) hi))))))
+
+(defun %185-helper-call (builder module name ret-type arg-vals body-fn)
+  "Call the internal noinline helper NAME : RET-TYPE(types of ARG-VALS), creating it in MODULE on
+   first use with a body built by BODY-FN, called as (BODY-FN helper-builder param-values) and
+   returning the value to ret.  SPIR_FUNC on SPIR-V; the call site gets the callee's CC."
+  (let* ((n (length arg-vals))
+         (existing (crisp.llvm-bindings::llvm-get-named-function module name))
+         (fnty (cffi:with-foreign-objects ((ptypes :pointer (max 1 n)))
+                 (loop for i from 0 for v in arg-vals
+                       do (setf (cffi:mem-aref ptypes :pointer i) (llvm-type-of v)))
+                 (crisp.llvm-bindings::llvm-function-type ret-type ptypes n nil)))
+         (fn (if (not (cffi:null-pointer-p existing))
+                 existing
+                 (let ((fn (crisp.llvm-bindings::llvm-add-function module name fnty))
+                       (tmp (llvm-create-builder)))
+                   (log:debug "%185-helper-call: creating ~a" name)
+                   (crisp.llvm-bindings::llvm-set-linkage fn 8)            ; LLVMInternalLinkage
+                   (llvm-add-attribute-at-index
+                    fn +llvm-attribute-function-index+
+                    (crisp.llvm-bindings::llvm-create-enum-attribute
+                     (llvm-get-module-context module)
+                     (crisp.llvm-bindings::llvm-get-enum-attribute-kind-for-name "noinline" 8) 0))
+                   (when (eq *target-backend* :spirv)
+                     (llvm-set-function-call-conv fn 75))                 ; SPIR_FUNC
+                   (unwind-protect
+                        (progn
+                          (llvm-position-builder-at-end tmp (llvm-append-basic-block fn "entry"))
+                          (llvm-build-ret tmp (funcall body-fn tmp
+                                                       (loop for i below n
+                                                             collect (crisp.llvm-bindings::llvm-get-param fn i)))))
+                     (llvm-dispose-builder tmp))
+                   fn)))
+         (call (cffi:with-foreign-objects ((avals :pointer (max 1 n)))
+                 (loop for i from 0 for v in arg-vals do (setf (cffi:mem-aref avals :pointer i) v))
+                 (crisp.llvm-bindings::llvm-build-call2 builder fnty fn avals n "helper_call"))))
+    (%propagate-callee-cc-to-call call fn)
+    call))
+
+(defmethod %hw-lower ((op (eql '%185-logand)) builder module arg-vals arg-types result-type)
+  "logand (endeavour 185)."
+  (declare (ignore module arg-types result-type))
+  (crisp.llvm-bindings::llvm-build-and builder (first arg-vals) (second arg-vals) "logand"))
+
+(defmethod %hw-lower ((op (eql '%185-logior)) builder module arg-vals arg-types result-type)
+  "logior (endeavour 185)."
+  (declare (ignore module arg-types result-type))
+  (crisp.llvm-bindings::llvm-build-or builder (first arg-vals) (second arg-vals) "logior"))
+
+(defmethod %hw-lower ((op (eql '%185-logxor)) builder module arg-vals arg-types result-type)
+  "logxor (endeavour 185)."
+  (declare (ignore module arg-types result-type))
+  (crisp.llvm-bindings::llvm-build-xor builder (first arg-vals) (second arg-vals) "logxor"))
+
+(defmethod %hw-lower ((op (eql '%185-lognot)) builder module arg-vals arg-types result-type)
+  "lognot (endeavour 185)."
+  (declare (ignore module arg-types result-type))
+  (crisp.llvm-bindings::llvm-build-not builder (first arg-vals) "lognot"))
+
+(defmethod %hw-lower ((op (eql '%185-popcount)) builder module arg-vals arg-types result-type)
+  "popcount (endeavour 185): llvm.ctpop -- set bits of the two's-complement representation.
+   Behind a noinline helper: inline, the BMG gave a wrong lane (BUG 120 family)."
+  (declare (ignore result-type))
+  (multiple-value-bind (cat bits lanes) (%hw-type-parts (first arg-types))
+    (let ((ity (%hw-int-llvm-type bits lanes))
+          (iname (format nil "llvm.ctpop.~a" (%hw-intrinsic-suffix cat bits lanes nil))))
+      (%185-helper-call builder module (format nil "__crisp_popcount_~(~a~)" (first arg-types)) ity arg-vals
+                        (lambda (b params) (%hw-call b module iname ity params "popcount"))))))
+
+(defun %185-ash-body (builder module x c x-type)
+  "ash (endeavour 185, D3) of X by C (already X-TYPE).  Branch-free:
+     left  = count >= bits ? 0 : x << count
+     right = x >> min(-count, bits-1)   (ashr: sign fill; lshr for unsigned, and 0 when -count >= bits)
+     ash   = count >= 0 ? left : right"
+  (multiple-value-bind (cat bits) (%hw-type-parts x-type)
+    (let* ((unsigned-p (eq cat :unsigned-int))
+           (ity (crisp-type-to-llvm-type x-type module))
+           (zero (llvm-const-int ity 0 0))
+           (width (llvm-const-int ity bits 0))
+           (top (llvm-const-int ity (1- bits) 0)))
+      (labels ((icmp (pred a b) (llvm-build-icmp builder pred a b "ash_c"))
+               (sel (p a b) (crisp.llvm-bindings::llvm-build-select builder p a b "ash_sel"))
+               (umin (a b) (sel (icmp +llvm-int-ult+ a b) a b)))
+        (let* ((nonneg (icmp +llvm-int-sge+ c zero))
+               (lc (umin (sel nonneg c zero) top))
+               (left (sel (icmp +llvm-int-sge+ c width) zero
+                          (crisp.llvm-bindings::llvm-build-shl builder x lc "ash_shl")))
+               (n (llvm-build-sub builder zero c "ash_neg"))
+               (rc (umin (sel nonneg zero n) top))
+               (right (if unsigned-p
+                          (sel (icmp +llvm-int-sge+ n width) zero
+                               (crisp.llvm-bindings::llvm-build-l-shr builder x rc "ash_lshr"))
+                          (crisp.llvm-bindings::llvm-build-a-shr builder x rc "ash_ashr"))))
+          (sel nonneg left right))))))
+
+(defmethod %hw-lower ((op (eql '%185-ash)) builder module arg-vals arg-types result-type)
+  "ash (endeavour 185, D3): see %185-ash-body.  Behind a noinline helper: inline, the BMG failed
+   zeModuleCreate (BUG 120 family)."
+  (declare (ignore result-type))
+  (let* ((x-type (first arg-types))
+         (c (build-cast-if-needed builder module (second arg-vals) (second arg-types) x-type)))
+    (%185-helper-call builder module (format nil "__crisp_ash_~(~a~)" x-type)
+                      (crisp-type-to-llvm-type x-type module) (list (first arg-vals) c)
+                      (lambda (b params) (%185-ash-body b module (first params) (second params) x-type)))))
+
+(defun %185-ocl-builtin-name (base bits)
+  "The Itanium-mangled OpenCL builtin BASE for a float (32) or double (64) argument: _Z4tanhf."
+  (format nil "_Z~a~a~a" (length base) base (if (= bits 64) "d" "f")))
+
+(defun %185-transcendental-call (builder module x type-name base)
+  "Call transcendental BASE (\"tanh\" \"erf\" \"exp2\") of X through the target's callee."
+  (multiple-value-bind (cat bits) (%hw-type-parts type-name)
+    (declare (ignore cat))
+    (let ((callee (cond
+                    ((string= base "exp2")
+                     (%math-call-name "llvm.exp2" "native_exp2" "__nv_exp2" nil 1 bits))
+                    ((eq *target-backend* :ptx)
+                     (%libdevice-fn-name (format nil "__nv_~a" base) (= bits 32)))
+                    (t (%185-ocl-builtin-name base bits)))))
+      (log:debug "%185-transcendental-call: ~a ~a -> ~a" base type-name callee)
+      (%apply-precision-fmf
+       (%hw-call builder module callee (crisp-type-to-llvm-type type-name module) (list x)
+                 (format nil "~a_tmp" base))))))
+
+(defmethod %hw-lower ((op (eql '%185-tanh)) builder module arg-vals arg-types result-type)
+  "tanh (endeavour 185 P3)."
+  (declare (ignore result-type))
+  (%185-transcendental-call builder module (first arg-vals) (first arg-types) "tanh"))
+
+(defmethod %hw-lower ((op (eql '%185-erf)) builder module arg-vals arg-types result-type)
+  "erf (endeavour 185 P3)."
+  (declare (ignore result-type))
+  (%185-transcendental-call builder module (first arg-vals) (first arg-types) "erf"))
+
+(defmethod %hw-lower ((op (eql '%185-exp2)) builder module arg-vals arg-types result-type)
+  "exp2 (endeavour 185 P3)."
+  (declare (ignore result-type))
+  (%185-transcendental-call builder module (first arg-vals) (first arg-types) "exp2"))
+
+(defmethod %hw-lower ((op (eql '%185-frem)) builder module arg-vals arg-types result-type)
+  "Float rem (endeavour 185): LLVM frem, i.e. C fmod -- truncating, sign of the dividend."
+  (declare (ignore module arg-types result-type))
+  (%apply-precision-fmf (crisp.llvm-bindings::llvm-build-frem builder (first arg-vals) (second arg-vals) "frem")))
+
+(defun %185-fmod-body (builder module x y type-name)
+  "Float mod: r = frem(x, y); r + y when r /= 0 and r, y differ in sign."
+  (let* ((zero (%hw-float-const builder module type-name 0.0))
+         (r (crisp.llvm-bindings::llvm-build-frem builder x y "fmod_r"))
+         (r-nonzero (llvm-build-fcmp builder 6 r zero "fmod_nz"))           ; ONE: ordered, not equal
+         (signs-differ (crisp.llvm-bindings::llvm-build-xor
+                        builder
+                        (llvm-build-fcmp builder +llvm-real-olt+ r zero "fmod_rneg")
+                        (llvm-build-fcmp builder +llvm-real-olt+ y zero "fmod_yneg") "fmod_x")))
+    (crisp.llvm-bindings::llvm-build-select
+     builder (crisp.llvm-bindings::llvm-build-and builder r-nonzero signs-differ "fmod_fix")
+     (llvm-build-fadd builder r y "fmod_ry") r "fmod")))
+
+(defmethod %hw-lower ((op (eql '%185-fmod)) builder module arg-vals arg-types result-type)
+  "Float mod (endeavour 185): see %185-fmod-body.  Behind a noinline helper (BUG 120 family)."
+  (declare (ignore result-type))
+  (let ((type-name (first arg-types)))
+    (%185-helper-call builder module (format nil "__crisp_fmod_~(~a~)" type-name)
+                      (crisp-type-to-llvm-type type-name module) arg-vals
+                      (lambda (b params) (%185-fmod-body b module (first params) (second params) type-name)))))
+
 ;; -- comparisons --
 (defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)
   "Helper to generate IR for comparison operators (<, >, =, etc)."
@@ -2566,7 +2971,8 @@
               (values nil nil)))))))
 
 (defmethod generate-node-ir ((node semantic-struct-construction) builder module var-env di-builder di-scope location-map)
-  (let* ((type-name (semantic-struct-construction-type node))
+  ;; ADV-018: the node's type may be c-t-qualified, (NAME :k v ...); the LLVM layout is NAME's.
+  (let* ((type-name (%member-access-struct-name (semantic-struct-construction-type node)))
          (struct-def (lookup-struct-definition type-name))
          (llvm-type (ensure-struct-llvm-type type-name))
          (agg-val (llvm-get-undef llvm-type))

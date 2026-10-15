@@ -411,6 +411,30 @@
      spec)
     (t (error "Invalid struct member spec: ~a" spec))))
 
+;;; ADV-018 (adversarial, 2026-10-12): a struct with a :c-t member that has no default is typed
+;;; (NAME :k v ...) once constructed; these let member access and construction handle that form.
+(defun %split-ct-props-args (args)
+  "Splits a %construct-struct argument list at the :%ct-props marker that
+   validate-and-reorder-struct-args appends for a struct whose compile-time members have no
+   default (ADV-018).  Returns (values runtime-args ct-plist); CT-PLIST is NIL when absent."
+  (let ((pos (position :%ct-props args)))
+    (if pos
+        (values (subseq args 0 pos) (subseq args (1+ pos)))
+        (values args nil))))
+
+(defun %member-access-struct-name (obj-type)
+  "Returns the struct/record NAME behind OBJ-TYPE for member access: OBJ-TYPE itself when
+   it is a symbol naming a struct; the head of a c-t-qualified type (NAME :k v ...); and the
+   same after resolving a def-type alias, e.g. (def-type fast-cfg (my-cfg :exec :fast)).
+   Returns OBJ-TYPE unchanged when none of those apply, so callers' errors still name it."
+  (let ((resolved (if (symbolp obj-type) (resolve-type-alias obj-type) obj-type)))
+    (cond
+      ((and (symbolp obj-type) (lookup-struct-definition obj-type)) obj-type)
+      ((and (symbolp resolved) (lookup-struct-definition resolved)) resolved)
+      ((and (consp resolved) (symbolp (car resolved)) (lookup-struct-definition (car resolved)))
+       (car resolved))
+      (t obj-type))))
+
 (defun validate-and-reorder-struct-args (struct-name defined-members args)
   "Validates and reorders keyword arguments for a struct constructor macro."
   ;; 0. Identify Runtime vs Compile-Time members
@@ -458,6 +482,23 @@
                  (error "Struct constructor for ~a has unknown argument: ~s" struct-name k)))
              processed-args)
 
-    (nreverse ordered-values)))
+    ;; 5. ADV-018: carry the REQUIRED compile-time values into the construction form, so the
+    ;; analyzer can type the value as (NAME :k v ...) -- a complete type -- instead of the bare,
+    ;; incomplete NAME.  Encoded as trailing ATOMS, :%ct-props :k v ..., because the ANF
+    ;; transform lifts any non-atomic argument (even a quoted one) into a temporary, which the AD
+    ;; walk then reads as a call.  LAST, so positional consumers of the runtime args (the AD
+    ;; constructor rule) never see it.  A non-atomic c-t value (a type spec, say) is not carried:
+    ;; the value keeps the bare NAME, as before.  Defaulted c-t members are left out, as before.
+    (let ((ct-props (loop for member in ct-required-members
+                          for kw = (intern (symbol-name (first member)) :keyword)
+                          append (list kw (gethash kw processed-args)))))
+      (log:debug "validate-and-reorder-struct-args ~a: required c-t props ~s" struct-name ct-props)
+      ;; A mangled template-instance struct (FAKE-CELL_FLOAT) keeps the bare NAME: template
+      ;; inference unmangles bare names, and detect-and-register-implicit-template already treats
+      ;; such names as complete (same '_' test), so qualifying them only breaks inference (037/07).
+      (if (and ct-props (every #'atom ct-props)
+               (not (find #\_ (symbol-name struct-name))))
+          (append (nreverse ordered-values) (list :%ct-props) ct-props)
+          (nreverse ordered-values)))))
 
 

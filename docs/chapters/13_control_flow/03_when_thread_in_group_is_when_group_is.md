@@ -4,7 +4,7 @@
 `when-thread-in-group-is` is much like `when-thread-is` except that instead of using the global thread id,
 the local id is used instead.  In other words, there is an implicit `(when (= someId (get-local-id 0)) ...)`
 
-Similarly, `when-group-is` is akin to those except that the group id is used instead.  In other words, there is an implicit `(when (= someId (get-group-id 0)) ...)`
+Similarly, `when-group-is` is akin to those except that the group id is used instead.  In other words, there is an implicit `(when (= someId (get-workgroup-id 0)) ...)`
 
 ```
 (when-thread-in-group-is id <expr>)

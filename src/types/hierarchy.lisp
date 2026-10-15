@@ -89,12 +89,33 @@
     ((eq source-type target-type) t)
     (t (has-ancestor-path? source-type target-type (make-hash-table)))))
 
+;;; ADV-018 (adversarial, 2026-10-12): a c-t-qualified struct value (NAME :k v ...) fits where the
+;;; bare, polymorphic NAME is expected (parameters via types-compatible-p, returns via types-assignable-p).
+(defun %struct-has-required-ct-member-p (struct-name)
+  "T if STRUCT-NAME's struct/record definition has a :c-t member with no default."
+  (let ((sd (lookup-struct-definition struct-name)))
+    (and sd (some (lambda (m) (and (consp m) (eq (third m) :c-t) (null (fourth m))))
+                  (crisp-struct-definition-members sd))
+         t)))
+
+(defun %ct-qualified-arg-fits-bare-param-p (arg-type param-type)
+  "T when ARG-TYPE is a c-t-qualified struct type (NAME :k v ...) and PARAM-TYPE resolves to
+   the bare NAME of a struct with unspecified c-t members."
+  (and (consp arg-type) (symbolp (car arg-type)) (symbolp param-type)
+       (let ((presolved (resolve-type-alias param-type)))
+         (and (symbolp presolved)
+              (string= (symbol-name presolved) (symbol-name (car arg-type)))
+              (%struct-has-required-ct-member-p presolved)))))
+
 (defun types-assignable-p (source-type target-type)
   "Checks if source-type can be assigned to target-type.
    This is true if:
    1. The types feature exact equivalence (types-equivalent-p)
-   2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)"
+   2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)
+   3. ADV-018: the source is a c-t-qualified struct (NAME :k v ...) and the target is the bare,
+      polymorphic NAME (see %ct-qualified-arg-fits-bare-param-p)"
   (or (types-equivalent-p source-type target-type)
+      (%ct-qualified-arg-fits-bare-param-p source-type target-type)
       (and (symbolp source-type)
            (symbolp target-type)
            (is-substitutable-for? source-type target-type))))

@@ -64,9 +64,14 @@
 
                
 (defun types-compatible-p (arg-type param-type)
-  "Checks if an argument type is compatible with a parameter type."
+  "Checks if an argument type is compatible with a parameter type.
+   ADV-018: a c-t-qualified struct value (NAME :k v ...) fits a parameter of the bare,
+   polymorphic NAME (see %ct-qualified-arg-fits-bare-param-p)."
   (log:debug "COMPAT-CHECK: Arg ~s Param ~s" arg-type param-type)
   (or (types-equivalent-p arg-type param-type)
+
+      ;; ADV-018: c-t-qualified struct value -> bare polymorphic struct parameter.
+      (%ct-qualified-arg-fits-bare-param-p arg-type param-type)
 
       ;; Endeavor 122 (FFI): voidp accepts any pointer argument — voidp, a typed
       ;; (c-pointer ...), or a (c-handle ...) (a void** slot; same addrspace-0 ABI).

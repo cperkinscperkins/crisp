@@ -125,7 +125,7 @@ the hardware accellerated types that have a widened accumulator, quantized integ
     (let ((tile-A (make-tile TILE_DIM T))
           (tile-B (make-tile TILE_DIM T))
           (local-id-x (get-local-id 0)) (local-id-y (get-local-id 1))
-          (group-id-x (get-group-id 0)) (group-id-y (get-group-id 1))
+          (group-id-x (get-workgroup-id 0)) (group-id-y (get-workgroup-id 1))
           (acc 0.0)) ; Per-thread accumulator register
 
       ;; main loop over the tiles in the inner dimension

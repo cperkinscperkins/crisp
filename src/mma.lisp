@@ -1226,7 +1226,7 @@
 ;;; (make-register-tile without :operand), never from the type name.
 ;;;
 ;;; These four definitions were EXTRACTED VERBATIM from src/mma.lisp by
-;;; put_temp_files_here/165/patch2a.py (balanced-paren scan) and edited by exact-match
+;;; a one-off balanced-paren scan script (endeavour 165) and edited by exact-match
 ;;; replacement, each asserted to hit exactly once.  Nothing here was retyped by hand.
 ;;;
 ;;; NOTE FOR THE SRC PATCH: %acc-frag-mn is new (src/mma.lisp); %register-tile-type-name
@@ -1266,7 +1266,7 @@
 ;;; (floor m 16) x (floor n 8) fragments, so ANY tile with M < 16 or N < 8 yields ZERO
 ;;; fragments.  There is nothing to fill, nothing to store and nothing to multiply, so the
 ;;; kernel legitimately optimises down to `ret;` -- and the compiler reports success.
-;;; Demonstrated on the dev box with a plain fp32 8x8 tile (put_temp_files_here/165/probe/):
+;;; Demonstrated on the dev box with a plain fp32 8x8 tile (research/165-f64-mma-probe/):
 ;;; a fill + store-tile kernel emitted an empty body and exit code 0.
 ;;;
 ;;; `%ensure-register-tile-type` ALREADY guards exactly this and says so.  It never fires,

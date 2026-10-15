@@ -378,11 +378,16 @@
                 nil)))))
 
 
+(defvar *explicit-instantiation-names* (make-hash-table :test 'equal)
+  "Explicit override name (string) -> (template-name . substitutions) of the instantiation that
+   claimed it in this compilation.  ADV-019.")
+
 (defun initialize-templates ()
   "Initializes the template system and hooks into the compiler.
    Extended to register ARRAY as a built-in arity-2 form for unmangle support."
   (clrhash *instantiated-templates*)
   (clrhash *template-registry*)
+  (clrhash *explicit-instantiation-names*)   ; ADV-019: names are unique per compilation
   (setf crisp.compiler::*template-instantiator-fn* #'ensure-template-instantiation)
   (setf crisp.compiler::*template-arity-lookup-fn*
     (lambda (name)
@@ -597,7 +602,55 @@
               template-name constructor-name keyword-call-args)
     `(,constructor-name ,@keyword-call-args)))
 
+;;; ADV-019 / ADV-005 (adversarial, 2026-10-12): explicit instantiation names must be unique per
+;;; compilation; a keyword literal's singleton type instantiates a template as its enumeration.
+(defun %enumerations-containing-keyword (kw)
+  "Returns the names of every registered def-enumeration whose members include KW."
+  (let ((names '()))
+    (maphash (lambda (name def)
+               (when (assoc kw (enumeration-def-members def))
+                 (push name names)))
+             *crisp-enums*)
+    (sort names #'string< :key #'symbol-name)))
+
+(defun %keyword-literal-type->enum (type)
+  "Maps a keyword literal's singleton type (keyword :k) to the enumeration that contains :k
+   (ADV-005).  Any other TYPE is returned unchanged.  Signals a crisp-compiler-error when :k
+   belongs to no enumeration, or to several -- the template parameter cannot be inferred."
+  (if (and (consp type) (eq (first type) 'keyword) (= (length type) 2) (keywordp (second type)))
+      (let* ((kw (second type))
+             (enums (%enumerations-containing-keyword kw)))
+        (log:debug "%keyword-literal-type->enum ~s -> candidates ~s" kw enums)
+        (cond
+          ((= (length enums) 1) (first enums))
+          ((null enums)
+           (error 'crisp-compiler-error
+                  :message (format nil "Cannot infer a template type from the keyword ~s: it is not a value of any def-enumeration" kw)))
+          (t
+           (error 'crisp-compiler-error
+                  :message (format nil "Cannot infer a template type from the keyword ~s: it is a value of several enumerations (~{~(~a~)~^, ~}). Pass it through a parameter declared with the enumeration you mean"
+                                   kw enums)))))
+      type))
+
 (defun %instantiate-callable-template (name body substitutions override-name)
+  "Builds the instantiated (progn (def-X NAME ...)) for a callable template, renamed to
+   OVERRIDE-NAME when one is given.  ADV-019: an explicit name may be reused only by the SAME
+   instantiation (same template, same substitutions -- macroexpansion legitimately repeats);
+   a different instantiation under a name already claimed in this compilation is an error,
+   since codegen would otherwise silently keep only the last one."
+  (when override-name
+    (let* ((key (string override-name))
+           (this (cons name substitutions))
+           (prior (gethash key *explicit-instantiation-names*)))
+      (log:debug "%instantiate-callable-template: ~a as ~s (prior ~s)" name key prior)
+      (cond
+        ((null prior) (setf (gethash key *explicit-instantiation-names*) this))
+        ((equal prior this) nil)
+        (t (error 'crisp-compiler-error
+                  :message (format nil "Kernel name ~s is already used by another instantiation of ~(~a~) (~{~(~a~)~^ ~}); this one (~{~(~a~)~^ ~}) would silently replace it. Give each instantiation its own name"
+                                   key (car prior)
+                                   (mapcar #'cdr (cdr prior))
+                                   (mapcar #'cdr substitutions)))))))
   (let ((substituted-body (sublis substitutions body)))
     (if override-name
         (let ((new-name (if (stringp override-name) (intern override-name (symbol-package name)) override-name)))
@@ -679,7 +732,15 @@ parameters have already been inferred from earlier arguments."
 (defun ensure-template-instantiation (name explicit-arg-types compiler-callback)
   "Called by the compiler to auto-instantiate templates.
    compiler-callback is (lambda (form location) ...).
-   Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro."
+   Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro.
+   ADV-005: a keyword literal's singleton type (keyword :k) stands for the enumeration that
+   holds :k (see %keyword-literal-type->enum)."
+  ;; ADV-005: map keyword-literal argument types to their enumeration first.  Only the
+  ;; instantiation path does this; direct overload resolution still sees (keyword :k).
+  (let ((mapped (mapcar #'%keyword-literal-type->enum explicit-arg-types)))
+    (unless (equal mapped explicit-arg-types)
+      (log:debug "ensure-template-instantiation ~a: keyword args ~s -> ~s" name explicit-arg-types mapped))
+    (setf explicit-arg-types mapped))
   ;; If the explicit args contain nil (e.g. an incomplete storage-handle type
   ;; spec like (tensor int 1 nil :last)), skip instantiation.  Such args
   ;; represent unresolved polymorphic slots; instantiation here would call
@@ -716,20 +777,33 @@ parameters have already been inferred from earlier arguments."
                                 name inferred-types status is-compiling)
 
                       (let ((instantiated-code (instantiate-template tmpl inferred-types)))
-                        (loop for form in (rest instantiated-code)
-                              do (let ((is-wrapper
-                                        ;; _WRAPPER functions have c-t fields typed as type-spec/address-space/etc
-                                        ;; which map to void in LLVM — illegal as parameter types.
-                                        ;; Eval them to register overloads; never compile to IR.
-                                        (and (consp form)
-                                             (symbolp (car form))
-                                             (string-equal (symbol-name (car form)) "DEF-FUNCTION")
-                                             (symbolp (second form))
-                                             (search "_WRAPPER" (symbol-name (second form))
-                                                     :test #'char-equal))))
-                                   (if (and is-compiling (not is-wrapper))
-                                       (funcall compiler-callback form nil)
-                                       (eval form))))
+                        (flet ((run-instantiated-forms ()
+                                 (loop for form in (rest instantiated-code)
+                                       do (let ((is-wrapper
+                                                 ;; _WRAPPER functions have c-t fields typed as type-spec/address-space/etc
+                                                 ;; which map to void in LLVM — illegal as parameter types.
+                                                 ;; Eval them to register overloads; never compile to IR.
+                                                 (and (consp form)
+                                                      (symbolp (car form))
+                                                      (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+                                                      (symbolp (second form))
+                                                      (search "_WRAPPER" (symbol-name (second form))
+                                                              :test #'char-equal))))
+                                            (if (and is-compiling (not is-wrapper))
+                                                (funcall compiler-callback form nil)
+                                                (eval form))))))
+                          ;; BUG 022: an :analyzed template is instantiated a SECOND time once
+                          ;; compilation starts, so its functions reach IR.  That re-runs the same
+                          ;; def-struct in the same compilation and redefines its MAKE-* macros with
+                          ;; identical definitions -- one SBCL warning each.  Muffle exactly those;
+                          ;; a first instantiation still warns, so a real collision stays visible.
+                          (if (eq status :analyzed)
+                              (progn
+                                (log:debug "ensure-template-instantiation ~a: compile pass re-run, muffling redefinition warnings"
+                                           name)
+                                (handler-bind ((sb-kernel:redefinition-warning #'muffle-warning))
+                                  (run-instantiated-forms)))
+                              (run-instantiated-forms)))
 
                         (setf (gethash key *instantiated-templates*) (if is-compiling :compiled :analyzed))
                         (setf did-work t)))))

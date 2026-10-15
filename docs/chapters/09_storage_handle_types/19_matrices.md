@@ -118,7 +118,7 @@ Possible Implemenation
 When working with matrices, we often want coalesced memory access, but that is limited
 to the `:row-major` / `:col-major` choice.  For this reason, a very common
 usage pattern when working with matrices is to use local memory tiles.
-These are typically `32x32` (ie `(get-warp-size)` squared ).
+These are typically `32x32` (ie `(warp-size)` squared ).
 
 If using the `tile-stride` macro, then stride aware `load-tile` and `store-tile` helpers
 are availalable in the body of the `tile-stride` (along with async variants). See [load-tile / store-tile](#load-tile) for a full discussion.
@@ -159,7 +159,7 @@ not necessarily like we want them to be.
 ;; (make-tile-scratch-vector T)
 ;; (make-tile dim T)
 
-(def-const TILE_DIM:ulong (get-warp-size))
+(def-const TILE_DIM:ulong (warp-size))
 
 ;; -- convert-layout --
 ;; THIS IS OUTDATED. REWRITE ONCE tile-stride, load-tile, workgroup-stride and store-tile are 

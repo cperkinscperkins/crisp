@@ -248,8 +248,8 @@ Findings:
   cannot move the register wall.  Naive-ring `:block` holds ~18–20% of cuBLAS; the gap is the
   occupancy the register wall is costing us.
 
-Reproduce: `put_temp_files_here/bench05.sh "1024 2048 4096"` (or the same `crisp-hoist-cuda
---mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow as Ch 1.5).  At 4096 the
+Reproduce: sizes 1024 2048 4096 through the same `crisp-hoist-cuda
+--mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow as Ch 1.5.  At 4096 the
 harness's O(N³) host reference check is glacial *after* the timed run — grab the `BENCH` line and
 move on (`stdbuf -oL ./bin | grep -m1 BENCH`).
 
@@ -312,8 +312,8 @@ Findings:
 Next levers: `wgmma` (the big one), bigger tiles per CTA for higher arithmetic intensity, and
 register reallocation (`setmaxnreg.dec` on the producer so it stops reserving the consumer budget).
 
-Reproduce: `put_temp_files_here/bench06.sh "1024 2048 4096"` (correctness gate @512 + GFLOPS sweep;
-same `crisp-hoist-cuda --mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow).
+Reproduce: sizes 1024 2048 4096, correctness gate at 512 then a GFLOPS sweep, through the
+same `crisp-hoist-cuda --mma-bench=M,N,K --grid-tile=64` → `nvcc -arch=sm_90a … -lcuda` flow.
 
 ## Chapter 4 — Clusters + TMA multicast (DSMEM). A measured negative result.
 
