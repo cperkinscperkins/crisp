@@ -27,7 +27,7 @@ NEXT  (housekeeping-oct)
       pre-order count of tree paths, so a debugger would show the wrong line of the .crisp); (2) cuda-gdb smoke
       test on the next pod rental (break / step / print in a Crisp kernel), alongside the 185 PTX libdevice check
       (tanh / erf / exp2); (3) gdb-oneapi on the BMG once it is not driving the display (iGPU for the monitor?) (L339)
-- [ ] make new prerelease (see Release)
+- [x] make new prerelease (see Release)
 - [ ] set up Claude with runpod.io MCP -- needs guardrails first (spend cap, auto-kill TTL)
 - [ ] Start AG on contest submissions -- spike the submission format first (PTX + cupy/cuda-python loader?)
 

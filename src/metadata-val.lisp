@@ -1757,11 +1757,6 @@ Returns the form or NIL."
                       (incf top-comma-count))))
           nil)))))
 
-(defun %074-has-local-ptr-param (define-line)
-  "Returns T if the define line contains a ptr addrspace(3) parameter."
-  (search "ptr addrspace(3)" define-line))
-
-
 
 
 (defun validate-074-02-scratch-vector-propagation-ir (ir-path)

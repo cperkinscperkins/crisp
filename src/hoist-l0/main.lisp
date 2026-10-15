@@ -491,16 +491,6 @@
           ((string-equal n "BFLOAT16") "crisp_f32_to_bf16")
           (t nil))))
 
-;; src/hoist-l0/main.lisp
-(defun %l0-f16-decoder (elem-type)
-  "C++ call PREFIX that decodes ELEM-TYPE's 16-bit encoding to float, e.g. \"crisp_f16_to_f32(\",
-   or NIL when a plain (float) cast is correct.  The caller supplies the closing paren."
-  (let ((n (and elem-type (symbolp elem-type) (symbol-name elem-type))))
-    (cond ((null n) nil)
-          ((string-equal n "HALF")     "crisp_f16_to_f32(")
-          ((string-equal n "BFLOAT16") "crisp_bf16_to_f32(")
-          (t nil))))
-
 
 
 (defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records &optional dispatch-info)
@@ -1208,26 +1198,6 @@
 
     allocations))
 
-(defun generate-kernel-arguments (stream declared-sig)
-  "Generate kernel argument setup code"
-  (format stream "    // Set kernel arguments~%")
-  (let ((arg-index 0))
-    (dolist (param declared-sig)
-      (let ((param-name (getf param :name))
-            (param-type (getf param :type)))
-        ;; For now, just handle scalar types
-        (when (symbolp param-type) ; Simple scalar type
-              (format stream "    ~a ~a_arg = ~d;  // TODO: Set actual value~%"
-                (string-downcase (symbol-name param-type))
-                param-name
-                (+ arg-index 42)) ; Placeholder value
-              (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a_arg);~%~%"
-                arg-index
-                (string-downcase (symbol-name param-type))
-                param-name)
-              (incf arg-index))))
-    (when (> arg-index 0)
-          (format stream "~%"))))
 
 
 ;; Record type helpers

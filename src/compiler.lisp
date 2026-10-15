@@ -441,25 +441,6 @@ from a fixed !100."
 ;; in the toolchain still work; on Linux/CI/RunPod with `opt-21` on PATH
 ;; (via CRISP_USE_SYSTEM_TOOLS) the optimization runs automatically.
 
-(defun %opt-available-p ()
-  "Returns the resolved opt tool path if findable, NIL otherwise.
-   We probe rather than assume, so machines without opt installed still
-   produce PTX / SPV (just unoptimized)."
-  (let ((tool (resolve-tool-executable "opt")))
-    ;; If resolve returns a bundled path, it's definitively present.
-    ;; If it returns a bare name (versioned or not), probe with --version.
-    (cond
-      ((probe-file tool) tool)
-      (t
-       (handler-case
-           (multiple-value-bind (out err code)
-               (uiop:run-program (list tool "--version")
-                                 :output nil :error-output nil
-                                 :ignore-error-status t)
-             (declare (ignore out err))
-             (when (zerop code) tool))
-         (error () nil))))))
-
 
 
 (defvar *nvptx-target-initialized* nil

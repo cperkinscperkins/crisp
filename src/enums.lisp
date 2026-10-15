@@ -65,9 +65,6 @@
       (and (integerp x)
            (find x '(0 1 2 3 4)))))
 
-(defun address-space-value (k)
-  "Returns the integer value for an address space keyword, sensitive to *target-backend*."
-  (encode-address-space k))
 
 (export 'is-address-space?)
 

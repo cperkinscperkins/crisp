@@ -1044,12 +1044,6 @@
         ((eq (%mv-source-head canon) :tensor)  (fourth canon))
         (t :global)))
 
-(defun %mv-source-access (canon)
-  "Return the access keyword from a canonical storage handle type."
-  (cond ((eq (%mv-source-head canon) :cell)   (fourth canon))
-        ((eq (%mv-source-head canon) :tensor)  (fifth canon))
-        (t :read-write)))
-
 
 
 (defun %mv-source-align (canon)

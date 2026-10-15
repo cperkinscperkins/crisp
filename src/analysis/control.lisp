@@ -311,10 +311,6 @@
           ((= (length nontrivial) 1) (first nontrivial))
           (t nil))))
 
-(defun %mbarrier-mode-p (mode)
-  "T if MODE denotes a real mbarrier object.  :linear is the backend's group-async-copy handle
-   (a phantom on PTX); :block and :cluster are both genuine mbarriers and differ only in reach."
-  (and mode (member mode (list :block :cluster)) t))
 
 (defvar *cluster-barrier-bindings* (make-hash-table :test 'eq)
   "Barrier binding SYMBOL (or ring symbol) -> T when declared :mode :cluster.
@@ -1019,19 +1015,6 @@
          :message "Crisp has no LET*. Use LET — Crisp's LET is already sequential, so later bindings may refer to earlier ones"
          :source-location location))
 
-#|
-(defun %warp-spec-check-sync (builtin-kw name-str location)
-  "Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective
-   (sync-workgroup) DEADLOCKS — only one role's warps reach it — so it is forbidden; warp-scoped
-   ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, defer to the normal
-   thread-divergent check."
-  (if *in-warp-spec-block*
-      (when (eq builtin-kw :sync-workgroup)
-        (error 'crisp-compiler-error
-          :message "sync-workgroup cannot appear inside a with-warp-specialization role block — it is a workgroup collective and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering."
-          :source-location location))
-      (%tlc-check-not-divergent name-str location)))
-      |#
 
 
 (defun %warp-spec-check-sync (builtin-kw name-str location)
@@ -1472,10 +1455,6 @@
         (body (cons 'progn (cddr expr))))
     (analyze-if+-expression `(if+ ,cond ,body) env context location)))
 
-(defun analyze-static-when-expression (expr env context location)
-  (let ((cond (second expr))
-        (body (cons 'progn (cddr expr))))
-    (analyze-static-if-expression `(if ,cond ,body) env context location)))
 
 (defun analyze-unless-expression (expr env context location)
   ;; Delegate to analyze-if-expression to leverage DCE.
@@ -1489,10 +1468,6 @@
         (body (cons 'progn (cddr expr))))
     (analyze-if+-expression `(if+ ,cond nil ,body) env context location)))
 
-(defun analyze-static-unless-expression (expr env context location)
-  (let ((cond (second expr))
-        (body (cons 'progn (cddr expr))))
-    (analyze-static-if-expression `(if ,cond nil ,body) env context location)))
 
 
 (defun %strip-execution-context-declares (body-forms)
@@ -3583,48 +3558,6 @@
         :source-location nil))
     (values strict-p layout-tag hw-tag bindings body-forms tensor-form)))
 
-;; Custom expansion for :warp-idx.  Unlike :workgroup-idx (which can delegate
-;; to tensor-stride because dim-0 iteration aligns with single-dim global-size),
-;; :warp-idx must iterate linearly over the FLATTENED global execution space.
-;; This matters when global-size has arity > 1 — tensor-stride's gid/gsize
-;; would only see dim 0, missing the rest of the enqueue.
-(defun %expand-warp-idx-form (tensor-form bindings body-forms location)
-  "Linear-flatten expansion for hardware-stride :warp-idx.  Always 1 binding."
-  (declare (ignore location))
-  (let* ((var-name (first bindings))
-         (gid-sym (gensym "GID"))
-         (gsize-sym (gensym "GSIZE"))
-         (len-sym (gensym "LEN"))
-         (k-sym (gensym "K"))
-         (cl-pkg (find-package :crisp-language))
-         (let-sym (intern "LET" cl-pkg))
-         (declare-sym (intern "DECLARE" cl-pkg))
-         (grid-level-sym (intern "GRID-LEVEL" cl-pkg))
-         (dotimes-sym (intern "DOTIMES" cl-pkg))
-         (if-sym (intern "IF" cl-pkg))
-         (progn-sym (intern "PROGN" cl-pkg))
-         (get-glid-sym (intern "GET-GLOBAL-LINEAR-ID" cl-pkg))
-         (get-glsize-sym (intern "GET-GLOBAL-LINEAR-SIZE" cl-pkg))
-         (len-tilde-sym (intern "LENGTH~" cl-pkg))
-         (plus-sym (intern "+" cl-pkg))
-         (lt-sym (intern "<" cl-pkg))
-         (inner-body (if (= (length body-forms) 1)
-                         (first body-forms)
-                         (cons progn-sym body-forms)))
-         (inner-if (list if-sym (list lt-sym var-name len-sym) inner-body))
-         (inner-let (list let-sym
-                          (list (list var-name (list plus-sym k-sym gid-sym)))
-                          inner-if))
-         (dotimes-form (list dotimes-sym
-                             (list k-sym len-sym gsize-sym)
-                             inner-let))
-         (expansion (list let-sym
-                          (list (list gid-sym (list get-glid-sym))
-                                (list gsize-sym (list get-glsize-sym))
-                                (list len-sym (list len-tilde-sym tensor-form)))
-                          (list declare-sym (list grid-level-sym))
-                          dotimes-form)))
-    expansion))
 
 
 ;; ======================================================================
@@ -4203,9 +4136,6 @@
                  (mapcar (lambda (sub) (%rewrite-bare-tile-in-form sub origin-binding-syms cl-pkg))
                      (cdr form)))))))))
 
-(defun %rewrite-bare-load-store-tile-in-body (body-forms origin-binding-syms cl-pkg)
-  (mapcar (lambda (f) (%rewrite-bare-tile-in-form f origin-binding-syms cl-pkg))
-      body-forms))
 
 (defun %detect-bare-load-store-tile-in-form (form path)
   (cond
@@ -5443,6 +5373,15 @@
 ;;; affects compile-time style warnings, not behaviour.
 ;;; ==================================================================
 
+
+;;; Endeavour 152: this function was an OVERLAY WRAPPER around the original definition,
+;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
+;;; src -- the capture would find the wrapper itself.  The original body is preserved
+;;; verbatim as %analyze-nvvm-tma-load-tile-at-base, and the wrapper below calls it directly.
+
+
+
+
 ;;; ======================================================================
 ;;; BUG 057 — load-tile-at across an ELEMENT-TYPE mismatch is now REFUSED.
 ;;;
@@ -5460,32 +5399,7 @@
 ;;; refusal to a helpful guess (see BUG 035, and 161's wgmma operand-shape refusal).  If a user
 ;;; genuinely wants a narrowing stage, they can write it explicitly with workgroup-stride and a
 ;;; cast, where the cost is visible in the source.
-;;;
-;;; SCOPED NARROW ON PURPOSE.  The check fires only when BOTH operands resolve to TENSOR types
-;;; through a pure env lookup (find-variable-in-env / parameter-def-type -- no re-analysis, so
-;;; no risk of duplicating a sub-expression's side effects).  A register tile, a view form like
-;;; (ring-get R i), or anything whose type does not canonicalize to a tensor is left alone: this
-;;; is a refusal being added to a green 1061-spec suite, and a false refusal is worse than a
-;;; missed one.  The register-tile path is therefore still unguarded; noted in bugs.md.
 ;;; ======================================================================
-(defun %tlc-tensor-elem-of (type-spec)
-  "The ELEMENT type of a tensor-shaped TYPE-SPEC, or NIL if it is not one.
-   Tolerant by design: anything that does not canonicalize to a (tensor ELEM ...) form answers
-   NIL, which makes the caller skip its check rather than guess."
-  (let ((canon (ignore-errors (canonicalize-type-specifier type-spec))))
-    (and (consp canon)
-         (symbolp (first canon))
-         (string-equal (symbol-name (first canon)) "TENSOR")
-         (second canon))))
-
-;;; Endeavour 152: this function was an OVERLAY WRAPPER around the original definition,
-;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
-;;; src -- the capture would find the wrapper itself.  The original body is preserved
-;;; verbatim as %analyze-nvvm-tma-load-tile-at-base, and the wrapper below calls it directly.
-
-
-
-
 ;; BUG 057, final form.  The first cut used a hand-rolled canonicalize + (tensor ELEM ...) match
 ;; and never fired: a KERNEL PARAM's type is not a list at all, it is the generated record name
 ;; TENSOR_FLOAT_2_GLOBAL_COMPACT_LAST, while the let-bound tile's type IS a (TENSOR ...) list.

@@ -256,24 +256,6 @@
                (sh    (crisp.llvm-bindings::llvm-build-shl builder pat32 shift "mc_mask32")))
           (llvm-build-trunc builder sh i16 "mc_mask")))))
 
-(defun %module-cluster-extent ()
-  "How many workgroups a :mode :cluster barrier must expect arrivals from.
-
-   Endeavor 152 step 10c: this is now the FULL cluster size (the product of every axis), not
-   a 1-D extent.  That follows directly from the decision above -- if peers arrive cluster-wide
-   then the count must be cluster-wide too.  Getting these two out of step is precisely the
-   failure that hangs a GPU: a barrier initialised for fewer arrivals than it receives releases
-   early, one initialised for more never releases at all.
-
-   *kernel-dispatch-declarations* is cleared per module, so this is module-scoped."
-  (let ((found nil))
-    (maphash (lambda (k plist)
-               (declare (ignore k))
-               (let* ((dims (getf plist :cluster-size))
-                      (e    (and dims (reduce (function *) dims))))
-                 (when (and e (> e 1)) (setf found e))))
-             *kernel-dispatch-declarations*)
-    found))
 
 (defun %gen-multicast-leader-pred (builder module plan &optional rot-src)
   "True in exactly ONE workgroup per multicast group.
@@ -968,14 +950,6 @@
       (llvm-di-builder-create-debug-location (llvm-get-module-context module)
                                              line 0 di-scope (cffi:null-pointer)))))
 
-#|
-(defun %attach-debug-loc (inst node module di-builder di-scope location-map)
-  "Helper: Creates and attaches a debug location to the instruction if metadata is available."
-  (let ((di-loc (%get-di-location node module di-builder di-scope location-map)))
-    (when di-loc
-      (llvm-instruction-set-debug-loc inst di-loc))
-    di-loc))
-    |#
 
 ;; src/codegen.lisp
 ;;
@@ -2503,37 +2477,8 @@
                       (crisp-type-to-llvm-type type-name module) arg-vals
                       (lambda (b params) (%185-fmod-body b module (first params) (second params) type-name)))))
 
+
 ;; -- comparisons --
-(defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)
-  "Helper to generate IR for comparison operators (<, >, =, etc)."
-  (let (;; Oops, semantic-lt etc don't store signature effectively in common way, 
-        ;; but they do store left-arg and right-arg. Let's assume standard accessors.
-        (left-arg (slot-value node 'left-arg))
-        (right-arg (slot-value node 'right-arg)))
-
-    (multiple-value-bind (lhs lhs-loc) (generate-node-ir left-arg builder module var-env di-builder di-scope location-map)
-      (declare (ignore lhs-loc))
-      (multiple-value-bind (rhs rhs-loc) (generate-node-ir right-arg builder module var-env di-builder di-scope location-map)
-        (declare (ignore rhs-loc))
-        (let* ((lhs-type-name (get-single-value-type left-arg))
-               ;; Determine common type (promote to float if mixed, else largest int)
-               ;; For simplicity, we enforce strict typing or assume implicit cast logic is handled by semantic analysis?
-               ;; Semantic analysis usually inserts casts. Let's assume types match or casts are explicit.
-               ;; BUT wait, semantic-add handles implicit casts. Let's reuse build-cast-if-needed logic if possible.
-               ;; Wait, semantic-lt structure: type, left-arg, right-arg.
-               ;; But type is 'int (result). We need args types.
-               (lhs-crisp-type (gethash lhs-type-name *crisp-types*))
-               (cmp-inst
-                (cond
-                 ((member (crisp-type-category lhs-crisp-type) '(:signed-int :unsigned-int))
-                   (llvm-build-icmp builder op-node-int lhs rhs "icmp_tmp"))
-                 ((eq (crisp-type-category lhs-crisp-type) :float)
-                   (llvm-build-fcmp builder op-node-float lhs rhs "fcmp_tmp"))
-                 (t (error "Unsupported comparison type: ~a" lhs-type-name)))))
-
-          ;; Convert i1 result to i32 (0 or 1) because Crisp uses int for booleans
-          (let ((result (llvm-build-zext builder cmp-inst (llvm-int32-type) "bool_ext")))
-            (values result nil)))))))
 
 ;; Redefining to be more generic and careful about accessors
 (defmacro def-comparison-codegen (type-name int-pred float-pred accessor-prefix)
@@ -4270,86 +4215,6 @@ never implied by an atomic; it comes only from an explicit mem-fence."
          (wid64    (crisp.llvm-bindings::llvm-build-udiv builder llid c32 "warp_id64")))
     (crisp.llvm-bindings::llvm-build-trunc builder wid64 i32-type "warp_id")))
 
-#|
-(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
-  "Generates LLVM IR for a GPU built-in function call.
-   Endeavor 115 Phase 2: full PTX dispatch for all builtins."
-  (declare (ignore var-env di-builder di-scope location-map))
-  (let* ((bname (semantic-gpu-builtin-builtin-name node))
-         (dim   (semantic-gpu-builtin-dimension node)))
-    (log:info "Generating GPU builtin IR: ~a dim=~a backend=~a" bname dim *target-backend*)
-    (labels
-        ((vec3-or-scalar (spirv-name)
-           (let ((vec (%get-builtin-vec3 builder module spirv-name)))
-             (if dim
-                 (values (%extract-vec3-i64 builder vec dim
-                                            (format nil "~a_~a" (string-downcase spirv-name) dim))
-                         nil)
-                 (values vec nil)))))
-      (case bname
-        ;; --- Primitive 3D/scalar vector builtins ---
-        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
-        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
-        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
-        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
-        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
-        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
-        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
-        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
-        (:get-global-id-abs
-         (if (eq *target-backend* :ptx)
-             ;; PTX has no GlobalOffset — same as get-global-id
-             (vec3-or-scalar "GlobalInvocationId")
-             (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
-                    (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
-               (if dim
-                   (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
-                          (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
-                     (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
-                   (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil)))))
-        ;; --- WorkDim (hidden kernel parameter, uint) ---
-        (:get-work-dim
-         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
-        ;; --- Synthesized scalar builtins ---
-        (:get-local-linear-id
-         (values (%gen-local-linear-id builder module) nil))
-        (:get-local-linear-size
-         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
-        (:get-global-linear-id
-         (values (%gen-global-linear-id builder module) nil))
-        ((:get-global-linear-size :get-total-threads)
-         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
-        (:get-total-groups
-         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
-        ;; --- 110: warp helpers ---
-        (:warp-id
-         (if (eq *target-backend* :ptx)
-             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
-             (values (%ptx-synthesize-warp-id builder module) nil)
-             (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
-        (:warp-lane
-         (if (eq *target-backend* :ptx)
-             (values (%ptx-read-warp-sreg builder module "laneid") nil)
-             (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil)))
-        (:warp-count
-         (if (eq *target-backend* :ptx)
-             (values (%ptx-synthesize-warp-count builder module) nil)
-             (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
-        ;; --- Barriers (void) ---
-        (:sync-workgroup
-         (if (eq *target-backend* :ptx)
-             (%ptx-barrier builder module)
-             (%gen-spirv-control-barrier builder module)))
-        (:sync-warp
-         (if (eq *target-backend* :ptx)
-             (%ptx-syncwarp builder module)
-             (%gen-spirv-warp-barrier builder module)))
-        (:mem-fence
-         (if (eq *target-backend* :ptx)
-             (%ptx-membar-cta builder module)
-             (%gen-spirv-memory-barrier builder module)))
-        (t (error "Unknown GPU builtin ~a" builtin-name))))))
-        |#
 
 
 ;; src/codegen.lisp  (REPLACES generate-node-ir (semantic-gpu-builtin) -- 157 Phase 1)
@@ -4932,23 +4797,6 @@ never implied by an atomic; it comes only from an explicit mem-fence."
     (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
     (llvm-build-call2 builder fn-type fn args 1 "mbar_state")))
 
-(defun %gen-nvvm-mbarrier-test-wait-shared (builder module mbarrier-ptr state-val)
-  "Emits @llvm.nvvm.mbarrier.test.wait.shared(ptr addrspace(3), i64 state) -> i1 bool."
-  (let* ((fn-name    "llvm.nvvm.mbarrier.test.wait.shared")
-         (i1-type    (llvm-int1-type))
-         (i64-type   (llvm-int64-type))
-         (i8-type    (llvm-int8-type))
-         (ptr-as3    (llvm-pointer-type i8-type 3))
-         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i64-type)
-                        arr))
-         (fn-type    (llvm-function-type i1-type param-types 2 nil))
-         (fn         (%spirv-get-or-create-fn module fn-name i1-type param-types 2))
-         (args       (cffi:foreign-alloc 'llvm-value-ref :count 2)))
-    (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
-    (setf (cffi:mem-aref args 'llvm-value-ref 1) state-val)
-    (llvm-build-call2 builder fn-type fn args 2 "mbar_ready")))
 
 ;; Endeavor 137 (Chapter 1.5) — NVIDIA :block TMA.  A monotonic counter naming the per-CTA
 ;; SLM mbarrier globals (one per :block barrier binding).
@@ -6353,17 +6201,6 @@ never implied by an atomic; it comes only from an explicit mem-fence."
       (unless (cffi:null-pointer-p i)
         (crisp.llvm-bindings::llvm-get-instruction-opcode i)))))
 
-(defun %llvm-binop-with-const (val opcode)
-  "Match VAL as `<OPCODE> %x, <const>` and return (values %x const), or NIL when it does not match.
-
-   Only the SECOND operand is tested for constness: LLVM canonicalises commutative operations to put
-   the constant on the right, and both producers here -- the fragment-index add and the
-   fragment-extent multiply -- are built that way explicitly."
-  (when (eql (%llvm-instr-opcode val) opcode)
-    (let* ((op0 (crisp.llvm-bindings::llvm-get-operand val 0))
-           (op1 (crisp.llvm-bindings::llvm-get-operand val 1))
-           (c   (%llvm-const-int-value op1)))
-      (when c (values op0 c)))))
 
 ;;
 ;; The first cut wrote an !spirv.ExecutionMode entry, exactly as endeavour 126 does for the denorm

@@ -23,16 +23,6 @@
   (clrhash *type-derivation-graph*)
   (log:info "Type derivation graph initialized (empty - will be populated by def-derived-type)"))
 
-(defun create-root-type-node (type-name)
-  "Creates a root type node for a built-in 'real' type with no derivation relationships."
-  (setf (gethash type-name *type-derivation-graph*)
-    (make-type-node :type-name type-name
-                    :original-type nil
-                    :base-type type-name
-                    :subst-mode nil
-                    :ancestors nil
-                    :descendants nil))
-  (log:debug "Created root type node: ~a" type-name))
 
 (defun create-numeric-hierarchy (type-names)
   "Creates a linked hierarchy of numeric types.

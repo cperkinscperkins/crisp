@@ -210,13 +210,6 @@
                  ,@accum)))))))
 
 
-(defun %crisp-tensor-type-p (type-spec)
-  "Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix
-   storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,
-   so a single head check covers all three."
-  (let* ((canonical (canonicalize-type-specifier type-spec)))
-    (and (consp canonical)
-         (string-equal (symbol-name (first canonical)) "TENSOR"))))
 
 (defun %crisp-float-tensor-type-p (type-spec)
   "Returns T if TYPE-SPEC resolves to a tensor/vector/matrix whose element type
@@ -3798,11 +3791,6 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    (%ad-zero) too, without threading the flag through every call.")
 
 
-;; is this actually used?
-(defun %autodiff-grad-cell-type ()
-  "Returns the canonical cell type used for gradient output parameters."
-  '(cell float :address-space :global))
-
 
 ;;; ===================================================================
 ;;; 101-revisit-autodiff: dynamic vars
@@ -3886,19 +3874,6 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
       (scan forms))
     info))
 
-(defun %resolve-to-base-type-for-records (pd-type)
-  "If PD-TYPE names a derived type whose base is a record, returns the
-   base record type symbol. Otherwise returns PD-TYPE unchanged.
-
-   Records are SROA'd at every function boundary, and derived-type wrappers
-   preserve that property. This helper lets the sub-function gate widening
-   accept derived-from-record types (e.g. `coordinate` derived from `point`)."
-  (let* ((base (if (consp pd-type) (first pd-type) pd-type)))
-    (or (cl:ignore-errors
-          (cl:let ((computed (compute-base-type pd-type)))
-            (cl:when (and (symbolp computed) (%crisp-record-type-p computed))
-              computed)))
-        base)))
 
 (defun %resolve-to-base-type-for-structs-or-records (pd-type)
   "If PD-TYPE names a derived type whose base is a struct OR a record,

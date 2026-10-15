@@ -493,9 +493,6 @@
         (when entries
           (length (template-data-parameters (first entries)))))))
 
-(defun type-lists-equivalent-p (l1 l2)
-  (and (= (length l1) (length l2))
-       (every #'types-equivalent-p l1 l2)))
 
 ;; Predicates
 ;; ==========

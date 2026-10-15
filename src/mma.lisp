@@ -84,22 +84,6 @@
       (intern (format nil "~a_GRAD" (symbol-name name))
               (or pkg (symbol-package name))))))
 
-(defun %emit-per-frag-map-vjp (adj-entry primal-entry fn-form)
-  "Per-fragment expansion of (%map-elements-vjp! ADJ PRIMAL #'F_GRAD) for register tiles:
-   zip the two tiles' fragment lists and pair them positionally.  Positional pairing is right
-   because both tiles carry the SAME shape and the same warp distribution, so fragment k of one
-   corresponds to fragment k of the other."
-  (let ((asyms (fourth adj-entry))
-        (psyms (fourth primal-entry)))
-    (unless (= (length asyms) (length psyms))
-      (error 'crisp-compiler-error
-             :message (format nil "%map-elements-vjp!: adjoint tile has ~a fragments but the primal tile has ~a — they must match."
-                              (length asyms) (length psyms))
-             :source-location nil))
-    `(progn
-       ,@(loop for a in asyms
-               for p in psyms
-               collect `(%map-elements-vjp! ,a ,p ,fn-form)))))
 
 (defun %emit-map-vjp-explode (form tiles)
   "Rewrite (%map-elements-vjp! ADJ PRIMAL FN [IDX]) when EITHER operand names an exploded tile.
@@ -3172,30 +3156,6 @@
 (defvar *wgmma-node-swizzle* (make-hash-table :test 'eq)
   "semantic-mma-accumulate node -> (list swizzle-mode k-block) for the wgmma path.")
 
-(defun %emit-one-wgmma (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off)
-  "One m64nNk8 wgmma: fence + mma_async (N/2 accumulators in/out + 2 descs) + commit + wait; return
-   the new D record.  The k-slice offset (kk*32 bytes) advances the swizzle descriptor start address."
-  (let* ((f32 (llvm-float-type)) (i64 (llvm-int64-type))
-         (nacc (floor n 2))
-         (descA (%wgmma-make-desc builder a-ptr swizzle-p kslice-off))
-         (descB (%wgmma-make-desc builder b-ptr swizzle-p kslice-off))
-         (c-ops (loop for i below nacc collect
-                      (llvm-build-extract-value builder d-val i (format nil "wc~d" i)))))
-    (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.fence.sync.aligned;" "~{memory}")
-    (let* ((asm-str     (%wgmma-asm-string nacc n))
-           (constraints (%wgmma-constraints nacc))
-           (ret-ty      (%wgmma-struct-of-floats module nacc))
-           (ptypes      (append (loop repeat nacc collect f32) (list i64 i64)))
-           (args        (append c-ops (list descA descB)))
-           (call        (%build-inline-asm-call builder ret-ty ptypes args asm-str constraints)))
-      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.commit_group.sync.aligned;" "~{memory}")
-      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.wait_group.sync.aligned 0;" "~{memory}")
-      (let ((agg (llvm-get-undef (crisp-type-to-llvm-type acc-type module))))
-        (dotimes (i nacc)
-          (setf agg (llvm-build-insert-value builder agg
-                      (llvm-build-extract-value builder call i (format nil "wo~d" i))
-                      i (format nil "wr~d" i))))
-        agg))))
 
 ;;; ===================================================================
 ;;; Endeavor 145 (MMA autodiff) — P2: load-fragment-acc.

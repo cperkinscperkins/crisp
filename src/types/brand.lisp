@@ -63,10 +63,6 @@
 
     (t nil)))
 
-(defun brand-member-p (member-type)
-  "Returns T if MEMBER-TYPE is a branded type whose brand is currently active."
-  (let ((brand-def (is-brand-type-p member-type)))
-    (and brand-def (brand-active-p brand-def))))
 
 ;;; =========================================================
 ;;; Brand Parsing
