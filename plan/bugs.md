@@ -83,7 +83,16 @@ The type equivalence function (types-equivalent-p) needs to resolve aliases, but
 [x] 021 - def-kernel supports arrow type declarations, but not (type a b int) style 
           >>  I suspect valid-type-p returns nil for list-based types like (cell ...) when checked in this context, causing the parser to miss the type binding entirely.
 
-[ ] 022 - (LOW)  seeing extra output from CL when running compiler.  
+[x] 022 - (LOW)  seeing extra output from CL when running compiler.
+        FIXED 2026-10-14: two sources, both redefining identical MAKE-* constructor macros.
+        (1) marshall-cell / %marshall-tensor eval'd instantiate-template on EVERY expansion -- now
+        %ensure-storage-struct-instantiated (src/macros.lisp) instantiates once per compilation, guarded
+        on *crisp-structs* (cleared by initialize-compiler; CL macros are not).  (2) an :analyzed template
+        is deliberately re-instantiated when compilation starts; ensure-template-instantiation
+        (src/templates.lisp) muffles sb-kernel:redefinition-warning on that re-run only.  Also deleted the
+        dead positional make-arrival-sync-handle (the def-struct's keyword constructor replaced it at
+        start-up, with a warning).  8 specs byte-identical IR/SPIR-V before and after; unit 389/389,
+        E2E 1490/1490, negative 350/350, adversarial 13 true + 10 known.  
         RE-VERIFIED 2026-10-13 (housekeeping review): still present (the redefining ... in DEFMACRO warnings print on every compile).
 
         .\bin\crisp-compile.exe --log-level=off --ir-target=ptx --metadata .\tests\spec\029-hoist-l0\07-basic-cell.crisp

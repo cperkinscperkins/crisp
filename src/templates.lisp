@@ -777,20 +777,33 @@ parameters have already been inferred from earlier arguments."
                                 name inferred-types status is-compiling)
 
                       (let ((instantiated-code (instantiate-template tmpl inferred-types)))
-                        (loop for form in (rest instantiated-code)
-                              do (let ((is-wrapper
-                                        ;; _WRAPPER functions have c-t fields typed as type-spec/address-space/etc
-                                        ;; which map to void in LLVM — illegal as parameter types.
-                                        ;; Eval them to register overloads; never compile to IR.
-                                        (and (consp form)
-                                             (symbolp (car form))
-                                             (string-equal (symbol-name (car form)) "DEF-FUNCTION")
-                                             (symbolp (second form))
-                                             (search "_WRAPPER" (symbol-name (second form))
-                                                     :test #'char-equal))))
-                                   (if (and is-compiling (not is-wrapper))
-                                       (funcall compiler-callback form nil)
-                                       (eval form))))
+                        (flet ((run-instantiated-forms ()
+                                 (loop for form in (rest instantiated-code)
+                                       do (let ((is-wrapper
+                                                 ;; _WRAPPER functions have c-t fields typed as type-spec/address-space/etc
+                                                 ;; which map to void in LLVM — illegal as parameter types.
+                                                 ;; Eval them to register overloads; never compile to IR.
+                                                 (and (consp form)
+                                                      (symbolp (car form))
+                                                      (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+                                                      (symbolp (second form))
+                                                      (search "_WRAPPER" (symbol-name (second form))
+                                                              :test #'char-equal))))
+                                            (if (and is-compiling (not is-wrapper))
+                                                (funcall compiler-callback form nil)
+                                                (eval form))))))
+                          ;; BUG 022: an :analyzed template is instantiated a SECOND time once
+                          ;; compilation starts, so its functions reach IR.  That re-runs the same
+                          ;; def-struct in the same compilation and redefines its MAKE-* macros with
+                          ;; identical definitions -- one SBCL warning each.  Muffle exactly those;
+                          ;; a first instantiation still warns, so a real collision stays visible.
+                          (if (eq status :analyzed)
+                              (progn
+                                (log:debug "ensure-template-instantiation ~a: compile pass re-run, muffling redefinition warnings"
+                                           name)
+                                (handler-bind ((sb-kernel:redefinition-warning #'muffle-warning))
+                                  (run-instantiated-forms)))
+                              (run-instantiated-forms)))
 
                         (setf (gethash key *instantiated-templates*) (if is-compiling :compiled :analyzed))
                         (setf did-work t)))))
