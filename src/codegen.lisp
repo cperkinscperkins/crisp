@@ -1909,9 +1909,9 @@
 (defmethod %hw-lower ((op (eql 'op-imad)) builder module arg-vals arg-types result-type)
   "op-imad: widen a and b to the accumulator's type (sext / zext), multiply, add c. Wraps in c's
    type like ordinary integer arithmetic."
+  (declare (ignore result-type))
   (destructuring-bind (a b c) arg-vals
     (destructuring-bind (a-type b-type c-type) arg-types
-      (declare (ignore result-type))
       (llvm-build-add builder
                       (llvm-build-mul builder
                                       (%hw-widen builder module a a-type c-type)
@@ -1926,9 +1926,10 @@
    are extended to W, so their product is exact; c is extended to W; a saturating add in W is then
    the exact sum clamped to W's range; finally, if W is wider than c, clamp to c's range and
    truncate."
+  (declare (ignore result-type))
   (destructuring-bind (a b c) arg-vals
     (destructuring-bind (a-type b-type c-type) arg-types
-      (declare (ignore b-type result-type))
+      (declare (ignore b-type))
       (multiple-value-bind (cat a-bits lanes) (%hw-type-parts a-type)
         (multiple-value-bind (c-cat c-bits) (%hw-type-parts c-type)
           (declare (ignore c-cat))
@@ -1978,13 +1979,12 @@
    Lane extraction (not llvm.vector.reduce.add) keeps the IR in forms both translators accept."
   (destructuring-bind (a b c) arg-vals
     (multiple-value-bind (cat bits lanes) (%hw-type-parts (first arg-types))
-      (declare (ignore cat))
+      (declare (ignore cat bits))
       (multiple-value-bind (c-cat c-bits) (%hw-type-parts result-type)
         (declare (ignore c-cat))
         (let* ((d (%hw-abs-diff-value builder module a b (first arg-types)))
                (d (llvm-build-zext builder d (%hw-int-llvm-type c-bits lanes) "hw_zext"))
                (sum c))
-          (declare (ignore bits))
           (dotimes (i lanes sum)
             (setf sum (llvm-build-add builder sum
                                       (llvm-build-extract-element builder d (llvm-const-int (llvm-int32-type) i 0) "hw_lane")

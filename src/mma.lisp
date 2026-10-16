@@ -2020,8 +2020,6 @@
                       (minus-sym (intern "-" cl))
                       (plus-sym (intern "+" cl))
                       (times-sym (intern "*" cl))
-                      (floor-sym (intern "FLOOR" cl))
-                      (mod-sym (intern "MOD" cl))
                       (warp-id (intern "WARP-ID" cl))
                       (gm (car grid)) (gn (cdr grid))
                       (mp (max 1 (floor m-frags gm)))
@@ -2778,6 +2776,7 @@
    outright.  With :swizzle the K is a K-BLOCK spanning several slices, so (M N) must match an
    entry and K must be a positive multiple of that entry's K -- the same relaxation the sm_90a
    fallback makes, kept identical so a profile cannot silently change what :swizzle means."
+  (declare (ignore elem))
   (destructuring-bind (m n k) shape
     (let ((ok (some (lambda (entry)
                       (let ((dims (%mma-shape-entry-dims entry)))
@@ -3761,7 +3760,7 @@
 
    Only the ACCUMULATOR defines the grid: it is the tile whose fragments are partitioned one-per-
    warp, and the operands merely follow that partition."
-  (declare (ignorable location))
+  (declare (ignorable location) (ignore context))
   (let ((grid nil))
     (dolist (b bindings grid)
       (when (and (consp b) (= (length b) 2) (symbolp (first b))

@@ -4631,6 +4631,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    Plain element moves via workgroup-stride — the same collective the scratch `fill-tile`
    uses — so it costs no MMA and needs no ColumnMajor support.  Emitted as source, so it
    lowers through the ordinary analyzer path on both backends."
+  (declare (ignore rows cols))
   (let* ((cl-pkg (find-package :crisp-language))
          (ws  (intern "WORKGROUP-STRIDE" cl-pkg))
          (aref (intern "~" cl-pkg))
@@ -4641,7 +4642,6 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
          (j (intern "%MMA_BW_TJ" cl-pkg))
          (oy (first origin))
          (ox (second origin)))
-    (declare (ignore rows cols))
     ;; Iterate DST's index space (COLS x ROWS): dst[j][i] = src[oy+i][ox+j].
     ;; Both addends are coerced to INT: the load-tile-at origin may be a ULONG expression
     ;; (extent arithmetic) while the collective's loop variables are INT, and `+` will not
@@ -5175,7 +5175,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    dC is materialised from the register accumulator into SLM once, then two collective loops
    accumulate into the operand adjoints.  Index arithmetic is coerced with to-int because a
    staging origin can be a ULONG extent expression while the collective's loop vars are INT."
-  (declare (ignore a-op b-op))
+  (declare (ignore a-op b-op kt))
   (let* ((cl (find-package :crisp-language))
          (let* (intern "LET" cl))      (msm  (intern "MAKE-SCRATCH-MATRIX" cl))
          ;; Endeavour 165: the dC staging matrix and the loop accumulator follow the
@@ -6775,7 +6775,6 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
    The copy rule (BUG 099) then carries each adjoint back to the pre-reduction variable, which Phase 1a's
    versioning left as (V%Vn V) ahead of the reduction."
   (let* ((head      (car form))
-         (comb      (second form))
          (vjp       (%dependent-reduction-vjp form))
          (clauses   (third form))
          (active    (and lane-form (fourth form)))

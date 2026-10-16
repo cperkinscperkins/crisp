@@ -1185,6 +1185,21 @@ from a fixed !100."
   "Endeavor 130: profile name (string) requested via --hardware-profile, or NIL.
    Resolved lazily against *hardware-profiles* by active-hardware-profile.")
 
+(defun %reset-gensym-counter ()
+  "Sets *GENSYM-COUNTER* to *GENSYM-COUNTER-BASE*, so gensym-derived names in the output are the
+   same for every build and every position in a multi-compilation run (see src/globals.lisp).
+   On the first call of the process it first checks that the base exceeds every gensym the image
+   has already made; if not, it raises the base above them -- names stay unique, at the cost of
+   reproducibility -- and warns that *GENSYM-COUNTER-BASE* needs raising."
+  (unless *gensym-base-checked*
+    (setf *gensym-base-checked* t)
+    (when (>= *gensym-counter* *gensym-counter-base*)
+      (log:warn "*gensym-counter-base* (~a) is not above the image's gensym count (~a); output names are no longer reproducible across builds.  Raise *gensym-counter-base* in src/globals.lisp."
+                *gensym-counter-base* *gensym-counter*)
+      (setf *gensym-counter-base* (* 10 *gensym-counter*))))
+  (log:debug "%reset-gensym-counter: ~a -> ~a" *gensym-counter* *gensym-counter-base*)
+  (setf *gensym-counter* *gensym-counter-base*))
+
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
                                  (math-precision :ieee) (force-math-precision nil)
                                  (denormal-handling :preserve)
@@ -1208,6 +1223,8 @@ from a fixed !100."
   (if (eq log-level :off)
       (log:config :off)
       (log:config :sane :stream *error-output* log-level))
+  ;; Reproducible output: every compilation numbers its gensyms from the same base.
+  (%reset-gensym-counter)
 
   (initialize-crisp-types)
   (initialize-crisp-types)

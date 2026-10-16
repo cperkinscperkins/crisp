@@ -68,12 +68,19 @@ OPEN
 - [/] RunPod as a GitHub Actions target (hoist tests only? separate .yml) (L985)
 
 ### Compiler hygiene / refactor
-- [ ] src/specials.lisp: lines after ";;;; end of generated file" hold ~155 hand-folded
-      defvars/defconstants that scripts/gen-specials.lisp WIPES on regeneration. Give them home files. (L864)
-- [ ] warnings when building the compiler; compiler warnings in tests (L862, L863)
+- [x] src/specials.lisp tail -> src/globals.lisp (hand-written, loaded right after specials; generated file now
+      wholly generated) -- 2026-10-15.  (The generator had carried the tail since 184, not wiped it.)  Regenerating
+      also proclaimed 6 globals that 185 / the adversarial fixes had added without a regen. (L864)
+- [x] warnings when building the compiler: clean build 15 STYLE-WARNINGs -> 0 (2026-10-15).  Left: 20 SBCL
+      "deleting unreachable code" notes in 6 functions -- worth a look, may be dead branches (L862, L863)
 - [ ] overly long functions (L861)
-- [ ] old ersatz output -> log4cl: (format t|*error-output* ...) remains in main.lisp, hoist-l0,
-      hoist-cuda, mma.lisp.  Some of main.lisp is legit CLI output -- sort, don't blanket-convert (L191)
+- [x] reproducible output: initialize-compiler resets *gensym-counter* to *gensym-counter-base* (10000,
+      src/globals.lisp) -- 2026-10-15.  Same source -> byte-identical output across builds (proven with a
+      probe build: 7588/7588 corpus files identical).  Names now read %g10038.
+- [x] ersatz output -> log4cl (2026-10-15): main.lisp progress chatter (Starting pass / passes finished /
+      hoister / FFI linking) and core.lisp's DEBUG prints.  Kept: errors, usage, user WARNINGs, the IR, c-t-output,
+      spec-validator FAIL lines, and the hoisters (no log4cl by design; a --quiet flag if wanted).  Found BUG 122:
+      above --log-level=off every log line ALSO lands on stdout (exe only). (L191)
 - [ ] audit uses of symbolp that assume (symbolp nil) is false (L209)
 - [ ] move validators to their own file(s); only the spec runner loads them (L237)
 - [ ] dump tables like dump-env for *function-table* and others (L303)

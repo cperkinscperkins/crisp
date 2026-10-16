@@ -4099,3 +4099,21 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
           (to-bfloat16 1.0) -> "Unsupported form 'TO-BFLOAT16'" on every target, though the AD code names
           TO-BFLOAT16 as a widening conversion (%ad-widening-conversion-form-p).
         bfloat16 inside the MMA paths is unaffected (the 159 specs); this is the scalar path.
+
+[ ] 122 WITH --log-level ABOVE off, crisp-compile.exe WRITES EVERY LOG LINE TO STDOUT AS WELL AS STDERR.
+        Found 2026-10-15 (refactor-oct) while moving main.lisp's progress chatter to log:info.  Pre-existing:
+        the leaked lines are ALL the compiler's log output, not just the moved ones.
+
+        MEASURED.  crisp-compile.exe --log-level=info 170/02-fma-double: stderr holds 631 <INFO> lines, and
+        `2>/dev/null` still leaves 632 log lines on stdout -- interleaved with the IR the user may be piping.
+        At the default (off) nothing leaks, which is why nobody noticed.
+
+        NOT reproducible in a plain SBCL process.  After ql:quickload :crisp + initialize-compiler :info,
+        log4cl:all-appenders is three CONSOLE-APPENDERs with no stream plus the TRICKY-CONSOLE-APPENDER on
+        stderr that `(log:config :sane :stream *error-output* level)` adds -- yet a probe log:info lands on
+        stdout ZERO times (put_temp_files_here/refactor/appenders2.lisp, also with :clear first and with the
+        config applied twice).  So it is specific to the saved executable: likely a console appender kept
+        in the image whose stream resolves to the process's stdout at run time.
+
+        NEXT: inspect log4cl:all-appenders from inside the exe (e.g. a temporary --dump-appenders flag), and
+        try removing every appender (log4cl:remove-all-appenders on root and children) before the :sane call.

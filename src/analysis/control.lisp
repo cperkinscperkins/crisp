@@ -1186,6 +1186,7 @@
    (dotimes (r M) (%spirv-async-copy <tile[r,0]> <src[ORIGIN0+r,ORIGIN1]> N BAR)) — one
    OpGroupAsyncCopy PER ROW, each copying N contiguous elements, its event chained
    through the barrier's spirv.Event slot.  The matching await lowers to OpGroupWaitEvents."
+  (declare (ignore location))
   (let* ((src-form (second expr))
          (tile-form (third expr))
          (origin-list (fourth expr))

@@ -230,9 +230,9 @@ Supports one or more .crisp source files: the last file is treated as the primar
   (let ((hoister-bin (get-hoister-binary-path hoist-id)))
     (if hoister-bin
         (progn
-         (format *error-output* "; Invoking hoister: ~a ~a~%"
-           (file-namestring hoister-bin)
-           (file-namestring metacrisp-file))
+         (log:info "Invoking hoister: ~a ~a"
+                   (file-namestring hoister-bin)
+                   (file-namestring metacrisp-file))
          ;; uiop:run-program with :ignore-error-status t returns exit code as first value
          (let ((exit-code (uiop:wait-process
                             (uiop:launch-program
@@ -241,7 +241,7 @@ Supports one or more .crisp source files: the last file is treated as the primar
                               :output :interactive
                               :error-output :interactive))))
            (if (zerop exit-code)
-               (format *error-output* "; Hoister completed successfully.~%")
+               (log:info "Hoister completed successfully.")
                (progn
                 (format *error-output* "~&ERROR: Hoister exited with code ~a~%" exit-code)
                 (uiop:quit exit-code)))))
@@ -267,7 +267,7 @@ Supports one or more .crisp source files: the last file is treated as the primar
                        (crisp.llvm-bindings::llvm-dispose-message p))))))
         (dolist (bc bc-files)
           (let ((path (namestring (uiop:truename* bc))))
-            (format *error-output* "; --- Linking foreign bitcode: ~a ---~%" path)
+            (log:info "Linking foreign bitcode: ~a" path)
             (cffi:with-foreign-objects ((mbuf :pointer) (msg :pointer) (srcmod :pointer))
               (unless (zerop (crisp.llvm-bindings::llvm-create-memory-buffer-with-contents-of-file path mbuf msg))
                 (format *error-output* "ERROR: FFI cannot read bitcode ~a: ~a~%" path (msg-string msg))
@@ -302,7 +302,7 @@ compile-unit filepath."
       (dolist (target-backend passes)
         (let ((crisp.compiler:*target-backend* target-backend)
               (crisp.compiler::*emit-metadata* metadata-p))
-          (format *error-output* "~&; --- Starting Pass for Target: ~a ---~%" target-backend)
+          (log:info "Starting pass for target: ~a" target-backend)
 
           (let* ((module (crisp.llvm-bindings:llvm-module-create (pathname-name filename)))
                  (builder (crisp.llvm-bindings:llvm-create-builder))
@@ -405,16 +405,16 @@ compile-unit filepath."
               (setf generated-metacrisp-files
                 (if (listp meta-paths) meta-paths (list meta-paths)))))
 
-      (format *error-output* "; ...All compilation passes finished.~%")
+      (log:info "All compilation passes finished.")
 
       ;; Invoke hoisters if specified
       (when hoist-targets
-            (format *error-output* "~&; --- Starting Hoisting Phase ---~%")
+            (log:info "Starting hoisting phase.")
             (dolist (hoist-id hoist-targets)
               (dolist (metacrisp-file generated-metacrisp-files)
                 (when (probe-file metacrisp-file)
                       (invoke-hoister hoist-id metacrisp-file))))
-            (format *error-output* "; ...All hoisting finished.~%")))))
+            (log:info "All hoisting finished.")))))
 
 (defun main ()
   "Main entry point for the crisp-compile executable."
