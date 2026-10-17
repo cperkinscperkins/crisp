@@ -4137,3 +4137,30 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         HYPOTHESIS: memory growth over a long in-process run (BUG 027's LLVM-object leak) or a foreign-code
         fault in the in-process L0/CUDA bindings.  NEXT: log the process's working set every N specs, and
         run with a larger --dynamic-space-size to see whether the crash point moves.
+
+[ ] 124 (occupancy-target N) CAN SILENTLY FORCE REGISTER SPILLS -- and Crisp cannot see it coming.
+        MEASURED 2026-10-16/17, LeetGPU challenge 01 (vector add), H100.  The first AntiGravity submission
+        declared (occupancy-target 2048) on a loop-vector-stride kernel with (unroll 4).  That is
+        __launch_bounds__(256, 8) -> 2048 threads/SM -> a 32-register cap, but the unrolled loop wants ~56-64
+        (LLVM precomputes one 64-bit base pointer per unrolled access per array: 12 for unroll 4 over 3
+        arrays).  ptxas spilled: Registers 32, Stack 72 B, 0.16 ms.  Dropping the declaration: 56 regs, 0 B,
+        0.12 ms (-25%).  The same source on a Tesla showed 63 regs / 0 B, because Turing cannot host 2048
+        threads/SM and ptxas ignored the bound -- so the cost is device-dependent and invisible on one GPU.
+        NOT a wrong value in a profile: benchmarks/profiles/h100-sxm.crisp's :stream-occupancy-target 1024
+        (endeavour 182, measured) allows 64 registers and would not have spilled this kernel.  The hazard is
+        a HAND-declared target above the profile's.
+        Crisp cannot know the register count before ptxas runs.  Options: (a) docs/writing-crisp.md says it
+        (done 2026-10-17); (b) the CUDA hoister / benchmark harness reports ptxas -v registers + spill bytes
+        when it builds, and flags a non-zero stack; (c) a compile-time WARNING when a declared target implies
+        <= 32 registers on a kernel with an unrolled stream loop (a heuristic, not a proof).
+
+[ ] 125 READ-ONLY LOADS ARE NOT CARRIED THROUGH VIEWS: a make-vector / make-matrix view of a read-only
+        kernel input loads with plain ld.global, not ld.global.nc (!invariant.load).
+        SEEN 2026-10-17, LeetGPU challenge 01 experiment B: (make-vector A float4 :length n4) over the
+        read-only input A gave `ld.global.v4.b32`; the scalar original gave `ld.global.nc.b32`.
+        CAUSE: %array-node-readonly-tensor-param-p (src/codegen.lisp) marks a load only when the array node
+        is a DIRECT semantic-var-read of a symbol in *kernel-readonly-tensor-syms*; its docstring says
+        aliases "degrade gracefully to a plain load".  A let-bound view is such an alias.
+        FIX SKETCH: record read-only-ness for a let-bound view whose source is a read-only param (a view
+        only re-describes the same bytes), so its reads get !invariant.load too.  Impact is likely a few
+        percent on streaming kernels -- worth it, but measure.

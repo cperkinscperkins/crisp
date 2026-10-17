@@ -29,7 +29,10 @@ NEXT  (housekeeping-oct)
       (tanh / erf / exp2); (3) gdb-oneapi on the BMG once it is not driving the display (iGPU for the monitor?) (L339)
 - [x] make new prerelease (see Release)
 - [ ] set up Claude with runpod.io MCP -- needs guardrails first (spend cap, auto-kill TTL)
-- [ ] Start AG on contest submissions -- spike the submission format first (PTX + cupy/cuda-python loader?)
+- [x] Start AG on contest submissions -- 2026-10-16: LeetGPU challenge 01 (vector add) submitted; the format
+      is Crisp PTX as inline asm inside a CUDA __global__ + a solve() launcher.  H100: 0.16 ms -> 0.12 ms
+      (78th pct) after removing a hand-set occupancy-target that spilled (BUG 124).  Recipe in
+      docs/writing-crisp.md section 12.  Follow-ups: one-thread-per float4 (AG), BUG 125 (.nc through views).
 
 
 OPEN
