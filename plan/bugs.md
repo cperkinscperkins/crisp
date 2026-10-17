@@ -4126,3 +4126,14 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         NEXT: inspect log4cl:all-appenders from inside the exe (e.g. a temporary --dump-appenders flag), and
         try removing every appender (log4cl:remove-all-appenders on root and children) before the :sane call.
+
+[ ] 123 THE IN-PROCESS E2E RUNNER INTERMITTENTLY SEGFAULTS LATE IN A FULL RUN (exit 139, no Lisp backtrace).
+        Seen 2026-10-16, refactor-oct: 2 of 8 full `sbcl --script tests/run-specs.lisp` runs that day died
+        at 83% and 92% of the run (3319 / 3651 of 3987 spec lines), at DIFFERENT specs -- one during an L0
+        on-metal hoist run (175/19), one during a plain compile (08-diff-reduce-workgroup-argmax-loser).
+        Both specs pass alone, and the next full run passed.  Compiler code was IDENTICAL between a clean
+        run and the first crash (only matmul.py / the fixture / hoisters had changed), so not a code
+        regression.  Nothing in the Windows Application log (no GPU reset, no WER crash record).
+        HYPOTHESIS: memory growth over a long in-process run (BUG 027's LLVM-object leak) or a foreign-code
+        fault in the in-process L0/CUDA bindings.  NEXT: log the process's working set every N specs, and
+        run with a larger --dynamic-space-size to see whether the crash point moves.
