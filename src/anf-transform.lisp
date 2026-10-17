@@ -203,6 +203,60 @@
                 (values temp (append all-bindings `((,temp ,call)))))
               (values call all-bindings)))))))
 
+;;; anf-normalize's tables and its one repeated tail (refactor-oct, 2026-10-16) -- moved out of its
+;;; body, unchanged.
+
+(defparameter *anf-unexpanded-macros*
+  '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let
+    template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
+    make-cell make-vector make-matrix make-tensor)
+  "Operators anf-normalize handles ITSELF.  When one of them is also a macro, it must not be
+   macroexpanded before the dispatch below sees it.")
+
+(defparameter *anf-opaque-statement-names*
+  '("LOAD-TILE-AT" "STORE-TILE-AT"
+    "%LOAD-TILE-AT-BWD" "%STORE-TILE-AT-BWD"
+    "LOAD-TILE" "STORE-TILE"
+    ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
+    ;; coord / dim LISTS that must stay opaque to ANF.
+    "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE"
+    ;; Endeavour 158: PREFETCH-TILE carries a coord tuple AND a :size
+    ;; tuple, and ANF flattened BOTH into bindings, so
+    ;;     (prefetch-tile A (grid-y grid-k) :size (32 16))
+    ;; arrived at the backward walk as
+    ;;     (LET ((%ANF-T-1 (GRID-Y GRID-K)) (%ANF-T-2 (32 16))) ...)
+    ;; where %ANF-T-1 reads as a CALL to a function named GRID-Y --
+    ;; really a tile-stride index -- reporting "Function GRID-Y is not
+    ;; differentiable".  Endeavour 146 had ALREADY placed PREFETCH-TILE
+    ;; on %backward-skip-fn-p as the pure scheduling hint it is; AD
+    ;; never got to use that entry because ANF destroyed the form
+    ;; first.  This is the third blocker 142/14's skip note predicted,
+    ;; named there as "in ANF rather than AD".
+    ;;
+    ;; Safe by construction: anf-transform runs on the AD path ONLY
+    ;; (see src/macros.lisp:982, "the forward still analyses the
+    ;; original form"), so no shipped prefetch kernel's forward
+    ;; lowering can be affected by this entry.
+    "PREFETCH-TILE")
+  "Forms anf-normalize passes through WHOLE (bound to a temp when nested): their coordinate / dimension
+   tuples are not expressions to flatten, and the backward walk meets them as single statements.")
+
+(defparameter *anf-atomic-op-names*
+  '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"
+    "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!"
+    ;; Endeavour 175 -- see the header above anf-normalize.
+    "ATOMIC-CAS!" "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
+  "The place-writing atomic operators, normalized by %anf-normalize-atomic.")
+
+(defun %anf-bind-if-nested (form bindings is-nested?)
+  "The tail every anf-normalize clause shares: return FORM with its BINDINGS -- or, when IS-NESTED?, bind
+   it to a fresh temp (appended after BINDINGS) and return the temp.  Callers normalize FORM's
+   sub-forms BEFORE calling this, so the temp is minted after theirs, as it always was."
+  (if is-nested?
+      (let ((temp (anf-fresh-temp)))
+        (values temp (append bindings `((,temp ,form)))))
+      (values form bindings)))
+
 (defun anf-normalize (expr is-nested?)
   "Returns (VALUES normalized-expr bindings-list).
    Phase 1c: added opaque pass-through for load-tile-at / store-tile-at
@@ -231,44 +285,14 @@
              (%refuse-dependent-autodiff expr)))
        (when (and (symbolp op)
                   (macro-function op)
-                  (not (member op '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let
-                                          template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
-                                          make-cell make-vector make-matrix make-tensor))))
+                  (not (member op *anf-unexpanded-macros*)))
              (multiple-value-bind (expanded changed) (macroexpand-1 expr)
                (when changed
                      (return-from anf-normalize (anf-normalize expanded is-nested?)))))
        (cond
         ((and (symbolp op)
-              (member (symbol-name op)
-                      '("LOAD-TILE-AT" "STORE-TILE-AT"
-                        "%LOAD-TILE-AT-BWD" "%STORE-TILE-AT-BWD"
-                        "LOAD-TILE" "STORE-TILE"
-                        ;; Endeavor 132 (MMA) — store-fragment / make-register-tile carry
-                        ;; coord / dim LISTS that must stay opaque to ANF.
-                        "STORE-FRAGMENT" "MAKE-REGISTER-TILE" "MMA-ACCUMULATE-VIA-TILE"
-                        ;; Endeavour 158: PREFETCH-TILE carries a coord tuple AND a :size
-                        ;; tuple, and ANF flattened BOTH into bindings, so
-                        ;;     (prefetch-tile A (grid-y grid-k) :size (32 16))
-                        ;; arrived at the backward walk as
-                        ;;     (LET ((%ANF-T-1 (GRID-Y GRID-K)) (%ANF-T-2 (32 16))) ...)
-                        ;; where %ANF-T-1 reads as a CALL to a function named GRID-Y --
-                        ;; really a tile-stride index -- reporting "Function GRID-Y is not
-                        ;; differentiable".  Endeavour 146 had ALREADY placed PREFETCH-TILE
-                        ;; on %backward-skip-fn-p as the pure scheduling hint it is; AD
-                        ;; never got to use that entry because ANF destroyed the form
-                        ;; first.  This is the third blocker 142/14's skip note predicted,
-                        ;; named there as "in ANF rather than AD".
-                        ;;
-                        ;; Safe by construction: anf-transform runs on the AD path ONLY
-                        ;; (see src/macros.lisp:982, "the forward still analyses the
-                        ;; original form"), so no shipped prefetch kernel's forward
-                        ;; lowering can be affected by this entry.
-                        "PREFETCH-TILE")
-                      :test #'string=))
-          (if is-nested?
-              (let ((temp (anf-fresh-temp)))
-                (values temp `((,temp ,expr))))
-              (values expr nil)))
+              (member (symbol-name op) *anf-opaque-statement-names* :test #'string=))
+          (%anf-bind-if-nested expr nil is-nested?))
         ((eq op 'set!)
           (%anf-normalize-set! expr is-nested?))
         ((member op '(if when unless))
@@ -285,61 +309,29 @@
         ((and (symbolp op) (string-equal (symbol-name op) "LET"))
           (%anf-normalize-let expr is-nested?))
         ((eq op 'declare)
-          (if is-nested?
-              (let ((temp (anf-fresh-temp)))
-                (values temp `((,temp ,expr))))
-              (values expr nil)))
+          (%anf-bind-if-nested expr nil is-nested?))
         ((eq op 'return)
           (multiple-value-bind (new-args bindings) (anf-normalize-args (cdr expr))
-            (let ((anf-ret `(return ,@new-args)))
-              (if is-nested?
-                  (let ((temp (anf-fresh-temp)))
-                    (values temp (append bindings `((,temp ,anf-ret)))))
-                  (values anf-ret bindings)))))
+            (%anf-bind-if-nested `(return ,@new-args) bindings is-nested?)))
         ((eq op 'as)
           (let ((type-spec (cadr expr))
                 (val (caddr expr)))
             (multiple-value-bind (new-val bindings) (anf-normalize val t)
-              (let ((anf-as `(as ,type-spec ,new-val)))
-                (if is-nested?
-                    (let ((temp (anf-fresh-temp)))
-                      (values temp (append bindings `((,temp ,anf-as)))))
-                    (values anf-as bindings))))))
+              (%anf-bind-if-nested `(as ,type-spec ,new-val) bindings is-nested?))))
         ((eq op 'make-scratch-cell)
-          (let ((type-spec (cadr expr)))
-            (let ((anf-msc `(make-scratch-cell ,type-spec)))
-              (if is-nested?
-                  (let ((temp (anf-fresh-temp)))
-                    (values temp `((,temp ,anf-msc))))
-                  (values anf-msc nil)))))
+          (%anf-bind-if-nested `(make-scratch-cell ,(cadr expr)) nil is-nested?))
         ((member op '(make-scratch-vector make-scratch-matrix make-scratch-tensor))
-          (let ((anf-form `(,op ,@(cdr expr))))
-            (if is-nested?
-                (let ((temp (anf-fresh-temp)))
-                  (values temp `((,temp ,anf-form))))
-                (values anf-form nil))))
+          (%anf-bind-if-nested `(,op ,@(cdr expr)) nil is-nested?))
         ((member op '(make-cell make-vector make-matrix make-tensor))
           (let* ((source (cadr expr))
                  (rest-args (cddr expr)))
             (multiple-value-bind (new-source source-bindings)
                 (anf-normalize source t)
-              (let ((anf-form `(,op ,new-source ,@rest-args)))
-                (if is-nested?
-                    (let ((temp (anf-fresh-temp)))
-                      (values temp (append source-bindings `((,temp ,anf-form)))))
-                    (values anf-form source-bindings))))))
+              (%anf-bind-if-nested `(,op ,new-source ,@rest-args) source-bindings is-nested?))))
         ((member op '(quote template-instantiation compiler-no-op def-function def-kernel def-kernel-exact eval-when))
-          (if is-nested?
-              (let ((temp (anf-fresh-temp)))
-                (values temp `((,temp ,expr))))
-              (values expr nil)))
+          (%anf-bind-if-nested expr nil is-nested?))
         ((eq op 'progn)
-          (let ((anf-body (mapcar #'%anf-transform (cdr expr))))
-            (let ((anf-progn `(progn ,@anf-body)))
-              (if is-nested?
-                  (let ((temp (anf-fresh-temp)))
-                    (values temp `((,temp ,anf-progn))))
-                  (values anf-progn nil)))))
+          (%anf-bind-if-nested `(progn ,@(mapcar #'%anf-transform (cdr expr))) nil is-nested?))
         ;; Endeavor 126 (pass 5b): with-precision is a codegen precision annotation,
         ;; transparent to the derivative STRUCTURE. For the backward/AD pipeline, ANF
         ;; it as a progn of its body (drop the region wrapper). The FORWARD kernel
@@ -359,21 +351,12 @@
         ((and (symbolp op) (string-equal (symbol-name op) "WHILE"))
           (%anf-normalize-while op expr is-nested?))
         ((and (symbolp op)
-              (member (symbol-name op)
-                      '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"
-                        "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!"
-                        ;; Endeavour 175 -- see the header above this definition.
-                        "ATOMIC-CAS!" "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
-                      :test #'string=))
+              (member (symbol-name op) *anf-atomic-op-names* :test #'string=))
           (%anf-normalize-atomic op expr is-nested?))
         (t
           (let ((args (cdr expr)))
             (multiple-value-bind (anf-args bindings) (anf-normalize-args args)
-              (let ((call `(,op ,@anf-args)))
-                (if is-nested?
-                    (let ((temp (anf-fresh-temp)))
-                      (values temp (append bindings `((,temp ,call)))))
-                    (values call bindings)))))))))
+              (%anf-bind-if-nested `(,op ,@anf-args) bindings is-nested?)))))))
 
    (t (error "Unsupported form for anf-transform: ~S" expr))))
 

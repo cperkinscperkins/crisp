@@ -67,6 +67,54 @@
 
 
 
+(defun %flag-value (flags prefix)
+  "The text after PREFIX (e.g. \"--log-level=\") of the first of FLAGS that starts with it, or NIL."
+  (let ((flag (find-if (lambda (f) (alexandria:starts-with-subseq prefix f)) flags)))
+    (when flag (subseq flag (length prefix)))))
+
+(defun %parse-choice-flag (value choices default label expected)
+  "VALUE (a flag's text, or NIL when the flag is absent) mapped through CHOICES, an alist of
+   (\"text\" . keyword) compared case-insensitively.  NIL gives DEFAULT; anything else is an error
+   naming LABEL and the EXPECTED spellings, and exits."
+  (cond ((null value) default)
+        ((cdr (assoc value choices :test #'string-equal)))
+        (t (format *error-output* "ERROR: unknown ~a '~a' (expected ~a).~%" label value expected)
+           (uiop:quit 1))))
+
+(defun %parse-ir-target (value)
+  "An --ir-target= value as a backend keyword (spv / spirv -> :SPIRV, ptx -> :PTX, else its keyword)."
+  (let ((val (string-upcase value)))
+    (cond
+     ((string= val "SPV") :spirv)
+     ((string= val "SPIRV") :spirv)
+     ((string= val "PTX") :ptx)
+     (t (intern val :keyword)))))
+
+(defun %parse-hoist-target (value)
+  "A --hoist= value as a hoister keyword (l0 / levelzero -> :L0, opencl / cl -> :OPENCL, cuda -> :CUDA)."
+  (let ((val (string-upcase value)))
+    (cond
+     ((or (string= val "L0") (string= val "LEVELZERO")) :L0)
+     ((or (string= val "OPENCL") (string= val "CL")) :OPENCL)
+     ((string= val "CUDA") :CUDA)
+     (t (intern val :keyword)))))
+
+(defun %reconcile-hoist-target (targets hoist-name target-name target-kw)
+  "A hoister needs one IR target.  With no --ir-target at all, enable TARGET-KW and say so; with targets
+   that do not include it, it is an error.  Returns the (possibly defaulted) TARGETS."
+  (if (null targets)
+      ;; Helpful default (e.g. --hoist=L0 -> spv)
+      (progn
+       (format *error-output* "; Auto-enabling --ir-target=~a (required for --hoist=~a)~%" target-name hoist-name)
+       (list target-kw))
+      ;; Validation (e.g. L0 requires spv)
+      (progn
+        (unless (member target-kw targets)
+          (format *error-output* "ERROR: --hoist=~a requires --ir-target=~a. Found targets: ~a~%"
+                  hoist-name target-name targets)
+          (uiop:quit 1))
+        targets)))
+
 (defun parse-cli-args (args)
   "Parses command-line arguments and returns (values files output-file debug-p single-pass-p targets metadata-p hoist-targets).
 Supports one or more .crisp source files: the last file is treated as the primary (determines output name)."
@@ -76,9 +124,9 @@ Supports one or more .crisp source files: the last file is treated as the primar
          ;; alongside the .crisp sources; split them out here.
          (bc-files (remove-if-not (lambda (f) (string-equal (pathname-type f) "bc")) files))
          (source-files (remove-if (lambda (f) (string-equal (pathname-type f) "bc")) files))
-         (log-level-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--log-level=" f)) flags))
-         (log-level (if log-level-flag
-                        (intern (string-upcase (subseq log-level-flag (length "--log-level="))) :keyword)
+         (log-level-value (%flag-value flags "--log-level="))
+         (log-level (if log-level-value
+                        (intern (string-upcase log-level-value) :keyword)
                         :off))
          (single-pass-p (member "--single-pass" flags :test #'string=))
          (debug-p (or (member "-g" flags :test #'string=)
@@ -88,66 +136,36 @@ Supports one or more .crisp source files: the last file is treated as the primar
 
          ;; Endeavor 126: precision axis. --force-math-precision overrides
          ;; --math-precision (and, later, all in-source precision choices).
-         (force-prec-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--force-math-precision=" f)) flags))
-         (math-prec-flag  (find-if (lambda (f) (alexandria:starts-with-subseq "--math-precision=" f)) flags))
+         (force-prec-value (%flag-value flags "--force-math-precision="))
          ;; Parsed SEPARATELY (not pre-resolved) so the compiler knows which is the
          ;; hard lock: force > with-precision > declaim > math > default(:ieee).
          (math-precision-mode
-          (let ((v (when math-prec-flag (subseq math-prec-flag (length "--math-precision=")))))
-            (cond ((null v) :ieee)
-                  ((string-equal v "fast") :fast)
-                  ((string-equal v "ieee") :ieee)
-                  (t (format *error-output* "ERROR: unknown math precision '~a' (expected ieee|fast).~%" v)
-                     (uiop:quit 1)))))
+          (%parse-choice-flag (%flag-value flags "--math-precision=")
+                              '(("fast" . :fast) ("ieee" . :ieee)) :ieee
+                              "math precision" "ieee|fast"))
          (force-precision-mode
-          (let ((v (when force-prec-flag (subseq force-prec-flag (length "--force-math-precision=")))))
-            (cond ((null v) nil)
-                  ((string-equal v "fast") :fast)
-                  ((string-equal v "ieee") :ieee)
-                  (t (format *error-output* "ERROR: unknown forced math precision '~a' (expected ieee|fast).~%" v)
-                     (uiop:quit 1)))))
-         (denorm-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--denormal-handling=" f)) flags))
+          (%parse-choice-flag force-prec-value
+                              '(("fast" . :fast) ("ieee" . :ieee)) nil
+                              "forced math precision" "ieee|fast"))
+         ;; Endeavor 126: default subnormal handling is :preserve.
          (denormal-handling
-          (let ((v (when denorm-flag (subseq denorm-flag (length "--denormal-handling=")))))
-            (cond ((null v) :preserve)   ; Endeavor 126: default subnormal handling
-                  ((string-equal v "ftz") :ftz)
-                  ((string-equal v "preserve") :preserve)
-                  (t (format *error-output* "ERROR: unknown denormal handling '~a' (expected ftz|preserve).~%" v)
-                     (uiop:quit 1)))))
+          (%parse-choice-flag (%flag-value flags "--denormal-handling=")
+                              '(("ftz" . :ftz) ("preserve" . :preserve)) :preserve
+                              "denormal handling" "ftz|preserve"))
 
          ;; Endeavor 130: hardware profile selection — a profile NAME, resolved
          ;; lazily during compilation against registered def-hardware-profile forms.
-         (hw-profile-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--hardware-profile=" f)) flags))
-         (hardware-profile-name (when hw-profile-flag
-                                  (subseq hw-profile-flag (length "--hardware-profile="))))
+         (hardware-profile-name (%flag-value flags "--hardware-profile="))
 
          ;; Endeavor 137 — --ir-target-arch=<ID> (sm_90, dg2, ...); NIL if unset (defaults
          ;; applied per-backend by crisp.compiler:resolved-target-arch).
-         (arch-flag (find-if (lambda (f) (alexandria:starts-with-subseq "--ir-target-arch=" f)) flags))
-         (ir-target-arch-kw (when arch-flag
-                              (intern (string-upcase (subseq arch-flag (length "--ir-target-arch=")))
-                                      :keyword)))
+         (arch-value (%flag-value flags "--ir-target-arch="))
+         (ir-target-arch-kw (when arch-value (intern (string-upcase arch-value) :keyword)))
 
-         ;; Target Parsing
-         (target-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags))
-         (targets (mapcar (lambda (f)
-                            (let ((val (string-upcase (subseq f (length "--ir-target=")))))
-                              (cond
-                               ((string= val "SPV") :spirv)
-                               ((string= val "SPIRV") :spirv)
-                               ((string= val "PTX") :ptx)
-                               (t (intern val :keyword)))))
-                      target-flags))
-         ;; Hoist Parsing
-         (hoist-flags (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--hoist=" f)) flags))
-         (hoist-targets (mapcar (lambda (f)
-                                  (let ((val (string-upcase (subseq f (length "--hoist=")))))
-                                    (cond
-                                     ((or (string= val "L0") (string= val "LEVELZERO")) :L0)
-                                     ((or (string= val "OPENCL") (string= val "CL")) :OPENCL)
-                                     ((string= val "CUDA") :CUDA)
-                                     (t (intern val :keyword)))))
-                            hoist-flags))
+         (targets (mapcar (lambda (f) (%parse-ir-target (subseq f (length "--ir-target="))))
+                          (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--ir-target=" f)) flags)))
+         (hoist-targets (mapcar (lambda (f) (%parse-hoist-target (subseq f (length "--hoist="))))
+                                (remove-if-not (lambda (f) (alexandria:starts-with-subseq "--hoist=" f)) flags)))
          ;; Auto-enable metadata if --hoist is specified
          (metadata-p (or (member "--metadata" flags :test #'string=)
                          (and hoist-targets t))))
@@ -157,7 +175,7 @@ Supports one or more .crisp source files: the last file is treated as the primar
           (uiop:quit 1))
 
     ;; Endeavor 126: --force-math-precision overrides all in-source precision intent.
-    (when force-prec-flag
+    (when force-prec-value
       (format *error-output* "WARNING: --force-math-precision overrides all in-source precision choices; use for testing/validation only.~%"))
 
     ;; Endeavor 126: `fast` precision flushes denormals; a competing `preserve` request
@@ -183,26 +201,11 @@ Supports one or more .crisp source files: the last file is treated as the primar
       (format *error-output* "Usage: crisp-compile [flags] [lib1.bc ...] <file1.crisp> [file2.crisp ...]~%")
       (uiop:quit 1))
 
-    ;; --- Hoisting Logic ---
+    ;; --- Hoisting Logic: each hoister needs its IR target ---
     (when (member :L0 hoist-targets)
-          (if (null targets)
-              ;; Case 1: Helpful Default (L0 -> SPV)
-              (progn
-               (format *error-output* "; Auto-enabling --ir-target=spv (required for --hoist=L0)~%")
-               (setf targets '(:spirv)))
-              ;; Case 2: Validation (L0 requires SPV)
-              (unless (member :spirv targets)
-                (format *error-output* "ERROR: --hoist=L0 requires --ir-target=spv. Found targets: ~a~%" targets)
-                (uiop:quit 1))))
-
+      (setf targets (%reconcile-hoist-target targets "L0" "spv" :spirv)))
     (when (member :CUDA hoist-targets)
-          (if (null targets)
-              (progn
-               (format *error-output* "; Auto-enabling --ir-target=ptx (required for --hoist=CUDA)~%")
-               (setf targets '(:ptx)))
-              (unless (member :ptx targets)
-                (format *error-output* "ERROR: --hoist=CUDA requires --ir-target=ptx. Found targets: ~a~%" targets)
-                (uiop:quit 1))))
+      (setf targets (%reconcile-hoist-target targets "CUDA" "ptx" :ptx)))
 
     ;; Endeavor 122 (FFI): linking a foreign .bc requires lowering to a real
     ;; device target (ptx or spv). The .bc is target-specific (triple, datalayout,
@@ -280,6 +283,85 @@ Supports one or more .crisp source files: the last file is treated as the primar
                 (format *error-output* "ERROR: FFI cannot link bitcode ~a into the kernel module.~%" path)
                 (uiop:quit 1)))))))))
 
+(defun %output-base-name (filepath)
+  "The name every output of FILEPATH is written under: its own name, or <name>_grad under --differentiate."
+  (if crisp.compiler::*differentiate-p*
+      (format nil "~a_grad" (pathname-name filepath))
+      (pathname-name filepath)))
+
+(defun %read-crisp-forms (files)
+  "Every top-level form of FILES, in order, read in :crisp-language."
+  (let ((*package* (find-package :crisp-language)))
+    (loop for f in files
+          appending (with-open-file (stream f)
+                      (loop for form = (read stream nil :eof)
+                            until (eq form :eof)
+                            collect form)))))
+
+(defun %compile-files-single-pass (files module builder di-builder di-compile-unit)
+  "--single-pass: compile each file's forms as they are read, with one shared toplevel index so that
+   location indices are unique across the entire compilation unit."
+  (let ((toplevel-index 0)
+        (*package* (find-package :crisp-language)))
+    (dolist (f files)
+      (with-open-file (stream f)
+        (loop for form = (read stream nil :eof)
+              until (eq form :eof)
+              do (let ((location (list toplevel-index)))
+                   (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
+                   (incf toplevel-index)))))))
+
+(defun %emit-target-output (target-backend module filepath debug-p)
+  "Writes MODULE for TARGET-BACKEND next to FILEPATH -- .spv, .ptx or .ll -- and returns (KIND PATH);
+   the generic backend prints the IR to stdout and returns NIL."
+  (let ((base-name (%output-base-name filepath)))
+    (case target-backend
+      (:spirv
+       (let ((out-path (make-pathname :name base-name :type "spv" :defaults filepath)))
+         (crisp.compiler:compile-to-spirv module out-path :debug-p debug-p)
+         (list :spv out-path)))
+      (:ptx
+       (let ((out-path (make-pathname :name base-name :type "ptx" :defaults filepath)))
+         (crisp.compiler:compile-to-ptx module out-path
+                                        :compute-capability (crisp.compiler::ptx-compute-capability-string)
+                                        :debug-p debug-p)
+         (list :ptx out-path)))
+      (:llvmir
+       (let ((out-path (make-pathname :name base-name :type "ll" :defaults filepath)))
+         (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
+           (unwind-protect
+               (with-open-file (stream out-path :direction :output :if-exists :supersede)
+                 (write-string (cffi:foreign-string-to-lisp ir-ptr) stream))
+             (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))
+         (list :llvmir out-path)))
+      ;; Default/Generic: Print IR to stdout
+      (t
+       (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
+         (unwind-protect
+             (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
+           (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))
+       nil))))
+
+(defun %generate-file-metadata (filepath generated-outputs captured-forms)
+  "Writes FILEPATH's .metacrisp (once, after every target's output exists) and returns the list of
+   metacrisp files written -- the hoisters' inputs."
+  (let* ((meta-path (make-pathname :name (%output-base-name filepath) :type "metacrisp" :defaults filepath))
+         (meta-paths
+          (crisp.compiler::generate-metadata-for-file filepath
+                                                      meta-path
+                                                      :output-targets (reverse generated-outputs)
+                                                      :forms captured-forms)))
+    (if (listp meta-paths) meta-paths (list meta-paths))))
+
+(defun %run-hoisters (hoist-targets metacrisp-files)
+  "Invokes each requested hoister on each metacrisp file that exists."
+  (log:info "Starting hoisting phase.")
+  (dolist (hoist-id hoist-targets)
+    (dolist (metacrisp-file metacrisp-files)
+      (when (probe-file metacrisp-file)
+            (invoke-hoister hoist-id metacrisp-file))))
+  (log:info "All hoisting finished."))
+
 (defun compile-files (files output-file debug-p single-pass-p targets metadata-p hoist-targets &optional bc-files)
   "Compiles the given files as a single unit (in order), iterating over requested targets, then invokes hoisters.
 When multiple files are given, forms are read from each file in order and compiled together as if they
@@ -313,26 +395,11 @@ compile-unit filepath."
                 (handler-case
                     (progn
                      (if single-pass-p
-                         ;; --- SINGLE-PASS MODE (multiple files) ---
-                         ;; Process each file's forms in order with a shared toplevel-index so that
-                         ;; location indices are unique across the entire compilation unit.
-                         (let ((toplevel-index 0)
-                               (*package* (find-package :crisp-language)))
-                           (dolist (f files)
-                             (with-open-file (stream f)
-                               (loop for form = (read stream nil :eof)
-                                     until (eq form :eof)
-                                     do (let ((location (list toplevel-index)))
-                                          (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
-                                          (incf toplevel-index))))))
-                         ;; --- MULTI-PASS MODE (DEFAULT, multiple files) ---
-                         ;; Read all forms from all files in order into one flat list, then compile-module.
+                         (%compile-files-single-pass files module builder di-builder di-compile-unit)
+                         ;; MULTI-PASS (default): all forms of all files, in order, then compile-module --
+                         ;; which, like the read, runs in :crisp-language.
                          (let* ((*package* (find-package :crisp-language))
-                                (forms (loop for f in files
-                                             appending (with-open-file (stream f)
-                                                         (loop for form = (read stream nil :eof)
-                                                               until (eq form :eof)
-                                                               collect form))))
+                                (forms (%read-crisp-forms files))
                                 (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
                            (setf captured-forms forms)
                            (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map)))
@@ -343,34 +410,8 @@ compile-unit filepath."
                      (link-foreign-bitcode module bc-files)
 
                      ;; Output Generation — keyed off the primary (last) file.
-                     (let ((base-name (if crisp.compiler::*differentiate-p*
-                                          (format nil "~a_grad" (pathname-name filepath))
-                                          (pathname-name filepath))))
-                       (case target-backend
-                         (:spirv
-                          (let ((out-path (make-pathname :name base-name :type "spv" :defaults filepath)))
-                            (crisp.compiler:compile-to-spirv module out-path :debug-p debug-p)
-                            (push (list :spv out-path) generated-outputs)))
-                         (:ptx
-                          (let ((out-path (make-pathname :name base-name :type "ptx" :defaults filepath)))
-                            (crisp.compiler:compile-to-ptx module out-path
-                                                           :compute-capability (crisp.compiler::ptx-compute-capability-string)
-                                                           :debug-p debug-p)
-                            (push (list :ptx out-path) generated-outputs)))
-                         (:llvmir
-                          (let ((out-path (make-pathname :name base-name :type "ll" :defaults filepath)))
-                            (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
-                              (unwind-protect
-                                  (with-open-file (stream out-path :direction :output :if-exists :supersede)
-                                    (write-string (cffi:foreign-string-to-lisp ir-ptr) stream))
-                                (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))
-                            (push (list :llvmir out-path) generated-outputs)))
-                         ;; Default/Generic: Print IR to stdout
-                         (t
-                          (let ((ir-ptr (crisp.llvm-bindings:llvm-print-module-to-string module)))
-                            (unwind-protect
-                                (format t "--- Generated LLVM IR (~a): ---~%~a~%" target-backend (cffi:foreign-string-to-lisp ir-ptr))
-                              (crisp.llvm-bindings:llvm-dispose-message ir-ptr)))))))
+                     (let ((output (%emit-target-output target-backend module filepath debug-p)))
+                       (when output (push output generated-outputs))))
 
                   ;; Error Handling — report all files involved.
                   (crisp.compiler:crisp-compiler-error (c)
@@ -392,29 +433,14 @@ compile-unit filepath."
 
       ;; Metadata Generation (Once, after collecting all outputs)
       (when metadata-p
-            (let* ((base-name (if crisp.compiler::*differentiate-p*
-                                  (format nil "~a_grad" (pathname-name filepath))
-                                  (pathname-name filepath)))
-                   (meta-path (make-pathname :name base-name :type "metacrisp" :defaults filepath))
-                   (meta-paths
-                    (crisp.compiler::generate-metadata-for-file filepath
-                                                                meta-path
-                                                                :output-targets (reverse generated-outputs)
-                                                                :forms captured-forms)))
-              ;; Track generated metacrisp files for hoisting
-              (setf generated-metacrisp-files
-                (if (listp meta-paths) meta-paths (list meta-paths)))))
+            (setf generated-metacrisp-files
+              (%generate-file-metadata filepath generated-outputs captured-forms)))
 
       (log:info "All compilation passes finished.")
 
       ;; Invoke hoisters if specified
       (when hoist-targets
-            (log:info "Starting hoisting phase.")
-            (dolist (hoist-id hoist-targets)
-              (dolist (metacrisp-file generated-metacrisp-files)
-                (when (probe-file metacrisp-file)
-                      (invoke-hoister hoist-id metacrisp-file))))
-            (log:info "All hoisting finished.")))))
+            (%run-hoisters hoist-targets generated-metacrisp-files)))))
 
 (defun main ()
   "Main entry point for the crisp-compile executable."

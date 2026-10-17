@@ -76,7 +76,13 @@ OPEN
       1 real bug fixed (make-matrix's friendly error came after (* width height), so users got a raw type
       error; spec 083/errors/02), 1 latent dead branch noted (semantic-literal singleton types (keyword :k)
       are swallowed by the earlier (listp type-spec) clause; no spec reaches it), 18 harmless (L862, L863)
-- [ ] overly long functions (L861) -- phase 3 of refactor-oct, scope not yet decided
+- [x] overly long functions (L861) -- refactor-oct phase 3, 2026-10-16: every LOGIC function over 100 CODE
+      lines decomposed (12: generate-backward-walk 550->271, anf-normalize, %emit-launch-base, calculate-
+      uniformity-state, resolve-type-to-llvm, %generate-backward-kernel-ast, parse-cli-args, compile-files,
+      %fused-grid-reduce-form, and the semantic-aref / -coop-op / -make-view codegen).  Each verified
+      byte-identical: compiler corpus (7588 files), hoister corpus (1471), CLI snapshot (16 cases).  Left on
+      purpose: registration tables, %handle-single-value-backward (half documentation), and the rest of
+      generate-backward-walk (its process-form closure -- moving it needs a context object; proposal).
 - [x] --mma-bench retired (2026-10-16): L0 fixture binds SLM scratch (chapters 1-3 moved onto it; Docker
       agreement within 0.6% to N=1024, 1-6% at 2048/4096), fixture BUILD_FLAGS "" bug fixed, matmul.py
       auto-bench paths removed (a kernel the fixture cannot run is a loud missing row), results record

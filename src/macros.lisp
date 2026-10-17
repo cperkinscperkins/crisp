@@ -1136,6 +1136,101 @@ processes float inputs — integer tensor inputs contribute zero gradient."
               (log:warn "BUG 100: version ~a is not in the primal replay; its reduction is not replayed" nv)
               (%ad-assemble-primal-replay bindings (rest stmts) body))))))
 
+;;; %generate-backward-kernel-ast, decomposed (refactor-oct, 2026-10-16) -- each helper is a piece MOVED
+;;; from its body, called where that piece used to run.
+
+(defun %bkg-prepare-body (raw-body record-subs-ht record-type-ht inputs input-types)
+  "The kernel body as the AD walk will see it: record accessors substituted, matrix-multiply-tile-stride
+   pre-lowered, and stride macros expanded."
+  (let* ((subst-body
+          (mapcar (lambda (form)
+                    (%substitute-record-accessors form record-subs-ht record-type-ht))
+              raw-body))
+         ;; 107: AD pre-pass — rewrite stride macros into their expansions
+         ;; using a kernel-param-based type resolver for tensor-stride CT.
+         ;; The resolver is built from the ORIGINAL inputs/input-types
+         ;; (not flat-inputs) so tensor-stride forms over a record param
+         ;; resolve against the record's type before SROA renaming.  In
+         ;; practice the tensor expression is a bare param name; the
+         ;; resolver handles that cleanly.
+         (kernel-type-resolver (%make-kernel-param-type-resolver inputs input-types))
+         ;; 145 P8: lower matrix-multiply-tile-stride FIRST — the 107 pre-pass below
+         ;; does not know it, and ANF mangles it if it survives.
+         (mmts-lowered-body (mapcar #'%mma-ad-prelower-mmts subst-body)))
+    (mapcar (lambda (form)
+              (%expand-stride-macros-in-form form kernel-type-resolver nil))
+        mmts-lowered-body)))
+
+(defun %bkg-refuse-if-nothing-differentiable (name flat-inputs flat-input-types diff-flat-inputs
+                                              struct-shadow-info)
+  "Refuses kernel NAME when it has inputs but none that can carry a gradient."
+  (when (and flat-inputs
+             (null diff-flat-inputs)
+             (null struct-shadow-info)
+             (not (some #'%crisp-integer-tensor-type-p flat-input-types))
+             (not (%has-diff-capable-scalar-input-p flat-input-types)))
+        (error 'crisp.compiler:crisp-compiler-error
+          :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name))))
+
+(defun %bkg-struct-shadow-table (struct-shadow-info flat-anf)
+  "Struct-at-boundary shadows as an EQ table PARAM -> (SHADOW-INFO . LEAVES), with FLAT-ANF's
+   intermediates registered against it; NIL when there are no shadows."
+  (when struct-shadow-info
+        (let ((ht (make-hash-table :test 'eq)))
+          (dolist (entry struct-shadow-info)
+            (setf (gethash (first entry) ht)
+              (cons (second entry)
+                    (fourth entry))))
+          (%register-shadow-anf-intermediates flat-anf ht)
+          ht)))
+
+(defun %bkg-record-param-field-adjs-table (record-subs-ht pkg)
+  "Endeavor 103 Phase A: each record parameter -> ((FIELD-NAME . FIELD_ADJ) ...), so record-at-boundary
+   accessor calls route adjoints into the SROA'd field's adjoint; NIL when there are no record params."
+  (when (> (hash-table-count record-subs-ht) 0)
+        (let ((ht (make-hash-table :test 'eq)))
+          (maphash
+            (lambda (rsym field-alist)
+              (let ((adj-alist
+                     (loop for entry in field-alist
+                           for fname = (car entry)
+                           for fsym = (cdr entry)
+                             unless (eq fname :%nested-leaf%)
+                           collect (cons (symbol-name fname)
+                                         (intern (format nil "~A_ADJ" (symbol-name fsym))
+                                                 pkg)))))
+                (setf (gethash rsym ht) adj-alist)))
+            record-subs-ht)
+          ht)))
+
+(defun %bkg-fix-up-walk (raw-backward-walk grad-cell-syms struct-shadow-info)
+  "The backward walk's three fix-ups, in order: record grad-cell emissions, leaf-adjoint bindings for
+   struct shadows, and struct-shadow writes."
+  (let* ((backward-walk-1
+          (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
+         (backward-walk-2
+          (if struct-shadow-info
+              (let ((all-leaves
+                     (loop for entry in struct-shadow-info
+                             append (%collect-all-leaf-adj-syms (fourth entry)))))
+                (%ensure-leaf-adj-bindings backward-walk-1 all-leaves))
+              backward-walk-1)))
+    (%fix-struct-shadow-writes backward-walk-2 struct-shadow-info)))
+
+(defun %bkg-kernel-form (bwd-name bwd-params bwd-types exploded-params exploded-types body-forms)
+  "The emitted backward kernel: register BWD-NAME's declared signature, then a def-kernel-exact whose
+   body is BODY-FORMS followed by (return)."
+  `(progn
+    (eval-when (:compile-toplevel :load-toplevel :execute)
+      (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
+        (loop for p in ',bwd-params
+              for t-spec in ',bwd-types
+              collect (cons p t-spec))))
+    (def-kernel-exact ,bwd-name ,exploded-params
+                      (declare #'(,@exploded-types))
+                      ,@body-forms
+                      (return))))
+
 (defun %generate-backward-kernel-ast (name params signature-types raw-body)
   "Generates the def-kernel-exact AST for the backward (gradient) pass.
    Endeavor 103 Phase A: dyn-binds *record-param-field-adjs* so record-at-
@@ -1154,35 +1249,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                         record-subs-ht record-type-ht grad-cell-syms
                                         struct-shadow-info)
           (%expand-record-kernel-inputs inputs input-types pkg)
-        (let* ((subst-body
-                (mapcar (lambda (form)
-                          (%substitute-record-accessors form record-subs-ht record-type-ht))
-                    raw-body))
-               ;; 107: AD pre-pass — rewrite stride macros into their expansions
-               ;; using a kernel-param-based type resolver for tensor-stride CT.
-               ;; The resolver is built from the ORIGINAL inputs/input-types
-               ;; (not flat-inputs) so tensor-stride forms over a record param
-               ;; resolve against the record's type before SROA renaming.  In
-               ;; practice the tensor expression is a bare param name; the
-               ;; resolver handles that cleanly.
-               (kernel-type-resolver (%make-kernel-param-type-resolver inputs input-types))
-               ;; 145 P8: lower matrix-multiply-tile-stride FIRST — the 107 pre-pass below
-               ;; does not know it, and ANF mangles it if it survives (see the block above).
-               (mmts-lowered-body (mapcar #'%mma-ad-prelower-mmts subst-body))
-               (expanded-body
-                (mapcar (lambda (form)
-                          (%expand-stride-macros-in-form form kernel-type-resolver nil))
-                    mmts-lowered-body)))
+        (let* ((expanded-body (%bkg-prepare-body raw-body record-subs-ht record-type-ht
+                                                 inputs input-types)))
           (multiple-value-bind (bwd-params bwd-types diff-flat-inputs diff-flat-input-types)
               (%compute-backward-kernel-params flat-inputs flat-input-types outputs output-types
                                                record-subs-ht rec-grad-out-params rec-grad-out-types pkg inputs)
-            (when (and flat-inputs
-                       (null diff-flat-inputs)
-                       (null struct-shadow-info)
-                       (not (some #'%crisp-integer-tensor-type-p flat-input-types))
-                       (not (%has-diff-capable-scalar-input-p flat-input-types)))
-                  (error 'crisp.compiler:crisp-compiler-error
-                    :message (format nil "Cannot differentiate kernel ~A: no differentiable parameters (all inputs have non-float types -- add (forward-only) declaration or use float element types)" name)))
+            (%bkg-refuse-if-nothing-differentiable name flat-inputs flat-input-types
+                                                   diff-flat-inputs struct-shadow-info)
             (multiple-value-bind (exploded-params exploded-types bwd-cell-reassembly-bindings)
                 (%explode-kernel-args bwd-params bwd-types)
               (let* ((augmented-diff-flat-inputs
@@ -1196,15 +1269,8 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                            flat-input-types)))))
                 (if (and (null augmented-diff-flat-inputs)
                          (null struct-shadow-info))
-                    `(progn
-                      (eval-when (:compile-toplevel :load-toplevel :execute)
-                        (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
-                          (loop for p in ',bwd-params
-                                for t-spec in ',bwd-types
-                                collect (cons p t-spec))))
-                      (def-kernel-exact ,bwd-name ,exploded-params
-                                        (declare #'(,@exploded-types))
-                                        (return)))
+                    (%bkg-kernel-form bwd-name bwd-params bwd-types exploded-params exploded-types
+                                      nil)
                     ;; Endeavor 146 Gap 3: lower with-warp-specialization BEFORE anf-transform.
                     ;; anf-transform knows a fixed set of control forms (IF, DOTIMES,
                     ;; WITH-PRECISION ...) whose bodies it must NOT hoist.  with-warp-
@@ -1234,31 +1300,9 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                             (let ((*ad-tile-src-map* (%mma-ad-tile-source-map flat-anf)))
                               (%ad-rewrite-primal-bindings
                                (%collect-forward-primal-bindings flat-anf anf-body))))
-                           (struct-shadow-ht
-                            (when struct-shadow-info
-                                  (let ((ht (make-hash-table :test 'eq)))
-                                    (dolist (entry struct-shadow-info)
-                                      (setf (gethash (first entry) ht)
-                                        (cons (second entry)
-                                              (fourth entry))))
-                                    (%register-shadow-anf-intermediates flat-anf ht)
-                                    ht)))
+                           (struct-shadow-ht (%bkg-struct-shadow-table struct-shadow-info flat-anf))
                            (kernel-record-param-field-adjs-ht
-                            (when (> (hash-table-count record-subs-ht) 0)
-                                  (let ((ht (make-hash-table :test 'eq)))
-                                    (maphash
-                                      (lambda (rsym field-alist)
-                                        (let ((adj-alist
-                                               (loop for entry in field-alist
-                                                     for fname = (car entry)
-                                                     for fsym = (cdr entry)
-                                                       unless (eq fname :%nested-leaf%)
-                                                     collect (cons (symbol-name fname)
-                                                                   (intern (format nil "~A_ADJ" (symbol-name fsym))
-                                                                           pkg)))))
-                                          (setf (gethash rsym ht) adj-alist)))
-                                      record-subs-ht)
-                                    ht)))
+                            (%bkg-record-param-field-adjs-table record-subs-ht pkg))
                            (raw-backward-walk
                             (let ((*struct-kernel-param-shadows* struct-shadow-ht)
                                   (*record-param-field-adjs* kernel-record-param-field-adjs-ht))
@@ -1266,29 +1310,13 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                                                       augmented-diff-flat-inputs outputs
                                                       augmented-diff-flat-input-types output-types
                                                       :kernel-pkg pkg)))
-                           (backward-walk-1
-                            (%fix-record-grad-cell-emissions raw-backward-walk grad-cell-syms))
-                           (backward-walk-2
-                            (if struct-shadow-info
-                                (let ((all-leaves
-                                       (loop for entry in struct-shadow-info
-                                               append (%collect-all-leaf-adj-syms (fourth entry)))))
-                                  (%ensure-leaf-adj-bindings backward-walk-1 all-leaves))
-                                backward-walk-1))
                            (backward-walk
-                            (%fix-struct-shadow-writes backward-walk-2 struct-shadow-info))
+                            (%bkg-fix-up-walk raw-backward-walk grad-cell-syms struct-shadow-info))
                            (all-reassembly (append bwd-cell-reassembly-bindings record-reassembly-bindings)))
-                      `(progn
-                        (eval-when (:compile-toplevel :load-toplevel :execute)
-                          (setf (gethash ',bwd-name crisp.compiler::*kernel-declared-signatures*)
-                            (loop for p in ',bwd-params
-                                  for t-spec in ',bwd-types
-                                  collect (cons p t-spec))))
-                        (def-kernel-exact ,bwd-name ,exploded-params
-                                          (declare #'(,@exploded-types))
-                                          (let (,@all-reassembly)
-                                            ,(%ad-assemble-primal-replay forward-bindings replay-statements backward-walk))
-                                          (return)))))))))))))
+                      (%bkg-kernel-form bwd-name bwd-params bwd-types exploded-params exploded-types
+                                        `((let (,@all-reassembly)
+                                            ,(%ad-assemble-primal-replay forward-bindings replay-statements
+                                                                         backward-walk))))))))))))))
 
 
 

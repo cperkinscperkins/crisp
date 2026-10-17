@@ -1636,6 +1636,137 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (when (< ,p ,ng)
            ,@(funcall fold-at p))))))
 
+(defun %grid-reduce-refuse (fmt &rest args)
+  "Signals a grid-reduce! compile error whose message is FMT applied to ARGS."
+  (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil))
+
+(defun %fused-grid-reduce-check-keys (strategy rest clauses)
+  "Refuses a :strategy that is not a compile-time keyword or not one of :atomic / :cas /
+   :last-man-standing, then any call-level key in REST or clause-level key in CLAUSES that STRATEGY
+   does not use."
+  (unless (keywordp strategy)
+    (%grid-reduce-refuse "grid-reduce!: :strategy ~s must be known at compile time -- write one of :atomic, :cas or :last-man-standing.  The strategy decides which construct the call becomes, so a value computed at run time cannot choose it." strategy))
+  (unless (member strategy '(:atomic :cas :last-man-standing))
+    (%grid-reduce-refuse "grid-reduce!: unknown :strategy ~s.  The strategy must be one of :atomic, :cas or :last-man-standing (the default).  For a two-kernel reduction use grid-reduce-second-stage! in the second kernel." strategy))
+  ;; keys the strategy does not use -- call level, then clause level
+  (let ((call-ok (if (eq strategy :last-man-standing)
+                     '(:strategy :message :atomic-counter :election-flag-cell)
+                     '(:strategy :message)))
+        (clause-ok (if (eq strategy :last-man-standing)
+                       '(:local-scratch-vec :global-scratch-vec)
+                       '(:local-scratch-vec))))
+    (loop for (k nil) on rest by #'cddr
+          unless (member k call-ok)
+            do (%grid-reduce-refuse "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~}." k strategy call-ok))
+    (dolist (clause clauses)
+      (loop for (k nil) on (nthcdr 4 clause) by #'cddr
+            unless (member k clause-ok)
+              do (%grid-reduce-refuse "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~} per clause." k strategy clause-ok)))))
+
+(defun %fused-grid-reduce-atomic-form (strategy clauses rwg)
+  ":atomic / :cas -- ONE fused workgroup reduction of every clause, then one leader thread applying each
+   clause's hardware atomic (:atomic) or CAS loop (:cas) to its return cell.  :atomic refuses an operator
+   with no native atomic."
+  (when (eq strategy :atomic)
+    (dolist (clause clauses)
+      (unless (%grid-atomic-op-name (first clause))
+        (%grid-reduce-refuse "grid-reduce-atomic!: ~s has no native hardware atomic, so there is no instruction for phase 2 to emit.  Only +, min and max qualify -- the hardware provides exactly those.  For an arbitrary commutative operator use grid-reduce-cas! (a CAS loop; no extra memory, high contention) or grid-reduce-last-man! (a global scratch buffer; no contention)." (first clause)))))
+  ;; 179: :atomic / :cas combine INTO each clause's return cell -- record that it needs
+  ;; the identity before every launch.
+  (dolist (clause clauses)
+    (%note-reduction-launch-init "grid-reduce!" (fourth clause) (third clause)))
+  `(progn
+     (,rwg ,(loop for clause in clauses
+                  collect (destructuring-bind (fn var identity out &rest keys) clause
+                            (declare (ignore out))
+                            `(,fn ,var ,identity ,@keys))))
+     (when-thread-in-group-is 0
+       ,@(loop for (fn var nil out) in clauses
+               collect (if (eq strategy :atomic)
+                           `(,(intern (%grid-atomic-op-name fn) (find-package :crisp.compiler)) (~ ,out 0) ,var)
+                           `(atomic-binop! (~ ,out 0) ,fn ,var))))
+     (compiler-no-op)))
+
+(defun %fused-grid-reduce-last-man-form (clauses rest rwg)
+  ":last-man-standing -- every workgroup's partial written, ONE ticket from ONE counter, ONE election
+   flag, and the last workgroup's ONE fused strided sweep writing every return cell.  Scratch the call
+   leaves out is allocated implicitly (see SUPPLY)."
+  (let ((lets '()) (checks '())
+        (v1 (second (first clauses))))
+    (labels ((supply (given var identity key)
+               ;; GIVEN scratch, or an implicit LET binding with a deterministic name, typed from
+               ;; IDENTITY (the counter and flag are always uint)
+               (or given
+                   (let ((elem-type (if (member key '(:atomic-counter :election-flag-cell))
+                                        'uint
+                                        (%identity-scan-type identity))))
+                     (unless elem-type
+                       (%grid-reduce-refuse "grid-reduce!: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass that clause's scratch yourself." identity))
+                     (let ((name (%implicit-scratch-binding-name var key)))
+                       (push (list name (%implicit-scratch-alloc-form key elem-type)) lets)
+                       (unless (member key '(:atomic-counter :election-flag-cell))
+                         (pushnew `(%check-reduction-identity "grid-reduce!" ,var ,identity ,elem-type)
+                                  checks :test #'equal))
+                       name)))))
+      (let* ((svs (loop for c in clauses
+                        collect (supply (%clause-key c 4 :local-scratch-vec) (second c) (third c) :local-scratch-vec)))
+             (gvs (loop for c in clauses
+                        collect (supply (%clause-key c 4 :global-scratch-vec) (second c) (third c) :global-scratch-vec)))
+             (ctr (supply (getf rest :atomic-counter) v1 nil :atomic-counter))
+             (flag (supply (getf rest :election-flag-cell) v1 nil :election-flag-cell))
+             (lid (gensym "LM-LID"))
+             (ng (gensym "LM-NG"))
+             (ls (gensym "LM-LS"))
+             (vals (loop repeat (length clauses) collect (gensym "LM-VAL")))
+             (body
+               `(progn
+                  ,@(reverse checks)
+                  ;; 181: one partial per workgroup in EVERY clause's buffer (the sweep is strided,
+                  ;; so the local size no longer caps the group count)
+                  ,@(loop for gv in (remove-duplicates gvs)
+                          collect `(r-t-assert-0 (<= (get-num-groups 0) (length~ ,gv))
+                                                 "grid-reduce!: a last-man :global-scratch-vec has fewer elements than there are workgroups; it needs one per workgroup (:match-num-workgroups)."))
+                  ;; Phase 1 -- ONE fused workgroup reduction of every clause
+                  (,rwg ,(loop for c in clauses for sv in svs
+                               collect `(,(first c) ,(second c) ,(third c) :local-scratch-vec ,sv)))
+                  ;; every partial written, then ONE ticket, ONE election
+                  ;; 183: thread 0's program order is the RELEASE -- every partial stored, ONE fence, ONE ticket
+                  (when-thread-in-group-is 0
+                    ,@(loop for c in clauses for gv in gvs
+                            collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(second c)))
+                    (mem-fence)
+                    (set! (~ ,flag)
+                          (if (= (atomic-add! (~ ,ctr) 1u)
+                                 (- (to-uint (get-num-groups 0)) 1u))
+                              1u 0u)))
+                  (sync-workgroup)
+                  ;; the LAST workgroup sweeps every clause's partials in ONE fused reduction
+                  (when+ (= (~ ,flag) 1u)
+                    ;; 183: the ACQUIRE half of publish-then-signal -- every thread of the elected workgroup
+                    ;; fences once before reading the partials other workgroups published.
+                    (mem-fence)
+                    (let ((,lid (to-int (get-local-linear-id)))
+                          (,ng  (to-int (get-num-groups 0)))
+                          (,ls  (to-int (get-local-linear-size))))
+                      (let ,(loop for c in clauses for val in vals
+                                  collect `(,val ,(third c)))
+                        ;; 181: fold every partial, strided, every clause in one loop
+                        ,(%181-strided-sweep-form
+                          lid ng ls
+                          (lambda (p)
+                            (loop for c in clauses for gv in gvs for val in vals
+                                  collect `(set! ,val ,(%175-apply-binop (first c) val `(~ ,gv ,p))))))
+                        (,rwg ,(loop for c in clauses for sv in svs for val in vals
+                                     collect `(,(first c) ,val ,(third c) :local-scratch-vec ,sv)))
+                        (when-thread-in-group-is 0
+                          ,@(loop for c in clauses for val in vals
+                                  collect `(set! (~ ,(fourth c) 0) ,val))
+                          ;; 179: put the ticket counter back for the next launch.  Safe here: every workgroup
+                          ;; has already drawn its ticket -- that is how this one knows it is last.
+                          (set! (~ ,ctr) 0u)))))
+                  (compiler-no-op))))
+        (if lets `(let ,(nreverse lets) ,body) body)))))
+
 (defun %fused-grid-reduce-form (form)
   "Endeavour 176 Phase 2b.  An independent grid-reduce!, lowered with its work done once for all clauses.
    Phase 1 is ONE independent reduce-workgroup (itself fused).  Phase 2 by :strategy --
@@ -1654,123 +1785,10 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
          (strategy-given (loop for (k v) on rest by #'cddr thereis (and (eq k :strategy) (list v))))
          (strategy (if strategy-given (first strategy-given) :last-man-standing))
          (rwg (intern "REDUCE-WORKGROUP" pkg)))
-    (flet ((fail (fmt &rest args)
-             (error 'crisp-compiler-error :message (apply #'format nil fmt args) :source-location nil)))
-      (unless (keywordp strategy)
-        (fail "grid-reduce!: :strategy ~s must be known at compile time -- write one of :atomic, :cas or :last-man-standing.  The strategy decides which construct the call becomes, so a value computed at run time cannot choose it." strategy))
-      (unless (member strategy '(:atomic :cas :last-man-standing))
-        (fail "grid-reduce!: unknown :strategy ~s.  The strategy must be one of :atomic, :cas or :last-man-standing (the default).  For a two-kernel reduction use grid-reduce-second-stage! in the second kernel." strategy))
-      ;; keys the strategy does not use -- call level, then clause level
-      (let ((call-ok (if (eq strategy :last-man-standing)
-                         '(:strategy :message :atomic-counter :election-flag-cell)
-                         '(:strategy :message)))
-            (clause-ok (if (eq strategy :last-man-standing)
-                           '(:local-scratch-vec :global-scratch-vec)
-                           '(:local-scratch-vec))))
-        (loop for (k nil) on rest by #'cddr
-              unless (member k call-ok)
-                do (fail "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~}." k strategy call-ok))
-        (dolist (clause clauses)
-          (loop for (k nil) on (nthcdr 4 clause) by #'cddr
-                unless (member k clause-ok)
-                  do (fail "grid-reduce!: ~s is not used by :strategy ~s, which takes ~{~s~^, ~} per clause." k strategy clause-ok))))
-      (ecase strategy
-        ((:atomic :cas)
-         (when (eq strategy :atomic)
-           (dolist (clause clauses)
-             (unless (%grid-atomic-op-name (first clause))
-               (fail "grid-reduce-atomic!: ~s has no native hardware atomic, so there is no instruction for phase 2 to emit.  Only +, min and max qualify -- the hardware provides exactly those.  For an arbitrary commutative operator use grid-reduce-cas! (a CAS loop; no extra memory, high contention) or grid-reduce-last-man! (a global scratch buffer; no contention)." (first clause)))))
-         ;; 179: :atomic / :cas combine INTO each clause's return cell -- record that it needs
-         ;; the identity before every launch.
-         (dolist (clause clauses)
-           (%note-reduction-launch-init "grid-reduce!" (fourth clause) (third clause)))
-         `(progn
-            (,rwg ,(loop for clause in clauses
-                         collect (destructuring-bind (fn var identity out &rest keys) clause
-                                   (declare (ignore out))
-                                   `(,fn ,var ,identity ,@keys))))
-            (when-thread-in-group-is 0
-              ,@(loop for (fn var nil out) in clauses
-                      collect (if (eq strategy :atomic)
-                                  `(,(intern (%grid-atomic-op-name fn) (find-package :crisp.compiler)) (~ ,out 0) ,var)
-                                  `(atomic-binop! (~ ,out 0) ,fn ,var))))
-            (compiler-no-op)))
-        (:last-man-standing
-         (let ((lets '()) (checks '())
-               (v1 (second (first clauses))))
-           (labels ((supply (given var identity key)
-                      ;; GIVEN scratch, or an implicit LET binding with a deterministic name, typed from
-                      ;; IDENTITY (the counter and flag are always uint)
-                      (or given
-                          (let ((elem-type (if (member key '(:atomic-counter :election-flag-cell))
-                                               'uint
-                                               (%identity-scan-type identity))))
-                            (unless elem-type
-                              (fail "grid-reduce!: cannot tell the type of the identity ~s before analysis, so Crisp cannot allocate the scratch memory for you.  Write the identity with a visible type -- 0.0, 0ul, (type-max int), (to-ulong x) -- or pass that clause's scratch yourself." identity))
-                            (let ((name (%implicit-scratch-binding-name var key)))
-                              (push (list name (%implicit-scratch-alloc-form key elem-type)) lets)
-                              (unless (member key '(:atomic-counter :election-flag-cell))
-                                (pushnew `(%check-reduction-identity "grid-reduce!" ,var ,identity ,elem-type)
-                                         checks :test #'equal))
-                              name)))))
-             (let* ((svs (loop for c in clauses
-                               collect (supply (%clause-key c 4 :local-scratch-vec) (second c) (third c) :local-scratch-vec)))
-                    (gvs (loop for c in clauses
-                               collect (supply (%clause-key c 4 :global-scratch-vec) (second c) (third c) :global-scratch-vec)))
-                    (ctr (supply (getf rest :atomic-counter) v1 nil :atomic-counter))
-                    (flag (supply (getf rest :election-flag-cell) v1 nil :election-flag-cell))
-                    (lid (gensym "LM-LID"))
-                    (ng (gensym "LM-NG"))
-                    (ls (gensym "LM-LS"))
-                    (vals (loop repeat (length clauses) collect (gensym "LM-VAL")))
-                    (body
-                      `(progn
-                         ,@(reverse checks)
-                         ;; 181: one partial per workgroup in EVERY clause's buffer (the sweep is strided,
-                         ;; so the local size no longer caps the group count)
-                         ,@(loop for gv in (remove-duplicates gvs)
-                                 collect `(r-t-assert-0 (<= (get-num-groups 0) (length~ ,gv))
-                                                        "grid-reduce!: a last-man :global-scratch-vec has fewer elements than there are workgroups; it needs one per workgroup (:match-num-workgroups)."))
-                         ;; Phase 1 -- ONE fused workgroup reduction of every clause
-                         (,rwg ,(loop for c in clauses for sv in svs
-                                      collect `(,(first c) ,(second c) ,(third c) :local-scratch-vec ,sv)))
-                         ;; every partial written, then ONE ticket, ONE election
-                         ;; 183: thread 0's program order is the RELEASE -- every partial stored, ONE fence, ONE ticket
-                         (when-thread-in-group-is 0
-                           ,@(loop for c in clauses for gv in gvs
-                                   collect `(set! (~ ,gv (to-int (get-workgroup-id 0))) ,(second c)))
-                           (mem-fence)
-                           (set! (~ ,flag)
-                                 (if (= (atomic-add! (~ ,ctr) 1u)
-                                        (- (to-uint (get-num-groups 0)) 1u))
-                                     1u 0u)))
-                         (sync-workgroup)
-                         ;; the LAST workgroup sweeps every clause's partials in ONE fused reduction
-                         (when+ (= (~ ,flag) 1u)
-                           ;; 183: the ACQUIRE half of publish-then-signal -- every thread of the elected workgroup
-                           ;; fences once before reading the partials other workgroups published.
-                           (mem-fence)
-                           (let ((,lid (to-int (get-local-linear-id)))
-                                 (,ng  (to-int (get-num-groups 0)))
-                                 (,ls  (to-int (get-local-linear-size))))
-                             (let ,(loop for c in clauses for val in vals
-                                         collect `(,val ,(third c)))
-                               ;; 181: fold every partial, strided, every clause in one loop
-                               ,(%181-strided-sweep-form
-                                 lid ng ls
-                                 (lambda (p)
-                                   (loop for c in clauses for gv in gvs for val in vals
-                                         collect `(set! ,val ,(%175-apply-binop (first c) val `(~ ,gv ,p))))))
-                               (,rwg ,(loop for c in clauses for sv in svs for val in vals
-                                            collect `(,(first c) ,val ,(third c) :local-scratch-vec ,sv)))
-                               (when-thread-in-group-is 0
-                                 ,@(loop for c in clauses for val in vals
-                                         collect `(set! (~ ,(fourth c) 0) ,val))
-                                 ;; 179: put the ticket counter back for the next launch.  Safe here: every workgroup
-                                 ;; has already drawn its ticket -- that is how this one knows it is last.
-                                 (set! (~ ,ctr) 0u)))))
-                         (compiler-no-op))))
-               (if lets `(let ,(nreverse lets) ,body) body)))))))))
+    (%fused-grid-reduce-check-keys strategy rest clauses)
+    (ecase strategy
+      ((:atomic :cas) (%fused-grid-reduce-atomic-form strategy clauses rwg))
+      (:last-man-standing (%fused-grid-reduce-last-man-form clauses rest rwg)))))
 
 (defun %independent-reduction-split-for-ad (form)
   "Endeavour 176 Phase 2b.  The AD path's view of an independent call: the Phase-2a per-clause SPLIT, so the

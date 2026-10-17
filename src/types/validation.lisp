@@ -740,6 +740,56 @@ Extended to also accept raw (function ...) forms from the Crisp reader
 
 
 
+(defun %derived-type-actual-symbol (type-spec)
+  "When symbol TYPE-SPEC names a DERIVED type (a node with an original type in *type-derivation-graph*),
+   the symbol its node is filed under -- TYPE-SPEC itself, or its namesake in :crisp-language -- else
+   NIL.  The :crisp-language lookup INTERNs, exactly as resolve-type-to-llvm always did."
+  (let* ((node-direct (gethash type-spec *type-derivation-graph*))
+         (node-alt (when (not node-direct)
+                     (gethash (intern (symbol-name type-spec)
+                                      (find-package :crisp-language))
+                              *type-derivation-graph*)))
+         (node (or node-direct node-alt)))
+    (when (and node (type-node-original-type node))
+      (if node-direct
+          type-spec
+          (intern (symbol-name type-spec) (find-package :crisp-language))))))
+
+(defun %template-struct-type-spec-p (type-spec)
+  "True when TYPE-SPEC is a parameterized struct -- a valid (TEMPLATE ARGS...) form of a known template,
+   or a symbol that unmangles to one."
+  (or (and (consp type-spec)
+           (valid-type-p type-spec)
+           (find-template-robust (first type-spec)))
+      (and (symbolp type-spec)
+           (let ((parts (unmangle-template-struct-name type-spec)))
+             (and parts (consp parts) (find-template-robust (first parts)))))))
+
+(defun %resolve-template-struct-name (type-spec)
+  "The mangled struct name of parameterized struct TYPE-SPEC, instantiating the template on demand --
+   evaluated, and compiled into the current module when one is open."
+  (let* ((canonical (canonicalize-type-specifier type-spec))
+         (is-cons (consp canonical))
+         (unmangled (if is-cons canonical (unmangle-template-struct-name canonical)))
+         (base (first unmangled))
+         (raw-args (rest unmangled))
+         (mangled (mangle-template-struct-name base raw-args)))
+    (unless (find-struct-definition-by-name mangled)
+      (let ((crisp.compiler::*defer-struct-validation* nil))
+        (ensure-template-instantiation base raw-args
+                                       (lambda (form location)
+                                         (eval form)
+                                         (when (and (boundp '*current-module*) *current-module*)
+                                           (compile-toplevel-form form location
+                                                                  *current-module*
+                                                                  *current-builder*
+                                                                  *current-di-builder*
+                                                                  *current-di-compile-unit*
+                                                                  *current-location-map*))))))
+    (unless (find-struct-definition-by-name mangled)
+      (error "Type Resolution: FAILED to instantiate struct ~a" mangled))
+    mangled))
+
 (defun resolve-type-to-llvm (type-spec)
   "Resolves a Crisp type specifier to an LLVM type reference.
    Extended to handle (array T N) → LLVM [N x T_llvm].
@@ -773,25 +823,8 @@ Extended to also accept raw (function ...) forms from the Crisp reader
          (crisp.llvm-bindings::llvm-array-type (resolve-type-to-llvm elem-type) count)))
 
       ;; Derived Type - resolve to base type (MUST come before *crisp-types* check)
-      ((and (symbolp type-spec)
-         (let* ((node-direct (gethash type-spec *type-derivation-graph*))
-                   (node-alt (when (not node-direct)
-                               (gethash (intern (symbol-name type-spec)
-                                                      (find-package :crisp-language))
-                                           *type-derivation-graph*)))
-                   (node (or node-direct node-alt)))
-           (and node (type-node-original-type node))))
-       (let* ((node-direct (gethash type-spec *type-derivation-graph*))
-                 (node-alt (when (not node-direct)
-                             (gethash (intern (symbol-name type-spec)
-                                                    (find-package :crisp-language))
-                                         *type-derivation-graph*)))
-                 (actual-type (if node-direct type-spec
-                                  (intern (symbol-name type-spec)
-                                             (find-package :crisp-language))))
-                 (base-type (get-type-base actual-type)))
-         (declare (ignore node-alt))
-         (resolve-type-to-llvm base-type)))
+      ((and (symbolp type-spec) (%derived-type-actual-symbol type-spec))
+       (resolve-type-to-llvm (get-type-base (%derived-type-actual-symbol type-spec))))
 
       ;; Built-in Scalar
       ((and (symbolp type-spec) (gethash type-spec *crisp-types*))
@@ -841,33 +874,8 @@ Extended to also accept raw (function ...) forms from the Crisp reader
        (llvm-int32-type))
 
       ;; Parameterized Structs (On-Demand Instantiation) OR Mangled Symbols
-      ((or (and (consp type-spec)
-                (valid-type-p type-spec)
-                (find-template-robust (first type-spec)))
-         (and (symbolp type-spec)
-           (let ((parts (unmangle-template-struct-name type-spec)))
-             (and parts (consp parts) (find-template-robust (first parts))))))
-       (let* ((canonical (canonicalize-type-specifier type-spec))
-                 (is-cons (consp canonical))
-                 (unmangled (if is-cons canonical (unmangle-template-struct-name canonical)))
-                 (base (first unmangled))
-                 (raw-args (rest unmangled))
-                 (mangled (mangle-template-struct-name base raw-args)))
-         (unless (find-struct-definition-by-name mangled)
-           (let ((crisp.compiler::*defer-struct-validation* nil))
-             (ensure-template-instantiation base raw-args
-                                            (lambda (form location)
-                                              (eval form)
-                                              (when (and (boundp '*current-module*) *current-module*)
-                                                (compile-toplevel-form form location
-                                                                       *current-module*
-                                                                       *current-builder*
-                                                                       *current-di-builder*
-                                                                       *current-di-compile-unit*
-                                                                       *current-location-map*))))))
-         (unless (find-struct-definition-by-name mangled)
-           (error "Type Resolution: FAILED to instantiate struct ~a" mangled))
-         (resolve-type-to-llvm mangled)))
+      ((%template-struct-type-spec-p type-spec)
+       (resolve-type-to-llvm (%resolve-template-struct-name type-spec)))
 
       ;; Generic List Wrapper
       ((consp type-spec)

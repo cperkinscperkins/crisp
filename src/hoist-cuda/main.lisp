@@ -1478,6 +1478,123 @@ overrides the runtime SM-count query in the grid-size heuristic."
                 (format stream "        return;~%")))
           (format stream "      } }~%"))))))
 
+(defun %cuda-emit-strided-grid (stream block-x block-y occupancy derive-from derive-from-is-tensor
+                                shared-bytes compute-units)
+  ":strategy :strided -- a grid of max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor x SMs),
+   optionally derated by :occupancy.  COMPUTE-UNITS, from the hardware profile, replaces the device
+   SM query when set."
+  (let ((block-size (* block-x (max 1 block-y)))
+        (ratio (cond ((null occupancy) 1.0)
+                     ((numberp occupancy) (float occupancy))
+                     (t 1.0))))
+    (format stream "    // Strategy: :strided — max occupancy via cuOccupancyMaxActiveBlocksPerMultiprocessor~%")
+    (when derive-from-is-tensor
+      (format stream "    // derive-from tensor '~a' (length=~a) used for check-thread-bounds; grid uses occupancy~%"
+              (first derive-from) (%tensor-length-cpp-var (first derive-from))))
+    (format stream "    int _blocksPerSM;~%")
+    (format stream "    CUDA_CHECK(cuOccupancyMaxActiveBlocksPerMultiprocessor(&_blocksPerSM, kernel, ~d, ~a));~%"
+            block-size shared-bytes)
+    (if compute-units
+        (progn
+          (format stream "    // Hardware profile active: :compute-units overrides the device SM query~%")
+          (format stream "    int _numSMs = ~d;~%" compute-units))
+        (progn
+          (format stream "    int _numSMs;~%")
+          (format stream "    CUDA_CHECK(cuDeviceGetAttribute(&_numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));~%")))
+    (if (= ratio 1.0)
+        (format stream "    unsigned int gridX = (unsigned int)(_blocksPerSM * _numSMs);~%")
+        (progn
+          (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
+          (format stream "    unsigned int gridX = (unsigned int)((_blocksPerSM * _numSMs) * ~f);~%" ratio)
+          (format stream "    if (gridX < 1) gridX = 1;~%")))
+    (format stream "    unsigned int gridY = 1, gridZ = 1;~%")))
+
+(defun %cuda-emit-fixed-grid (stream set-to block-x)
+  ":set-to INTEGER -- a fixed 1-D grid of SET-TO threads, in blocks of BLOCK-X."
+  (let ((grid-x (if (> block-x 1)
+                    (format nil "(~a + ~a) / ~a" set-to (1- block-x) block-x)
+                    (format nil "~a" set-to))))
+    (format stream "    unsigned int gridX = ~a, gridY = 1, gridZ = 1;~%" grid-x)))
+
+(defun %cuda-emit-exact-grid (stream derive-from derive-from-is-tensor tile-shape block-x block-y)
+  ":strategy :exact with :derive-from -- ceil(extent / tile) per axis: from a tensor's length, or from up
+   to two scalar parameters.  The tile is :tile-shape when declared, else the block."
+  (if derive-from-is-tensor
+      ;; Tensor-derived exact: gridX = ceil(<tensor>_length / tx)
+      (let ((tx (if tile-shape (or (first tile-shape) 1) block-x))
+            (tensor-var (%tensor-length-cpp-var (first derive-from))))
+        (format stream "    unsigned int gridX = ((unsigned int)~a + ~d) / ~d;~%"
+                tensor-var (1- tx) tx)
+        (format stream "    unsigned int gridY = 1, gridZ = 1;~%"))
+      ;; Scalar list exact
+      (let ((d0 (first derive-from))
+            (d1 (second derive-from))
+            (tx (if tile-shape (or (first tile-shape) 1) block-x))
+            (ty (if tile-shape (or (second tile-shape) 1) (if (> block-y 1) block-y 1))))
+        (when d0
+          (format stream "    unsigned int gridX = ((unsigned int)~a + ~a) / ~a;~%"
+                  (%dispatch-sym-to-cpp-var d0) (1- tx) tx))
+        (when d1
+          (format stream "    unsigned int gridY = ((unsigned int)~a + ~a) / ~a;~%"
+                  (%dispatch-sym-to-cpp-var d1) (1- ty) ty))
+        (unless d0 (format stream "    unsigned int gridX = 1;~%"))
+        (unless d1 (format stream "    unsigned int gridY = 1;~%"))
+        (format stream "    unsigned int gridZ = 1;~%"))))
+
+(defun %cuda-emit-one-thread-per-grid (stream derive-from block-x)
+  ":strategy :one-thread-per (or the unstated default) with :derive-from TENSOR -- one thread per element
+   of the tensor, in blocks of BLOCK-X."
+  (let ((tensor-var (%tensor-length-cpp-var (first derive-from))))
+    (format stream "    // Strategy: :one-thread-per from tensor ~a~%" (first derive-from))
+    (if (> block-x 1)
+        (format stream "    unsigned int gridX = ((unsigned int)~a + ~d) / ~d;~%"
+                tensor-var (1- block-x) block-x)
+        (format stream "    unsigned int gridX = (unsigned int)~a;~%" tensor-var))
+    (format stream "    unsigned int gridY = 1, gridZ = 1;~%")))
+
+(defun %cuda-emit-dims-grid (stream set-to derive-from block-x block-y)
+  ":set-to LIST, or :derive-from a list of SCALAR parameters -- a 2-D grid, each axis ceil(dim / block)
+   where a dim is an integer or a parameter."
+  (let* ((dims (cond ((consp set-to) set-to)
+                     (derive-from derive-from)
+                     (t nil)))
+         (d0 (first dims))
+         (d1 (second dims)))
+    (flet ((dim-gc (dim local-val)
+             (cond
+               ((null dim) "1")
+               ((integerp dim)
+                (if (> local-val 1)
+                    (format nil "(~a + ~a) / ~a" dim (1- local-val) local-val)
+                    (format nil "~a" dim)))
+               ((symbolp dim)
+                (let ((v (%dispatch-sym-to-cpp-var dim)))
+                  (if (> local-val 1)
+                      (format nil "((unsigned int)~a + ~a) / ~a" v (1- local-val) local-val)
+                      (format nil "(unsigned int)~a" v))))
+               (t "1"))))
+      (format stream "    unsigned int gridX = ~a, gridY = ~a, gridZ = 1;~%"
+              (dim-gc d0 block-x)
+              (dim-gc d1 (if (> block-y 1) block-y 1))))))
+
+(defun %cuda-emit-launch-lambda (stream block-x block-y shared-bytes)
+  "The launch itself: an `_crisp_launch` lambda over the final gridX/gridY/gridZ, called once for the
+   correctness readback that follows.  emit-launch anchors its cluster-grid fix-up on this lambda's
+   first line, so it must stay the first thing after ALL grid computation.  (The lambda also served
+   the --mma-bench timed relaunch loop, retired 2026-10-16; it is kept so the emitted code is
+   unchanged.)  Plain cuLaunchKernel, no CUDA_CHECK -- its `return` would make this void lambda
+   non-void; a launch error surfaces at the cuCtxSynchronize below."
+  (format stream "    auto _crisp_launch = [&]() {~%")
+  (format stream "      CUresult _lr = cuLaunchKernel(kernel,~%")
+  (format stream "          gridX, gridY, gridZ,~%")
+  (format stream "          ~a, ~a, 1,~%" block-x block-y)
+  (format stream "          ~a, 0,~%" shared-bytes)
+  (format stream "          kernelParams, nullptr);~%")
+  (format stream "      if (_lr != CUDA_SUCCESS) { const char* _es; cuGetErrorString(_lr, &_es);~%")
+  (format stream "        std::cerr << \"launch error: \" << _es << std::endl; }~%")
+  (format stream "    };~%")
+  (format stream "    _crisp_launch();~%~%"))
+
 (defun %emit-launch-base (stream dispatch-info shared-bytes &optional compute-units)
   "Emit cuLaunchKernel call with grid/block dims from dispatch-info.
    Supports:
@@ -1493,7 +1610,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
    effect host-side.
    Endeavor 140 (dynamic-SMEM opt-in): a kernel needing >48KB SMEM (n128-pipe, n256, wgmma
    big-tile, ...) must cuFuncSetAttribute MAX_DYNAMIC_SHARED_SIZE_BYTES or the launch silently
-   fails (CUDA_ERROR_INVALID_VALUE)."
+   fails (CUDA_ERROR_INVALID_VALUE).
+   Each strategy's grid is emitted by its own %CUDA-EMIT-*-GRID (refactor-oct, 2026-10-16)."
   ;; sm_90 reserves ~1KB of the 48KB default, so even exactly-48KB (49152) dynamic SMEM needs the
   ;; opt-in; n64-pipe (32768) launches fine without it, so 32768 is the safe cutoff.  Emitted
   ;; before the grid/launch code so the attribute is set prior to cuLaunchKernel.
@@ -1532,125 +1650,27 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "    // Launch kernel~%")
 
     (cond
-
       ;; --- :tile-shape — rank-N tile grid (Endeavor 143; ported from the L0 hoist) ---
       ;; Must precede :strided.  A 1-D grid under an N-D tile-stride loop does not merely
       ;; under-dispatch, it SERIALIZES the missing axes (measured 7.6x on Intel BMG).
       ((and tile-shape derive-from (or is-strided is-exact))
        (%cuda-emit-tile-grid stream derive-from derive-from-is-tensor tile-shape is-strided))
-
-      ;; --- :strategy :strided — max occupancy (optionally derated by :occupancy) ---
       (is-strided
-       (let ((block-size (* block-x (max 1 block-y)))
-             (ratio (cond ((null occupancy) 1.0)
-                          ((numberp occupancy) (float occupancy))
-                          (t 1.0))))
-         (format stream "    // Strategy: :strided — max occupancy via cuOccupancyMaxActiveBlocksPerMultiprocessor~%")
-         (when derive-from-is-tensor
-           (format stream "    // derive-from tensor '~a' (length=~a) used for check-thread-bounds; grid uses occupancy~%"
-                   (first derive-from) (%tensor-length-cpp-var (first derive-from))))
-         (format stream "    int _blocksPerSM;~%")
-         (format stream "    CUDA_CHECK(cuOccupancyMaxActiveBlocksPerMultiprocessor(&_blocksPerSM, kernel, ~d, ~a));~%"
-                 block-size shared-bytes)
-         (if compute-units
-             (progn
-               (format stream "    // Hardware profile active: :compute-units overrides the device SM query~%")
-               (format stream "    int _numSMs = ~d;~%" compute-units))
-             (progn
-               (format stream "    int _numSMs;~%")
-               (format stream "    CUDA_CHECK(cuDeviceGetAttribute(&_numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));~%")))
-         (if (= ratio 1.0)
-             (format stream "    unsigned int gridX = (unsigned int)(_blocksPerSM * _numSMs);~%")
-             (progn
-               (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
-               (format stream "    unsigned int gridX = (unsigned int)((_blocksPerSM * _numSMs) * ~f);~%" ratio)
-               (format stream "    if (gridX < 1) gridX = 1;~%")))
-         (format stream "    unsigned int gridY = 1, gridZ = 1;~%")))
-
-      ;; --- :set-to integer — fixed grid ---
+       (%cuda-emit-strided-grid stream block-x block-y occupancy derive-from derive-from-is-tensor
+                                shared-bytes compute-units))
       ((and (not is-exact) (integerp set-to))
-       (let ((grid-x (if (> block-x 1)
-                         (format nil "(~a + ~a) / ~a" set-to (1- block-x) block-x)
-                         (format nil "~a" set-to))))
-         (format stream "    unsigned int gridX = ~a, gridY = 1, gridZ = 1;~%" grid-x)))
-
-      ;; --- :strategy :exact with :derive-from ---
+       (%cuda-emit-fixed-grid stream set-to block-x))
       (is-exact
-       (if derive-from-is-tensor
-           ;; Tensor-derived exact: gridX = ceil(<tensor>_length / tx)
-           (let ((tx (if tile-shape (or (first tile-shape) 1) block-x))
-                 (tensor-var (%tensor-length-cpp-var (first derive-from))))
-             (format stream "    unsigned int gridX = ((unsigned int)~a + ~d) / ~d;~%"
-                     tensor-var (1- tx) tx)
-             (format stream "    unsigned int gridY = 1, gridZ = 1;~%"))
-           ;; Scalar list exact
-           (let ((d0 (first derive-from))
-                 (d1 (second derive-from))
-                 (tx (if tile-shape (or (first tile-shape) 1) block-x))
-                 (ty (if tile-shape (or (second tile-shape) 1) (if (> block-y 1) block-y 1))))
-             (when d0
-               (format stream "    unsigned int gridX = ((unsigned int)~a + ~a) / ~a;~%"
-                       (%dispatch-sym-to-cpp-var d0) (1- tx) tx))
-             (when d1
-               (format stream "    unsigned int gridY = ((unsigned int)~a + ~a) / ~a;~%"
-                       (%dispatch-sym-to-cpp-var d1) (1- ty) ty))
-             (unless d0 (format stream "    unsigned int gridX = 1;~%"))
-             (unless d1 (format stream "    unsigned int gridY = 1;~%"))
-             (format stream "    unsigned int gridZ = 1;~%"))))
-
-      ;; --- :strategy :one-thread-per (or unstated default) + :derive-from <tensor> ---
+       (%cuda-emit-exact-grid stream derive-from derive-from-is-tensor tile-shape block-x block-y))
       ((and is-one-thread-per derive-from-is-tensor)
-       (let ((tensor-var (%tensor-length-cpp-var (first derive-from))))
-         (format stream "    // Strategy: :one-thread-per from tensor ~a~%" (first derive-from))
-         (if (> block-x 1)
-             (format stream "    unsigned int gridX = ((unsigned int)~a + ~d) / ~d;~%"
-                     tensor-var (1- block-x) block-x)
-             (format stream "    unsigned int gridX = (unsigned int)~a;~%" tensor-var))
-         (format stream "    unsigned int gridY = 1, gridZ = 1;~%")))
-
-      ;; --- :set-to list OR :derive-from (scalar list) ---
+       (%cuda-emit-one-thread-per-grid stream derive-from block-x))
       ((or (consp set-to) derive-from)
-       (let* ((dims (cond ((consp set-to) set-to)
-                          (derive-from derive-from)
-                          (t nil)))
-              (d0 (first dims))
-              (d1 (second dims)))
-         (flet ((dim-gc (dim local-val)
-                  (cond
-                    ((null dim) "1")
-                    ((integerp dim)
-                     (if (> local-val 1)
-                         (format nil "(~a + ~a) / ~a" dim (1- local-val) local-val)
-                         (format nil "~a" dim)))
-                    ((symbolp dim)
-                     (let ((v (%dispatch-sym-to-cpp-var dim)))
-                       (if (> local-val 1)
-                           (format nil "((unsigned int)~a + ~a) / ~a" v (1- local-val) local-val)
-                           (format nil "(unsigned int)~a" v))))
-                    (t "1"))))
-           (format stream "    unsigned int gridX = ~a, gridY = ~a, gridZ = 1;~%"
-                   (dim-gc d0 block-x)
-                   (dim-gc d1 (if (> block-y 1) block-y 1))))))
-
+       (%cuda-emit-dims-grid stream set-to derive-from block-x block-y))
       ;; --- Default fallback ---
       (t
        (format stream "    unsigned int gridX = 1, gridY = 1, gridZ = 1;~%")))
 
-    ;; Repeatable launch — one call for the correctness readback that follows.  (It also served the
-    ;; --mma-bench timed relaunch loop, retired 2026-10-16; the lambda is kept so the emitted code is
-    ;; unchanged.)
-    ;; Plain launch (no CUDA_CHECK — its `return` would make this void lambda non-void AND
-    ;; swallow errors from the timed loop); a launch error surfaces at the cuCtxSynchronize below.
-    (format stream "    auto _crisp_launch = [&]() {~%")
-    (format stream "      CUresult _lr = cuLaunchKernel(kernel,~%")
-    (format stream "          gridX, gridY, gridZ,~%")
-    (format stream "          ~a, ~a, 1,~%" block-x block-y)
-    (format stream "          ~a, 0,~%" shared-bytes)
-    (format stream "          kernelParams, nullptr);~%")
-    (format stream "      if (_lr != CUDA_SUCCESS) { const char* _es; cuGetErrorString(_lr, &_es);~%")
-    (format stream "        std::cerr << \"launch error: \" << _es << std::endl; }~%")
-    (format stream "    };~%")
-    (format stream "    _crisp_launch();~%~%")))
+    (%cuda-emit-launch-lambda stream block-x block-y shared-bytes)))
 
 ;; ---------------------------------------------------------------------------------------------------------
 ;;; Endeavor 152 rung 04 — clustered launch in the CUDA hoist
