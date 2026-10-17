@@ -162,3 +162,123 @@
   "Extract the base type from a cell type like (cell int ...)"
   (when (cell-type-p param-type)
         (second param-type)))
+
+;;; ------------------------------------------------------------------------------------------
+;;; Helpers shared by BOTH hoisters (refactor-oct, 2026-10-16).  Each was defined twice --
+;;; identically, or differing only in docstrings / an -l0 suffix -- in src/hoist-l0/main.lisp and
+;;; src/hoist-cuda/main.lisp.  Moved here verbatim (L0's docstrings where they were fuller) and
+;;; exported, so the two hoisters cannot drift apart again.
+;;; ------------------------------------------------------------------------------------------
+
+(defvar *mma-test-dims* nil "(M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.")
+
+(defvar *mma-input-counter* 0 "Per-kernel input-tensor counter for A(0)/B(1) role assignment.")
+
+(defvar *mma-scale* 1 "Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.
+   Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).")
+
+(defvar *hoist-current-structs* nil
+        "Dynamic variable: list of (def-struct NAME ...) forms from the current
+   metacrisp :structs section.  Bound by each hoister's launcher generator.")
+
+(defun %mma-out-dir-p (dir)
+  "T if the param direction is an output (&out)."
+  (and dir (search "out" (string-downcase (string dir)))))
+
+(defun %array-type-p (type)
+  "Returns T if TYPE is an (array T N) form."
+  (and (consp type)
+       (symbolp (first type))
+       (string-equal (symbol-name (first type)) "ARRAY")))
+
+(defun %array-element-type (array-type)
+  "Returns the element type T from an (array T N) form."
+  (second array-type))
+
+(defun %array-size (array-type)
+  "Returns the compile-time size N from an (array T N) form."
+  (third array-type))
+
+(defun %struct-base-type (param-type)
+  "Extract the base struct name from PARAM-TYPE (symbol or list form)."
+  (if (symbolp param-type) param-type (first param-type)))
+
+(defun record-base-type (type)
+  "Extract the base record type symbol from a plain symbol or a list-form like (V-POINT EARNESTNESS 3.0)."
+  (if (symbolp type) type (first type)))
+
+(defun find-record-def (type records)
+  "Find the def-record entry matching TYPE in RECORDS.
+   TYPE may be a plain symbol or a parameterized list form."
+  (let ((base (record-base-type type)))
+    (find base records
+      :key #'second
+      :test (lambda (a b) (string-equal (symbol-name a) (symbol-name b))))))
+
+(defun record-type-p (type records)
+  "Returns true if TYPE refers to a def-record in RECORDS."
+  (and (not (cell-type-p type))
+       (not (null (find-record-def type records)))))
+
+(defun tensor-type-p (param-type)
+  "Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier."
+  (and (consp param-type)
+       (symbolp (first param-type))
+       (member (symbol-name (first param-type))
+               '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))
+
+(defun %tensor-compact-extents-strides (n extents-list)
+  "Returns (values extents strides) for a compact N-dim tensor.
+   Strides are in elements; innermost stride = 1."
+  (let* ((extents (copy-list extents-list))
+         (strides (make-list n :initial-element 1)))
+    (loop for k from (- n 2) downto 0 do
+            (setf (nth k strides) (* (nth (1+ k) strides) (nth (1+ k) extents))))
+    (values extents strides)))
+
+(defun %dispatch-sym-to-cpp-var (sym)
+  "Convert a dispatch param symbol (e.g. 'WIDTH or 'width) to C++ variable name 'width_arg'."
+  (format nil "~a_arg" (substitute #\_ #\- (string-downcase (symbol-name sym)))))
+
+(defun %find-struct-def (name)
+  "Find (def-struct NAME ...) in *hoist-current-structs*."
+  (find name *hoist-current-structs*
+        :test (lambda (n f)
+                (and (consp f)
+                     (symbolp (first f))
+                     (string-equal (symbol-name (first f)) "DEF-STRUCT")
+                     (symbolp (second f))
+                     (string-equal (symbol-name n) (symbol-name (second f)))))))
+
+(defun struct-type-p (type)
+  "Returns T if TYPE names a def-struct in *hoist-current-structs*."
+  (let ((base (cond ((symbolp type) type)
+                    ((and (consp type) (symbolp (first type))) (first type))
+                    (t nil))))
+    (and base (not (null (%find-struct-def base))))))
+
+(defun %struct-emit-fields (stream var-path members aliases)
+  "Recursively emit C++ field assignments for a struct variable."
+  (dolist (member members)
+    (let* ((field-name     (first member))
+           (field-type-raw (second member))
+           (field-name-cpp (format-cpp-identifier field-name))
+           (field-path     (format nil "~a.~a" var-path field-name-cpp))
+           (field-type     (resolve-type-alias field-type-raw aliases)))
+      (cond
+       ((%array-type-p field-type)
+        (let* ((elem-type (%array-element-type field-type))
+               (arr-size  (%array-size field-type))
+               (elem-str  (crisp-type-to-cpp-type elem-type)))
+          (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
+                  arr-size field-path elem-str)))
+       ((struct-type-p field-type)
+        (let* ((nested-def     (%find-struct-def field-type))
+               (nested-members (cddr nested-def)))
+          (%struct-emit-fields stream field-path nested-members aliases)))
+       (t
+        (let* ((cpp-type (crisp-type-to-cpp-type field-type))
+               (init-val (cond ((string= cpp-type "float")  "1.0f")
+                               ((string= cpp-type "double") "1.0")
+                               (t "1"))))
+          (format stream "    ~a = ~a;~%" field-path init-val)))))))

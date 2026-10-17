@@ -1185,6 +1185,18 @@ from a fixed !100."
   "Endeavor 130: profile name (string) requested via --hardware-profile, or NIL.
    Resolved lazily against *hardware-profiles* by active-hardware-profile.")
 
+(defun %drop-terminal-io-log-appender ()
+  "Removes the root logger's plain CONSOLE-APPENDER, leaving the stderr one (BUG 122).
+   log4cl's `(log:config :sane :stream S level)` installs TWO root appenders: :SANE's console
+   appender, which writes to the dynamic value of *TERMINAL-IO*, and a TRICKY-CONSOLE-APPENDER on S.
+   In the crisp-compile executable *TERMINAL-IO* is the process's stdout, so above --log-level=off
+   every log line also landed in the IR stream (measured: 303 <INFO> lines on BOTH stdout and stderr
+   for 001/01).  Under `sbcl --script` *TERMINAL-IO* is not stdout, which is why no in-process run
+   ever showed it.  Logging belongs on stderr only."
+  (dolist (a (copy-list (log4cl:logger-appenders log4cl:*root-logger*)))
+    (when (eq (type-of a) 'log4cl:console-appender)
+      (log4cl:remove-appender log4cl:*root-logger* a))))
+
 (defun %reset-gensym-counter ()
   "Sets *GENSYM-COUNTER* to *GENSYM-COUNTER-BASE*, so gensym-derived names in the output are the
    same for every build and every position in a multi-compilation run (see src/globals.lisp).
@@ -1222,7 +1234,9 @@ from a fixed !100."
 
   (if (eq log-level :off)
       (log:config :off)
-      (log:config :sane :stream *error-output* log-level))
+      (progn
+        (log:config :sane :stream *error-output* log-level)
+        (%drop-terminal-io-log-appender)))
   ;; Reproducible output: every compilation numbers its gensyms from the same base.
   (%reset-gensym-counter)
 

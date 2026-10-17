@@ -114,76 +114,30 @@ def sh(cmd, **kw):
     return subprocess.run([str(c) for c in cmd], **kw)
 
 # --------------------------------------------------------------------------------------
-# §5 of plan/benchmark-harness.md — verification does not scale, and it is the real ceiling.
+# §5 of plan/benchmark-harness.md -- every benchmark child gets a WALL TIMEOUT.  Verification is not
+# the only way to hang: a deadlocking kernel (cluster/barrier chapters have a known padded-grid
+# failure mode) would otherwise wedge the whole sweep with no diagnostic.  A timeout turns that into
+# one lost point.
 #
-# The generated auto-bench harness validates with a HOST reference matmul: an OpenMP'd but
-# cache-hostile triple loop, O(N^3).  At N=16384 that is 8.8 TFLOP (~a minute); at N=32768 it is
-# 7.0e13 FLOP (many minutes) plus three 4.3 GB host allocations.  The NVIDIA canonical size list
-# goes to 32768 where Intel's stops at 16384, which is why this bit on an H100 and not on BMG.
-#
-# The harness prints its BENCH line BEFORE the reference check.  So we do not need a compiler-side
-# "bench without verify" flag (there isn't one -- --mma-bench implies --mma-test): we stream the
-# child's output, and above VERIFY_MAX_N we stop at BENCH and terminate it.  Correctness is still
-# established at every size <= VERIFY_MAX_N, which is the split §5 asks for -- the tile loops are
-# the same code at 16384 as at 2048.
-#
-# Every benchmark child also gets a WALL TIMEOUT.  Verification is not the only way to hang: a
-# deadlocking kernel (cluster/barrier chapters have a known padded-grid failure mode) would
-# otherwise wedge the whole sweep with no diagnostic.  A timeout turns that into one lost point.
+# (Until 2026-10-16 this section also managed the GENERATED auto-bench harness -- crisp-hoist-cuda /
+# crisp-hoist-l0 --mma-bench: its O(N^3) host reference was cut short at the BENCH line above
+# VERIFY_MAX_N = 2048, and its baked-in WARMUP/ITERS were rewritten per size.  That harness was
+# retired; every harness run here now spot-checks and emits JSON.)
 # --------------------------------------------------------------------------------------
-VERIFY_MAX_N   = 2048     # full host-reference verification at or below this size
-# 300 s, not 900.  The 900 was sized for the CUDA auto-bench's O(N^3) HOST REFERENCE -- which never
-# runs above VERIFY_MAX_N anyway, because the child is killed at its BENCH line -- and was then
-# inherited by harnesses that only spot-check (< 1 s at N=16384).  Of 3,152 points recorded on
+# 300 s, not 900.  The 900 was sized for the retired CUDA auto-bench's O(N^3) HOST REFERENCE, and
+# was then inherited by harnesses that only spot-check (< 1 s at N=16384).  Of 3,152 points recorded on
 # every device before 2026-09-12 the longest timed loop was 148 s; none exceeded 300.  What 900
 # actually bought, on BMG on 2026-09-12, was two chap0_naive points at 16384 that each waited the
 # full 15 minutes and recorded nothing.  SizePacer below now declines such points up front.
 BENCH_TIMEOUT  = 300.0    # seconds per benchmark binary, verification included
-_BENCH_RE      = re.compile(r'^\s*BENCH\b')
 
-# §3 of plan/benchmark-harness.md, for the AUTO-BENCH path specifically.
-#
-# scaled_counts() bounds the timed loop for competitor binaries, which take warmup/iters as argv.
-# The generated auto-bench harness does NOT: crisp-hoist-cuda bakes `const int WARMUP = 20,
-# ITERS = 100;` into the .cu and --mma-bench has no flag to override it.  So every auto-bench
-# point ran 120 iterations regardless of size -- for chap0_naive (no tensor cores, ~8 s/iter at
-# 16384) that is ~16 minutes for ONE point, and ~2.2 hours at 32768.  That, not verification, is
-# what made the H100 sweep look hung.
-#
-# The runner already rewrites this .cu to repoint its PTX path, so the counts are rewritten in the
-# same pass.  No compiler change, and the harness's GFLOPS formula divides by ITERS so it stays
-# consistent with whatever we substitute.
-_COUNTS_RE = re.compile(r'const\s+int\s+WARMUP\s*=\s*\d+\s*,\s*ITERS\s*=\s*\d+\s*;')
-_L0_WARMUP_RE = re.compile(r'_w\s*<\s*\d+\s*;')
-_L0_ITERS_RE  = re.compile(r'const\s+int\s+BENCH_ITERS\s*=\s*\d+\s*;')
+def run_bench_proc(cmd, *, timeout: float = BENCH_TIMEOUT, cwd=None, env=None):
+    """Run a benchmark binary, streaming stdout, under a wall timeout.
 
-def _rewrite_bench_counts(txt: str, n: int, base_warmup: int = 20, base_iters: int = 100,
-                          counts=None) -> str:
-    # COUNTS, when given, are the SizePacer's -- so the generated harness runs exactly what the
-    # sweep decided and records, instead of recomputing its own.
-    w, it = counts if counts else scaled_counts(base_warmup, base_iters, n)
-    new, k = _COUNTS_RE.subn(f"const int WARMUP = {w}, ITERS = {it};", txt)
-    if k == 0:
-        # The GENERATED L0 harness spells them differently: a literal warmup loop bound and a
-        # BENCH_ITERS constant.  Its warmup was hardcoded to 20 whatever the sweep asked for.
-        new, kw = _L0_WARMUP_RE.subn(f"_w < {w};", txt)
-        new, ki = _L0_ITERS_RE.subn(f"const int BENCH_ITERS = {it};", new)
-        k = kw + ki
-    if k == 0:
-        print(f"  (note: could not rewrite WARMUP/ITERS in the generated harness for N={n}; "
-              f"it will use the baked-in 20/100)", file=sys.stderr)
-    return new
-
-def should_full_verify(n: int) -> bool:
-    """Full host-reference verification only for N <= VERIFY_MAX_N (§5)."""
-    return n <= VERIFY_MAX_N
-
-def run_bench_proc(cmd, *, verify: bool, timeout: float = BENCH_TIMEOUT, cwd=None, env=None):
-    """Run a benchmark binary, streaming stdout.
-
-    Returns (output_text, status) where status is one of "ok", "early" (stopped at BENCH by
-    design), "timeout", or "error".  stderr is folded into stdout so a parse failure still shows
-    the child's complaint.
+    Returns (output_text, status) where status is one of "ok", "timeout", or "error".  stderr is
+    folded into stdout so a parse failure still shows the child's complaint.  (Its "early" status --
+    stop at a BENCH line, skip the host reference -- served only the generated harness, retired
+    2026-10-16.)
     """
     import threading
     cmd = [str(c) for c in cmd]
@@ -194,15 +148,12 @@ def run_bench_proc(cmd, *, verify: bool, timeout: float = BENCH_TIMEOUT, cwd=Non
     except OSError as e:
         return (f"failed to launch: {e}", "error")
 
-    lines, state = [], {"early": False}
+    lines = []
 
     def _reader():
         try:
             for line in p.stdout:
                 lines.append(line)
-                if not verify and _BENCH_RE.match(line):
-                    state["early"] = True
-                    return          # got the number; the host reference is not worth waiting for
         except Exception:
             pass
 
@@ -211,7 +162,7 @@ def run_bench_proc(cmd, *, verify: bool, timeout: float = BENCH_TIMEOUT, cwd=Non
     t.join(timeout)
     timed_out = t.is_alive()
 
-    if timed_out or state["early"]:
+    if timed_out:
         p.kill()
     try:
         p.wait(timeout=10)
@@ -222,8 +173,6 @@ def run_bench_proc(cmd, *, verify: bool, timeout: float = BENCH_TIMEOUT, cwd=Non
     out = "".join(lines)
     if timed_out:
         return (out, "timeout")
-    if state["early"]:
-        return (out, "early")
     return (out, "ok" if p.returncode == 0 else "error")
 
 # §4 of plan/benchmark-harness.md, adaptively rather than as a per-chapter table: see SizePacer.
@@ -500,7 +449,6 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
     # Popen raise rather than run.  A competitor binary lives in its chapter dir and any relative
     # file it wants is there too.
     out, status = run_bench_proc([path, M, N, K, warmup, iters],
-                                 verify=True,          # competitor harnesses emit JSON, not BENCH
                                  timeout=bench_timeout_for(N),
                                  cwd=str(Path(path).parent), env=env)
     if status != "ok":
@@ -597,213 +545,6 @@ def run_sweep(chapter: str, exe_path: str, competitor_name: str, sizes: list, wa
         results=results
     )
 
-def _hoist_cuda_bin(crisp_compiler):
-    p = Path(crisp_compiler)
-    return str(p.parent / ("crisp-hoist-cuda" + (".exe" if p.suffix == ".exe" else "")))
-
-def run_crisp_autobench(src_path: Path, grid_tile: str, M: int, N: int, K: int, crisp_compiler: str,
-                        prec_flags=(), nvcc_math=(), counts=None):
-    chap_dir = src_path.parent
-    base = src_path.stem
-    ptx = chap_dir / f"{base}.ptx"
-    metacrisp = chap_dir / f"{base}_matmul.metacrisp"
-    if not (ptx.exists() and metacrisp.exists()):
-        sh([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)], check=True)
-        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)], check=True)
-    if not metacrisp.exists():
-        print(f"autobench: no metacrisp {metacrisp}", file=sys.stderr); return None
-    sh([_hoist_cuda_bin(crisp_compiler), f"--mma-bench={M},{N},{K}", f"--grid-tile={grid_tile}", str(metacrisp)])
-    cu = chap_dir / f"{base}_matmul_CUDA.cu"
-    if not cu.exists():
-        print(f"autobench: no bench .cu {cu}", file=sys.stderr); return None
-    txt = cu.read_text()
-    txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.ptx"', '"' + str(ptx).replace("\\", "/") + '"', txt)
-    txt = _rewrite_bench_counts(txt, N, counts=counts)
-    cu.write_text(txt)
-    exe = chap_dir / f"{base}_bench"
-    c = sh(["nvcc", "-O3", "-arch=sm_90a", "-Xcompiler", "-fopenmp", *nvcc_math, str(cu), "-o", str(exe), "-lcuda"], capture_output=True, text=True)
-    if c.returncode != 0:
-        print("autobench nvcc failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
-    verify = should_full_verify(N)
-    out, status = run_bench_proc([str(exe)], verify=verify, timeout=bench_timeout_for(N))
-    if status == "timeout":
-        print(f"  ! autobench {N}^3 TIMED OUT after {bench_timeout_for(N):.0f}s — skipping point", file=sys.stderr)
-        return None
-    m = re.search(r'BENCH\s+matmul\s+\d+x\d+x\d+:\s*([\d.]+)\s*GFLOPS\s*\(([\d.eE+-]+)\s*ms/iter\)', out)
-    if not m:
-        print(f"autobench parse failed (status={status}):\n" + out[-800:], file=sys.stderr); return None
-    # Above VERIFY_MAX_N the child is terminated before its host reference runs, so there is no
-    # MMA_CORRECT to find.  Report correctness as None (unknown) rather than False, so a caller
-    # cannot mistake "not checked at this size" for "checked and wrong".
-    return {"gflops": float(m.group(1)), "kernel_median_us": float(m.group(2)) * 1000.0,
-            "correct": ("MMA_CORRECT" in out) if verify else None,
-            "verified": verify,
-            "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
-
-def run_autobench_sweep(chapter, src_path, grid_tile, comp_name, sizes, warmup, iters,
-                        precision, ftz, dev_c_ms, crisp_compiler):
-    meta = _apply_hw(create_metadata())
-    prec_flags = [f"--math-precision={precision}",
-                  f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-    nvcc_math = nvcc_math_flags(precision, ftz)
-    src = Path(src_path)
-    stale = src.parent / f"{src.stem}_matmul.metacrisp"
-    if stale.exists():
-        stale.unlink()
-    results = []
-    pacer = SizePacer(chapter, comp_name, warmup, iters)
-    for s in sizes_for_chapter(chapter, sizes):
-        S = int(s)
-        if pacer.announce_skip(S): break
-        w, it = pacer.counts(S)
-        _t0 = time.time()
-        out = run_crisp_autobench(src, grid_tile, S, S, S, crisp_compiler, prec_flags, nvcc_math,
-                                  counts=(w, it))
-        _el = time.time() - _t0
-        if not out:
-            pacer.failed(S, _el)
-            continue
-        pacer.record(S, _el, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
-        # correct is None when the size is above VERIFY_MAX_N and the host reference was
-        # deliberately not run (§5).  Only a MEASURED failure discards the point; "not checked"
-        # must not be read as "wrong", or every large size would silently vanish from the report.
-        if out.get("correct") is False:
-            print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
-            continue
-        results.append(SweepPoint(
-            # The counts that actually RAN.  This recorded the base 20/100 while the generated
-            # harness ran its size-scaled counts, so every auto-bench point misreported them.
-            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
-                           "verified": bool(out.get("verified", True))},
-            metrics=BenchmarkMetrics(
-                compile_time=CompileTimeMetrics(device_compile_ms=dev_c_ms,
-                                                all_compile_ms=dev_c_ms + out.get("driver_jit_ms", 0.0)),
-                runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
-                                       kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
-                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0),
-                verification=_verif(out))))
-    return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
-                          precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
-
-def _hoist_l0_bin(crisp_compiler):
-    p = Path(crisp_compiler)
-    return str(p.parent / ("crisp-hoist-l0" + (".exe" if p.suffix == ".exe" else "")))
-
-def run_l0_autobench(src_path: Path, M: int, N: int, K: int, warmup: int, iters: int, crisp_compiler: str,
-                     prec_flags=(), cxx_flags=()):
-    chap_dir = src_path.parent
-    base = src_path.stem
-    spv = chap_dir / f"{base}.spv"
-    metacrisp = chap_dir / f"{base}_matmul.metacrisp"
-    compile_ms = 0.0
-    hoist_ms = 0.0
-    if not (spv.exists() and metacrisp.exists()):
-        compile_ms = time_compile([crisp_compiler, "--ir-target=spv", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)], name=src_path.stem)
-        hoist_ms = time_compile([crisp_compiler, "--hoist=l0", *hw_profile_flags(), *prec_flags, "--log-level=off", str(src_path)])
-    if not metacrisp.exists():
-        print(f"autobench-l0: no metacrisp {metacrisp}", file=sys.stderr); return None
-    
-    sh([_hoist_l0_bin(crisp_compiler), f"--mma-test={M},{N},{K}", f"--mma-bench={iters}", str(metacrisp)])
-    cpp = chap_dir / f"{base}_matmul_L0.cpp"
-    if not cpp.exists():
-        print(f"autobench-l0: no bench .cpp {cpp}", file=sys.stderr); return None
-    
-    txt = cpp.read_text()
-    txt = re.sub(r'"[^"]*' + re.escape(base) + r'\.spv"', '"' + str(spv).replace("\\", "/") + '"', txt)
-    txt = _rewrite_bench_counts(txt, N, counts=(warmup, iters))
-    cpp.write_text(txt)
-    
-    exe = chap_dir / f"{base}_bench_l0"
-    cxx, link_pre, link_post = _resolve_cxx_and_l0_link()
-    c = sh([cxx, "-O3", *cxx_flags, str(cpp), *link_pre, "-o", str(exe), *link_post], capture_output=True, text=True)
-    if c.returncode != 0:
-        print("autobench-l0 build failed:\n" + (c.stderr or "")[-1200:], file=sys.stderr); return None
-    
-    # VERIFY AT EVERY SIZE.  should_full_verify() exists for the CUDA generated harness, whose
-    # reference is a full O(N^3) host loop and is killed at its BENCH line above VERIFY_MAX_N.  The
-    # L0 generated harness never had that cost: it checked a 64x64 corner, and now a strided 64x64
-    # sample (overlays/hoist-l0), under a second at 16384.  Applying the CUDA rule here recorded
-    # chap1..chap3 on BMG as UNVERIFIED from 4096 up, for no saving at all.
-    verify = True
-    out, status = run_bench_proc([str(exe)], verify=verify, timeout=bench_timeout_for(N))
-    if status == "timeout":
-        print(f"  ! autobench-l0 {N}^3 TIMED OUT after {bench_timeout_for(N):.0f}s — skipping point", file=sys.stderr)
-        return None
-    m = re.search(r'BENCH\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s*GFLOPS\s*\((\d+)\s*iters,\s*([\d.eE+-]+)\s*s\)', out)
-    if not m:
-        print(f"autobench-l0 parse failed (status={status}):\n" + out[-800:], file=sys.stderr); return None
-    gflops = float(m.group(4))
-    secs = float(m.group(6))
-    iters_ran = int(m.group(5))
-    mm = re.search(r'median_us=([\d.eE+-]+)', out)
-    k_us = float(mm.group(1)) if mm else (secs / iters_ran) * 1e6
-    method = re.search(r'method=(\w+)', out)
-    return {"gflops": gflops, "kernel_median_us": k_us,
-            "timing_method": method.group(1) if method else "batched_submit_legacy",
-            "compile_ms": compile_ms, "hoist_ms": hoist_ms,
-            "correct": ("MMA_CORRECT" in out) if verify else None,
-            "verified": verify,
-            "wall_time_ms": 0.0, "driver_jit_ms": 0.0}
-
-def run_l0_autobench_sweep(chapter, src_path, comp_name, sizes, warmup, iters,
-                           precision, ftz, dev_c_ms, crisp_compiler):
-    meta = _apply_hw(create_metadata())
-    prec_flags = [f"--math-precision={precision}",
-                  f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-    src = Path(src_path)
-    stale = src.parent / f"{src.stem}_matmul.metacrisp"
-    if stale.exists():
-        stale.unlink()
-    results = []
-    measured_c_ms = 0.0
-    measured_hoist_ms = 0.0
-    pacer = SizePacer(chapter, comp_name, warmup, iters)
-    for s in sizes_for_chapter(chapter, sizes):
-        S = int(s)
-        # (A hard `if S > 8192: continue` stood here from the 2026-08-22 reorg with no stated
-        #  reason.  It kept half the BMG section-1 ladder from ever reaching 16384, which the
-        #  ground rules require.  Time is SizePacer's job now; memory is sizes_for_chapter's.)
-        if pacer.announce_skip(S): break
-        w, it = pacer.counts(S)
-        _t0 = time.time()
-        out = run_l0_autobench(src, S, S, S, w, it, crisp_compiler, prec_flags, [])
-        _el = time.time() - _t0
-        if not out:
-            pacer.failed(S, _el)
-            continue
-        pacer.record(S, _el, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
-        if out.get("compile_ms", 0.0) > 0.0:
-            measured_c_ms = out["compile_ms"]
-            measured_hoist_ms = out.get("hoist_ms", 0.0)
-        # correct is None when the size is above VERIFY_MAX_N and the host reference was
-        # deliberately not run (§5).  Only a MEASURED failure discards the point; "not checked"
-        # must not be read as "wrong", or every large size would silently vanish from the report.
-        if out.get("correct") is False:
-            print(f"  ! {chapter} ({comp_name}) {S}^3: NOT MMA_CORRECT — skipping point", file=sys.stderr)
-            continue
-        results.append(SweepPoint(
-            configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
-                           "verified": bool(out.get("verified", True))},
-            metrics=BenchmarkMetrics(
-                # Driver JIT added for the same reason as the fixed-sweep path below: this total is
-                # compile-to-native.  The autobench harness is hoist-generated and does not report
-                # driver_jit_ms today, so this contributes 0 there and becomes correct for free if
-                # that harness ever does -- rather than being a second place to forget.
-                compile_time=CompileTimeMetrics(device_compile_ms=measured_c_ms or dev_c_ms,
-                                                all_compile_ms=((measured_c_ms + measured_hoist_ms) or dev_c_ms)
-                                                                + out.get("driver_jit_ms", 0.0)),
-                runtime=RuntimeMetrics(wall_time_ms=out.get("wall_time_ms", 0.0),
-                                       kernel_execution_ms=out.get("kernel_median_us", 0.0) / 1000.0),
-                throughput=ThroughputMetrics(tflops=out.get("gflops", 0.0) / 1000.0),
-                verification=_verif(out))))
-    if measured_c_ms > 0.0:
-        for p in results:
-            if p.metrics.compile_time.device_compile_ms == 0.0:
-                p.metrics.compile_time.device_compile_ms = measured_c_ms
-                p.metrics.compile_time.all_compile_ms = measured_c_ms + measured_hoist_ms
-    return BenchmarkSweep(run_metadata=meta, benchmark_suite="matmul", chapter=chapter, competitor=comp_name,
-                          precision=precision, denormal_handling="ftz" if ftz else "preserve", results=results)
-
 def _resolve_cxx_and_l0_link():
     if _platform.system() == "Windows":
         clang  = os.environ.get("CRISP_CLANGXX",
@@ -819,7 +560,7 @@ def run_l0_bin(path, M, N, K, warmup, iters, env_extra=None):
     if env_extra: env.update(env_extra)
     # Timeout only: this harness emits JSON on completion rather than a BENCH line, so there is
     # nothing to stop early at -- but it still must not be able to wedge the sweep.
-    out, status = run_bench_proc([path, M, N, K, warmup, iters], verify=True,
+    out, status = run_bench_proc([path, M, N, K, warmup, iters],
                                  timeout=bench_timeout_for(N), env=env)
     if status != "ok":
         print(f"  ! {Path(path).name} {M}x{N}x{K}: {status}\n{out[-600:]}", file=sys.stderr)
@@ -899,15 +640,78 @@ def l0_fixture_env(crisp_src, metacrisp):
     if km:
         env["CRISP_MATMUL_KERNEL"] = km.group(1)
 
-    # SLM scratch tensors are passed as LEADING kernel arguments, so A/B/C are NOT at 0/9/18.
-    # The fixture binds the three global tensors at fixed offsets and has no way to allocate a
-    # group-local argument (which needs zeKernelSetArgumentValue(i, bytes, nullptr) plus extents
-    # taken from the kernel source).  Rather than bind the global tensors onto the SLM slots -- which
-    # produced a nonsense 135848 GFLOPS before verification rejected it -- say so and let the caller
-    # use the generated harness, which does handle these kernels.
-    env["_fixture_unsupported"] = ("scratch/SLM tensor arguments"
-                                   if "ADDRESS-SPACE LOCAL" in meta.upper() else "")
+    # SLM scratch tensors are passed as LEADING kernel arguments, so A/B/C are NOT at 0/9/18.  The
+    # layout comes from the metacrisp by the SAME rules the CUDA fixture uses (_fixture_arg_layout):
+    # CRISP_MATMUL_ARG_A/B/C place the globals and CRISP_MATMUL_SCRATCH lists the tiles, which the
+    # fixture allocates as group-local arguments (zeKernelSetArgumentValue(i, bytes, nullptr)).
+    # Until 2026-10-16 the fixture could not do that, so every SLM kernel (chapters 1-3) was measured
+    # on the generated per-kernel harness instead.  Binding the globals onto the SLM slots is what
+    # produced a nonsense 135848 GFLOPS before verification rejected it -- so a scratch tile the
+    # layout cannot size (no literal :size-expr) still refuses rather than guesses.
+    layout, scratch_sec = _fixture_arg_layout(meta)
+    env.update({k: v for k, v in layout.items() if k != "CRISP_MATMUL_ARGC"})   # L0 needs no ARGC
+    n_local = len(re.findall(r":address-space\s+:local", scratch_sec, re.I))
+    n_bound = len([t for t in layout.get("CRISP_MATMUL_SCRATCH", "").split(",") if t])
+    env["_fixture_unsupported"] = (f"{n_local - n_bound} scratch tile(s) without a literal :size-expr"
+                                   if n_local > n_bound else "")
     return env
+
+
+def _fixture_arg_layout(meta):
+    """Argument layout of a matmul kernel, read from its metacrisp, for BOTH reviewed fixtures.
+
+    Returns (layout, scratch_sec): layout holds CRISP_MATMUL_ARG_A/B/C, CRISP_MATMUL_ARGC and
+    CRISP_MATMUL_SCRATCH ("idx:ext0:ext1[:ext2],..." for every scratch tile with a literal
+    :size-expr); scratch_sec is the :implicit-params text, which the CUDA fixture also reads for
+    its tensormaps.  Moved out of cuda_fixture_env unchanged (refactor-oct, 2026-10-16) so the L0
+    fixture reads scratch tiles by the same rules instead of a second copy of them.
+    """
+    env = {}
+    # --- argument layout, read from the recorded :range values -------------------------------
+    # ANCHORED TO THE SECTIONS, not matched globally.  A single non-greedy regex over the whole
+    # metacrisp silently matched `(:name "H100" ...)` from the hardware-profile block and ran on
+    # to the first :range it found -- producing A's range under the profile's name.  It happened
+    # to yield the right numbers, which is worse than failing: the next kernel would have been
+    # bound to whatever the profile block landed on.
+    def _entries(section):
+        return [(m.group(1), int(m.group(2)), int(m.group(3)), m.group(0))
+                for m in re.finditer(
+                    r':name\s+"([^"]+)"(?:(?!:name).)*?:range\s+\((\d+)\s+(\d+)\)',
+                    section, re.S)]
+
+    ip = meta.find(":implicit-params")
+    # The declared params live under :declared-signature.  There is no :params key -- and note
+    # ":implicit-params" CONTAINS ":params" as a substring, so searching for that would silently
+    # locate the scratch section and report zero declared parameters.
+    pp = meta.find(":declared-signature")
+    declared_sec = meta[pp:ip] if (pp >= 0 and ip > pp) else (meta[pp:] if pp >= 0 else "")
+    scratch_sec  = meta[ip:] if ip >= 0 else ""
+
+    declared = _entries(declared_sec)
+    scratch  = _entries(scratch_sec)
+
+    if len(declared) >= 3:
+        env["CRISP_MATMUL_ARG_A"] = str(declared[0][1])
+        env["CRISP_MATMUL_ARG_B"] = str(declared[1][1])
+        env["CRISP_MATMUL_ARG_C"] = str(declared[2][1])
+    allr = declared + scratch
+    if allr:
+        env["CRISP_MATMUL_ARGC"] = str(max(e for _, _, e, _ in allr) + 1)
+
+    specs = []
+    for name, st, _e, _blob in scratch:
+        seg = scratch_sec[scratch_sec.find('"' + name + '"'):]
+        # RANK 2 OR 3.  A ring is rank+1 (`(tensor bfloat16 3 :local ...)`, :size-expr
+        # (slots rows cols)) and flattens to TWELVE arguments rather than nine, so a parser that
+        # only matched a 2-tuple silently bound nothing for chapters 5 and 6 -- the two rungs
+        # whose whole point is the ring.
+        sm = re.search(r":size-expr\s+\((\d+)\s+(\d+)(?:\s+(\d+))?\)", seg[:400])
+        if sm:
+            dims = [g for g in sm.groups() if g]
+            specs.append(":".join([str(st)] + dims))
+    if specs:
+        env["CRISP_MATMUL_SCRATCH"] = ",".join(specs)
+    return env, scratch_sec
 
 
 def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
@@ -967,36 +771,8 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
     if km:
         env["CRISP_MATMUL_KERNEL"] = km.group(1)
 
-    # --- argument layout, read from the recorded :range values -------------------------------
-    # ANCHORED TO THE SECTIONS, not matched globally.  A single non-greedy regex over the whole
-    # metacrisp silently matched `(:name "H100" ...)` from the hardware-profile block and ran on
-    # to the first :range it found -- producing A's range under the profile's name.  It happened
-    # to yield the right numbers, which is worse than failing: the next kernel would have been
-    # bound to whatever the profile block landed on.
-    def _entries(section):
-        return [(m.group(1), int(m.group(2)), int(m.group(3)), m.group(0))
-                for m in re.finditer(
-                    r':name\s+"([^"]+)"(?:(?!:name).)*?:range\s+\((\d+)\s+(\d+)\)',
-                    section, re.S)]
-
-    ip = meta.find(":implicit-params")
-    # The declared params live under :declared-signature.  There is no :params key -- and note
-    # ":implicit-params" CONTAINS ":params" as a substring, so searching for that would silently
-    # locate the scratch section and report zero declared parameters.
-    pp = meta.find(":declared-signature")
-    declared_sec = meta[pp:ip] if (pp >= 0 and ip > pp) else (meta[pp:] if pp >= 0 else "")
-    scratch_sec  = meta[ip:] if ip >= 0 else ""
-
-    declared = _entries(declared_sec)
-    scratch  = _entries(scratch_sec)
-
-    if len(declared) >= 3:
-        env["CRISP_MATMUL_ARG_A"] = str(declared[0][1])
-        env["CRISP_MATMUL_ARG_B"] = str(declared[1][1])
-        env["CRISP_MATMUL_ARG_C"] = str(declared[2][1])
-    allr = declared + scratch
-    if allr:
-        env["CRISP_MATMUL_ARGC"] = str(max(e for _, _, e, _ in allr) + 1)
+    layout, scratch_sec = _fixture_arg_layout(meta)
+    env.update(layout)
 
     # --- TMA descriptors ----------------------------------------------------------------
     # Chapters 4/5/6 take CUtensorMap descriptors as their FIRST kernel arguments.  Each is
@@ -1039,19 +815,6 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
             specs.append(f"{st}:{describes}:{b0}:{b1}:{sw}:{orient}")
         env["CRISP_MATMUL_TENSORMAP"] = ",".join(specs)
 
-    specs = []
-    for name, st, _e, _blob in scratch:
-        seg = scratch_sec[scratch_sec.find('"' + name + '"'):]
-        # RANK 2 OR 3.  A ring is rank+1 (`(tensor bfloat16 3 :local ...)`, :size-expr
-        # (slots rows cols)) and flattens to TWELVE arguments rather than nine, so a parser that
-        # only matched a 2-tuple silently bound nothing for chapters 5 and 6 -- the two rungs
-        # whose whole point is the ring.
-        sm = re.search(r":size-expr\s+\((\d+)\s+(\d+)(?:\s+(\d+))?\)", seg[:400])
-        if sm:
-            dims = [g for g in sm.groups() if g]
-            specs.append(":".join([str(st)] + dims))
-    if specs:
-        env["CRISP_MATMUL_SCRATCH"] = ",".join(specs)
 
     return env
 
@@ -1175,7 +938,11 @@ def run_l0_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, warmu
         pacer.record(S, _el, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
         results.append(SweepPoint(
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
-                           "verified": bool(out.get("verified", True))},
+                           "verified": bool(out.get("verified", True)),
+                           # PROVENANCE: which apparatus measured this point.  Since 2026-10-16 every
+                           # Crisp matmul point is the reviewed fixture; recorded so a reader never
+                           # has to infer it (the generated harness left no trace in result files).
+                           "harness": "fixture"},
             metrics=BenchmarkMetrics(
                 # all_compile_ms is compile-to-NATIVE, so it must include the driver JIT.  It was
                 # hardcoded to dev_c_ms -- SPIR-V emission only -- which made Crisp's "total build"
@@ -1318,7 +1085,11 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
         pacer.record(S, time.time() - _t0, w, it, out.get("kernel_median_us", 0.0) / 1000.0)
         results.append(SweepPoint(
             configuration={"m": S, "n": S, "k": S, "warmup": w, "iters": it,
-                           "verified": bool(out.get("verified", True))},
+                           "verified": bool(out.get("verified", True)),
+                           # PROVENANCE: which apparatus measured this point.  Since 2026-10-16 every
+                           # Crisp matmul point is the reviewed fixture; recorded so a reader never
+                           # has to infer it (the generated harness left no trace in result files).
+                           "harness": "fixture"},
             metrics=BenchmarkMetrics(
                 compile_time=CompileTimeMetrics(
                     device_compile_ms=dev_c_ms,
@@ -1510,7 +1281,7 @@ def main():
             "only the 64-bit matmul ladder runs at ieee+preserve" if not ftz else
             "no matmul runs at ieee+FTZ (that pass is for scalar suites)"), flush=True)
 
-        def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, crisp_grid_tile=None, use_fixture=False):
+        def run_target(chapter, source_name, bin_name, comp_name, flags, is_sycl=False, is_cublas=False, is_crisp=False, use_fixture=False):
             if _skip(chapter):
                 return
             src_path = HERE / chapter / source_name
@@ -1522,7 +1293,7 @@ def main():
             bin_path = HERE / chapter / bin_name
             try:
                 return _run_target_inner(chapter, comp_name, flags, is_sycl, is_cublas,
-                                         is_crisp, crisp_grid_tile, src_path, bin_path,
+                                         is_crisp, src_path, bin_path,
                                          use_fixture)
             except ContenderBuildError as e:
                 # A missing peer library (third_party/ not provisioned) used to raise
@@ -1537,7 +1308,7 @@ def main():
                 return
 
         def _run_target_inner(chapter, comp_name, flags, is_sycl, is_cublas,
-                              is_crisp, crisp_grid_tile, src_path, bin_path,
+                              is_crisp, src_path, bin_path,
                               use_fixture=False):
             dev_c_ms = 0.0
             all_c_ms = 0.0
@@ -1551,25 +1322,24 @@ def main():
                 dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *hw_profile_flags(), *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
                 all_c_ms = dev_c_ms
                 if use_fixture:
-                    # PREFER THE REVIEWED FIXTURE.  The generated autobench harness is 16-bit
-                    # broken on CUDA (raw-bit-pattern fill, float readback), which is why the
+                    # THE REVIEWED FIXTURE.  (The generated harness, retired 2026-10-16, was 16-bit
+                    # broken on CUDA -- raw-bit-pattern fill, float readback -- which is why the
                     # first Crisp 16-bit attempt produced zero data points while every other
-                    # contender in the same section produced numbers.
+                    # contender in the same section produced numbers.)
                     _hb = HERE / "crisp" / "matmul_crisp"
                     sweep = run_cuda_fixed_sweep(chapter, src_path, comp_name, _hb, sizes,
                                                  a.warmup, a.iters, prec, ftz, crisp_compiler)
-                    # Fall back when there is no VERIFIED point, not merely no point: a kernel the
-                    # fixture cannot bind correctly records unverified points, and those are dropped
-                    # by the report -- which would silently lose the row instead of falling back.
+                    # NO VERIFIED POINT IS A MISSING ROW, SAID LOUDLY.  This used to fall back to the
+                    # generated per-kernel harness (crisp-hoist-cuda --mma-bench), i.e. a number from a
+                    # different apparatus; that harness was retired on 2026-10-16.  The sweep is still
+                    # saved -- its unverified points are the record of what failed, and the report
+                    # drops them.
                     if not any(pt.configuration.get("verified") for pt in sweep.results):
-                        print(f"  NOTE: {comp_name} ({chapter}) produced no points through the "
-                              f"fixture (or none verified); falling back to the generated harness.", file=sys.stderr)
-                        sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile or "64,64",
-                                                    comp_name, sizes, a.warmup, a.iters, prec, ftz,
-                                                    dev_c_ms, crisp_compiler)
+                        print(f"  ERROR: NO ROW for {comp_name} ({chapter}) -- the fixture produced no "
+                              f"verified point.", file=sys.stderr)
                     _saved = sweep.save(out_dir)
                     print(f"Saved {chapter} ({comp_name}) fixture sweep to {_saved.parent}")
-                    # RETURN, like the autobench branch below.  Without it control falls through
+                    # RETURN.  Without it control falls through
                     # to the generic runner, which re-invokes the SAME fixture binary with only
                     # CRISP_MATMUL_PTX set -- no ARGC, no ARG_A/B/C, no SCRATCH -- so it defaults
                     # to a 27-argument layout with A/B/C at 0/9/18 and the launch is rejected
@@ -1577,14 +1347,12 @@ def main():
                     # good result this branch just saved, which is why the Crisp 16-bit rows read
                     # as zero-point failures while every other contender was fine.
                     return
-                elif crisp_grid_tile:
-                    sweep = run_autobench_sweep(chapter, src_path, crisp_grid_tile, comp_name, sizes,
-                                                a.warmup, a.iters, prec, ftz, dev_c_ms, crisp_compiler)
-                    _saved = sweep.save(out_dir)
-                    print(f"Saved {chapter} ({comp_name}) auto-bench sweep to {_saved.parent}")
-                    return
-                exe_path = str(HERE / "crisp" / "matmul_crisp")
-                env_ext = {"CRISP_MATMUL_PTX": str(bin_path)}
+                # Every Crisp target goes through the reviewed fixture (use_fixture=True at each call
+                # site).  The generic runner below cannot bind a Crisp kernel's arguments -- see the
+                # RETURN note above -- so refuse rather than record a nonsense row.
+                print(f"  ERROR: NO ROW for {comp_name} ({chapter}) -- Crisp targets must use the "
+                      f"fixture (use_fixture=True).", file=sys.stderr)
+                return
             else:
                 compiler = "icpx" if is_sycl else "nvcc"
                 if is_sycl and not shutil.which("icpx"):
@@ -1607,7 +1375,7 @@ def main():
             _saved = sweep.save(out_dir)
             print(f"Saved {chapter} ({comp_name}) sweep to {_saved.parent}")
 
-        def run_l0_crisp(chapter, source_name, comp_name="Crisp", use_autobench=False):
+        def run_l0_crisp(chapter, source_name, comp_name="Crisp"):
             if _skip(chapter):
                 return
             src = HERE / chapter / source_name
@@ -1617,14 +1385,14 @@ def main():
                 print(f"Skipping {comp_name} ({chapter}) — {crisp_compiler} not found."); return
             
             try:
-                # PREFER THE FIXTURE whenever it is built.  `use_autobench` used to select the
-                # per-kernel generated harness, which is both the thing measured and the apparatus
-                # measuring it -- it silently dropped contenders (chap4/chap5 bf16 recorded ZERO
-                # points while running at 46 and 39 TFLOPS by hand), and it mis-dispatched 2-D local
-                # sizes (chap0_naive read MMA_WRONG for a kernel that was always correct).  The
-                # fixture is one reviewed harness, identical for every kernel, calibrated against
-                # the old path to within 0.5%.  Autobench remains only as a fallback for when the
-                # fixture has not been compiled.
+                # THE FIXTURE ONLY.  The per-kernel generated harness (crisp-hoist-l0 --mma-bench) was
+                # both the thing measured and the apparatus measuring it -- it silently dropped
+                # contenders (chap4/chap5 bf16 recorded ZERO points while running at 46 and 39 TFLOPS
+                # by hand), and it mis-dispatched 2-D local sizes (chap0_naive read MMA_WRONG for a
+                # kernel that was always correct).  The fixture is one reviewed harness, identical for
+                # every kernel.  Its last users, the SLM chapters 1-3, moved onto it on 2026-10-16
+                # (agreement measured in Docker: within 0.6% to N=1024, 1-6% at 2048/4096), and the
+                # generated harness was retired.
                 unsupported = ""
                 _mc = next(iter(sorted(src.parent.glob(f"{src.stem}_*.metacrisp"))), None)
                 if _mc is None:
@@ -1645,25 +1413,15 @@ def main():
                 if l0_harness and not unsupported:
                     sweep = run_l0_fixed_sweep(chapter, src, comp_name, l0_harness, sizes, a.warmup, a.iters,
                                                prec, ftz, crisp_compiler)
-                elif use_autobench:
-                    # ALWAYS say which harness produced the number.  The two do not agree, so a row
-                    # whose provenance is unstated is a row that cannot be compared to the others.
-                    dev_c_ms = 0.0
-                    why = (f"uses {unsupported}, which the fixture does not support"
-                           if unsupported else "the fixture was not built")
-                    print(f"  NOTE: {comp_name} ({chapter}) measured through the GENERATED harness "
-                          f"— {why}.", file=sys.stderr)
-                    sweep = run_l0_autobench_sweep(chapter, src, comp_name, sizes, a.warmup, a.iters,
-                                                   prec, ftz, dev_c_ms, crisp_compiler)
                 else:
-                    # Say the real reason.  This used to print "L0 harness not built" even when the
-                    # harness was built and the kernel was simply one the fixture cannot run.
+                    # A kernel the fixture cannot run is a MISSING row, said loudly -- never a number
+                    # from a different apparatus.
                     if unsupported:
-                        print(f"  WARNING: SKIPPING {comp_name} ({chapter}) — the fixture cannot run it "
-                              f"({unsupported}) and this chapter is not enabled for the generated "
-                              f"harness (use_autobench).")
+                        print(f"  ERROR: NO ROW for {comp_name} ({chapter}) -- the fixture cannot run it "
+                              f"({unsupported}).", file=sys.stderr)
                     else:
-                        print(f"Skipping {comp_name} ({chapter}) — L0 fixture not built.")
+                        print(f"  ERROR: NO ROW for {comp_name} ({chapter}) -- the L0 fixture was not "
+                              f"built.", file=sys.stderr)
                     return
             except ContenderBuildError as e:
                 # Crisp itself can fail to compile a chapter's kernel — an unsupported element
@@ -1680,41 +1438,41 @@ def main():
 
         if a.platform == "nvidia":
             # §1 Ch 0 — Naive loops, no tensor cores (fp32)
-            run_target("chap0_naive", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="16,16", use_fixture=True)
+            run_target("chap0_naive", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("chap0_naive", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap0_naive", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 1 — Hand-rolled mma-accumulate-via-tile (tf32)
-            run_target("chap1_handrolled_mma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap1_handrolled_mma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("chap1_handrolled_mma", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 2 — matrix-multiply-tile-stride macro (tiling)
-            run_target("chap2_tiling", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap2_tiling", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("chap2_tiling", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 3 — cp.async linear pipelining
-            run_target("chap3_async", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap3_async", "matmul_async.crisp", "matmul_async.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("chap3_async", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
             run_target("chap3_async", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 4 — TMA descriptor (CUtensorMap)
-            run_target("chap4_cheap_fetch", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap4_cheap_fetch", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("chap4_cheap_fetch", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
             # §1 Ch 5 — SMEM ring (multi-stage pipeline)
-            run_target("chap5_multistage_ring", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap5_multistage_ring", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("chap5_multistage_ring", "cuda_apples.cu", "cuda_apples", "CUDA_Apples", nvcc_flags)
 
             # §1 Ch 6 — Warp specialization with sync MMA
-            run_target("chap6_warp_specialization", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+            run_target("chap6_warp_specialization", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
 
             # §1 Ch 7 — WGMMA + Warp Specialization (Hopper warpgroup MMA)
-            run_target("chap7_wgmma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+            run_target("chap7_wgmma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
 
             # §2 — Top MMA Benchmarks (All 4 contender classes)
-            run_target("sec2_top", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+            run_target("sec2_top", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("sec2_top", "cuda_control.cu", "cuda_control", "CUDA_Apples", nvcc_flags)
             # CUTLASS include is REPO-RELATIVE, matching how SYCL-TLA is located below.  It used
             # to be the absolute "-I/workspace/cutlass/include" -- a path specific to one RunPod
@@ -1809,9 +1567,9 @@ def main():
             # imported from fp32, where PEDANTIC forbids tf32, and does not transfer, because DMMA
             # is bit-identical IEEE double and PEDANTIC has no numerical reason to refuse it.
             run_target("sec2_top_f64", "matmul_f64.crisp", "matmul_f64.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,32", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("sec2_top_f64", "matmul_f64_warpspec.crisp", "matmul_f64_warpspec.ptx",
-                       "Crisp_V_warpspec", [], is_crisp=True, crisp_grid_tile="64,32",
+                       "Crisp_V_warpspec", [], is_crisp=True,
                        use_fixture=True)
             run_target("sec2_top_f64", "cublas_ceiling_f64.cu", "cublas_ceiling_f64",
                        "CUBLAS_Optimal_F64", cublas_flags, is_cublas=True)
@@ -1859,11 +1617,8 @@ def main():
                               ("chap5_multistage_ring_f64", "matmul.crisp"),
                               ("chap6_warp_specialization_f64", "matmul.crisp")):
                 _ptx = _src.replace(".crisp", ".ptx")
-                # chap0 is one-thread-per, so its grid tile is not meaningful; the others are
-                # grid-strided at the 64x32 tile their kernels declare.
-                _tile = None if _ch == "chap0_naive_f64" else "64,32"
                 run_target(_ch, _src, _ptx, "Crisp",
-                           [], is_crisp=True, crisp_grid_tile=_tile, use_fixture=True)
+                           [], is_crisp=True, use_fixture=True)
 
             # ---- NVIDIA 16-bit LADDER (endeavour 159) ------------------------------------
             # Each rung adds exactly ONE technique over the rung below, and every one is a
@@ -1874,19 +1629,19 @@ def main():
             # kernel of its day.  chap7 (wgmma) is absent because %check-wgmma-shape hard-errors
             # on K != 8, so a 16-bit wgmma kernel does not compile yet.
             run_target("chap1_handrolled_mma_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("chap2_tiling_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("chap4_cheap_fetch_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("chap5_multistage_ring_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("chap6_warp_specialization_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             # Endeavour 160: the top rung.  Tile is 64,256 like its tf32 twin -- a 64,64 tile here
             # would measure a different kernel than chap7_wgmma and make the rows incomparable.
             run_target("chap7_wgmma_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
 
             # Endeavour 162 GEOMETRY VARIANTS (underscore dirs -- not ladder chapters, not §1.5).
             # chap7_wgmma_bf16 is 64x256 on ONE warpgroup; CUTLASS's winner at 4096 is 128x256.
@@ -1896,9 +1651,9 @@ def main():
             # to one CTA, so ring depth 4 is free there where it would cost the 64-row kernel
             # its second CTA.  Tile is 128,256 for both; 64,256 would measure the wrong geometry.
             run_target("_variant_wgmma_bf16_2wg", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("_variant_wgmma_bf16_2wg_d3", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
 
 
             # Endeavour 160 BISECTION PROBES (underscore dirs -- not ladder chapters, not in §1.5).
@@ -1909,18 +1664,18 @@ def main():
             # The tf32 arm is the control -- the no-swizzle wgmma path has only ever had
             # COMPILE-ONLY coverage, so it could be carrying a defect nothing has executed.
             run_target("_probe_wgmma_bf16_scatter", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("_probe_wgmma_tf32_scatter", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             # Step 5e: the OTHER bisection -- keep TMA + 128B swizzle, drop the ring and the warp
             # split.  The scatter probes removed the swizzle and hit BUG 052, which said nothing
             # about 16 bits; these keep it.  K-block differs between the arms because 128B swizzle
             # requires 128 BYTES of K -- 64 bf16 elements, 32 tf32 -- so they are the same
             # geometry, not different ones.
             run_target("_probe_wgmma_bf16_swz", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
             run_target("_probe_wgmma_tf32_swz", "matmul.crisp", "matmul.ptx", "Crisp",
-                       [], is_crisp=True, crisp_grid_tile="64,64", use_fixture=True)
+                       [], is_crisp=True, use_fixture=True)
 
             for _ch, _sfx, _tag in (("sec2_top_fp16", "fp16", "FP16"),
                                     ("sec2_top_bf16", "bf16", "BF16")):
@@ -1941,7 +1696,7 @@ def main():
                 # that used to sit here.  Tile 64,256 matches the kernel, as chapter 7 requires --
                 # a 64,64 tile here would measure a different kernel than the one promoted.
                 run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
-                           [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+                           [], is_crisp=True, use_fixture=True)
                 # Endeavour 162: the 128x256 two-warpgroup, ring-depth-4 geometry, PROMOTED here
                 # from an underscore probe.  A VARIANT and not a replacement, because the two
                 # kernels CROSS OVER: on an H100 NVL the base wins at 1024 (97.8 vs 74.0) and 2048
@@ -1951,7 +1706,7 @@ def main():
                 # and names its winner -- the presentation the Intel sections already use.
                 # The 128,256 tile is the kernel's own geometry; 64,256 would measure something else.
                 run_target(_ch, "matmul_2wg_deep.crisp", "matmul_2wg_deep.ptx", "Crisp_V_2wg_deep",
-                           [], is_crisp=True, crisp_grid_tile="128,256", use_fixture=True)
+                           [], is_crisp=True, use_fixture=True)
                 run_target(_ch, f"cuda_control_{_sfx}.cu", f"cuda_control_{_sfx}",
                            f"CUDA_Apples_{_tag}", nvcc_flags)
                 for _cfg, _dflags in cutlass_16bit_configs:
@@ -1965,16 +1720,15 @@ def main():
 
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
             run_target("sec3_cluster_multicast", "matmul_tile128.crisp",
-                       "matmul_tile128.ptx", "Crisp", [], is_crisp=True, crisp_grid_tile="64,128", use_fixture=True)
+                       "matmul_tile128.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("sec3_cluster_multicast", "matmul_tile128_multicast.crisp",
-                       "matmul_tile128_multicast.ptx", "Crisp_Multicast", [], is_crisp=True,
-                       crisp_grid_tile="64,128", use_fixture=True)
+                       "matmul_tile128_multicast.ptx", "Crisp_Multicast", [], is_crisp=True, use_fixture=True)
             run_target("sec3_cluster_multicast", "cublas_optimal.cu", "cublas_optimal",
                        "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
             run_target("sec4_fused_relu", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
-                       "Crisp_Fused_Relu", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+                       "Crisp_Fused_Relu", [], is_crisp=True, use_fixture=True)
             run_target("sec4_fused_relu", "cublaslt_relu.cu", "cublaslt_relu",
                        "CUBLASLt_Fused_Relu", cublas_flags + ["-lcublasLt"], is_cublas=True)
             run_target("sec4_fused_relu", "cublas_optimal.cu", "cublas_optimal",
@@ -1982,7 +1736,7 @@ def main():
 
             # §4 Activation Ch 2 — Fused Custom
             run_target("sec4_fused_custom", "matmul_wgmma_ws_custom.crisp", "matmul_wgmma_ws_custom.ptx",
-                       "Crisp_Fused_Custom", [], is_crisp=True, crisp_grid_tile="64,256", use_fixture=True)
+                       "Crisp_Fused_Custom", [], is_crisp=True, use_fixture=True)
             run_target("sec4_fused_custom", "cublaslt_optimal.cu", "cublaslt_optimal",
                        "CUBLASLt_Plus_Custom", cublas_flags + ["-lcublasLt"], is_cublas=True)
             run_target("sec4_fused_custom", "cublas_optimal.cu", "cublas_optimal",
@@ -1990,30 +1744,29 @@ def main():
         else:
             # --- Intel/BMG ladder (endeavor 143) ---
             # §1 Ch 0 — Naive loops, no XMX tensor cores
-            run_l0_crisp("chap0_naive", "matmul_bmg.crisp", use_autobench=True)
+            run_l0_crisp("chap0_naive", "matmul_bmg.crisp")
             run_target("chap0_naive", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 1 — Hand-rolled XMX coop-matrix
-            run_l0_crisp("chap1_handrolled_mma", "matmul_bmg.crisp", use_autobench=True)
+            run_l0_crisp("chap1_handrolled_mma", "matmul_bmg.crisp")
             run_target("chap1_handrolled_mma", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 2 — synchronous coop-matrix tiling (matrix-multiply-tile-stride)
-            # use_autobench: this kernel binds SLM tensor arguments, which the fixture cannot, so
-            # the generated harness is the ONLY way it runs.  Without the flag it never did --
-            # chap2_tiling tf32 recorded zero BMG points from the 2026-08-22 reorg to 2026-09-12.
-            run_l0_crisp("chap2_tiling", "matmul_bmg.crisp", use_autobench=True)
+            # (Binds SLM tensor arguments; measured through the fixture since 2026-10-16, before
+            # which only the retired generated harness could run it.)
+            run_l0_crisp("chap2_tiling", "matmul_bmg.crisp")
             run_target("chap2_tiling", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 3 — OpGroupAsyncCopy staging
-            run_l0_crisp("chap3_async", "matmul_bmg_async.crisp", use_autobench=True)   # SLM args; see Ch 2
+            run_l0_crisp("chap3_async", "matmul_bmg_async.crisp")   # SLM args; see Ch 2
             run_target("chap3_async", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags, is_sycl=True)
 
             # §1 Ch 4 — Register-resident load (global -> GRF)
-            run_l0_crisp("chap4_cheap_fetch", "matmul_bmg.crisp", use_autobench=True)
+            run_l0_crisp("chap4_cheap_fetch", "matmul_bmg.crisp")
             run_target("chap4_cheap_fetch", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
             # §1 Ch 5 — Register ring + prefetch (intel_prefetch)
-            run_l0_crisp("chap5_multistage_ring", "matmul_bmg.crisp", use_autobench=True)
+            run_l0_crisp("chap5_multistage_ring", "matmul_bmg.crisp")
 
             # §1 (bf16) — the SAME technique ladder in 16-bit.  Registered as separate chapters, not
             # extra contenders in the tf32 chapters: report.py's _is_crisp matches any "Crisp_*"
@@ -2022,7 +1775,7 @@ def main():
             # existing sec2_top / sec2_top_bf16 convention.
             for _ch in ("chap0_naive", "chap1_handrolled_mma", "chap2_tiling",
                         "chap3_async", "chap4_cheap_fetch", "chap5_multistage_ring"):
-                run_l0_crisp(_ch + "_bf16", "matmul_bmg_bf16.crisp", use_autobench=True)
+                run_l0_crisp(_ch + "_bf16", "matmul_bmg_bf16.crisp")
             run_target("chap5_multistage_ring", "sycl_apples.cpp", "sycl_apples", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
 
             # SYCL-TLA (CUTLASS 3.x for Intel Xe2) specific flags
@@ -2064,31 +1817,31 @@ def main():
             ]
 
             # §2 — Top MMA Benchmarks (TF32 / FP32 Precision Tier)
-            run_l0_crisp("sec2_top", "matmul_bmg.crisp", use_autobench=True)
+            run_l0_crisp("sec2_top", "matmul_bmg.crisp")
             run_target("sec2_top", "sycl_control.cpp", "sycl_control", "SYCL_Apples", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top", "onemkl_ceiling.cpp", "onemkl_ceiling", "OneMKL_Optimal", sycl_flags, is_sycl=True, is_cublas=True)
 
             # §2.1 — Top MMA Benchmarks (BFloat16 Low-Precision Tier)
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16.crisp", use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16.crisp")
             # VARIANTS.  The bf16 kernel is geometrically IDENTICAL to its fp16 twin -- same
             # 128x256 tile over 16 subgroups, same K step, same (8 16 16) shape -- so the same
             # prefetch-distance sweep applies.  bf16 had a SYCL-TLA peer and no variant sweep;
             # fp16 had the sweep and no peer.  Both halves are now filled in.
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw1.crisp", "Crisp_V_pfw1", use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw1.crisp", "Crisp_V_pfw1")
             # THE fp16 WINNER, TRANSFERRED.  Peer geometry (256x256/32sg) + :xe-native + prefetch
             # reached 106.0 TF at 8192 in fp16 -- 95% of oneMKL, best at every size, no sign
             # flip.  The bf16 kernel is geometrically identical and the pair has tracked within
             # 0.5% at every size, so the result is expected to transfer.  bf16 is where the
             # SYCL-TLA peer has settled data, so this is the comparison that matters.
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_pf2.crisp",   "Crisp_V_wg256pf2",   use_autobench=True)
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xe.crisp",    "Crisp_V_wg256xe",    use_autobench=True)
-            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2", use_autobench=True)
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_pf2.crisp",   "Crisp_V_wg256pf2")
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xe.crisp",    "Crisp_V_wg256xe")
+            run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2")
             # superseded by the peer geometry; d1 is the best of this family:
-            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw2.crisp", "Crisp_V_pfw2")
             # superseded by the peer geometry; d1 is the best of this family:
-            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw3.crisp", "Crisp_V_pfw3")
             # superseded by the peer geometry; d1 is the best of this family:
-            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
+            # run_l0_crisp("sec2_top_bf16", "matmul_bmg_bf16_pfw4.crisp", "Crisp_V_pfw4")
             run_target("sec2_top_bf16", "sycl_control_bf16.cpp", "sycl_control_bf16", "SYCL_Apples_BF16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec2_top_bf16", "sycl_tla_peer.cpp", "sycl_tla_peer", "SYCL-TLA_BF16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_bf16", "onemkl_bf16.cpp", "onemkl_bf16", "OneMKL_BF16", sycl_flags, is_sycl=True, is_cublas=True)
@@ -2106,7 +1859,7 @@ def main():
             # Reporting the fp16 number in the bf16 table would be exactly the fabrication this
             # report was just fixed for (the CUB/CUBLAS substring collision).  Different element
             # type, different section, contenders converted to match.
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16.crisp", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16.crisp")
             # VARIANTS of the fp16 solution, not separate contenders.  The `Crisp_V_` prefix is
             # the marker report.py reads: a `Crisp_V_<tag>` competitor is an alternative
             # CONFIGURATION of this chapter's Crisp kernel, so the report shows the per-size
@@ -2117,10 +1870,10 @@ def main():
             # Endeavour 158: prefetch distance is a real tuning parameter here, and it CHANGES
             # SIGN with N -- +40% at 4096, -55% at 8192.  Exactly the case the envelope/single
             # split and the sign-flip warnings exist to make visible.
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw1.crisp", "Crisp_V_pfw1", use_autobench=True)
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw2.crisp", "Crisp_V_pfw2", use_autobench=True)
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw3.crisp", "Crisp_V_pfw3", use_autobench=True)
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw4.crisp", "Crisp_V_pfw4", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw1.crisp", "Crisp_V_pfw1")
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw2.crisp", "Crisp_V_pfw2")
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw3.crisp", "Crisp_V_pfw3")
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_pfw4.crisp", "Crisp_V_pfw4")
             # THE PEER'S GEOMETRY: 256x256 over 32 subgroups, which is what SYCL-TLA runs at
             # EVERY size (verified: compile-time constants, zero size-dependent branching).
             # Per-subgroup tile is already identical to ours at 32x64 and register demand is
@@ -2128,27 +1881,27 @@ def main():
             # therefore arithmetic intensity: 128 flops/byte against our 85.3.
             # Endeavour 156 banked this geometry as a loss at 34.6 vs 60.8, but that was at
             # K=16 and before :warp-partitioned prefetch existed.
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256.crisp",     "Crisp_V_wg256",     use_autobench=True)
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf1.crisp", "Crisp_V_wg256pf1", use_autobench=True)
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2.crisp", "Crisp_V_wg256pf2", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256.crisp",     "Crisp_V_wg256")
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf1.crisp", "Crisp_V_wg256pf1")
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2.crisp", "Crisp_V_wg256pf2")
             # :XE-NATIVE at the peer geometry -- 42 machine instructions per dpas against 57.
             # Attacks the INSTRUCTION STREAM, where the remaining gap to the peer lives.
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xe.crisp",    "Crisp_V_wg256xe",    use_autobench=True)
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xe.crisp",    "Crisp_V_wg256xe")
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_xepf2.crisp", "Crisp_V_wg256xepf2")
             # CACHE CONTROL, now covering the PREFETCH as well as the loads.  Byte-identical
             # source to wg256_pf2; only the NAME differs, so one env setting decorates this
             # kernel and not its twin and both are measured in the SAME session.
-            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2cc.crisp", "Crisp_V_wg256pf2cc", use_autobench=True)
+            run_l0_crisp("sec2_top_fp16", "matmul_bmg_fp16_wg256_pf2cc.crisp", "Crisp_V_wg256pf2cc")
 
             # §3 Situational — MMA LOWERING (:coop-matrix vs :xe-native), Intel only.
             # Four kernels, one variable at a time.  All are 32x64 bf16 over one subgroup; the
             # TUNED pair adds ring depth 2 + prefetch distance 2, making Crisp_Coop_Tuned the same
             # kernel as sec2_top_bf16.  Both pairs are needed: :xe-native is FASTER bare and SLOWER
             # tuned, so either pair alone tells a true and misleading story.
-            run_l0_crisp("sec3_mma_lowering", "matmul_coop_bare.crisp",  "Crisp_Coop_Bare",     use_autobench=True)
-            run_l0_crisp("sec3_mma_lowering", "matmul_xe_bare.crisp",    "Crisp_XeNative_Bare",  use_autobench=True)
-            run_l0_crisp("sec3_mma_lowering", "matmul_coop_tuned.crisp", "Crisp_Coop_Tuned",    use_autobench=True)
-            run_l0_crisp("sec3_mma_lowering", "matmul_xe_tuned.crisp",   "Crisp_XeNative_Tuned", use_autobench=True)
+            run_l0_crisp("sec3_mma_lowering", "matmul_coop_bare.crisp",  "Crisp_Coop_Bare")
+            run_l0_crisp("sec3_mma_lowering", "matmul_xe_bare.crisp",    "Crisp_XeNative_Bare")
+            run_l0_crisp("sec3_mma_lowering", "matmul_coop_tuned.crisp", "Crisp_Coop_Tuned")
+            run_l0_crisp("sec3_mma_lowering", "matmul_xe_tuned.crisp",   "Crisp_XeNative_Tuned")
             # DIAGNOSTIC — ROOFLINE PROBE.  Not a chapter of the report; it has no contenders and
             # produces no row.  Three arms of ONE kernel (the shipped sec2_top_fp16 geometry) that
             # separate "bound by the loads" from "bound by the math":
@@ -2164,16 +1917,15 @@ def main():
             #   * _skip() means it runs ONLY when named in --chapters, never in a full sweep;
             #   * it must be run with --scratch, so its JSON lands in results/scratch/ which the
             #     report never reads into a canonical table;
-            #   * at N <= VERIFY_MAX_N the harness runs the host reference and DISCARDS the two
-            #     wrong arms as NOT MMA_CORRECT.  That is expected and is itself the check that
-            #     the integrity gate still works -- include 2048 in the sizes to see it fire.
-            # The measurable sizes are therefore 4096 and up, where the host reference is skipped
-            # and points are recorded with verified:false.
-            run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full",  use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_wg256_xe_math.crisp", "Probe_WG256_XE_Math", use_autobench=True)
-            # run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads", use_autobench=True)
+            #   * the fixture spot-checks EVERY size, so the two deliberately wrong arms record
+            #     verified:false at every size.  That is expected and is itself the check that the
+            #     integrity gate still works.  (This note used to describe the retired generated
+            #     harness, whose host reference ran only at N <= 2048.)
+            run_l0_crisp("_probe_roofline", "probe_full.crisp",  "Probe_Full")
+            run_l0_crisp("_probe_roofline", "probe_wg256_xe_math.crisp", "Probe_WG256_XE_Math")
+            # run_l0_crisp("_probe_roofline", "probe_loads.crisp", "Probe_Loads")
             # ROUND-2 ARM, already answered -- re-enable to re-measure:
-            # run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math",  use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_math.crisp",  "Probe_Math")
             # Round 2 arms.  The first probe answered "which half is the critical path" (the
             # loads, at 95%).  These three ask WHY T_loads is large, since fetch and math turned
             # out to be ~95% overlapped already -- so the win has to come from shrinking T_loads
@@ -2188,26 +1940,26 @@ def main():
             #   C  fixed coords    loop-invariant load address: both the per-iteration 64-bit
             #                      address arithmetic and any cache miss vanish.  The CEILING arm.
             # ROUND-2 ARM, already answered -- re-enable to re-measure:
-            # run_l0_crisp("_probe_roofline", "probe_loads_cc.crisp",    "Probe_Loads_CC",    use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads_cc.crisp",    "Probe_Loads_CC")
             # ROUND-2 ARM, already answered -- re-enable to re-measure:
-            # run_l0_crisp("_probe_roofline", "probe_loads_pf2.crisp",   "Probe_Loads_PF2",   use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads_pf2.crisp",   "Probe_Loads_PF2")
             # ROUND-2 ARM, already answered -- re-enable to re-measure:
-            # run_l0_crisp("_probe_roofline", "probe_loads_pf3.crisp",   "Probe_Loads_PF3",   use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads_pf3.crisp",   "Probe_Loads_PF3")
             # ROUND-2 ARM, already answered -- re-enable to re-measure:
-            # run_l0_crisp("_probe_roofline", "probe_loads_fixed.crisp", "Probe_Loads_Fixed", use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads_fixed.crisp", "Probe_Loads_Fixed")
             # Round 3 (endeavour 158): arm B re-run with a prefetch that is actually DISTRIBUTED.
             # The round-2 arms above issued all 24 prefetches from all 16 subgroups because
             # prefetch-tile had no :warps notion; these issue TWO per subgroup for the same
             # coverage.  probe_full_pfw* are numerically CORRECT (a prefetch changes no result), so
             # unlike the loads-only arms they verify at N<=2048 and compare directly to probe_full.
             # LOADS-ONLY MISLEADS FOR PREFETCH (round 3) -- parked:
-            # run_l0_crisp("_probe_roofline", "probe_loads_pfw2.crisp",  "Probe_Loads_PFW2",  use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads_pfw2.crisp",  "Probe_Loads_PFW2")
             # LOADS-ONLY MISLEADS FOR PREFETCH (round 3) -- parked:
-            # run_l0_crisp("_probe_roofline", "probe_loads_pfw3.crisp",  "Probe_Loads_PFW3",  use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_full_pfw1.crisp",   "Probe_Full_PFW1",   use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_full_pfw2.crisp",   "Probe_Full_PFW2",   use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_full_pfw3.crisp",   "Probe_Full_PFW3",   use_autobench=True)
-            run_l0_crisp("_probe_roofline", "probe_full_pfw4.crisp",   "Probe_Full_PFW4",   use_autobench=True)
+            # run_l0_crisp("_probe_roofline", "probe_loads_pfw3.crisp",  "Probe_Loads_PFW3")
+            run_l0_crisp("_probe_roofline", "probe_full_pfw1.crisp",   "Probe_Full_PFW1")
+            run_l0_crisp("_probe_roofline", "probe_full_pfw2.crisp",   "Probe_Full_PFW2")
+            run_l0_crisp("_probe_roofline", "probe_full_pfw3.crisp",   "Probe_Full_PFW3")
+            run_l0_crisp("_probe_roofline", "probe_full_pfw4.crisp",   "Probe_Full_PFW4")
 
             run_target("sec2_top_fp16", "sycl_control_fp16.cpp", "sycl_control_fp16", "SYCL_Apples_FP16", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             # PEER for fp16.  A verbatim port of the bf16 peer with only the element type
@@ -2218,7 +1970,7 @@ def main():
 
             # §4 Activation Ch 1 — Fused ReLU
             run_l0_crisp("sec4_fused_relu", "matmul_bmg_prefetch_relu.crisp",
-                         comp_name="Crisp_Fused_Relu", use_autobench=True)
+                         comp_name="Crisp_Fused_Relu")
             run_target("sec4_fused_relu", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Relu", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec4_fused_relu", "sycl_tla_relu.cpp", "sycl_tla_relu",
@@ -2230,7 +1982,7 @@ def main():
 
             # §4 Activation Ch 2 — Fused Custom
             run_l0_crisp("sec4_fused_custom", "matmul_bmg_prefetch_custom.crisp",
-                         comp_name="Crisp_Fused_Custom", use_autobench=True)
+                         comp_name="Crisp_Fused_Custom")
             run_target("sec4_fused_custom", "sycl_apples.cpp", "sycl_apples",
                        "SYCL_Apples_Custom", sycl_flags + ["-Xs", "-ze-opt-large-register-file"], is_sycl=True)
             run_target("sec4_fused_custom", "sycl_tla_custom.cpp", "sycl_tla_custom",

@@ -163,20 +163,24 @@ Presets and explicit sizes mix freely: `--sizes=small,8192`.  Other knobs: `--it
 (default 100), `--warmup=N` (default 20), `--chapters=a,b` to restrict, `--scratch` to write
 to `results/scratch/` where the report will not read it.
 
-**Two Crisp launch paths.**  The simple chapters (chap0, chap1) share one fixed
-`crisp/bench_harness.cu` launcher — a single 45-slot param layout (2 SLM tiles +
-A/B/C), kernel picked at runtime by the `CRISP_MATMUL_PTX` env var.  The advanced
-chapters (chap4 TMA, chap5 rings, chap6 warp-spec, chap7 wgmma) can't use it — they have their own
-param layouts (CuTensorMap descriptors, ring tiles, >48KB dynamic SMEM, 128+
-threads).  For those, `matmul.py` passes `crisp_grid_tile=...` to `run_target`,
-which routes through `run_crisp_autobench`: it runs `crisp-hoist-cuda --mma-bench`
-to auto-generate a *per-kernel* harness (reading the real params + col-major B +
-the `cuFuncSetAttribute` SMEM opt-in straight from the kernel's metacrisp), then
-nvcc-compiles and runs it.  Note: this compiles once per kernel and reuses the
-PTX/metacrisp across all sizes/precisions, so the auto-bench chapters report the
-same Crisp throughput at every precision (the kernel is tf32 regardless — the
-`fast` column is the honest tensor-core-vs-tensor-core comparison; under `ieee`
-cuBLAS drops to fp32, so Crisp's tf32 wgmma "beats" it, which is apples-to-oranges).
+**One reviewed harness per backend.**  Every Crisp matmul point is measured by a hand-written,
+reviewed fixture -- `crisp/bench_harness.cu` (CUDA) and `crisp/bench_harness_l0.cpp` (Level Zero) --
+identical for every kernel, so a difference between two rows is a difference between two kernels.
+The kernel's argument layout is not restated anywhere: `matmul.py` reads it from the kernel's
+metacrisp (`_fixture_arg_layout`: where A/B/C sit, the SLM scratch tiles and rings, and on CUDA the
+CuTensorMap descriptors) and passes it as `CRISP_MATMUL_ARG_A/B/C`, `CRISP_MATMUL_SCRATCH` and
+`CRISP_MATMUL_TENSORMAP`.  Each result point records `"harness": "fixture"`.
+
+There is no fallback.  Until 2026-10-16 a kernel the fixture could not run was measured by a
+*generated* per-kernel harness (`crisp-hoist-cuda` / `crisp-hoist-l0 --mma-bench`) -- a different
+apparatus, and the thing measured doubling as the thing measuring it.  The last such rows, the
+SLM-staged BMG chapters 1-3, moved onto the L0 fixture (agreement measured in Docker: within 0.6%
+to N=1024, 1-6% at 2048/4096) and the flag was retired.  A kernel the fixture cannot run is now a
+missing row, reported as `ERROR: NO ROW for ...`.
+
+Precision: a tf32 kernel (wgmma is tf32-only) stays tf32 under `ieee`, while cuBLAS drops to fp32 --
+so the `fast` column is the honest tensor-core-vs-tensor-core comparison, and an `ieee` Crisp win
+over cuBLAS there is apples-to-oranges.
 
 **Targeted single-config runs** (when you only want one precision):
 ```bash
@@ -362,8 +366,8 @@ arguments); it verifies with a strided sample but still fills on the CPU, which 
 
 - **No benchmark process may run longer than 5 minutes** (`BENCH_TIMEOUT = 300`), and above
   N = 16384, 150 s.  Of 3,152 points recorded on every device before 2026-09-12 the longest timed
-  loop was 148 s and none exceeded 300 s.  **Enforced.**  (It was 900 s, sized for the CUDA
-  auto-bench's host reference, and on 2026-09-12 cost two `chap0_naive` points at 16384 fifteen
+  loop was 148 s and none exceeded 300 s.  **Enforced.**  (It was 900 s, sized for the since-retired
+  CUDA auto-bench's host reference, and on 2026-09-12 cost two `chap0_naive` points at 16384 fifteen
   minutes each for nothing.)
 - **A point predicted to exceed its timeout is not attempted**, and neither is any larger size for
   that contender.  A point that fails after using most of its timeout stops the ladder the same
@@ -424,9 +428,9 @@ Two independent reasons the other cells are not results:
 - **Under `ieee`, the comparison stops being like-for-like.**  cuBLAS drops to fp32 while the
   Crisp kernel is still tf32 on tensor cores, so Crisp "wins" — apples to oranges.  Only the
   `fast` column is a tensor-core-vs-tensor-core comparison.
-- **The auto-bench chapters do not vary with precision at all.**  They compile once per kernel
-  and reuse that PTX across every size and precision, so the advanced chapters report the *same*
-  Crisp throughput in all three columns.  Three passes there produce one number, thrice.
+- *(Historical.)* The generated auto-bench harness, retired 2026-10-16, compiled once per kernel
+  and reused that PTX across every precision, so its chapters reported the *same* Crisp throughput
+  in all three columns -- three passes producing one number, thrice.
 
 So matmul runs at exactly one precision per ladder, and `matmul.py` enforces it — see
 [Harness Ground Rules](#harness-ground-rules).

@@ -1291,6 +1291,11 @@
        (let* ((new-elem  (second args))
               (width     (%mv-eval-integer (third args)))
               (height    (%mv-eval-integer (fourth args)))
+              ;; Checked HERE, before anything below multiplies them: the check used to sit after
+              ;; (* width height), so a runtime width died in a raw Lisp type error and SBCL deleted
+              ;; the friendly message as unreachable (refactor-oct, 2026-10-16).
+              (_dims     (unless (and width height)
+                           (error "make-matrix: width and height must be compile-time integer literals")))
               (kwargs    (%mv-parse-kwargs (nthcdr 4 args)))
               (offset    (or (%mv-eval-integer (getf kwargs :offset)) 0))
               (major-kw  (or (getf kwargs :major) :row))
@@ -1308,8 +1313,7 @@
               (src-align (%mv-source-align src-canon))
               (align     (%mv-result-align src-align explicit-strides-p col-p))
               (ct        (if col-p :first :last)))
-         (unless (and width height)
-           (error "make-matrix: width and height must be compile-time integer literals"))
+         (declare (ignore _dims))
          (%mv-check-restrictions op src-canon new-elem location)
          (make-semantic-make-view
           :type        (%mv-result-tensor-type new-elem 2 addr align ct)

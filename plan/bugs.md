@@ -4100,7 +4100,16 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
           TO-BFLOAT16 as a widening conversion (%ad-widening-conversion-form-p).
         bfloat16 inside the MMA paths is unaffected (the 159 specs); this is the scalar path.
 
-[ ] 122 WITH --log-level ABOVE off, crisp-compile.exe WRITES EVERY LOG LINE TO STDOUT AS WELL AS STDERR.
+[x] 122 WITH --log-level ABOVE off, crisp-compile.exe WRITES EVERY LOG LINE TO STDOUT AS WELL AS STDERR.
+        FIXED 2026-10-16.  CAUSE (measured, not the image-appender guess below): log4cl's
+        `(log:config :sane :stream S level)` installs TWO root appenders -- :SANE's CONSOLE-APPENDER, which
+        writes to the dynamic value of *TERMINAL-IO*, and a TRICKY-CONSOLE-APPENDER on S.  A temporary
+        exit-hook dump inside the exe showed both receiving all 421 messages.  In the executable
+        *TERMINAL-IO* is the process's stdout; under `sbcl --script` it is not, which is why every
+        in-process probe came back clean.  FIX: %drop-terminal-io-log-appender (src/compiler.lisp), called
+        by initialize-compiler after :sane, removes the plain console appender.  001/01 at --log-level=info:
+        stdout 0 log lines (was 303), stderr 303; debug: stdout 0, stderr 1217; off: unchanged.
+        (log4cl:clear-logging-configuration was tried first, on the wrong theory, and changed nothing.)
         Found 2026-10-15 (refactor-oct) while moving main.lisp's progress chatter to log:info.  Pre-existing:
         the leaked lines are ALL the compiler's log output, not just the moved ones.
 

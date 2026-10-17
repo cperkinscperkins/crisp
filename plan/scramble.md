@@ -72,8 +72,18 @@ OPEN
       wholly generated) -- 2026-10-15.  (The generator had carried the tail since 184, not wiped it.)  Regenerating
       also proclaimed 6 globals that 185 / the adversarial fixes had added without a regen. (L864)
 - [x] warnings when building the compiler: clean build 15 STYLE-WARNINGs -> 0 (2026-10-15).  Left: 20 SBCL
-      "deleting unreachable code" notes in 6 functions -- worth a look, may be dead branches (L862, L863)
-- [ ] overly long functions (L861)
+      "deleting unreachable code" notes -- REVIEWED 2026-10-16 (put_temp_files_here/refactor/unreachable.txt):
+      1 real bug fixed (make-matrix's friendly error came after (* width height), so users got a raw type
+      error; spec 083/errors/02), 1 latent dead branch noted (semantic-literal singleton types (keyword :k)
+      are swallowed by the earlier (listp type-spec) clause; no spec reaches it), 18 harmless (L862, L863)
+- [ ] overly long functions (L861) -- phase 3 of refactor-oct, scope not yet decided
+- [x] --mma-bench retired (2026-10-16): L0 fixture binds SLM scratch (chapters 1-3 moved onto it; Docker
+      agreement within 0.6% to N=1024, 1-6% at 2048/4096), fixture BUILD_FLAGS "" bug fixed, matmul.py
+      auto-bench paths removed (a kernel the fixture cannot run is a loud missing row), results record
+      "harness": "fixture", hoisters refuse --mma-bench / --grid-tile by name.  --mma-test stays.
+- [x] hoister helpers: 18 functionally identical helpers moved into crisp.hoist (2026-10-16); 1471 hoister
+      outputs byte-identical.  Left per-backend: %record-field-args, %mma-parse-args, main.
+- [x] BUG 122 fixed (2026-10-16): log lines no longer leak onto stdout above --log-level=off.
 - [x] reproducible output: initialize-compiler resets *gensym-counter* to *gensym-counter-base* (10000,
       src/globals.lisp) -- 2026-10-15.  Same source -> byte-identical output across builds (proven with a
       probe build: 7588/7588 corpus files identical).  Names now read %g10038.

@@ -32,4 +32,24 @@
    #:%dvec-cpp-scalar-type
    #:%emit-dvec-typedef
    #:%collect-dvec-types
-   #:generate-cpp-dvec-typedefs))
+   #:generate-cpp-dvec-typedefs
+
+   ;; Helpers shared by both hoisters (moved from hoist-l0 / hoist-cuda, 2026-10-16)
+   #:*mma-test-dims*
+   #:*mma-input-counter*
+   #:*mma-scale*
+   #:*hoist-current-structs*
+   #:%mma-out-dir-p
+   #:%array-type-p
+   #:%array-element-type
+   #:%array-size
+   #:%struct-base-type
+   #:record-base-type
+   #:find-record-def
+   #:record-type-p
+   #:tensor-type-p
+   #:%tensor-compact-extents-strides
+   #:%dispatch-sym-to-cpp-var
+   #:%find-struct-def
+   #:struct-type-p
+   #:%struct-emit-fields))

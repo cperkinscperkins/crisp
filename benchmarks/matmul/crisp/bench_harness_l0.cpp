@@ -31,6 +31,10 @@
 //          CRISP_MATMUL_GRID    "strided" | "one-thread-per"                  (default "strided")
 //          CRISP_MATMUL_TILE    output tile "TM,TN", for GRID=strided         (default "32,64")
 //          CRISP_MATMUL_ELEM    A/B element type: "f32" | "bf16" | "f16"      (default "f32")
+//          CRISP_MATMUL_ARG_A   A's FIRST argument index                      (default 0)
+//          CRISP_MATMUL_ARG_B   B's FIRST argument index                      (default 9)
+//          CRISP_MATMUL_ARG_C   C's FIRST argument index                      (default 18)
+//          CRISP_MATMUL_SCRATCH SLM scratch tiles, "idx:ext0:ext1[:ext2][,...]" (default "")
 //          CRISP_FILL_SPV       common/fill.crisp compiled to SPIR-V          (required)
 //   stdout: one JSON object -- verified / wall_time_ms / kernel_median_us / gflops
 //
@@ -50,7 +54,20 @@
 //
 // Kernel ABI: a rank-2 Crisp tensor flattens to NINE arguments, in order --
 //   ptr, byte_size, off0, off1, str0, str1, ext0, ext1, length
-// so A, B, C occupy argument indices 0-8, 9-17 and 18-26.
+// so a kernel with no scratch has A, B, C at argument indices 0-8, 9-17 and 18-26.
+//
+// SCRATCH (SLM) TILES (refactor-oct, 2026-10-16).  A kernel that stages through workgroup-local
+// memory -- chapters 1-3, (make-scratch-matrix ...) -- gets each scratch tile as an IMPLICIT tensor
+// argument placed BEFORE A/B/C, so the three globals are no longer at 0/9/18.  The positions come
+// from the metacrisp (:implicit-params / :declared-signature :range), through the same
+// CRISP_MATMUL_ARG_A/B/C + CRISP_MATMUL_SCRATCH contract the CUDA fixture uses.  A scratch tile's
+// "ptr" slot is not a pointer: Level Zero allocates group-local memory when the argument is set
+// with a SIZE and a NULL value -- zeKernelSetArgumentValue(k, idx, bytes, nullptr).  The other
+// slots are its compact row-major geometry, exactly what crisp-hoist-l0 emits.  A rank-3 scratch
+// (a ring: slots x rows x cols) flattens to TWELVE arguments.  Like the CUDA fixture, a scratch
+// element is sized at the A/B element width: these tiles stage A and B.  Before this, SLM kernels
+// were measured on the generated per-kernel harness (crisp-hoist-l0 --mma-bench), the one
+// apparatus difference left in the Intel section.
 
 #if __has_include(<level_zero/ze_api.h>)
 #include <level_zero/ze_api.h>
@@ -63,6 +80,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <sstream>
 #include "../common/fill_verify.h"
 #include <string>
 #include <vector>
@@ -95,6 +113,15 @@ static std::vector<uint32_t> parse_csv(const std::string &s, size_t want, uint32
     return out;
 }
 
+static std::vector<std::string> split(const std::string &s, char d) {
+    std::vector<std::string> out; std::string cur; std::istringstream is(s);
+    while (std::getline(is, cur, d)) if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+// A scratch (SLM) tile: its first argument index, rank (2, or 3 for a ring) and extents.
+struct Scratch { uint32_t idx; int rank; uint64_t e0, e1, e2; };
+
 int main(int argc, char **argv) {
     if (argc < 6) {
         std::cerr << "usage: " << argv[0] << " M N K warmup iters\n";
@@ -122,10 +149,34 @@ int main(int argc, char **argv) {
     // costs ~3.1x on a 32x64 tile (50.3 vs 16.0 TFLOPS measured).  It is a knob rather than
     // a constant because the right answer is geometry-dependent: the DEFAULT allocation
     // beats large-GRF by 70% at 128x128 over 16 subgroups.
-    const std::string build_flags = env_or("CRISP_MATMUL_BUILD_FLAGS", "-ze-opt-large-register-file");
+    //
+    // SET-BUT-EMPTY MEANS NO FLAGS.  matmul.py sets "" when the compiler chose the DEFAULT register
+    // file (:selected-registers-per-thread <= 128).  env_or treats "" as unset, so until 2026-10-16
+    // that request silently became large-GRF -- half the occupancy, 30-37% slower for chapters 1-2 at
+    // N >= 1024 (the first SLM kernels through this fixture, and so the first to ask for "").  Only
+    // a truly UNSET variable takes the default.
+    const char *bf_env = std::getenv("CRISP_MATMUL_BUILD_FLAGS");
+    const std::string build_flags = bf_env ? std::string(bf_env) : std::string("-ze-opt-large-register-file");
 
     const bool ab16 = (elem == "bf16" || elem == "f16");
     const size_t ab_bytes = ab16 ? 2 : 4;
+
+    // Argument layout, from the metacrisp via matmul.py (see SCRATCH in the header).
+    const uint32_t iA = (uint32_t)std::strtoul(env_or("CRISP_MATMUL_ARG_A", "0").c_str(), nullptr, 10);
+    const uint32_t iB = (uint32_t)std::strtoul(env_or("CRISP_MATMUL_ARG_B", "9").c_str(), nullptr, 10);
+    const uint32_t iC = (uint32_t)std::strtoul(env_or("CRISP_MATMUL_ARG_C", "18").c_str(), nullptr, 10);
+    std::vector<Scratch> scratch;
+    for (const auto &tok : split(env_or("CRISP_MATMUL_SCRATCH", ""), ',')) {
+        auto f = split(tok, ':');
+        if (f.size() < 3) { std::cerr << "bad CRISP_MATMUL_SCRATCH entry '" << tok << "'\n"; return 1; }
+        Scratch s{};
+        s.idx  = (uint32_t)std::strtoul(f[0].c_str(), nullptr, 10);
+        s.rank = (f.size() >= 4) ? 3 : 2;
+        s.e0   = std::stoull(f[1]);
+        s.e1   = std::stoull(f[2]);
+        s.e2   = (s.rank == 3) ? std::stoull(f[3]) : 1;
+        scratch.push_back(s);
+    }
 
     // ---- SPIR-V -------------------------------------------------------------------------
     std::vector<uint8_t> spv;
@@ -273,9 +324,27 @@ int main(int argc, char **argv) {
             }
         return true;
     };
-    if (!bind(0, A, M, K, ab_bytes)) return 2;
-    if (!bind(9, B, K, N, ab_bytes)) return 2;
-    if (!bind(18, C, M, N, 4)) return 2;
+    if (!bind(iA, A, M, K, ab_bytes)) return 2;
+    if (!bind(iB, B, K, N, ab_bytes)) return 2;
+    if (!bind(iC, C, M, N, 4)) return 2;
+
+    // Scratch tiles: slot 0 is group-local memory (a size with a NULL value), then the compact
+    // row-major geometry crisp-hoist-l0 emits.  Rank 2 -> 9 slots, rank 3 (a ring) -> 12.
+    for (const auto &s : scratch) {
+        const uint64_t len = s.e0 * s.e1 * s.e2, bytes = len * ab_bytes;
+        std::vector<uint64_t> v;
+        if (s.rank == 2) v = {bytes, 0, 0, s.e1, 1, s.e0, s.e1, len};
+        else             v = {bytes, 0, 0, 0, s.e1 * s.e2, s.e2, 1, s.e0, s.e1, s.e2, len};
+        if (zeKernelSetArgumentValue(kernel, s.idx, (size_t)bytes, nullptr) != ZE_RESULT_SUCCESS) {
+            std::cerr << "setArg " << s.idx << " (local scratch, " << bytes << " bytes) failed\n";
+            return 2;
+        }
+        for (size_t j = 0; j < v.size(); ++j)
+            if (zeKernelSetArgumentValue(kernel, s.idx + 1 + (uint32_t)j, sizeof(uint64_t), &v[j]) != ZE_RESULT_SUCCESS) {
+                std::cerr << "setArg " << (s.idx + 1 + j) << " failed\n";
+                return 2;
+            }
+    }
 
     // ---- dispatch -----------------------------------------------------------------------
     // THIS is what the generated harness got wrong for chap0_naive: it emitted a 1-D group count
