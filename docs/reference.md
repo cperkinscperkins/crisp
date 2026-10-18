@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-11T19:36:03.707225Z
+Generated on 2026-10-18T01:38:57.931435Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -92,13 +92,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%MBARRIER-MODE-P`
-- **Args**: `(MODE)`
-
-  > T if MODE denotes a real mbarrier object.  :linear is the backend's group-async-copy handle  >    (a phantom on PTX); :block and :cluster are both genuine mbarriers and differ only in reach.
-
-
----
 ### DEFVAR `*CLUSTER-BARRIER-BINDINGS*`
 
   > Barrier binding SYMBOL (or ring symbol) -> T when declared :mode :cluster.  >    Parallel to *async-barrier-modes*, which records the OBJECT kind; this records the REACH.
@@ -160,10 +153,17 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%ENUM-TYPE-FOR-BRANCH`
+- **Args**: `(TYPE)`
+
+  > The set of enumerations a branch of TYPE could belong to: for (keyword :k) every enum  >    holding :k; for an enumeration name, just that name; otherwise NIL.
+
+
+---
 ### DEFUN `ENSURE-BRANCH-COMPATIBILITY`
 - **Args**: `(THEN-NODE ELSE-NODE LOCATION)`
 
-  > Unifies types of then/else branches. Returns (values unified-type new-then new-else).
+  > Unifies types of then/else branches. Returns (values unified-type new-then new-else).  >    ADV-007: two enum-valued branches -- e.g. (if c :mul :add), whose keyword literals each  >    have their own singleton type -- unify to their single common enumeration.
 
 
 ---
@@ -394,19 +394,11 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
-### DEFUN `ANALYZE-STATIC-WHEN-EXPRESSION`
-- **Args**: `(EXPR ENV CONTEXT LOCATION)`
-
----
 ### DEFUN `ANALYZE-UNLESS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
 ### DEFUN `ANALYZE-UNLESS+-EXPRESSION`
-- **Args**: `(EXPR ENV CONTEXT LOCATION)`
-
----
-### DEFUN `ANALYZE-STATIC-UNLESS-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
 ---
@@ -883,13 +875,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%EXPAND-WARP-IDX-FORM`
-- **Args**: `(TENSOR-FORM BINDINGS BODY-FORMS LOCATION)`
-
-  > Linear-flatten expansion for hardware-stride :warp-idx.  Always 1 binding.
-
-
----
 ### DEFUN `%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS`
 - **Args**: `(TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN
               LOCATION)`
@@ -963,10 +948,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 ---
 ### DEFUN `%REWRITE-BARE-TILE-IN-FORM`
 - **Args**: `(FORM ORIGIN-BINDING-SYMS CL-PKG)`
-
----
-### DEFUN `%REWRITE-BARE-LOAD-STORE-TILE-IN-BODY`
-- **Args**: `(BODY-FORMS ORIGIN-BINDING-SYMS CL-PKG)`
 
 ---
 ### DEFUN `%DETECT-BARE-LOAD-STORE-TILE-IN-FORM`
@@ -1211,13 +1192,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(DECL KERNEL-NAME PROFILE)`
 
   > Validate a (mma-lowering <keyword>) declaration and return the chosen lowering keyword.  >   >    DECL absent -> the active profile's default (its first :mma-lowerings entry, else :coop-matrix).  >    DECL present -> that lowering, if the profile offers it; otherwise a compile-time REFUSAL.  >   >    The refusal is the point.  Silently falling back to the portable path would hand the user a slow  >    kernel with no way to tell that their request was ignored -- exactly the failure mode that hid  >    :warps-on-a-ring being a no-op through two endeavours.
-
-
----
-### DEFUN `%TLC-TENSOR-ELEM-OF`
-- **Args**: `(TYPE-SPEC)`
-
-  > The ELEMENT type of a tensor-shaped TYPE-SPEC, or NIL if it is not one.  >    Tolerant by design: anything that does not canonicalize to a (tensor ELEM ...) form answers  >    NIL, which makes the caller skip its check rather than guess.
 
 
 ---
@@ -1782,6 +1756,20 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%UNIFORMITY-JOIN`
+- **Args**: `(STATES)`
+
+  > The uniformity of a value computed from parts whose uniformity STATES are given: :divergent if any  >    part is, :uniform only if every part is, :unknown otherwise.
+
+
+---
+### DEFUN `%UNIFORMITY-OF-ALL`
+- **Args**: `(NODES ENV)`
+
+  > %uniformity-join over the uniformity of each of NODES, computed in order.
+
+
+---
 ### DEFUN `CALCULATE-UNIFORMITY-STATE`
 - **Args**: `(NODE ENV)`
 
@@ -2094,14 +2082,14 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFUN `ANALYZE-MOD-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (mod x y).  Expands to (- x (* (/ x y) y)) with x and y bound  >    to gensyms first, then delegates to analyze-expression.  Works for any  >    numeric type via the standard +/-/*/ analyzers.
+  > Analyzes (mod x y): the remainder of FLOOR division -- its sign follows the divisor, so  >    (mod -1 4) is 3 (Common Lisp mod; endeavour 185).  Integers and floats.
 
 
 ---
 ### DEFUN `ANALYZE-REM-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (rem x y).  Currently identical to mod — both match C % / LLVM  >    srem.  Split semantics later if needed.
+  > Analyzes (rem x y): the remainder of TRUNCATING division -- its sign follows the dividend,  >    like C++ % (Common Lisp rem; endeavour 185).  Integers and floats.
 
 
 ---
@@ -2226,6 +2214,114 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzer for (type-infinity T): positive infinity, as a constant of floating-point type T.  Negate it  >    for negative infinity.  Meaningful under :ieee precision; an integer T has no infinity and is  >    refused.
+
+
+---
+### DEFPARAMETER `*185-DIVMOD-OPS*`
+
+  > Crisp operator name -> integer division rounding mode (endeavour 185).
+
+
+---
+### DEFUN `%185-INT-CATEGORY-P`
+- **Args**: `(TYPE-NAME)`
+
+  > T when TYPE-NAME is a signed or unsigned integer SCALAR type.
+
+
+---
+### DEFUN `%185-FLOAT-CATEGORY-P`
+- **Args**: `(TYPE-NAME)`
+
+  > T when TYPE-NAME is a floating-point SCALAR type.
+
+
+---
+### DEFUN `%185-ANALYZE-INT-OPERANDS`
+- **Args**: `(OP-NAME A-FORM B-FORM ENV CONTEXT LOCATION)`
+
+  > Analyzes the two operands of integer division OP-NAME and returns (values a-node b-node type).  >    Both must be the same integer scalar type; an integer LITERAL operand is coerced to the other  >    operand's type (as mod does), since a literal is INT only because of how the reader spells it.  >    Float operands are an error: two-argument floor / ceil / round are integer division.
+
+
+---
+### DEFUN `ANALYZE-ROUNDING-DIVISION-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes floor / ceil / round (endeavour 185, decision D2):  >      (floor x)    float x -> int, rounded toward -infinity (ceil: +infinity; round: nearest, ties even);  >                   an integer x is returned unchanged  >      (floor a b)  integer division, chapter 32/06 -- the QUOTIENT here; the remainder is available  >                   through a multiple-value binding (see %185-maybe-divmod-node).
+
+
+---
+### DEFUN `%185-MAYBE-DIVMOD-NODE`
+- **Args**: `(INIT-FORM BINDING-VARS ENV CONTEXT LOCATION)`
+
+  > D1: when a let binds TWO OR MORE variables to (/ a b), (floor a b), (ceil a b) or (round a b),  >    returns the two-value quotient / remainder node; otherwise NIL (the caller analyzes INIT-FORM  >    normally).  Float operands of / are refused here: float division has no second value.
+
+
+---
+### DEFPARAMETER `*185-MATH-OP-NAMES*`
+
+  > Endeavour 185 P1: the math operator names analyzed by analyze-185-math-op.
+
+
+---
+### DEFUN `%185-OP-NAMED-P`
+- **Args**: `(SYM NAME)`
+
+  > T when SYM is a symbol whose name is NAME (any package).
+
+
+---
+### DEFUN `%185-CRISP-SYM`
+- **Args**: `(NAME)`
+
+  > The :crisp-language symbol NAME -- what the AD walk must emit so the backward source reads  >    like user source.
+
+
+---
+### DEFUN `%185-COERCE-LITERAL-NODE`
+- **Args**: `(FORM NODE TO-TYPE ENV CONTEXT LOCATION POS)`
+
+  > If FORM is a numeric literal whose node type is not TO-TYPE, re-analyze it as (TO-<TO-TYPE> FORM);  >    otherwise return NODE.  A literal has no independent type worth defending.
+
+
+---
+### DEFUN `ANALYZE-185-MATH-OP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes sqrt / rsqrt / abs / clamp / *! (endeavour 185 P1).
+
+
+---
+### DEFPARAMETER `*185-BIT-OP-NAMES*`
+
+  > Endeavour 185 P2: the integer bit operator names analyzed by analyze-185-bit-op.
+
+
+---
+### DEFUN `%185-REGISTER-MATH-OP-ANALYZERS`
+
+  > Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language  >    and :crisp.compiler.  Called from register-ops-analyzers.
+
+
+---
+### DEFUN `ANALYZE-185-BIT-OP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes ash / logand / logior / logxor / lognot / popcount (endeavour 185 P2).
+
+
+---
+### DEFUN `%185-TRUNC-REM-EXPANSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 185: the pre-185 analyze-mod-expression body, kept for INTEGER rem.  >    Analyzes (rem x y) as  Expands to (- x (* (/ x y) y)) with x and y bound  >    to gensyms first, then delegates to analyze-expression.  Works for any  >    numeric type via the standard +/-/*/ analyzers.
+
+
+---
+### DEFUN `%185-REM-OR-MOD`
+- **Args**: `(EXPR ENV CONTEXT LOCATION MODE)`
+
+  > Shared analyzer for (rem x y) / (mod x y), MODE :rem or :mod (endeavour 185).
 
 
 ---
@@ -2383,6 +2479,34 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(LID NG LS FOLD-AT)`
 
   > Endeavour 181.  Last-man's final sweep, run by every thread of the elected workgroup: thread LID folds  >    partials LID, LID+LS, LID+2*LS, ... below NG into accumulator(s) the caller has bound to the IDENTITY,  >    so one workgroup of LS threads covers any number of workgroups.  LID, NG and LS are symbols bound to  >    ints.  FOLD-AT is called with the symbol holding the partial index P and returns a LIST of the forms  >    that fold partial P in (spliced into the guarding WHEN).  >   >    A COUNTED loop over ceil(NG/LS) strides with a closed-form index -- not a loop-carried P -- keeps the  >    AD pass out of it (compare BUG 103/105), and the trip count is uniform (NG and LS are the same in  >    every thread), hence dotimes+.  The fold order is fixed by (NG, LS) alone, so last-man stays  >    reproducible.  >   >    The first partial is folded by the loop like every other, NOT read into the accumulator before it as  >    the pre-181 one-pass sweep did.  Seeding with (if (< lid ng) (~ gv lid) identity) and then looping  >    compiled to correct LLVM IR (checked at -O3) that BMG executed wrongly: the seed was dropped, in some  >    specs and not others depending on unrelated code shape, while the loop's own folds were never wrong.  >    Same signature as BUG 030 (IGC).  See tests/spec/181-last-man-sweep/last-man-sweep.md, D2.
+
+
+---
+### DEFUN `%GRID-REDUCE-REFUSE`
+- **Args**: `(FMT &REST ARGS)`
+
+  > Signals a grid-reduce! compile error whose message is FMT applied to ARGS.
+
+
+---
+### DEFUN `%FUSED-GRID-REDUCE-CHECK-KEYS`
+- **Args**: `(STRATEGY REST CLAUSES)`
+
+  > Refuses a :strategy that is not a compile-time keyword or not one of :atomic / :cas /  >    :last-man-standing, then any call-level key in REST or clause-level key in CLAUSES that STRATEGY  >    does not use.
+
+
+---
+### DEFUN `%FUSED-GRID-REDUCE-ATOMIC-FORM`
+- **Args**: `(STRATEGY CLAUSES RWG)`
+
+  > :atomic / :cas -- ONE fused workgroup reduction of every clause, then one leader thread applying each  >    clause's hardware atomic (:atomic) or CAS loop (:cas) to its return cell.  :atomic refuses an operator  >    with no native atomic.
+
+
+---
+### DEFUN `%FUSED-GRID-REDUCE-LAST-MAN-FORM`
+- **Args**: `(CLAUSES REST RWG)`
+
+  > :last-man-standing -- every workgroup's partial written, ONE ticket from ONE counter, ONE election  >    flag, and the last workgroup's ONE fused strided sweep writing every return cell.  Scratch the call  >    leaves out is allocated implicitly (see SUPPLY).
 
 
 ---
@@ -2800,7 +2924,7 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFUN `GET-STRUCT-MEMBER-INDEX`
 - **Args**: `(STRUCT-TYPE-NAME MEMBER-NAME)`
 
-  > Helper to find the physical index of a struct member, accounting for padding.
+  > Helper to find the physical index of a struct member, accounting for padding.  >    ADV-018: a def-type alias of a c-t-qualified struct, (def-type fast-cfg (my-cfg :exec :fast)),  >    is resolved to the qualified type first, so set! through an accessor works on it.
 
 
 ---
@@ -2997,13 +3121,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(CANON)`
 
   > Return the address-space keyword from a canonical storage handle type.
-
-
----
-### DEFUN `%MV-SOURCE-ACCESS`
-- **Args**: `(CANON)`
-
-  > Return the access keyword from a canonical storage handle type.
 
 
 ---
@@ -3237,6 +3354,31 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(OP EXPR IS-NESTED?)`
 
 ---
+### DEFPARAMETER `*ANF-UNEXPANDED-MACROS*`
+
+  > Operators anf-normalize handles ITSELF.  When one of them is also a macro, it must not be  >    macroexpanded before the dispatch below sees it.
+
+
+---
+### DEFPARAMETER `*ANF-OPAQUE-STATEMENT-NAMES*`
+
+  > Forms anf-normalize passes through WHOLE (bound to a temp when nested): their coordinate / dimension  >    tuples are not expressions to flatten, and the backward walk meets them as single statements.
+
+
+---
+### DEFPARAMETER `*ANF-ATOMIC-OP-NAMES*`
+
+  > The place-writing atomic operators, normalized by %anf-normalize-atomic.
+
+
+---
+### DEFUN `%ANF-BIND-IF-NESTED`
+- **Args**: `(FORM BINDINGS IS-NESTED?)`
+
+  > The tail every anf-normalize clause shares: return FORM with its BINDINGS -- or, when IS-NESTED?, bind  >    it to a fresh temp (appended after BINDINGS) and return the temp.  Callers normalize FORM's  >    sub-forms BEFORE calling this, so the temp is minted after theirs, as it always was.
+
+
+---
 ### DEFUN `ANF-NORMALIZE`
 - **Args**: `(EXPR IS-NESTED?)`
 
@@ -3258,10 +3400,37 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFVAR `*AD-SHADOW-RENAME-COUNTER*`
+
+  > Counter for the NAME%SHn symbols minted by %alpha-rename-shadowed-lets (ADV-001).
+
+
+---
+### DEFUN `%FRESH-SHADOW-NAME`
+- **Args**: `(SYM)`
+
+  > A fresh symbol NAME%SHn in SYM's package, for a renamed shadowing binding.
+
+
+---
+### DEFUN `%RENAMABLE-VAR-P`
+- **Args**: `(SYM)`
+
+  > T for a symbol that names a lexical variable: not a keyword, not NIL / T.
+
+
+---
+### DEFUN `%ALPHA-RENAME-SHADOWED-LETS`
+- **Args**: `(FORM &OPTIONAL ENV BOUND)`
+
+  > Returns FORM with shadowing let / counted-loop bindings alpha-renamed (ADV-001).  >    ENV is an alist old-symbol -> new-symbol for renamings in scope; BOUND lists the names bound  >    by enclosing lets / loops of this form.  Operator positions are never renamed.
+
+
+---
 ### DEFUN `ANF-TRANSFORM`
 - **Args**: `(EXPR)`
 
-  > Transforms a Crisp expression into A-Normal Form.
+  > Transforms a Crisp expression into A-Normal Form.  >    ADV-001: first alpha-renames let bindings that shadow a name in scope, because ANF flattens  >    nested lets and the AD walk keys adjoints by name (see %alpha-rename-shadowed-lets).
 
 
 ---
@@ -3306,13 +3475,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)`
 
   > Endeavor 123 (FFI-AD): emits the user-supplied VJP call for foreign function  >    FN. Call shape mirrors the mechanically-derived VJP signature:  >   >        (BKWD  primals...  seeds...  shadows...)  >   >      - primals = ARGS (the original forward args, in order)  >      - seeds   = T-ADJ-FORMS (adjoints of the active returns; empty for => nil)  >      - shadows = (base-ptr~ <src>_GRAD) for each c-pointer/voidp param, where  >                  <src> is the storage the forward pointer came from via  >                  (base-ptr~ <src>), resolved through *ffi-baseptr-src*.  >   >    The VJP returns one delta per ACTIVE SCALAR input (float/int), in forward  >    order; each is accumulated into that input arg's local adjoint. Pointer-input  >    gradients are written through the shadow pointers by the VJP body, not  >    returned. Handles and other passive params get nothing.
-
-
----
-### DEFUN `%CRISP-TENSOR-TYPE-P`
-- **Args**: `(TYPE-SPEC)`
-
-  > Returns T if TYPE-SPEC (possibly a type alias) resolves to a tensor/vector/matrix  >    storage handle. Vectors (N=1) and matrices (N=2) are syntactic sugar for tensor,  >    so a single head check covers all three.
 
 
 ---
@@ -3504,6 +3666,13 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
 
   > Backward rules for the endeavour-170 hardware math ops (v := EXPR). Each operand's adjoint  >    accumulates d(op)/d(operand) * v_adj. Integer operands get promoted adjoints like any integer  >    input. Kinks and ties use the conventions recorded in the endeavour doc (D7-D10); the *-approx  >    derivatives are evaluated with the approx ops themselves (D20). Returns T.
+
+
+---
+### DEFUN `%185-MATH-BACKWARD`
+- **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
+
+  > Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of  >    them (the clause handled it), else NIL.
 
 
 ---
@@ -3769,6 +3938,99 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%GBW-RECORD-TEMP-ENTRIES`
+- **Args**: `(FLAT-ANF KERNEL-PKG)`
+
+  > Every (TEMP (%construct-struct RECORD ...)) binding in FLAT-ANF whose RECORD is a record or struct,  >    as (TEMP . ((FIELD-NAME . TEMP_FIELD_ADJ) ...)) -- the per-field adjoint names of a record temp.
+
+
+---
+### DEFUN `%GBW-RECORD-FIELD-ADJS-TABLE`
+- **Args**: `(RECORD-TEMP-ENTRIES)`
+
+  > *RECORD-PARAM-FIELD-ADJS* (the kernel's record PARAMETERS) merged with RECORD-TEMP-ENTRIES (its  >    record TEMPS) into one fresh EQ table, or NIL when there is neither.
+
+
+---
+### DEFUN `%GBW-BASEPTR-SOURCES`
+- **Args**: `(FLAT-ANF)`
+
+  > Endeavor 123 (FFI-AD): each pointer temp bound via (T (base-ptr~ SRC)) -> SRC, so a foreign call's  >    pointer argument can route its shadow to <SRC>_GRAD.
+
+
+---
+### DEFUN `%GBW-FLOAT-TENSOR-INPUTS`
+- **Args**: `(INPUTS INPUT-TYPES)`
+
+  > The kernel inputs whose type is a float tensor, as an EQ table INPUT -> TYPE.
+
+
+---
+### DEFUN `%GBW-SCRATCH-TILE-SYMS`
+- **Args**: `(FLAT-ANF)`
+
+  > Bug 032: the symbols bound via make-scratch-vector / -matrix / -tensor / -cell anywhere in  >    FLAT-ANF, as an EQ table SYM -> T, so the `~` and SET! backward cases can route indexed accesses on  >    them to their _ADJ tensor instead of polluting the scalar adjoint-map.
+
+
+---
+### DEFUN `%GFW-HOF-INLINE-BACKWARD`
+- **Args**: `(FN ARGS V ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN SCRATCH-TILE-SYMS)`
+
+  > Differentiates a call (V := (FN ARGS...)) of a higher-order function by INLINING it: the HOF's body  >    is instantiated with the concrete function argument, ANF-flattened, and walked backwards here, its  >    return variables seeded with V's adjoint.  Nested HOF calls recurse with the same context.
+
+
+---
+### DEFUN `%GFW-TILE-AT-BACKWARD-FORM`
+- **Args**: `(BWD-NAME FORM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
+
+  > Phase 1c: the backward of a LOAD-TILE-AT (BWD-NAME %LOAD-TILE-AT-BWD) or STORE-TILE-AT  >    (%STORE-TILE-AT-BWD) statement FORM -- (BWD (adj (second FORM)) (adj (third FORM)) ORIGINS  >    [:transpose V]).  The two forward forms share this shape: load is (SRC TILE ...), store is  >    (TILE DEST ...), and their backwards take the two adjoints in that same order.
+
+
+---
+### DEFUN `%GFW-REGISTER-TILE-STORE-BACKWARD-FORM`
+- **Args**: `(FORM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
+
+  > Endeavor 145 P3b: the backward of storing a REGISTER accumulator tile -- seed the accumulator's  >    adjoint from the destination's, fragment by fragment.  The origin coords are unscaled first: the  >    store-tile macro multiplied the tile-ID by (~ (extents~ TILE) i), which is meaningless for a  >    register tile -- the tile-ID inside is what we want.
+
+
+---
+### DEFUN `%GFW-WHEN-UNLESS-AS-IF`
+- **Args**: `(FORM)`
+
+  > Bug 032 fix part 2: (when C B...) as (if C B' nil) and (unless C B...) as (if C nil B'), where B' is  >    the body as one form (a PROGN when it has several).  WHEN and UNLESS were not handled by the AD  >    walker, so any forms inside them (including the load/store-tile-at inner body's set!s after  >    workgroup-stride expansion) were silently dropped; the IF case handles the rest.
+
+
+---
+### DEFUN `%GFW-PROCESS-VOID-SUB-FN-CALL`
+- **Args**: `(FORM EMIT-FN PROCESS-FORM-FN LOCAL-ADJ-FN)`
+
+  > BUG 038: the backward of an ordinary differentiable SUB-FUNCTION called as a VOID STATEMENT.  >    Prefers INLINING the callee's body: it needs no companion, so it is immune to every way companion  >    generation can quietly decline, and it gives the body's statements (load-tile above all) the same  >    treatment they would get in a kernel.  Falls back to the companion when there is no body to inline  >    -- notably FFI, and recursion.  Void, so there is no return seed.
+
+
+---
+### DEFUN `%GFW-PROCESS-MULTI-VALUE-BINDING`
+- **Args**: `(FORM EMIT-FN LOCAL-ADJ-FN)`
+
+  > The backward of a multi-value binding (V1 V2 ... (FN ARGS...)) whose FN is a registered  >    differentiable function: one backward call seeded with every result variable's adjoint.  A  >    foreign FN (Endeavor 123, FFI-AD) routes through the shadow-aware emitter.
+
+
+---
+### DEFUN `%GBW-EMIT-INPUT-GRAD-WRITES`
+- **Args**: `(INPUTS INPUT-TYPES ANY-OUTPUT-DOUBLE KERNEL-PKG EMIT-FN
+              LOCAL-ADJ-FN)`
+
+  > After the reverse walk: write each scalar / cell input's adjoint to its <INPUT>_GRAD.  Tensor inputs  >    are written by the walk itself.  Endeavor 124 (AD issues) C: under ANY-OUTPUT-DOUBLE the adjoint  >    runs in double, but a float/small-int input's grad cell is float -- down-cast at the write to match.
+
+
+---
+### DEFUN `%GBW-ASSEMBLE-BACKWARD`
+- **Args**: `(ADJOINT-MAP BACKWARD-FORMS FLAT-ANF INPUTS INPUT-TYPES
+              ANY-OUTPUT-DOUBLE KERNEL-PKG)`
+
+  > The backward AST: one LET binding every adjoint the walk named (zeroed at its type) and the paired  >    <var>_ADJ scratch for each make-scratch-* / make-register-tile binding, around BACKWARD-FORMS (which  >    were pushed, so they are reversed here).  Then the Endeavour 146 ring-adjoint fixup, the  >    Endeavour 149 top-level primal replay, and dead-scratch pruning.
+
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
@@ -3982,10 +4244,17 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%AD-ENUM-TYPE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > T if TYPE-SPEC (after alias resolution) names a def-enumeration, or is a keyword  >    literal's singleton type (keyword :k).  ADV-007.
+
+
+---
 ### DEFUN `%PROMOTE-TO-FLOAT-ADJOINT`
 - **Args**: `(TYPE-SPEC)`
 
-  > Generalised float-adjoint type promotion for AD output gradient slots.  >    - integer scalar      → float / double scalar  >    - integer tensor      → float / double tensor (element-type promoted)  >    - integer cell        → cell of float / double  >    - everything else     → unchanged (already float, or non-numeric)  >    Used to produce caller-supplied _GRAD seed types and input _GRAD output  >    types that mirror the input shape with float adjoint values.
+  > Generalised float-adjoint type promotion for AD output gradient slots.  >    - integer scalar      → float / double scalar  >    - enum scalar         → float (an enum is an i32; ADV-007)  >    - integer tensor      → float / double tensor (element-type promoted)  >    - integer cell        → cell of float / double  >    - everything else     → unchanged (already float, or non-numeric)  >    Used to produce caller-supplied _GRAD seed types and input _GRAD output  >    types that mirror the input shape with float adjoint values.
 
 
 ---
@@ -4016,12 +4285,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%AUTODIFF-GRAD-CELL-TYPE`
-
-  > Returns the canonical cell type used for gradient output parameters.
-
-
----
 ### DEFVAR `*RECORD-PARAM-FIELD-ADJS*`
 
   > Hash table: record-sym -> alist of (FIELD-NAME-STR . FIELD-ADJ-SYM)  >    in declaration order.  Bound during backward walk for sub-functions  >    with record params, and for kernels with record-valued ANF temps  >    (constructed via make-RECORD).  Otherwise NIL.  >   >    Consumers:  >      - The accessor rule in %handle-single-value-backward routes adjoint  >        flow from (FIELD~ p) to the per-field synth adj.  >      - The %construct-struct case flows per-field adjs to constructor args.  >      - %emit-sub-fn-backward distributes deltas per-field when an arg is  >        a record-valued symbol.
@@ -4038,13 +4301,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(FORMS)`
 
   > Walks FORMS (recursing through progn / with-template-type) and returns  >    an alist mapping (symbol-name TYPE-NAME) -> count of non-:c-t,  >    non-brand runtime fields. Used during pre-registration when *crisp-types*  >    isn't yet populated.  >   >    Includes BOTH def-record AND def-struct (records and structs at the  >    sub-function AD level both contribute their field count toward the  >    differentiability gate).  Also includes derived-from-{record,struct}  >    types: when (def-derived-type NEW BASE ...) is encountered and BASE is  >    already in the alist, NEW is added with the same field count.  >   >    The name `record-info` is historical; the alist now tracks structs too.
-
-
----
-### DEFUN `%RESOLVE-TO-BASE-TYPE-FOR-RECORDS`
-- **Args**: `(PD-TYPE)`
-
-  > If PD-TYPE names a derived type whose base is a record, returns the  >    base record type symbol. Otherwise returns PD-TYPE unchanged.  >   >    Records are SROA'd at every function boundary, and derived-type wrappers  >    preserve that property. This helper lets the sub-function gate widening  >    accept derived-from-record types (e.g. `coordinate` derived from `point`).
 
 
 ---
@@ -4789,7 +5045,7 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFUN `%COOP-LENGTH`
 - **Args**: `(BUILDER MODULE MAT-VAL ELEM-LLVM ROWS COLS USE)`
 
-  > Emit OpCooperativeMatrixLengthKHR(MAT-VAL) -> i32, the number of components THIS  >    invocation holds.  Runtime value by design (see the header).  >   >    The name carries a _use_rows_cols suffix for the same reason the Load/Store builtins do:  >    %coop-call reuses a declaration by NAME, so two different coop types under one name would  >    collide on the second call's signature.  The translator matches on the prefix — verified  >    by spike2 in put_temp_files_here/150-spv/, which emits the real instruction.
+  > Emit OpCooperativeMatrixLengthKHR(MAT-VAL) -> i32, the number of components THIS  >    invocation holds.  Runtime value by design (see the header).  >   >    The name carries a _use_rows_cols suffix for the same reason the Load/Store builtins do:  >    %coop-call reuses a declaration by NAME, so two different coop types under one name would  >    collide on the second call's signature.  The translator matches on the prefix — verified  >    by a one-off spike during endeavour 150, which emitted the real instruction.
 
 
 ---
@@ -4903,12 +5159,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(BUILDER MODULE PLAN)`
 
   > The i16 ctaMask for THIS workgroup's multicast group: PATTERN << (position on the  >    non-group axes).  When every clustered axis is in the group -- the 1-D case -- there are no  >    non-group axes, the shift vanishes and this folds back to the old compile-time constant.
-
-
----
-### DEFUN `%MODULE-CLUSTER-EXTENT`
-
-  > How many workgroups a :mode :cluster barrier must expect arrivals from.  >   >    Endeavor 152 step 10c: this is now the FULL cluster size (the product of every axis), not  >    a 1-D extent.  That follows directly from the decision above -- if peers arrive cluster-wide  >    then the count must be cluster-wide too.  Getting these two out of step is precisely the  >    failure that hangs a GPU: a barrier initialised for fewer arrivals than it receives releases  >    early, one initialised for more never releases at all.  >   >    *kernel-dispatch-declarations* is cleared per module, so this is module-scoped.
 
 
 ---
@@ -5362,11 +5612,73 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `GENERATE-COMPARISON-IR`
-- **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE
-              OP-NODE-INT OP-NODE-FLOAT)`
+### DEFUN `%185-INT-DIVMOD`
+- **Args**: `(BUILDER MODULE MODE A B TYPE-NAME)`
 
-  > Helper to generate IR for comparison operators (<, >, =, etc).
+  > Integer division of A by B (both TYPE-NAME) rounded per MODE (:trunc :floor :ceil :round, the  >    last ties-to-even).  Returns (values quotient remainder) with remainder = a - q*b.  >    Branch-free, written as integer arithmetic (sign masks from arithmetic shifts, a borrow bit for  >    the unsigned compare); InstCombine is free to re-form icmp/select from it.  >    OPEN (BUG 120): on the BMG, four of these written INLINE in one kernel and SLP-vectorized at -O3  >    into <4 x i32> / <4 x i1> ran and stored nothing -- the IR and SPIR-V look correct, and the same  >    code through a helper function is right.  Not yet understood.
+
+
+---
+### DEFUN `%185-DIVMOD-HELPER`
+- **Args**: `(MODULE MODE TYPE-NAME TWO-VALUES-P)`
+
+  > The internal helper function computing integer division MODE on TYPE-NAME, returning the  >    quotient, or {quotient, remainder} when TWO-VALUES-P.  Created on first use in MODULE:  >    internal linkage, noinline, SPIR_FUNC on SPIR-V.  Its body is %185-int-divmod.
+
+
+---
+### DEFUN `%185-LOWER-DIVMOD`
+- **Args**: `(BUILDER MODULE MODE ARG-VALS ARG-TYPES RESULT-TYPE TWO-VALUES-P)`
+
+  > Shared %hw-lower body for the endeavour-185 integer division ops.  :trunc is inline; floor /  >    ceil / round call their helper (BUG 120 workaround, see %185-divmod-helper).
+
+
+---
+### DEFUN `%185-LOWER-FP-TO-INT`
+- **Args**: `(BUILDER MODULE BASE ARG-VALS ARG-TYPES RESULT-TYPE)`
+
+  > llvm.BASE (floor / ceil / rint) on the float argument, then fptosi to RESULT-TYPE.
+
+
+---
+### DEFUN `%185-SQRT-CALL`
+- **Args**: `(BUILDER MODULE X TYPE-NAME)`
+
+  > sqrt of X (float / double scalar) through the transcendental callee selection: llvm.sqrt under  >    ieee on both backends (NVPTX: sqrt.rn; no libdevice); native_sqrt under fast on SPIR-V; fast  >    flags (afn -> sqrt.approx) under fast on PTX.
+
+
+---
+### DEFUN `%185-HELPER-CALL`
+- **Args**: `(BUILDER MODULE NAME RET-TYPE ARG-VALS BODY-FN)`
+
+  > Call the internal noinline helper NAME : RET-TYPE(types of ARG-VALS), creating it in MODULE on  >    first use with a body built by BODY-FN, called as (BODY-FN helper-builder param-values) and  >    returning the value to ret.  SPIR_FUNC on SPIR-V; the call site gets the callee's CC.
+
+
+---
+### DEFUN `%185-ASH-BODY`
+- **Args**: `(BUILDER MODULE X C X-TYPE)`
+
+  > ash (endeavour 185, D3) of X by C (already X-TYPE).  Branch-free:  >      left  = count >= bits ? 0 : x << count  >      right = x >> min(-count, bits-1)   (ashr: sign fill; lshr for unsigned, and 0 when -count >= bits)  >      ash   = count >= 0 ? left : right
+
+
+---
+### DEFUN `%185-OCL-BUILTIN-NAME`
+- **Args**: `(BASE BITS)`
+
+  > The Itanium-mangled OpenCL builtin BASE for a float (32) or double (64) argument: _Z4tanhf.
+
+
+---
+### DEFUN `%185-TRANSCENDENTAL-CALL`
+- **Args**: `(BUILDER MODULE X TYPE-NAME BASE)`
+
+  > Call transcendental BASE ("tanh" "erf" "exp2") of X through the target's callee.
+
+
+---
+### DEFUN `%185-FMOD-BODY`
+- **Args**: `(BUILDER MODULE X Y TYPE-NAME)`
+
+  > Float mod: r = frem(x, y); r + y when r /= 0 and r, y differ in sign.
 
 
 ---
@@ -5438,6 +5750,37 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%AREF-CELL-SPEC`
+- **Args**: `(ARRAY-TYPE)`
+
+  > ARRAY-TYPE canonicalized for semantic-aref's dispatch: a (CELL ...) / (TENSOR ...) spec, unmangled  >    from a template-struct name where it is one.
+
+
+---
+### DEFUN `%AREF-FIXED-ARRAY-IR`
+- **Args**: `(ARRAY-NODE ARRAY-TYPE INDEX-VAL BUILDER MODULE VAR-ENV DI-BUILDER
+              DI-SCOPE LOCATION-MAP)`
+
+  > semantic-aref Case 2: an (array T N) fixed-size array -- GEP into its alloca (or an inline struct  >    field, or an inner aref's pointer).  Returns (values loaded nil elem-ptr).
+
+
+---
+### DEFUN `%AREF-TENSOR-IR`
+- **Args**: `(ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE
+              VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the  >    element pointer is the parent storage's base pointer (SROA field 0 of field 0) plus index * sizeof.  >    A read of a read-only kernel-parameter tensor gets !invariant.load.  Returns (values loaded nil ptr).
+
+
+---
+### DEFUN `%AREF-CELL-IR`
+- **Args**: `(ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE
+              VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > semantic-aref Case 1: a CELL.  The element pointer is the parent storage's base pointer plus the  >    cell's byte offset plus index * sizeof.  Returns (values loaded nil ptr).
+
+
+---
 ### DEFUN `%DVEC-COERCE-ELEMENT-IR`
 - **Args**: `(ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV
               DI-BUILDER DI-SCOPE LOCATION-MAP)`
@@ -5471,6 +5814,30 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(BUILDER MODULE ADDR-SPACE SRC-PARENT NEW-PTR NEW-BYTESIZE)`
 
   > Build a new STORAGE_{addr} struct value from ptr and bytesize.
+
+
+---
+### DEFUN `%MV-EMIT-BOUNDS-CHECK`
+- **Args**: `(BUILDER MODULE RANK EXPLICIT-LEN OFFSET-ELEMS OFFSET-BYTES
+              ELEM-SIZE SRC-BYTESIZE)`
+
+  > --runtime-checks: trap unless offset_bytes + view_bytes <= the source's byte size.  >    view_bytes = len_elems * sizeof(elem): 1 element for make-cell, the explicit length when given,  >    else 1 (an auto-length view only has to fit its offset).
+
+
+---
+### DEFUN `%MV-CELL-VALUE`
+- **Args**: `(BUILDER MODULE ADDR-SPACE SRC-PARENT SRC-PTR SRC-BYTESIZE
+              OFFSET-ELEMS ELEM-SIZE RESULT-UNDEF)`
+
+  > make-cell (rank 0): { STORAGE, byte-offset-i64 } -- the SOURCE's storage, unbumped, and the offset in  >    bytes.
+
+
+---
+### DEFUN `%MV-TENSOR-VALUE`
+- **Args**: `(BUILDER RANK STRIDES EXTENTS EXPLICIT-LEN NEW-BYTESIZE ELEM-SIZE
+              RESULT-UNDEF NEW-STORAGE)`
+
+  > make-vector / -matrix / -tensor (rank >= 1): { STORAGE, offsets (zero), strides, extents, length },  >    strides row-major unless given, length explicit or bytes / sizeof(elem).
 
 
 ---
@@ -5738,13 +6105,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%GEN-NVVM-MBARRIER-TEST-WAIT-SHARED`
-- **Args**: `(BUILDER MODULE MBARRIER-PTR STATE-VAL)`
-
-  > Emits @llvm.nvvm.mbarrier.test.wait.shared(ptr addrspace(3), i64 state) -> i1 bool.
-
-
----
 ### DEFVAR `*TMA-MBAR-COUNTER*`
 
   > Monotonic id source for unique __crisp_mbar_N shared globals (Endeavor 137 TMA).
@@ -5964,6 +6324,36 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%COOP-VAR-STORAGE`
+- **Args**: `(NODE NAME VAR-ENV)`
+
+  > The storage (alloca) of variable NAME in VAR-ENV, for a cooperative-matrix map; refuses when absent.
+
+
+---
+### DEFUN `%COOP-EMIT-MAP-LOOP`
+- **Args**: `(NODE BUILDER MODULE ROWS COLS USE PRIMARY-PTR PER-ELEM)`
+
+  > Emits a loop over every element of the cooperative matrix stored at PRIMARY-PTR, calling PER-ELEM  >    with the element index (i64) inside the body.  Endeavour 155: the map loops extract SCALAR elements  >    into f32 allocas (cm_elem / cm_prm / cm_adj), so a 16-bit matrix is refused rather than  >    miscompiled.  Returns (values nil nil).
+
+
+---
+### DEFUN `%COOP-MAP-IR`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ROWS
+              COLS USE)`
+
+  > :map -- rewrite every element of the target matrix in place: bind the element to the map's temp and  >    store back the value of the body.
+
+
+---
+### DEFUN `%COOP-MAP2-IR`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ROWS
+              COLS USE)`
+
+  > :map2 -- the two-matrix map (adjoint, primal): bind both elements to the map's temps and store the  >    body's value back into the adjoint matrix.
+
+
+---
 ### DEFUN `%LLVM-FLOAT-WIDTH`
 - **Args**: `(TY)`
 
@@ -6031,13 +6421,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(VAL)`
 
   > If VAL is an LLVM Instruction, its opcode as an LLVMOpcode integer; otherwise NIL.  >   >    Guarded by LLVMIsAInstruction because LLVMGetInstructionOpcode is an unchecked  >    unwrap<Instruction> -- handing it a constant or a function argument crashes the process.  That  >    exact trap is what BUG 033 turned out to be, in LLVMInstructionSetDebugLoc.
-
-
----
-### DEFUN `%LLVM-BINOP-WITH-CONST`
-- **Args**: `(VAL OPCODE)`
-
-  > Match VAL as `<OPCODE> %x, <const>` and return (values %x const), or NIL when it does not match.  >   >    Only the SECOND operand is tested for constness: LLVM canonicalises commutative operations to put  >    the constant on the right, and both producers here -- the fragment-index add and the  >    fragment-extent multiply -- are built that way explicitly.
 
 
 ---
@@ -6430,12 +6813,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%OPT-AVAILABLE-P`
-
-  > Returns the resolved opt tool path if findable, NIL otherwise.  >    We probe rather than assume, so machines without opt installed still  >    produce PTX / SPV (just unoptimized).
-
-
----
 ### DEFVAR `*NVPTX-TARGET-INITIALIZED*`
 
   > Guard so the NVPTX target is registered at most once per image.
@@ -6644,6 +7021,18 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%DROP-TERMINAL-IO-LOG-APPENDER`
+
+  > Removes the root logger's plain CONSOLE-APPENDER, leaving the stderr one (BUG 122).  >    log4cl's `(log:config :sane :stream S level)` installs TWO root appenders: :SANE's console  >    appender, which writes to the dynamic value of *TERMINAL-IO*, and a TRICKY-CONSOLE-APPENDER on S.  >    In the crisp-compile executable *TERMINAL-IO* is the process's stdout, so above --log-level=off  >    every log line also landed in the IR stream (measured: 303 <INFO> lines on BOTH stdout and stderr  >    for 001/01).  Under `sbcl --script` *TERMINAL-IO* is not stdout, which is why no in-process run  >    ever showed it.  Logging belongs on stderr only.
+
+
+---
+### DEFUN `%RESET-GENSYM-COUNTER`
+
+  > Sets *GENSYM-COUNTER* to *GENSYM-COUNTER-BASE*, so gensym-derived names in the output are the  >    same for every build and every position in a multi-compilation run (see src/globals.lisp).  >    On the first call of the process it first checks that the base exceeds every gensym the image  >    has already made; if not, it raises the base above them -- names stay unique, at the cost of  >    reproducibility -- and warns that *GENSYM-COUNTER-BASE* needs raising.
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL)
               (MATH-PRECISION IEEE) (FORCE-MATH-PRECISION NIL)
@@ -6706,13 +7095,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 ---
 ### DEFUN `IS-ADDRESS-SPACE?`
 - **Args**: `(X)`
-
----
-### DEFUN `ADDRESS-SPACE-VALUE`
-- **Args**: `(K)`
-
-  > Returns the integer value for an address space keyword, sensitive to *target-backend*.
-
 
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\environment.lisp`
@@ -6887,6 +7269,105 @@ Generated on 2026-10-11T19:36:03.707225Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\errors.lisp`
 
+### DEFPARAMETER `*UNSUPPORTED-FORM-HINTS*`
+
+  > Common Lisp operator name -> what to write in Crisp instead.  Appended to the  >    unsupported-form error (ADV-007).
+
+
+---
+### DEFUN `%UNSUPPORTED-FORM-HINT`
+- **Args**: `(FORM)`
+
+  > The Crisp alternative for FORM's operator name, or NIL.
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp-man\src\globals.lisp`
+
+### DEFVAR `*REGISTER-TILE-ELEMS*`
+
+  > Endeavour 155: alist (SYM . ELEM) of the ELEMENT TYPE of every register tile / tile-ring bound  >    by the LET currently being exploded.  %emit-per-frag-block-load reads it so a load-tile  >    expansion walks the operand at ITS element type's native K (8 for a 32-bit operand, 16 for a  >    16-bit one) rather than at the profile's first shape.  Bound by %explode-register-tiles; NIL  >    elsewhere, in which case FLOAT is assumed — exactly the pre-155 behaviour.
+
+
+---
+### DEFVAR `*WARP-GRID*`
+
+  > Endeavour 155: (GM . GN) warp grid of the LET currently being exploded, derived from its  >    accumulator register-tile's fragment grid and warp count, or NIL when there is no distributed  >    accumulator.  Read by the operand-slicing paths so A/B, C and the loads all agree on which warp  >    owns what.  Bound by %explode-register-tiles; NIL elsewhere, in which case operands are  >    allocated whole -- the pre-Step-2 behaviour.
+
+
+---
+### DEFCONSTANT `+LLVM-OPCODE-ADD+`
+
+  > LLVMOpcode enum value for the integer Add instruction.
+
+
+---
+### DEFCONSTANT `+LLVM-OPCODE-MUL+`
+
+  > LLVMOpcode enum value for the integer Mul instruction.
+
+
+---
+### DEFCONSTANT `+LLVM-OPCODE-SEXT+`
+
+  > LLVMOpcode enum value for the SExt cast instruction.
+
+
+---
+### DEFCONSTANT `+SPIRV-EXECUTION-MODE-SUBGROUP-SIZE+`
+
+  > SPIR-V ExecutionMode SubgroupSize.  Takes one literal operand: the required size.
+
+
+---
+### DEFPARAMETER `*KNOWN-MMA-LOWERINGS*`
+
+  > Every MMA lowering NAME the compiler understands, whether or not a given backend implements it.  >   >    :coop-matrix  SPV_KHR_cooperative_matrix / the portable path.  Implemented; the default.  >    :xe-native    Intel Xe: inline-assembly DPAS + the Block2D address-payload load convention.  >                  NAMED but NOT YET IMPLEMENTED -- no profile lists it, so requesting it is refused  >                  with the profile's actual offering.  It is named here so the value type validates  >                  and so the intent is documented in one place.  >   >    A profile's :mma-lowerings is checked against this list, which turns a typo into an error at  >    def-hardware-profile time rather than a kernel that silently never selects its lowering.
+
+
+---
+### DEFVAR `*MMA-LOWERING*`
+
+  > The MMA lowering in force while generating the current kernel's IR.  >   >    Bound per kernel by GENERATE-LLVM-IR from that kernel's (mma-lowering ...) declaration, which  >    the analyzer has already validated against the active hardware profile.  Defaults to  >    :coop-matrix so any code path reached outside a kernel -- and every existing kernel, which  >    declares nothing -- behaves exactly as before.
+
+
+---
+### DEFCONSTANT `+XE-NATIVE-OPERANDS-BF16+`
+
+  > MatrixABf16 | MatrixBBf16 for SubgroupMatrixMultiplyAccumulateINTEL.
+
+
+---
+### DEFCONSTANT `+XE-NATIVE-OPERANDS-FP16+`
+
+  > MatrixAFp16 | MatrixBFp16 for SubgroupMatrixMultiplyAccumulateINTEL.
+
+
+---
+### DEFVAR `*XE-NATIVE-OPERAND-ELEM*`
+
+  > The element kind (:bf16 / :fp16) of the A/B fragments built so far in this kernel, or NIL.  >   >    Recorded by %coop-type-impl for :xe-native and read by %coop-mma-impl, which cannot recover it  >    from its own arguments -- see the header above.  Bound per kernel by GENERATE-LLVM-IR.
+
+
+---
+### DEFVAR `*SPLIT-BARRIER-DEPTH*`
+
+  > How many split-barrier windows are open in the kernel currently being analysed, or NIL outside  >    one.  Bound per kernel by INTERNAL-DEF-FUNCTION and stepped by %ANALYZE-GPU-BUILTIN.  >   >    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the  >    second :arrive sees a non-zero depth and refuses.
+
+
+---
+### DEFPARAMETER `*GENSYM-COUNTER-BASE*`
+
+  > The value INITIALIZE-COMPILER gives *GENSYM-COUNTER*, making gensym-derived names in the  >    output independent of the build and of what was compiled before in the same process.  Must  >    exceed the counter's value at the first INITIALIZE-COMPILER; %RESET-GENSYM-COUNTER checks.
+
+
+---
+### DEFVAR `*GENSYM-BASE-CHECKED*`
+
+  > T once %RESET-GENSYM-COUNTER has compared *GENSYM-COUNTER-BASE* against the image's own  >    gensym count (done on the first INITIALIZE-COMPILER of the process only).
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hardware-profile.lisp`
 
 ### DEFPARAMETER `*HARDWARE-PROFILE-SCHEMA*`
@@ -6941,13 +7422,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(&OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))`
 
   > The DEFAULT per-thread register allocation (the first / smallest selectable mode),  >    or NIL.  This is what a plain fit-check should measure against — it is what the  >    kernel gets unless a larger mode is deliberately selected.
-
-
----
-### DEFUN `%HP-REGISTERS-PER-THREAD-MAX`
-- **Args**: `(&OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))`
-
-  > The LARGEST selectable per-thread register allocation, or NIL.  Exceeding this means  >    the kernel will spill no matter which mode is chosen.
 
 
 ---
@@ -7047,150 +7521,22 @@ Generated on 2026-10-11T19:36:03.707225Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\main.lisp`
 
-### DEFVAR `*MMA-TEST-DIMS*`
-
-  > (M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.
-
-
----
-### DEFVAR `*MMA-INPUT-COUNTER*`
-
-  > Per-kernel input-tensor counter for A(0)/B(1) role assignment.
-
-
----
-### DEFVAR `*MMA-SCALE*`
-
-  > Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.  >    Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).
-
-
----
-### DEFVAR `*MMA-BENCH-P*`
-
-  > T when --mma-bench=M,N,K is passed: same setup + C=A·B check as  >    --mma-test, PLUS a warmup + timed relaunch loop reporting GFLOPS.  Since the harness is  >    generated from the metacrisp, it launches EACH kernel with its exact args (incl. the  >    CUtensorMap descriptor for :block) — so sync / :linear / :block are apples-to-apples.
-
-
----
-### DEFVAR `*MMA-GRID-TILE*`
-
-  > Explicit (TM TN) output-tile override from --grid-tile=T[,TN]; the  >    --mma-bench harness launches a (M/TM x N/TN) 2-D grid.  When NIL the tile is DERIVED from the  >    two local staging tiles (%derive-output-tile).
-
-
----
 ### DEFVAR `*MMA-SWIZZLE-DESCRIBES*`
 
-  > Endeavor 140 (col-major B): tensor names (strings) feeding a :128b + :col-major swizzle descriptor  >    (wgmma's B).  Such a matrix must be K-CONTIGUOUS in global memory (the wgmma descriptor reads SMEM  >    directly), so the mma-bench harness emits col-major (dim-0 contiguous) strides for it.  Populated by  >    emit-kernel-args pre-scanning the sig; consumed by %cuda-emit-tensor-arg.  Gated on swizzle-fed +  >    col-major so 137/138's nominal :col-major (mma.sync, row-major SMEM) path is untouched.
+  > Endeavor 140 (col-major B): tensor names (strings) feeding a :128b + :col-major swizzle descriptor  >    (wgmma's B).  Such a matrix must be K-CONTIGUOUS in global memory (the wgmma descriptor reads SMEM  >    directly), so the generated harness emits col-major (dim-0 contiguous) strides for it.  Populated by  >    emit-kernel-args pre-scanning the sig; consumed by %cuda-emit-tensor-arg.  Gated on swizzle-fed +  >    col-major so 137/138's nominal :col-major (mma.sync, row-major SMEM) path is untouched.
 
 
 ---
 ### DEFUN `%MMA-PARSE-ARGS`
 - **Args**: `(ARGS)`
 
-  > Return (values metacrisp-path (M N K)-or-NIL scale bench-p grid-tile), extracting --mma-test,  >    --mma-bench (implies test + timing), --mma-scale=S, and --grid-tile=T[,TN].
-
-
----
-### DEFUN `%DERIVE-OUTPUT-TILE`
-- **Args**: `(FULL-SIG)`
-
-  > Endeavor 137: derive the (M-per-wg . N-per-wg) output tile from the two LOCAL staging tiles  >    in the metacrisp.  A-tile is (M-per-wg k-step), B-tile is (k-step N-per-wg) — they share the  >    k-step dim.  Returns (values TM TN) or NIL if it cannot be cleanly identified (caller falls  >    back to --grid-tile / a single workgroup).
-
-
----
-### DEFUN `%MMA-OUT-DIR-P`
-- **Args**: `(DIR)`
-
-  > T if the param direction is an output (&out).
+  > Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an optional  >    --mma-scale=S flag.  --mma-bench and its --grid-tile were RETIRED on 2026-10-16: matmul benchmarks  >    are measured by the reviewed fixture (benchmarks/matmul/crisp/bench_harness.cu), never by a  >    per-kernel generated harness, so both flags are refused by name rather than mistaken for the path.
 
 
 ---
 ### DEFUN `MAIN`
 
   > Entry point for crisp-hoist-cuda.exe.  Endeavor 134: accepts --mma-test=M,N,K.
-
-
----
-### DEFVAR `*HOIST-CURRENT-STRUCTS*`
-
-  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.
-
-
----
-### DEFUN `%FIND-STRUCT-DEF`
-- **Args**: `(NAME)`
-
-  > Find (def-struct NAME ...) in *hoist-current-structs*.
-
-
----
-### DEFUN `STRUCT-TYPE-P`
-- **Args**: `(TYPE)`
-
-  > Returns T if TYPE names a def-struct in *hoist-current-structs*.
-
-
----
-### DEFUN `%STRUCT-BASE-TYPE`
-- **Args**: `(PARAM-TYPE)`
-
-  > Extract the base struct name from PARAM-TYPE.
-
-
----
-### DEFUN `%ARRAY-TYPE-P`
-- **Args**: `(TYPE)`
-
-  > Returns T if TYPE is an (array T N) form.
-
-
----
-### DEFUN `%ARRAY-ELEMENT-TYPE`
-- **Args**: `(TYPE)`
-
----
-### DEFUN `%ARRAY-SIZE`
-- **Args**: `(TYPE)`
-
----
-### DEFUN `%STRUCT-EMIT-FIELDS`
-- **Args**: `(STREAM VAR-PATH MEMBERS ALIASES)`
-
-  > Recursively emit C++ field assignments for a struct variable.
-
-
----
-### DEFUN `RECORD-BASE-TYPE`
-- **Args**: `(TYPE)`
-
-  > Extract the base record type symbol.
-
-
----
-### DEFUN `FIND-RECORD-DEF`
-- **Args**: `(TYPE RECORDS)`
-
-  > Find the def-record entry matching TYPE in RECORDS.
-
-
----
-### DEFUN `RECORD-TYPE-P`
-- **Args**: `(TYPE RECORDS)`
-
-  > Returns true if TYPE refers to a def-record in RECORDS.
-
-
----
-### DEFUN `TENSOR-TYPE-P`
-- **Args**: `(PARAM-TYPE)`
-
-  > Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier.
-
-
----
-### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
-- **Args**: `(N EXTENTS-LIST)`
-
-  > Returns (values extents strides) for a compact N-dim tensor.  >    Strides are in elements; innermost stride = 1.
 
 
 ---
@@ -7451,13 +7797,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%DISPATCH-SYM-TO-CPP-VAR`
-- **Args**: `(SYM)`
-
-  > Convert a dispatch param symbol to C++ variable name.
-
-
----
 ### DEFUN `%TENSOR-LENGTH-CPP-VAR`
 - **Args**: `(SYM)`
 
@@ -7493,17 +7832,60 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%EMIT-LAUNCH-BASE`
-- **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS
-              KERNEL-NAME OUT-TILE)`
+### DEFUN `%CUDA-EMIT-STRIDED-GRID`
+- **Args**: `(STREAM BLOCK-X BLOCK-Y OCCUPANCY DERIVE-FROM
+              DERIVE-FROM-IS-TENSOR SHARED-BYTES COMPUTE-UNITS)`
 
-  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    OUT-TILE (TM TN), when set (--mma-bench), OVERRIDES the grid with a (M/TM x N/TN) 2-D grid.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).  >    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;  >    the :strided strategy then uses that fixed SM count instead of querying the  >    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes  >    effect host-side.  >    Endeavor 140 (dynamic-SMEM opt-in): a kernel needing >48KB SMEM (n128-pipe, n256, wgmma  >    big-tile, ...) must cuFuncSetAttribute MAX_DYNAMIC_SHARED_SIZE_BYTES or the launch silently  >    fails (CUDA_ERROR_INVALID_VALUE).
+  > :strategy :strided -- a grid of max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor x SMs),  >    optionally derated by :occupancy.  COMPUTE-UNITS, from the hardware profile, replaces the device  >    SM query when set.
+
+
+---
+### DEFUN `%CUDA-EMIT-FIXED-GRID`
+- **Args**: `(STREAM SET-TO BLOCK-X)`
+
+  > :set-to INTEGER -- a fixed 1-D grid of SET-TO threads, in blocks of BLOCK-X.
+
+
+---
+### DEFUN `%CUDA-EMIT-EXACT-GRID`
+- **Args**: `(STREAM DERIVE-FROM DERIVE-FROM-IS-TENSOR TILE-SHAPE BLOCK-X
+              BLOCK-Y)`
+
+  > :strategy :exact with :derive-from -- ceil(extent / tile) per axis: from a tensor's length, or from up  >    to two scalar parameters.  The tile is :tile-shape when declared, else the block.
+
+
+---
+### DEFUN `%CUDA-EMIT-ONE-THREAD-PER-GRID`
+- **Args**: `(STREAM DERIVE-FROM BLOCK-X)`
+
+  > :strategy :one-thread-per (or the unstated default) with :derive-from TENSOR -- one thread per element  >    of the tensor, in blocks of BLOCK-X.
+
+
+---
+### DEFUN `%CUDA-EMIT-DIMS-GRID`
+- **Args**: `(STREAM SET-TO DERIVE-FROM BLOCK-X BLOCK-Y)`
+
+  > :set-to LIST, or :derive-from a list of SCALAR parameters -- a 2-D grid, each axis ceil(dim / block)  >    where a dim is an integer or a parameter.
+
+
+---
+### DEFUN `%CUDA-EMIT-LAUNCH-LAMBDA`
+- **Args**: `(STREAM BLOCK-X BLOCK-Y SHARED-BYTES)`
+
+  > The launch itself: an `_crisp_launch` lambda over the final gridX/gridY/gridZ, called once for the  >    correctness readback that follows.  emit-launch anchors its cluster-grid fix-up on this lambda's  >    first line, so it must stay the first thing after ALL grid computation.  (The lambda also served  >    the --mma-bench timed relaunch loop, retired 2026-10-16; it is kept so the emitted code is  >    unchanged.)  Plain cuLaunchKernel, no CUDA_CHECK -- its `return` would make this void lambda  >    non-void; a launch error surfaces at the cuCtxSynchronize below.
+
+
+---
+### DEFUN `%EMIT-LAUNCH-BASE`
+- **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS)`
+
+  > Emit cuLaunchKernel call with grid/block dims from dispatch-info.  >    Supports:  >      :strategy :strided        — max occupancy (cuOccupancyMaxActiveBlocksPerMultiprocessor)  >      :strategy :one-thread-per — grid sized to derive-from source  >      :strategy :exact          — grid sized via derive-from / local-size (or tile-shape if present)  >      :set-to integer/list      — fixed grid  >    And :derive-from can be a single tensor symbol (uses <name>_length) or a list  >    of scalar parameter names (uses <name>_arg).  >    COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units;  >    the :strided strategy then uses that fixed SM count instead of querying the  >    device (CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT), so a shrunken profile takes  >    effect host-side.  >    Endeavor 140 (dynamic-SMEM opt-in): a kernel needing >48KB SMEM (n128-pipe, n256, wgmma  >    big-tile, ...) must cuFuncSetAttribute MAX_DYNAMIC_SHARED_SIZE_BYTES or the launch silently  >    fails (CUDA_ERROR_INVALID_VALUE).  >    Each strategy's grid is emitted by its own %CUDA-EMIT-*-GRID (refactor-oct, 2026-10-16).
 
 
 ---
 ### DEFUN `EMIT-LAUNCH`
 - **Args**: `(STREAM DISPATCH-INFO SHARED-BYTES &OPTIONAL COMPUTE-UNITS
-              KERNEL-NAME OUT-TILE)`
+              KERNEL-NAME)`
 
   > Endeavor 152: renders %emit-launch-base to a string and injects the  >    cluster grid reconciliation immediately BEFORE the launch lambda -- i.e. after every strategy  >    has finished computing gridX/gridY/gridZ and after the device-limit clamping, so the  >    reconciliation is the last word on the grid.  >   >    Endeavour 181: the :match-num-workgroups scratch blocks (*cuda-deferred-scratch*) are injected at the  >    same anchor, AFTER the fix-up, so they size from the grid that is actually launched.
 
@@ -7558,102 +7940,16 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFVAR `*MMA-TEST-DIMS*`
-
-  > (M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.
-
-
----
-### DEFVAR `*MMA-BENCH-ITERS*`
-
-  > Endeavor 142 (Phase B, Q1): iteration count when --mma-bench[=N] is passed — the launcher then wraps  >    the (already-closed) command list in a warmup + timed re-execution loop and prints  >    `BENCH M N K <gflops> GFLOPS`.  Requires --mma-test=M,N,K for the FLOPS count.  NIL = no benchmark.
-
-
----
-### DEFVAR `*MMA-INPUT-COUNTER*`
-
-  > Per-kernel input-tensor counter for A(0)/B(1) role assignment.
-
-
----
-### DEFVAR `*MMA-SCALE*`
-
-  > Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.  >    Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).
-
-
----
 ### DEFUN `%MMA-PARSE-ARGS`
 - **Args**: `(ARGS)`
 
-  > Return (values metacrisp-path (M N K)-or-NIL scale bench-iters), extracting --mma-test=M,N,K, an  >    optional --mma-scale=S flag, and an optional --mma-bench[=N] flag (Endeavor 142; default 100 iters).
-
-
----
-### DEFUN `%MMA-OUT-DIR-P`
-- **Args**: `(DIR)`
-
-  > T if the param direction is an output (&out).
+  > Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an optional  >    --mma-scale=S flag.  --mma-bench was RETIRED on 2026-10-16: matmul benchmarks are measured by the  >    reviewed fixtures in benchmarks/matmul/crisp/, never by a per-kernel generated harness, so the flag  >    is refused by name rather than mistaken for the metacrisp path.
 
 
 ---
 ### DEFUN `MAIN`
 
   > Entry point for crisp-hoist-l0.exe.  Endeavor 134: accepts --mma-test=M,N,K.
-
-
----
-### DEFVAR `*HOIST-CURRENT-STRUCTS*`
-
-  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.  Bound by generate-l0-launcher.
-
-
----
-### DEFUN `%FIND-STRUCT-DEF-L0`
-- **Args**: `(NAME)`
-
-  > Find (def-struct NAME ...) in *hoist-current-structs*.  >    NAME is a symbol; all comparisons use string-equal to be package-agnostic.  >    The metacrisp is parsed with standard READ (cl-user package), so symbols  >    from the parsed data will not eq symbols from overlay source code.
-
-
----
-### DEFUN `STRUCT-TYPE-P-L0`
-- **Args**: `(TYPE)`
-
-  > Returns T if TYPE names a def-struct in *hoist-current-structs*.  >    Accepts plain symbols or list forms like (POINT :EARNESTNESS 3.0).
-
-
----
-### DEFUN `%STRUCT-BASE-TYPE`
-- **Args**: `(PARAM-TYPE)`
-
-  > Extract the base struct name from PARAM-TYPE (symbol or list form).
-
-
----
-### DEFUN `%ARRAY-TYPE-P`
-- **Args**: `(TYPE)`
-
-  > Returns T if TYPE is an (array T N) form.
-
-
----
-### DEFUN `%ARRAY-ELEMENT-TYPE`
-- **Args**: `(ARRAY-TYPE)`
-
-  > Returns the element type T from an (array T N) form.
-
-
----
-### DEFUN `%ARRAY-SIZE`
-- **Args**: `(ARRAY-TYPE)`
-
-  > Returns the compile-time size N from an (array T N) form.
-
-
----
-### DEFUN `%STRUCT-EMIT-FIELDS`
-- **Args**: `(STREAM VAR-PATH MEMBERS ALIASES)`
-
-  > Recursively emit C++ field assignments for a struct variable at VAR-PATH.  >    MEMBERS is the member list from the (def-struct NAME ...) form.  >    Array-typed fields are iota-initialized: field[i] = (T)i.  >    Scalar fields use a type-appropriate constant (1 / 1.0f / 1.0).  >    Nested structs are recursed into.
 
 
 ---
@@ -7713,13 +8009,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%L0-F16-DECODER`
-- **Args**: `(ELEM-TYPE)`
-
-  > C++ call PREFIX that decodes ELEM-TYPE's 16-bit encoding to float, e.g. "crisp_f16_to_f32(",  >    or NIL when a plain (float) cast is correct.  The caller supplies the closing paren.
-
-
----
 ### DEFUN `GENERATE-CPP-MAIN`
 - **Args**: `(STREAM KERNEL-NAME SPV-PATH DECLARED-SIG ALIASES RECORDS
               &OPTIONAL DISPATCH-INFO)`
@@ -7745,13 +8034,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(STREAM SPV-PATH)`
 
   > Generate SPIR-V module loading code.  >   >    Endeavor 144 Phase 4: pBuildFlags now carries the compiler-selected register allocation  >    (see %l0-register-build-flags) instead of being unconditionally nullptr.
-
-
----
-### DEFUN `%DISPATCH-SYM-TO-CPP-VAR`
-- **Args**: `(SYM)`
-
-  > Convert a dispatch param symbol (e.g. 'WIDTH or 'width) to C++ variable name 'width_arg'.
 
 
 ---
@@ -7833,35 +8115,7 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(STREAM KERNEL-NAME DECLARED-SIG ALIASES RECORDS &OPTIONAL
               DISPATCH-INFO)`
 
-  > Generate kernel creation and launch code. Returns list of USM allocations.  >    Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups.  >   >    Endeavor 143: the --mma-bench block now times each launch individually via L0  >    kernel-timestamp events and reports the median, replacing the batched-submit /  >    single-sync loop whose repeats the driver coalesced (inflating GFLOPS by ITERS).
-
-
----
-### DEFUN `GENERATE-KERNEL-ARGUMENTS`
-- **Args**: `(STREAM DECLARED-SIG)`
-
-  > Generate kernel argument setup code
-
-
----
-### DEFUN `RECORD-BASE-TYPE`
-- **Args**: `(TYPE)`
-
-  > Extract the base record type symbol from a plain symbol or a list-form like (V-POINT EARNESTNESS 3.0).
-
-
----
-### DEFUN `FIND-RECORD-DEF`
-- **Args**: `(TYPE RECORDS)`
-
-  > Find the def-record entry matching TYPE in RECORDS.  >    TYPE may be a plain symbol or a parameterized list form.
-
-
----
-### DEFUN `RECORD-TYPE-P`
-- **Args**: `(TYPE RECORDS)`
-
-  > Returns true if TYPE refers to a def-record in RECORDS.
+  > Generate kernel creation and launch code. Returns list of USM allocations.  >    Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups.  >    (Its --mma-bench timing block, Endeavours 142/143, was retired 2026-10-16 -- benchmarks use the  >    reviewed fixture, benchmarks/matmul/crisp/bench_harness_l0.cpp.)
 
 
 ---
@@ -7869,20 +8123,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(STREAM MEMBERS VAR-PATH ARG-INDEX RECORDS ALIASES)`
 
   > Recursively emit field initialization and zeKernelSetArgumentValue calls  >    for all leaf fields of a record, following nested records.  >    Array-typed members are SROA'd: iota-initialized and passed as N  >    individual scalar args (one per element), matching the compiler's  >    physical signature which explodes (array T N) to N scalar slots.  >    Returns the updated arg-index after consuming all fields.
-
-
----
-### DEFUN `TENSOR-TYPE-P`
-- **Args**: `(PARAM-TYPE)`
-
-  > Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier.
-
-
----
-### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
-- **Args**: `(N EXTENTS-LIST)`
-
-  > Returns (values extents strides) for a compact N-dim tensor.  >    Strides are in elements; innermost stride = 1.
 
 
 ---
@@ -7903,7 +8143,7 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFUN `%L0-EMIT-H2D-STAGING`
 - **Args**: `(STREAM CONTEXT-VAR DEVICE-VAR)`
 
-  > Emit one host-to-device copy for every buffer recorded in *L0-STAGING*.  >   >    Deliberately its OWN command list and queue rather than an append to `cmdList`.  cmdList  >    is re-executed by the --mma-bench loop, so staging appended there would be re-run and  >    TIMED on every benchmark iteration -- it would show up as kernel time and nobody would see  >    why.  A launcher pays for one extra queue at startup instead.
+  > Emit one host-to-device copy for every buffer recorded in *L0-STAGING*.  >   >    Deliberately its OWN command list and queue rather than an append to `cmdList`.  cmdList  >    was re-executed by the --mma-bench loop (retired 2026-10-16), so staging appended there would  >    have been re-run and TIMED on every benchmark iteration.  Keeping staging separate costs one  >    extra queue at startup and keeps the kernel's command list a pure launch.
 
 
 ---
@@ -8141,6 +8381,128 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(PARAM-TYPE)`
 
   > Extract the base type from a cell type like (cell int ...)
+
+
+---
+### DEFVAR `*MMA-TEST-DIMS*`
+
+  > (M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.
+
+
+---
+### DEFVAR `*MMA-INPUT-COUNTER*`
+
+  > Per-kernel input-tensor counter for A(0)/B(1) role assignment.
+
+
+---
+### DEFVAR `*MMA-SCALE*`
+
+  > Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.  >    Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).
+
+
+---
+### DEFVAR `*HOIST-CURRENT-STRUCTS*`
+
+  > Dynamic variable: list of (def-struct NAME ...) forms from the current  >    metacrisp :structs section.  Bound by each hoister's launcher generator.
+
+
+---
+### DEFUN `%MMA-OUT-DIR-P`
+- **Args**: `(DIR)`
+
+  > T if the param direction is an output (&out).
+
+
+---
+### DEFUN `%ARRAY-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE is an (array T N) form.
+
+
+---
+### DEFUN `%ARRAY-ELEMENT-TYPE`
+- **Args**: `(ARRAY-TYPE)`
+
+  > Returns the element type T from an (array T N) form.
+
+
+---
+### DEFUN `%ARRAY-SIZE`
+- **Args**: `(ARRAY-TYPE)`
+
+  > Returns the compile-time size N from an (array T N) form.
+
+
+---
+### DEFUN `%STRUCT-BASE-TYPE`
+- **Args**: `(PARAM-TYPE)`
+
+  > Extract the base struct name from PARAM-TYPE (symbol or list form).
+
+
+---
+### DEFUN `RECORD-BASE-TYPE`
+- **Args**: `(TYPE)`
+
+  > Extract the base record type symbol from a plain symbol or a list-form like (V-POINT EARNESTNESS 3.0).
+
+
+---
+### DEFUN `FIND-RECORD-DEF`
+- **Args**: `(TYPE RECORDS)`
+
+  > Find the def-record entry matching TYPE in RECORDS.  >    TYPE may be a plain symbol or a parameterized list form.
+
+
+---
+### DEFUN `RECORD-TYPE-P`
+- **Args**: `(TYPE RECORDS)`
+
+  > Returns true if TYPE refers to a def-record in RECORDS.
+
+
+---
+### DEFUN `TENSOR-TYPE-P`
+- **Args**: `(PARAM-TYPE)`
+
+  > Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier.
+
+
+---
+### DEFUN `%TENSOR-COMPACT-EXTENTS-STRIDES`
+- **Args**: `(N EXTENTS-LIST)`
+
+  > Returns (values extents strides) for a compact N-dim tensor.  >    Strides are in elements; innermost stride = 1.
+
+
+---
+### DEFUN `%DISPATCH-SYM-TO-CPP-VAR`
+- **Args**: `(SYM)`
+
+  > Convert a dispatch param symbol (e.g. 'WIDTH or 'width) to C++ variable name 'width_arg'.
+
+
+---
+### DEFUN `%FIND-STRUCT-DEF`
+- **Args**: `(NAME)`
+
+  > Find (def-struct NAME ...) in *hoist-current-structs*.
+
+
+---
+### DEFUN `STRUCT-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Returns T if TYPE names a def-struct in *hoist-current-structs*.
+
+
+---
+### DEFUN `%STRUCT-EMIT-FIELDS`
+- **Args**: `(STREAM VAR-PATH MEMBERS ALIASES)`
+
+  > Recursively emit C++ field assignments for a struct variable.
 
 
 ---
@@ -8395,7 +8757,7 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFMACRO `C-T-OUTPUT`
 - **Args**: `(&REST ARGS)`
 
-  > Compile-Time Output. Evaluates arguments at macro-expansion time and prints them.
+  > Compile-Time Output. Evaluates arguments at macro-expansion time and prints them.  >    An argument that cannot be evaluated at compile time (e.g. a runtime variable) is  >    noted in place, per chapter 41, instead of aborting compilation (ADV-006).
 
 
 ---
@@ -8467,10 +8829,45 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%STORAGE-HANDLE-INCOMPLETE-ELEMENT`
+- **Args**: `(TYPE-SPEC)`
+
+  > If TYPE-SPEC (after alias resolution; an (&out T) wrapper is looked through) is a storage  >    handle -- cell / vector / matrix / tensor -- whose element type is an incomplete struct or  >    record, returns that element type; otherwise NIL.  ADV-014 / ADV-020.
+
+
+---
+### DEFUN `%ALIAS-RESOLVED-STORAGE-HANDLE-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > T if TYPE-SPEC (after alias resolution) is a cell / vector / matrix / tensor spec.
+
+
+---
+### DEFUN `%STORAGE-HANDLE-NESTED-ELEMENT`
+- **Args**: `(TYPE-SPEC)`
+
+  > If TYPE-SPEC is a storage handle whose element type is itself a storage handle, returns  >    that element type; otherwise NIL.  ADV-015.
+
+
+---
+### DEFUN `%REFUSE-INCOMPLETE-MARSHALL-TARGET`
+- **Args**: `(MACRO-NAME TYPE-ALIAS)`
+
+  > ADV-020: signals an error when TYPE-ALIAS -- the type argument of marshall-cell /  >    marshall-tensor -- is a storage handle whose element is an incomplete struct or record.
+
+
+---
+### DEFUN `%ENSURE-STORAGE-STRUCT-INSTANTIATED`
+- **Args**: `(BASE PARAMS)`
+
+  > Instantiates the storage-handle struct template BASE for PARAMS (e.g. CELL (DOUBLE :GLOBAL)  >    or STORAGE (:GLOBAL)) unless this compilation has already done so, and returns the mangled  >    struct name (CELL_DOUBLE_GLOBAL).  The marshal macros expand once per kernel parameter per  >    pass; re-evaluating the def-struct each time redefined its MAKE-* constructor macro and SBCL  >    printed a redefinition warning for every one (BUG 022).  >    The guard is *crisp-structs*, not MACRO-FUNCTION: initialize-compiler clears the registry  >    but never CL macros, so a constructor left over from an earlier compilation in the same  >    process must not stop this one from registering the struct.
+
+
+---
 ### DEFUN `%VALIDATE-KERNEL-PARAMETERS`
 - **Args**: `(PARAMS TYPE-MAP NAME)`
 
-  > Helper: Validates that kernel parameters are complete, not voidp,  >    and that records do not appear in &out position.
+  > Helper: Validates that kernel parameters are complete, not voidp,  >    and that records do not appear in &out position.  >    ADV-015: a storage handle's element may not itself be a storage handle.  >    ADV-014: a storage handle's element must be complete (chapter 21, rule 2).
 
 
 ---
@@ -8636,6 +9033,50 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(BINDINGS STMTS BODY)`
 
   > BUG 100.  The backward's primal replay around BODY: a LET of BINDINGS, SPLIT after each version  >    symbol's binding so the reduction in STMTS (VERSION-SYM . STATEMENT) re-runs exactly there --  >        (let (b1 .. (V%V1 V)) (reduce-warp #'+ V%V1 0.0) (let (..rest..) BODY))  >    A statement whose version binding was dropped from the replay (an unreplayable dependency) cannot  >    run and is skipped -- every later binding reading it was dropped with it.
+
+
+---
+### DEFUN `%BKG-PREPARE-BODY`
+- **Args**: `(RAW-BODY RECORD-SUBS-HT RECORD-TYPE-HT INPUTS INPUT-TYPES)`
+
+  > The kernel body as the AD walk will see it: record accessors substituted, matrix-multiply-tile-stride  >    pre-lowered, and stride macros expanded.
+
+
+---
+### DEFUN `%BKG-REFUSE-IF-NOTHING-DIFFERENTIABLE`
+- **Args**: `(NAME FLAT-INPUTS FLAT-INPUT-TYPES DIFF-FLAT-INPUTS
+              STRUCT-SHADOW-INFO)`
+
+  > Refuses kernel NAME when it has inputs but none that can carry a gradient.
+
+
+---
+### DEFUN `%BKG-STRUCT-SHADOW-TABLE`
+- **Args**: `(STRUCT-SHADOW-INFO FLAT-ANF)`
+
+  > Struct-at-boundary shadows as an EQ table PARAM -> (SHADOW-INFO . LEAVES), with FLAT-ANF's  >    intermediates registered against it; NIL when there are no shadows.
+
+
+---
+### DEFUN `%BKG-RECORD-PARAM-FIELD-ADJS-TABLE`
+- **Args**: `(RECORD-SUBS-HT PKG)`
+
+  > Endeavor 103 Phase A: each record parameter -> ((FIELD-NAME . FIELD_ADJ) ...), so record-at-boundary  >    accessor calls route adjoints into the SROA'd field's adjoint; NIL when there are no record params.
+
+
+---
+### DEFUN `%BKG-FIX-UP-WALK`
+- **Args**: `(RAW-BACKWARD-WALK GRAD-CELL-SYMS STRUCT-SHADOW-INFO)`
+
+  > The backward walk's three fix-ups, in order: record grad-cell emissions, leaf-adjoint bindings for  >    struct shadows, and struct-shadow writes.
+
+
+---
+### DEFUN `%BKG-KERNEL-FORM`
+- **Args**: `(BWD-NAME BWD-PARAMS BWD-TYPES EXPLODED-PARAMS EXPLODED-TYPES
+              BODY-FORMS)`
+
+  > The emitted backward kernel: register BWD-NAME's declared signature, then a def-kernel-exact whose  >    body is BODY-FORMS followed by (return).
 
 
 ---
@@ -8836,10 +9277,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFMACRO `MAKE-ARRIVAL-SYNC-HANDLE`
-- **Args**: `(COUNTER COUNT)`
-
----
 ### DEFMACRO `ARRIVAL-SYNC-HANDLE-COUNTER`
 - **Args**: `(OBJ)`
 
@@ -8983,6 +9420,41 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%FLAG-VALUE`
+- **Args**: `(FLAGS PREFIX)`
+
+  > The text after PREFIX (e.g. "--log-level=") of the first of FLAGS that starts with it, or NIL.
+
+
+---
+### DEFUN `%PARSE-CHOICE-FLAG`
+- **Args**: `(VALUE CHOICES DEFAULT LABEL EXPECTED)`
+
+  > VALUE (a flag's text, or NIL when the flag is absent) mapped through CHOICES, an alist of  >    ("text" . keyword) compared case-insensitively.  NIL gives DEFAULT; anything else is an error  >    naming LABEL and the EXPECTED spellings, and exits.
+
+
+---
+### DEFUN `%PARSE-IR-TARGET`
+- **Args**: `(VALUE)`
+
+  > An --ir-target= value as a backend keyword (spv / spirv -> :SPIRV, ptx -> :PTX, else its keyword).
+
+
+---
+### DEFUN `%PARSE-HOIST-TARGET`
+- **Args**: `(VALUE)`
+
+  > A --hoist= value as a hoister keyword (l0 / levelzero -> :L0, opencl / cl -> :OPENCL, cuda -> :CUDA).
+
+
+---
+### DEFUN `%RECONCILE-HOIST-TARGET`
+- **Args**: `(TARGETS HOIST-NAME TARGET-NAME TARGET-KW)`
+
+  > A hoister needs one IR target.  With no --ir-target at all, enable TARGET-KW and say so; with targets  >    that do not include it, it is an error.  Returns the (possibly defaulted) TARGETS.
+
+
+---
 ### DEFUN `PARSE-CLI-ARGS`
 - **Args**: `(ARGS)`
 
@@ -9008,6 +9480,48 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(MODULE BC-FILES)`
 
   > Endeavor 122 (FFI): parse each .bc in BC-FILES and link it into MODULE so  >    that def-foreign-function calls resolve to real definitions at compile time.  >    Quits with a clear error on read/parse/link failure.
+
+
+---
+### DEFUN `%OUTPUT-BASE-NAME`
+- **Args**: `(FILEPATH)`
+
+  > The name every output of FILEPATH is written under: its own name, or <name>_grad under --differentiate.
+
+
+---
+### DEFUN `%READ-CRISP-FORMS`
+- **Args**: `(FILES)`
+
+  > Every top-level form of FILES, in order, read in :crisp-language.
+
+
+---
+### DEFUN `%COMPILE-FILES-SINGLE-PASS`
+- **Args**: `(FILES MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT)`
+
+  > --single-pass: compile each file's forms as they are read, with one shared toplevel index so that  >    location indices are unique across the entire compilation unit.
+
+
+---
+### DEFUN `%EMIT-TARGET-OUTPUT`
+- **Args**: `(TARGET-BACKEND MODULE FILEPATH DEBUG-P)`
+
+  > Writes MODULE for TARGET-BACKEND next to FILEPATH -- .spv, .ptx or .ll -- and returns (KIND PATH);  >    the generic backend prints the IR to stdout and returns NIL.
+
+
+---
+### DEFUN `%GENERATE-FILE-METADATA`
+- **Args**: `(FILEPATH GENERATED-OUTPUTS CAPTURED-FORMS)`
+
+  > Writes FILEPATH's .metacrisp (once, after every target's output exists) and returns the list of  >    metacrisp files written -- the hoisters' inputs.
+
+
+---
+### DEFUN `%RUN-HOISTERS`
+- **Args**: `(HOIST-TARGETS METACRISP-FILES)`
+
+  > Invokes each requested hoister on each metacrisp file that exists.
 
 
 ---
@@ -9503,13 +10017,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `%074-HAS-LOCAL-PTR-PARAM`
-- **Args**: `(DEFINE-LINE)`
-
-  > Returns T if the define line contains a ptr addrspace(3) parameter.
-
-
----
 ### DEFUN `VALIDATE-074-02-SCRATCH-VECTOR-PROPAGATION-IR`
 - **Args**: `(IR-PATH)`
 
@@ -9937,13 +10444,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(FN-FORM PKG)`
 
   > The <NAME>_GRAD symbol for the fused function in FN-FORM (a #'NAME), interned in PKG.  >    Matches the convention the AD walk itself uses (src/autodiff.lisp:2553).
-
-
----
-### DEFUN `%EMIT-PER-FRAG-MAP-VJP`
-- **Args**: `(ADJ-ENTRY PRIMAL-ENTRY FN-FORM)`
-
-  > Per-fragment expansion of (%map-elements-vjp! ADJ PRIMAL #'F_GRAD) for register tiles:  >    zip the two tiles' fragment lists and pair them positionally.  Positional pairing is right  >    because both tiles carry the SAME shape and the same warp distribution, so fragment k of one  >    corresponds to fragment k of the other.
 
 
 ---
@@ -10650,13 +11150,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFVAR `*WGMMA-NODE-SWIZZLE*`
 
   > semantic-mma-accumulate node -> (list swizzle-mode k-block) for the wgmma path.
-
-
----
-### DEFUN `%EMIT-ONE-WGMMA`
-- **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF)`
-
-  > One m64nNk8 wgmma: fence + mma_async (N/2 accumulators in/out + 2 descs) + commit + wait; return  >    the new D record.  The k-slice offset (kk*32 bytes) advances the swizzle descriptor start address.
 
 
 ---
@@ -11391,78 +11884,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\specials.lisp`
 
-### DEFVAR `*REGISTER-TILE-ELEMS*`
-
-  > Endeavour 155: alist (SYM . ELEM) of the ELEMENT TYPE of every register tile / tile-ring bound  >    by the LET currently being exploded.  %emit-per-frag-block-load reads it so a load-tile  >    expansion walks the operand at ITS element type's native K (8 for a 32-bit operand, 16 for a  >    16-bit one) rather than at the profile's first shape.  Bound by %explode-register-tiles; NIL  >    elsewhere, in which case FLOAT is assumed — exactly the pre-155 behaviour.
-
-
----
-### DEFVAR `*WARP-GRID*`
-
-  > Endeavour 155: (GM . GN) warp grid of the LET currently being exploded, derived from its  >    accumulator register-tile's fragment grid and warp count, or NIL when there is no distributed  >    accumulator.  Read by the operand-slicing paths so A/B, C and the loads all agree on which warp  >    owns what.  Bound by %explode-register-tiles; NIL elsewhere, in which case operands are  >    allocated whole -- the pre-Step-2 behaviour.
-
-
----
-### DEFCONSTANT `+LLVM-OPCODE-ADD+`
-
-  > LLVMOpcode enum value for the integer Add instruction.
-
-
----
-### DEFCONSTANT `+LLVM-OPCODE-MUL+`
-
-  > LLVMOpcode enum value for the integer Mul instruction.
-
-
----
-### DEFCONSTANT `+LLVM-OPCODE-SEXT+`
-
-  > LLVMOpcode enum value for the SExt cast instruction.
-
-
----
-### DEFCONSTANT `+SPIRV-EXECUTION-MODE-SUBGROUP-SIZE+`
-
-  > SPIR-V ExecutionMode SubgroupSize.  Takes one literal operand: the required size.
-
-
----
-### DEFPARAMETER `*KNOWN-MMA-LOWERINGS*`
-
-  > Every MMA lowering NAME the compiler understands, whether or not a given backend implements it.  >   >    :coop-matrix  SPV_KHR_cooperative_matrix / the portable path.  Implemented; the default.  >    :xe-native    Intel Xe: inline-assembly DPAS + the Block2D address-payload load convention.  >                  NAMED but NOT YET IMPLEMENTED -- no profile lists it, so requesting it is refused  >                  with the profile's actual offering.  It is named here so the value type validates  >                  and so the intent is documented in one place.  >   >    A profile's :mma-lowerings is checked against this list, which turns a typo into an error at  >    def-hardware-profile time rather than a kernel that silently never selects its lowering.
-
-
----
-### DEFVAR `*MMA-LOWERING*`
-
-  > The MMA lowering in force while generating the current kernel's IR.  >   >    Bound per kernel by GENERATE-LLVM-IR from that kernel's (mma-lowering ...) declaration, which  >    the analyzer has already validated against the active hardware profile.  Defaults to  >    :coop-matrix so any code path reached outside a kernel -- and every existing kernel, which  >    declares nothing -- behaves exactly as before.
-
-
----
-### DEFCONSTANT `+XE-NATIVE-OPERANDS-BF16+`
-
-  > MatrixABf16 | MatrixBBf16 for SubgroupMatrixMultiplyAccumulateINTEL.
-
-
----
-### DEFCONSTANT `+XE-NATIVE-OPERANDS-FP16+`
-
-  > MatrixAFp16 | MatrixBFp16 for SubgroupMatrixMultiplyAccumulateINTEL.
-
-
----
-### DEFVAR `*XE-NATIVE-OPERAND-ELEM*`
-
-  > The element kind (:bf16 / :fp16) of the A/B fragments built so far in this kernel, or NIL.  >   >    Recorded by %coop-type-impl for :xe-native and read by %coop-mma-impl, which cannot recover it  >    from its own arguments -- see the header above.  Bound per kernel by GENERATE-LLVM-IR.
-
-
----
-### DEFVAR `*SPLIT-BARRIER-DEPTH*`
-
-  > How many split-barrier windows are open in the kernel currently being analysed, or NIL outside  >    one.  Bound per kernel by INTERNAL-DEF-FUNCTION and stepped by %ANALYZE-GPU-BUILTIN.  >   >    A counter rather than a flag so that nesting is DETECTED rather than silently tolerated: the  >    second :arrive sees a non-zero depth and refuses.
-
-
----
 ## File: `C:\Users\cperk\Documents\crisp-man\src\struct-definitions.lisp`
 
 ### DEFSTRUCT `CRISP-STRUCT-DEFINITION`
@@ -11580,6 +12001,20 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%SPLIT-CT-PROPS-ARGS`
+- **Args**: `(ARGS)`
+
+  > Splits a %construct-struct argument list at the :%ct-props marker that  >    validate-and-reorder-struct-args appends for a struct whose compile-time members have no  >    default (ADV-018).  Returns (values runtime-args ct-plist); CT-PLIST is NIL when absent.
+
+
+---
+### DEFUN `%MEMBER-ACCESS-STRUCT-NAME`
+- **Args**: `(OBJ-TYPE)`
+
+  > Returns the struct/record NAME behind OBJ-TYPE for member access: OBJ-TYPE itself when  >    it is a symbol naming a struct; the head of a c-t-qualified type (NAME :k v ...); and the  >    same after resolving a def-type alias, e.g. (def-type fast-cfg (my-cfg :exec :fast)).  >    Returns OBJ-TYPE unchanged when none of those apply, so callers' errors still name it.
+
+
+---
 ### DEFUN `VALIDATE-AND-REORDER-STRUCT-ARGS`
 - **Args**: `(STRUCT-NAME DEFINED-MEMBERS ARGS)`
 
@@ -11659,6 +12094,12 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(PATTERN-SIG CONCRETE-SIG INFERENCE-MAP TEMPLATE-PARAMS)`
 
 ---
+### DEFVAR `*EXPLICIT-INSTANTIATION-NAMES*`
+
+  > Explicit override name (string) -> (template-name . substitutions) of the instantiation that  >    claimed it in this compilation.  ADV-019.
+
+
+---
 ### DEFUN `INITIALIZE-TEMPLATES`
 
   > Initializes the template system and hooks into the compiler.  >    Extended to register ARRAY as a built-in arity-2 form for unmangle support.
@@ -11686,8 +12127,25 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%ENUMERATIONS-CONTAINING-KEYWORD`
+- **Args**: `(KW)`
+
+  > Returns the names of every registered def-enumeration whose members include KW.
+
+
+---
+### DEFUN `%KEYWORD-LITERAL-TYPE->ENUM`
+- **Args**: `(TYPE)`
+
+  > Maps a keyword literal's singleton type (keyword :k) to the enumeration that contains :k  >    (ADV-005).  Any other TYPE is returned unchanged.  Signals a crisp-compiler-error when :k  >    belongs to no enumeration, or to several -- the template parameter cannot be inferred.
+
+
+---
 ### DEFUN `%INSTANTIATE-CALLABLE-TEMPLATE`
 - **Args**: `(NAME BODY SUBSTITUTIONS OVERRIDE-NAME)`
+
+  > Builds the instantiated (progn (def-X NAME ...)) for a callable template, renamed to  >    OVERRIDE-NAME when one is given.  ADV-019: an explicit name may be reused only by the SAME  >    instantiation (same template, same substitutions -- macroexpansion legitimately repeats);  >    a different instantiation under a name already claimed in this compilation is an error,  >    since codegen would otherwise silently keep only the last one.
+
 
 ---
 ### DEFUN `%UNWRAP-FUNCTION-SIGNATURE`
@@ -11728,7 +12186,7 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFUN `ENSURE-TEMPLATE-INSTANTIATION`
 - **Args**: `(NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)`
 
-  > Called by the compiler to auto-instantiate templates.  >    compiler-callback is (lambda (form location) ...).  >    Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro.
+  > Called by the compiler to auto-instantiate templates.  >    compiler-callback is (lambda (form location) ...).  >    Fixed: is-compiling now uses *compiler-session* instead of boundp on symbol-macro.  >    ADV-005: a keyword literal's singleton type (keyword :k) stands for the enumeration that  >    holds :k (see %keyword-literal-type->enum).
 
 
 ---
@@ -11751,7 +12209,7 @@ Generated on 2026-10-11T19:36:03.707225Z
 ### DEFUN `TYPES-COMPATIBLE-P`
 - **Args**: `(ARG-TYPE PARAM-TYPE)`
 
-  > Checks if an argument type is compatible with a parameter type.
+  > Checks if an argument type is compatible with a parameter type.  >    ADV-018: a c-t-qualified struct value (NAME :k v ...) fits a parameter of the bare,  >    polymorphic NAME (see %ct-qualified-arg-fits-bare-param-p).
 
 
 ---
@@ -11800,13 +12258,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(TYPE-NAME)`
 
   > Returns the brand-definition if TYPE-NAME is a registered brand, NIL otherwise.
-
-
----
-### DEFUN `BRAND-MEMBER-P`
-- **Args**: `(MEMBER-TYPE)`
-
-  > Returns T if MEMBER-TYPE is a branded type whose brand is currently active.
 
 
 ---
@@ -11891,13 +12342,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `CREATE-ROOT-TYPE-NODE`
-- **Args**: `(TYPE-NAME)`
-
-  > Creates a root type node for a built-in 'real' type with no derivation relationships.
-
-
----
 ### DEFUN `CREATE-NUMERIC-HIERARCHY`
 - **Args**: `(TYPE-NAMES)`
 
@@ -11912,10 +12356,24 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
+### DEFUN `%STRUCT-HAS-REQUIRED-CT-MEMBER-P`
+- **Args**: `(STRUCT-NAME)`
+
+  > T if STRUCT-NAME's struct/record definition has a :c-t member with no default.
+
+
+---
+### DEFUN `%CT-QUALIFIED-ARG-FITS-BARE-PARAM-P`
+- **Args**: `(ARG-TYPE PARAM-TYPE)`
+
+  > T when ARG-TYPE is a c-t-qualified struct type (NAME :k v ...) and PARAM-TYPE resolves to  >    the bare NAME of a struct with unspecified c-t members.
+
+
+---
 ### DEFUN `TYPES-ASSIGNABLE-P`
 - **Args**: `(SOURCE-TYPE TARGET-TYPE)`
 
-  > Checks if source-type can be assigned to target-type.  >    This is true if:  >    1. The types feature exact equivalence (types-equivalent-p)  >    2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)
+  > Checks if source-type can be assigned to target-type.  >    This is true if:  >    1. The types feature exact equivalence (types-equivalent-p)  >    2. The source type represents a derived type that is substitutable for the target (is-substitutable-for?)  >    3. ADV-018: the source is a c-t-qualified struct (NAME :k v ...) and the target is the bare,  >       polymorphic NAME (see %ct-qualified-arg-fits-bare-param-p)
 
 
 ---
@@ -12342,10 +12800,6 @@ Generated on 2026-10-11T19:36:03.707225Z
 
 
 ---
-### DEFUN `TYPE-LISTS-EQUIVALENT-P`
-- **Args**: `(L1 L2)`
-
----
 ### DEFUN `VALID-BASIC-TYPE-P`
 - **Args**: `(TYPE-SPEC)`
 
@@ -12410,6 +12864,27 @@ Generated on 2026-10-11T19:36:03.707225Z
 - **Args**: `(TYPE-SPEC)`
 
   > Returns T if TYPE-SPEC is a list form whose head is the symbol ARRAY.  >    Used throughout the array implementation to identify (array T N) type specs.
+
+
+---
+### DEFUN `%DERIVED-TYPE-ACTUAL-SYMBOL`
+- **Args**: `(TYPE-SPEC)`
+
+  > When symbol TYPE-SPEC names a DERIVED type (a node with an original type in *type-derivation-graph*),  >    the symbol its node is filed under -- TYPE-SPEC itself, or its namesake in :crisp-language -- else  >    NIL.  The :crisp-language lookup INTERNs, exactly as resolve-type-to-llvm always did.
+
+
+---
+### DEFUN `%TEMPLATE-STRUCT-TYPE-SPEC-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > True when TYPE-SPEC is a parameterized struct -- a valid (TEMPLATE ARGS...) form of a known template,  >    or a symbol that unmangles to one.
+
+
+---
+### DEFUN `%RESOLVE-TEMPLATE-STRUCT-NAME`
+- **Args**: `(TYPE-SPEC)`
+
+  > The mangled struct name of parameterized struct TYPE-SPEC, instantiating the template on demand --  >    evaluated, and compiled into the current module when one is open.
 
 
 ---
