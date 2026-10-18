@@ -4099,3 +4099,68 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
           (to-bfloat16 1.0) -> "Unsupported form 'TO-BFLOAT16'" on every target, though the AD code names
           TO-BFLOAT16 as a widening conversion (%ad-widening-conversion-form-p).
         bfloat16 inside the MMA paths is unaffected (the 159 specs); this is the scalar path.
+
+[x] 122 WITH --log-level ABOVE off, crisp-compile.exe WRITES EVERY LOG LINE TO STDOUT AS WELL AS STDERR.
+        FIXED 2026-10-16.  CAUSE (measured, not the image-appender guess below): log4cl's
+        `(log:config :sane :stream S level)` installs TWO root appenders -- :SANE's CONSOLE-APPENDER, which
+        writes to the dynamic value of *TERMINAL-IO*, and a TRICKY-CONSOLE-APPENDER on S.  A temporary
+        exit-hook dump inside the exe showed both receiving all 421 messages.  In the executable
+        *TERMINAL-IO* is the process's stdout; under `sbcl --script` it is not, which is why every
+        in-process probe came back clean.  FIX: %drop-terminal-io-log-appender (src/compiler.lisp), called
+        by initialize-compiler after :sane, removes the plain console appender.  001/01 at --log-level=info:
+        stdout 0 log lines (was 303), stderr 303; debug: stdout 0, stderr 1217; off: unchanged.
+        (log4cl:clear-logging-configuration was tried first, on the wrong theory, and changed nothing.)
+        Found 2026-10-15 (refactor-oct) while moving main.lisp's progress chatter to log:info.  Pre-existing:
+        the leaked lines are ALL the compiler's log output, not just the moved ones.
+
+        MEASURED.  crisp-compile.exe --log-level=info 170/02-fma-double: stderr holds 631 <INFO> lines, and
+        `2>/dev/null` still leaves 632 log lines on stdout -- interleaved with the IR the user may be piping.
+        At the default (off) nothing leaks, which is why nobody noticed.
+
+        NOT reproducible in a plain SBCL process.  After ql:quickload :crisp + initialize-compiler :info,
+        log4cl:all-appenders is three CONSOLE-APPENDERs with no stream plus the TRICKY-CONSOLE-APPENDER on
+        stderr that `(log:config :sane :stream *error-output* level)` adds -- yet a probe log:info lands on
+        stdout ZERO times (put_temp_files_here/refactor/appenders2.lisp, also with :clear first and with the
+        config applied twice).  So it is specific to the saved executable: likely a console appender kept
+        in the image whose stream resolves to the process's stdout at run time.
+
+        NEXT: inspect log4cl:all-appenders from inside the exe (e.g. a temporary --dump-appenders flag), and
+        try removing every appender (log4cl:remove-all-appenders on root and children) before the :sane call.
+
+[ ] 123 THE IN-PROCESS E2E RUNNER INTERMITTENTLY SEGFAULTS LATE IN A FULL RUN (exit 139, no Lisp backtrace).
+        Seen 2026-10-16, refactor-oct: 2 of 8 full `sbcl --script tests/run-specs.lisp` runs that day died
+        at 83% and 92% of the run (3319 / 3651 of 3987 spec lines), at DIFFERENT specs -- one during an L0
+        on-metal hoist run (175/19), one during a plain compile (08-diff-reduce-workgroup-argmax-loser).
+        Both specs pass alone, and the next full run passed.  Compiler code was IDENTICAL between a clean
+        run and the first crash (only matmul.py / the fixture / hoisters had changed), so not a code
+        regression.  Nothing in the Windows Application log (no GPU reset, no WER crash record).
+        HYPOTHESIS: memory growth over a long in-process run (BUG 027's LLVM-object leak) or a foreign-code
+        fault in the in-process L0/CUDA bindings.  NEXT: log the process's working set every N specs, and
+        run with a larger --dynamic-space-size to see whether the crash point moves.
+
+[ ] 124 (occupancy-target N) CAN SILENTLY FORCE REGISTER SPILLS -- and Crisp cannot see it coming.
+        MEASURED 2026-10-16/17, LeetGPU challenge 01 (vector add), H100.  The first AntiGravity submission
+        declared (occupancy-target 2048) on a loop-vector-stride kernel with (unroll 4).  That is
+        __launch_bounds__(256, 8) -> 2048 threads/SM -> a 32-register cap, but the unrolled loop wants ~56-64
+        (LLVM precomputes one 64-bit base pointer per unrolled access per array: 12 for unroll 4 over 3
+        arrays).  ptxas spilled: Registers 32, Stack 72 B, 0.16 ms.  Dropping the declaration: 56 regs, 0 B,
+        0.12 ms (-25%).  The same source on a Tesla showed 63 regs / 0 B, because Turing cannot host 2048
+        threads/SM and ptxas ignored the bound -- so the cost is device-dependent and invisible on one GPU.
+        NOT a wrong value in a profile: benchmarks/profiles/h100-sxm.crisp's :stream-occupancy-target 1024
+        (endeavour 182, measured) allows 64 registers and would not have spilled this kernel.  The hazard is
+        a HAND-declared target above the profile's.
+        Crisp cannot know the register count before ptxas runs.  Options: (a) docs/writing-crisp.md says it
+        (done 2026-10-17); (b) the CUDA hoister / benchmark harness reports ptxas -v registers + spill bytes
+        when it builds, and flags a non-zero stack; (c) a compile-time WARNING when a declared target implies
+        <= 32 registers on a kernel with an unrolled stream loop (a heuristic, not a proof).
+
+[ ] 125 READ-ONLY LOADS ARE NOT CARRIED THROUGH VIEWS: a make-vector / make-matrix view of a read-only
+        kernel input loads with plain ld.global, not ld.global.nc (!invariant.load).
+        SEEN 2026-10-17, LeetGPU challenge 01 experiment B: (make-vector A float4 :length n4) over the
+        read-only input A gave `ld.global.v4.b32`; the scalar original gave `ld.global.nc.b32`.
+        CAUSE: %array-node-readonly-tensor-param-p (src/codegen.lisp) marks a load only when the array node
+        is a DIRECT semantic-var-read of a symbol in *kernel-readonly-tensor-syms*; its docstring says
+        aliases "degrade gracefully to a plain load".  A let-bound view is such an alias.
+        FIX SKETCH: record read-only-ness for a let-bound view whose source is a read-only param (a view
+        only re-describes the same bytes), so its reads get !invariant.load too.  Impact is likely a few
+        percent on streaming kernels -- worth it, but measure.

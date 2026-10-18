@@ -343,71 +343,6 @@
     (setf (gethash inner *volatile-var-reads*) t)
     inner))
 
-#|
-(defun initialize-expression-analyzers ()
-  "Registers all expression analyzers; extended for 087-gpu-builtins.
-   Endeavor 103 phase B: adds %volatile-read for the IGC workaround."
-  (clrhash *expression-analyzers*)
-  (register-ops-analyzers)
-  (register-control-analyzers)
-  (register-struct-analyzers)
-  (register-mma-analyzers)         ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
-  ;; ##(...) device vector literal
-  (setf (gethash 'crisp-vec-literal *expression-analyzers*)
-        #'analyze-crisp-dvec-literal)
-  (let ((cl-pkg (find-package :crisp-language))
-        (cc-pkg (find-package :crisp.compiler)))
-    ;; Component accessors x~ / y~ / z~ / w~
-    (dolist (name '("X~" "Y~" "Z~" "W~"))
-      (let ((sym-cl (intern name cl-pkg))
-            (sym-cc (intern name cc-pkg)))
-        (setf (gethash sym-cl *expression-analyzers*) #'analyze-dvec-component-ref)
-        (unless (eq sym-cl sym-cc)
-          (setf (gethash sym-cc *expression-analyzers*) #'analyze-dvec-component-ref))))
-    ;; 083 matrix helpers: transpose, col, row, transpose!
-    (dolist (entry `(("TRANSPOSE"  . ,#'analyze-transpose-expression)
-                     ("COL"        . ,#'analyze-col-expression)
-                     ("ROW"        . ,#'analyze-row-expression)
-                     ("TRANSPOSE!" . ,#'analyze-transpose-bang-expression)))
-      (let ((sym-cl (intern (car entry) cl-pkg))
-            (sym-cc (intern (car entry) cc-pkg))
-            (fn     (cdr entry)))
-        (setf (gethash sym-cl *expression-analyzers*) fn)
-        (unless (eq sym-cl sym-cc)
-          (setf (gethash sym-cc *expression-analyzers*) fn))))
-    ;; 087 GPU built-in functions
-    (dolist (entry '(("GET-GLOBAL-ID"          :get-global-id)
-                     ("GET-LOCAL-ID"            :get-local-id)
-                     ("GET-WORKGROUP-ID"        :get-workgroup-id)
-                     ("GET-NUM-GROUPS"          :get-num-groups)
-                     ("GET-LOCAL-WORK-SIZE"     :get-local-work-size)
-                     ("GET-GLOBAL-WORK-SIZE"    :get-global-work-size)
-                     ("GET-GLOBAL-OFFSET"       :get-global-offset)
-                     ("GET-GLOBAL-ID-ABS"       :get-global-id-abs)
-                     ("GET-WORK-DIM"            :get-work-dim)
-                     ("GET-LOCAL-LINEAR-ID"     :get-local-linear-id)
-                     ("GET-LOCAL-LINEAR-SIZE"   :get-local-linear-size)
-                     ("GET-GLOBAL-LINEAR-ID"    :get-global-linear-id)
-                     ("GET-GLOBAL-LINEAR-SIZE"  :get-global-linear-size)
-                     ("GET-TOTAL-THREADS"       :get-total-threads)
-                     ("GET-TOTAL-GROUPS"        :get-total-groups)
-                     ("SYNC-WORKGROUP"          :sync-workgroup)
-                     ("SYNC-WARP"               :sync-warp)
-                     ("MEM-FENCE"               :mem-fence)))
-      (let* ((name-str (first entry))
-             (kw       (second entry))
-             (fn       (let ((kw0 kw) (ns0 name-str))
-                         (lambda (expr env context location)
-                           (%analyze-gpu-builtin kw0 ns0 expr env context location)))))
-        (let ((sym-cl (intern name-str cl-pkg))
-              (sym-cc (intern name-str cc-pkg)))
-          (setf (gethash sym-cl *expression-analyzers*) fn)
-          (unless (eq sym-cl sym-cc)
-            (setf (gethash sym-cc *expression-analyzers*) fn)))))
-    ;; IGC SROA-aliasing workaround (endeavor 103 phase B): %volatile-read
-    (setf (gethash '%volatile-read *expression-analyzers*)
-          #'analyze-%volatile-read-expression)))
-|#
 
 
 (defun initialize-expression-analyzers ()
@@ -2088,6 +2023,17 @@ in single-pass mode."
 
 
 
+(defun %uniformity-join (states)
+  "The uniformity of a value computed from parts whose uniformity STATES are given: :divergent if any
+   part is, :uniform only if every part is, :unknown otherwise."
+  (cond ((member :divergent states) :divergent)
+        ((every (lambda (s) (eq s :uniform)) states) :uniform)
+        (t :unknown)))
+
+(defun %uniformity-of-all (nodes env)
+  "%uniformity-join over the uniformity of each of NODES, computed in order."
+  (%uniformity-join (mapcar (lambda (n) (calculate-uniformity-state n env)) nodes)))
+
 (defun calculate-uniformity-state (node env)
   "Recursively determines the uniformity state of an analyzed semantic AST node.
    Returns :uniform, :divergent, or :unknown.
@@ -2111,48 +2057,22 @@ in single-pass mode."
     (semantic-coop-op :divergent)
     ;; Endeavor 132 (MMA) F2: a multi-value pack is as uniform as its least-uniform member.
     (semantic-values
-     (let ((states (mapcar (lambda (el) (calculate-uniformity-state el env))
-                           (semantic-values-value-nodes node))))
-       (cond
-         ((some (lambda (s) (eq s :divergent)) states) :divergent)
-         ((every (lambda (s) (eq s :uniform)) states) :uniform)
-         (t :unknown))))
+     (%uniformity-of-all (semantic-values-value-nodes node) env))
     (semantic-device-vec-literal
-     (let ((states (mapcar (lambda (el) (calculate-uniformity-state el env))
-                           (semantic-device-vec-literal-elements node))))
-       (cond
-         ((some (lambda (s) (eq s :divergent)) states) :divergent)
-         ((every (lambda (s) (eq s :uniform)) states) :uniform)
-         (t :unknown))))
+     (%uniformity-of-all (semantic-device-vec-literal-elements node) env))
     (semantic-var-read
      (let ((v (find-variable-in-env (semantic-var-read-name node) env)))
        (if v
            (parameter-def-uniformity v)
            :unknown)))
     (semantic-add
-     (let ((ls (calculate-uniformity-state (semantic-add-left-arg node) env))
-           (rs (calculate-uniformity-state (semantic-add-right-arg node) env)))
-       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
-             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (semantic-add-left-arg node) (semantic-add-right-arg node)) env))
     (semantic-sub
-     (let ((ls (calculate-uniformity-state (semantic-sub-left-arg node) env))
-           (rs (calculate-uniformity-state (semantic-sub-right-arg node) env)))
-       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
-             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (semantic-sub-left-arg node) (semantic-sub-right-arg node)) env))
     (semantic-mul
-     (let ((ls (calculate-uniformity-state (semantic-mul-left-arg node) env))
-           (rs (calculate-uniformity-state (semantic-mul-right-arg node) env)))
-       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
-             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (semantic-mul-left-arg node) (semantic-mul-right-arg node)) env))
     (semantic-div
-     (let ((ls (calculate-uniformity-state (semantic-div-left-arg node) env))
-           (rs (calculate-uniformity-state (semantic-div-right-arg node) env)))
-       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
-             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (semantic-div-left-arg node) (semantic-div-right-arg node)) env))
     (semantic-sin
      (calculate-uniformity-state (semantic-sin-arg node) env))
     (semantic-cos
@@ -2167,42 +2087,23 @@ in single-pass mode."
     (semantic-acos (calculate-uniformity-state (semantic-acos-arg node) env))
     (semantic-atan (calculate-uniformity-state (semantic-atan-arg node) env))
     (semantic-pow
-     (let ((ls (calculate-uniformity-state (semantic-pow-left-arg node) env))
-           (rs (calculate-uniformity-state (semantic-pow-right-arg node) env)))
-       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
-             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (semantic-pow-left-arg node) (semantic-pow-right-arg node)) env))
     (semantic-atan2
-     (let ((ls (calculate-uniformity-state (semantic-atan2-left-arg node) env))
-           (rs (calculate-uniformity-state (semantic-atan2-right-arg node) env)))
-       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
-             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (semantic-atan2-left-arg node) (semantic-atan2-right-arg node)) env))
     ;; Endeavour 170: a hardware math op combines its arguments exactly like arithmetic --
     ;; divergent if any argument is, uniform only if all of them are.
     (semantic-hw-op
-     (let ((states (mapcar (lambda (a) (calculate-uniformity-state a env))
-                           (semantic-hw-op-args node))))
-       (cond ((member :divergent states) :divergent)
-             ((every (lambda (s) (eq s :uniform)) states) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (semantic-hw-op-args node) env))
     ;; Endeavor 120: casts/conversions (to-*, as-*) are passthrough. Covers all
     ;; semantic-cast subtypes (value-cast, bitcast, fp-truncate-cast, truncate).
     (semantic-cast
      (calculate-uniformity-state (semantic-cast-arg node) env))
     ((or semantic-lt semantic-gt semantic-le semantic-ge semantic-eq semantic-neq)
-     (let ((ls (calculate-uniformity-state (slot-value node 'left-arg) env))
-           (rs (calculate-uniformity-state (slot-value node 'right-arg) env)))
-       (cond ((or (eq ls :divergent) (eq rs :divergent)) :divergent)
-             ((and (eq ls :uniform) (eq rs :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (slot-value node 'left-arg) (slot-value node 'right-arg)) env))
     (semantic-if
-     (let ((cs (calculate-uniformity-state (semantic-if-condition-node node) env))
-           (ts (calculate-uniformity-state (semantic-if-then-node node) env))
-           (es (calculate-uniformity-state (semantic-if-else-node node) env)))
-       (cond ((or (eq cs :divergent) (eq ts :divergent) (eq es :divergent)) :divergent)
-             ((and (eq cs :uniform) (eq ts :uniform) (eq es :uniform)) :uniform)
-             (t :unknown))))
+     (%uniformity-of-all (list (semantic-if-condition-node node) (semantic-if-then-node node)
+                               (semantic-if-else-node node))
+                         env))
     (semantic-let
      :unknown)
     (semantic-gpu-builtin
@@ -2693,10 +2594,10 @@ in single-pass mode."
                 (form-with-location (append crisp-form (list :source-location ''(0))))
                 (expanded-form (macroexpand-1 form-with-location))
                 (semantic-fn (progn
-                                (format *error-output* "~&DEBUG CONTEXT is: ~s type: ~s~%" *compiler-context* (type-of *compiler-context*))
-                                (format *error-output* "~&DEBUG EXPANSION: ~s~%" expanded-form)
+                                (log:debug "context is: ~s type: ~s" *compiler-context* (type-of *compiler-context*))
+                                (log:debug "expansion: ~s" expanded-form)
                                 (let ((val (eval expanded-form)))
-                                  (format *error-output* "~&DEBUG EVAL RESULT: ~s~%" val)
+                                  (log:debug "eval result: ~s" val)
                                   val))))
            (generate-llvm-ir semantic-fn module builder di-builder di-compile-unit location-map))
          (cffi:foreign-string-to-lisp (llvm-print-module-to-string module)))

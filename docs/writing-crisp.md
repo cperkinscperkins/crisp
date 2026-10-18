@@ -266,10 +266,53 @@ Integer results (`floor`, bit ops) carry zero gradient.  See chapter 48.
 - Start from the measured guidance in `docs/performance-levers.md`.
 - Pick the hardware profile that matches the device; it drives tile shapes, register budgets and the
   warp width.
-- `(declare (occupancy-target N))` and the profile's `:stream-occupancy-target` bound registers on NVIDIA;
-  `(declare (unroll t))` / unroll counts on loops.
+- `(declare (occupancy-target N))` and the profile's `:stream-occupancy-target` bound registers on NVIDIA
+  (registers per thread = 65536 / N).  **Do not hand-set a higher target than the profile's** -- a kernel
+  that needs more registers than the bound allows is SPILLED by ptxas, silently (BUG 124).  Leave it to the
+  profile, or turn it off with `(occupancy-target nil)`; whatever you choose, check that `ptxas -v` (or a
+  contest site's report) shows a stack of 0 bytes.
+- `(declare (unroll t))` / unroll counts on loops.
 - Reductions: `reduce-vec`.  Matmul: the MMA paths above.  Elementwise: `loop-vector-stride`.
 - Compare against `benchmarks/` and `performance/` before claiming a speedup.
+
+### Memory-bound streaming kernels (elementwise maps, vector add, ...)
+
+The work is moving bytes, so the levers are bytes per instruction and loads in flight -- not occupancy:
+
+```lisp
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
+
+(def-kernel vector_add (A B &out C)
+  (declare #'(in-vec in-vec &out out-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n  (length~ A))
+        (n4 (/ n 4ul))
+        (a4 (make-vector A float4 :length n4))      ; 128-bit loads and stores
+        (b4 (make-vector B float4 :length n4))
+        (c4 (make-vector C float4 :length n4)))
+    (loop-vector-stride a4 (i)
+      (declare (unroll 4))                          ; keeps several loads in flight per thread
+      (set! (~ c4 i) (+ (~ a4 i) (~ b4 i))))
+    (let ((tail (+ (* n4 4ul) (get-global-id 0))))  ; the 0..3 elements float4 cannot cover
+      (when (< tail n)
+        (set! (~ C tail) (+ (~ A tail) (~ B tail)))))))
+```
+
+Measured on LeetGPU's H100 (challenge 01, 2026-10-16), one change at a time:
+
+| Variant | Registers / stack | Time |
+|---|---|---|
+| scalar, `unroll 4`, `(occupancy-target 2048)` | 32 / **72 B** (spilled) | 0.16 ms |
+| scalar, `unroll 4`, no target | 56 / 0 | 0.12 ms |
+| the kernel above (`float4` + `unroll 4`) | 64 / 0 | 0.12 ms |
+| `float4`, no unroll | 32 / 0 | 0.13 ms |
+
+So: no hand-set occupancy target, keep the unroll, and prefer `float4` -- it was a wash on H100 but is the
+form that matters on older GPUs.  Still open: whether one `float4` per thread
+(`:strategy :one-thread-per`, no loop) beats the strided loop on H100, and BUG 125 (a view of a read-only
+input loses the `.nc` read-only load).
 
 ---
 

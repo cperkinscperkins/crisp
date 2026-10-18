@@ -227,12 +227,6 @@
    kernel gets unless a larger mode is deliberately selected."
   (first (%hp-register-modes profile)))
 
-;; src/hardware-profile.lisp
-(defun %hp-registers-per-thread-max (&optional (profile (active-hardware-profile)))
-  "The LARGEST selectable per-thread register allocation, or NIL.  Exceeding this means
-   the kernel will spill no matter which mode is chosen."
-  (let ((modes (%hp-register-modes profile)))
-    (and modes (reduce #'max modes))))
 
 (defun register-hardware-profile (name proplist)
   "Endeavor 130 Phase 0: parse, validate, and register a hardware profile.

@@ -45,35 +45,24 @@
           (getf profile :simd-width))
     profile))
 
-(defvar *mma-test-dims* nil "(M N K) when --mma-test=M,N,K is passed to the hoist; else NIL.")
-(defvar *mma-bench-iters* nil
-  "Endeavor 142 (Phase B, Q1): iteration count when --mma-bench[=N] is passed — the launcher then wraps
-   the (already-closed) command list in a warmup + timed re-execution loop and prints
-   `BENCH M N K <gflops> GFLOPS`.  Requires --mma-test=M,N,K for the FLOPS count.  NIL = no benchmark.")
-(defvar *mma-input-counter* 0 "Per-kernel input-tensor counter for A(0)/B(1) role assignment.")
-(defvar *mma-scale* 1 "Reference scale factor (--mma-scale=S): expected C = S·(A·B).  Default 1.
-   Used by kernels that fire the MMA more than once per fragment (e.g. accum-op body).")
 
 (defun %mma-parse-args (args)
-  "Return (values metacrisp-path (M N K)-or-NIL scale bench-iters), extracting --mma-test=M,N,K, an
-   optional --mma-scale=S flag, and an optional --mma-bench[=N] flag (Endeavor 142; default 100 iters)."
-  (let ((dims nil) (path nil) (scale 1) (bench nil))
+  "Return (values metacrisp-path (M N K)-or-NIL scale), extracting --mma-test=M,N,K and an optional
+   --mma-scale=S flag.  --mma-bench was RETIRED on 2026-10-16: matmul benchmarks are measured by the
+   reviewed fixtures in benchmarks/matmul/crisp/, never by a per-kernel generated harness, so the flag
+   is refused by name rather than mistaken for the metacrisp path."
+  (let ((dims nil) (path nil) (scale 1))
     (dolist (a args)
       (cond
         ((and (>= (length a) 11) (string= (subseq a 0 11) "--mma-test="))
          (setf dims (mapcar #'parse-integer (uiop:split-string (subseq a 11) :separator ","))))
         ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-scale="))
          (setf scale (parse-integer (subseq a 12))))
-        ((and (>= (length a) 12) (string= (subseq a 0 12) "--mma-bench="))
-         (setf bench (parse-integer (subseq a 12))))
-        ((string= a "--mma-bench")
-         (setf bench 100))
+        ((and (>= (length a) 11) (string= (subseq a 0 11) "--mma-bench"))
+         (error "--mma-bench was retired on 2026-10-16; benchmark through the reviewed fixture (benchmarks/matmul/crisp/bench_harness_l0.cpp, driven by scripts/crisp_bench/matmul.py)"))
         (t (unless path (setf path a)))))
-    (values path dims scale bench)))
+    (values path dims scale)))
 
-(defun %mma-out-dir-p (dir)
-  "T if the param direction is an output (&out)."
-  (and dir (search "out" (string-downcase (string dir)))))
 
 (defun main ()
   "Entry point for crisp-hoist-l0.exe.  Endeavor 134: accepts --mma-test=M,N,K."
@@ -84,13 +73,9 @@
         (unless args
           (format t "Usage: crisp-hoist-l0 [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-        (multiple-value-bind (metacrisp-path dims scale bench) (%mma-parse-args args)
+        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
           (setf *mma-test-dims* dims)
           (setf *mma-scale* scale)
-          (setf *mma-bench-iters* bench)
-          (when (and bench (not dims))
-            (format t "Error: --mma-bench requires --mma-test=M,N,K (for the FLOPS count).~%")
-            (uiop:quit 1))
           (unless (and metacrisp-path (probe-file metacrisp-path))
             (format t "Error: File not found: ~a~%" metacrisp-path)
             (uiop:quit 1))
@@ -119,87 +104,19 @@
 ;;; modifying the call chain through generate-cpp-main / generate-kernel-launch.
 ;;; -----------------------------------------------------------------------
 
-(defvar *hoist-current-structs* nil
-        "Dynamic variable: list of (def-struct NAME ...) forms from the current
-   metacrisp :structs section.  Bound by generate-l0-launcher.")
 
 
 ;; --- struct lookup helpers ---
 
-(defun %find-struct-def-l0 (name)
-  "Find (def-struct NAME ...) in *hoist-current-structs*.
-   NAME is a symbol; all comparisons use string-equal to be package-agnostic.
-   The metacrisp is parsed with standard READ (cl-user package), so symbols
-   from the parsed data will not eq symbols from overlay source code."
-  (find name *hoist-current-structs*
-    :test (lambda (n f)
-            (and (consp f)
-                 (symbolp (first f))
-                 (string-equal (symbol-name (first f)) "DEF-STRUCT")
-                 (symbolp (second f))
-                 (string-equal (symbol-name n) (symbol-name (second f)))))))
 
-(defun struct-type-p-l0 (type)
-  "Returns T if TYPE names a def-struct in *hoist-current-structs*.
-   Accepts plain symbols or list forms like (POINT :EARNESTNESS 3.0)."
-  (let ((base (cond ((symbolp type) type)
-                    ((and (consp type) (symbolp (first type))) (first type))
-                    (t nil))))
-    (and base (not (null (%find-struct-def-l0 base))))))
 
-(defun %struct-base-type (param-type)
-  "Extract the base struct name from PARAM-TYPE (symbol or list form)."
-  (if (symbolp param-type) param-type (first param-type)))
 
 
 ;; --- field initialization emitter ---
 
-(defun %array-type-p (type)
-  "Returns T if TYPE is an (array T N) form."
-  (and (consp type)
-       (symbolp (first type))
-       (string-equal (symbol-name (first type)) "ARRAY")))
 
-(defun %array-element-type (array-type)
-  "Returns the element type T from an (array T N) form."
-  (second array-type))
 
-(defun %array-size (array-type)
-  "Returns the compile-time size N from an (array T N) form."
-  (third array-type))
 
-(defun %struct-emit-fields (stream var-path members aliases)
-  "Recursively emit C++ field assignments for a struct variable at VAR-PATH.
-   MEMBERS is the member list from the (def-struct NAME ...) form.
-   Array-typed fields are iota-initialized: field[i] = (T)i.
-   Scalar fields use a type-appropriate constant (1 / 1.0f / 1.0).
-   Nested structs are recursed into."
-  (dolist (member members)
-    (let* ((field-name (first member))
-           (field-type-raw (second member))
-           (field-name-cpp (format-cpp-identifier field-name))
-           (field-path (format nil "~a.~a" var-path field-name-cpp))
-           (field-type (resolve-type-alias field-type-raw aliases)))
-      (cond
-       ;; Array field — iota initialization: field[i] = (T)i
-       ((%array-type-p field-type)
-         (let* ((elem-type (%array-element-type field-type))
-                (arr-size (%array-size field-type))
-                (elem-str (crisp-type-to-cpp-type elem-type)))
-           (format stream "    for (int _i = 0; _i < ~a; _i++) ~a[_i] = (~a)_i;~%"
-             arr-size field-path elem-str)))
-       ;; Nested struct — recurse
-       ((struct-type-p-l0 field-type)
-         (let* ((nested-def (%find-struct-def-l0 field-type))
-                (nested-members (cddr nested-def)))
-           (%struct-emit-fields stream field-path nested-members aliases)))
-       ;; Scalar field — type-appropriate constant
-       (t
-         (let* ((cpp-type (crisp-type-to-cpp-type field-type))
-                (init-val (cond ((string= cpp-type "float") "1.0f")
-                                ((string= cpp-type "double") "1.0")
-                                (t "1"))))
-           (format stream "    ~a = ~a;~%" field-path init-val)))))))
 
 
 (defun generate-l0-launcher (metacrisp-path)
@@ -491,16 +408,6 @@
           ((string-equal n "BFLOAT16") "crisp_f32_to_bf16")
           (t nil))))
 
-;; src/hoist-l0/main.lisp
-(defun %l0-f16-decoder (elem-type)
-  "C++ call PREFIX that decodes ELEM-TYPE's 16-bit encoding to float, e.g. \"crisp_f16_to_f32(\",
-   or NIL when a plain (float) cast is correct.  The caller supplies the closing paren."
-  (let ((n (and elem-type (symbolp elem-type) (symbol-name elem-type))))
-    (cond ((null n) nil)
-          ((string-equal n "HALF")     "crisp_f16_to_f32(")
-          ((string-equal n "BFLOAT16") "crisp_bf16_to_f32(")
-          (t nil))))
-
 
 
 (defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records &optional dispatch-info)
@@ -535,7 +442,8 @@
         (format stream "        }~%")
         (format stream "        std::cout << std::endl;~%")
         (format stream "    }~%")))
-    ;; Endeavour 155: was (and *mma-test-dims* (not *mma-bench-iters*)) -- see header.
+    ;; Endeavour 155: was (and *mma-test-dims* (not *mma-bench-iters*)) -- see header.  (--mma-bench
+    ;; itself was retired 2026-10-16.)
     (when *mma-test-dims*
       (%l0-emit-mma-reference stream allocations))
     (format stream "    std::cout << \"Success!\" << std::endl;~%")
@@ -645,9 +553,6 @@
   (format stream "    std::cout << \"Module loaded successfully\" << std::endl;~%~%"))
 
 
-(defun %dispatch-sym-to-cpp-var (sym)
-  "Convert a dispatch param symbol (e.g. 'WIDTH or 'width) to C++ variable name 'width_arg'."
-  (format nil "~a_arg" (substitute #\_ #\- (string-downcase (symbol-name sym)))))
 
 
 ;; ======================================================================
@@ -1049,10 +954,8 @@
 (defun generate-kernel-launch (stream kernel-name declared-sig aliases records &optional dispatch-info)
   "Generate kernel creation and launch code. Returns list of USM allocations.
    Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups.
-
-   Endeavor 143: the --mma-bench block now times each launch individually via L0
-   kernel-timestamp events and reports the median, replacing the batched-submit /
-   single-sync loop whose repeats the driver coalesced (inflating GFLOPS by ITERS)."
+   (Its --mma-bench timing block, Endeavours 142/143, was retired 2026-10-16 -- benchmarks use the
+   reviewed fixture, benchmarks/matmul/crisp/bench_harness_l0.cpp.)"
   (format stream "    // Create kernel~%")
   (format stream "    ze_kernel_desc_t kernelDesc = { ZE_STRUCTURE_TYPE_KERNEL_DESC };~%")
   (format stream "    kernelDesc.pKernelName = \"~a\";~%" kernel-name)
@@ -1109,145 +1012,15 @@
 
     (format stream "    std::cout << \"Kernel executed successfully\" << std::endl;~%~%")
 
-    ;; Endeavor 142 (Q1) / fixed in 143: per-launch kernel-timestamp timing.  Each iteration is a
-    ;; SEPARATE submit + sync of a measurement command list that signals a kernel-timestamp event,
-    ;; so every sample is one real execution.  Report the median.  See the overlay header comment
-    ;; for why the previous batched-submit loop measured one execution no matter the iteration count.
-    (when (and *mma-bench-iters* *mma-test-dims*)
-      (destructuring-bind (m n k) *mma-test-dims*
-        (format stream "    // --mma-bench: per-launch kernel-timestamp timing (Endeavor 142; fixed 143)~%")
-        (format stream "    {~%")
-        (format stream "        const int BENCH_ITERS = ~d;~%" *mma-bench-iters*)
-        (format stream "        ze_device_properties_t _bmProps = { ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES };~%")
-        (format stream "        zeDeviceGetProperties(device, &_bmProps);~%")
-        (format stream "        uint64_t _timerRes  = _bmProps.timerResolution;~%")
-        (format stream "        uint64_t _validBits = _bmProps.kernelTimestampValidBits;~%")
-        (format stream "        uint64_t _clockMask = (_validBits >= 64) ? ~~0ULL : ((1ULL << _validBits) - 1ULL);~%")
-        ;; timerResolution is cycles/sec on L0 1.0 and ns/tick from 1.1 on; disambiguate by magnitude
-        ;; exactly as bench_harness_l0.cpp does.
-        (format stream "        bool _timerInHz = (_timerRes > 1000000ULL);~%~%")
-
-        (format stream "        ze_event_pool_desc_t _poolDesc = { ZE_STRUCTURE_TYPE_EVENT_POOL_DESC };~%")
-        (format stream "        _poolDesc.flags = ZE_EVENT_POOL_FLAG_KERNEL_TIMESTAMP;~%")
-        (format stream "        _poolDesc.count = 1;~%")
-        (format stream "        ze_event_pool_handle_t _pool = nullptr;~%")
-        (format stream "        ze_event_handle_t _tsEvent = nullptr;~%")
-        (format stream "        ze_command_list_handle_t _measList = nullptr;~%")
-        (format stream "        bool _poolOk = (zeEventPoolCreate(context, &_poolDesc, 1, &device, &_pool) == ZE_RESULT_SUCCESS);~%")
-        (format stream "        bool _tsOk = _poolOk;~%")
-        (format stream "        if (_tsOk) {~%")
-        (format stream "            ze_event_desc_t _evDesc = { ZE_STRUCTURE_TYPE_EVENT_DESC };~%")
-        (format stream "            _evDesc.index  = 0;~%")
-        (format stream "            _evDesc.signal = ZE_EVENT_SCOPE_FLAG_HOST;~%")
-        (format stream "            _evDesc.wait   = ZE_EVENT_SCOPE_FLAG_HOST;~%")
-        (format stream "            _tsOk = (zeEventCreate(_pool, &_evDesc, &_tsEvent) == ZE_RESULT_SUCCESS);~%")
-        (format stream "        }~%")
-        (format stream "        if (_tsOk) {~%")
-        (format stream "            zeCommandListCreate(context, device, &cmdListDesc, &_measList);~%")
-        (format stream "            zeCommandListAppendLaunchKernel(_measList, kernel, &groupCount, _tsEvent, 0, nullptr);~%")
-        (format stream "            zeCommandListClose(_measList);~%")
-        (format stream "        }~%~%")
-
-        (format stream "        // Warmup: real submit + sync pairs, so caches/clocks settle per execution.~%")
-        (format stream "        for (int _w = 0; _w < 20; ++_w) {~%")
-        (format stream "            zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);~%")
-        (format stream "            zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
-        (format stream "        }~%~%")
-
-        (format stream "        double _kt[BENCH_ITERS];~%")
-        (format stream "        int _kn = 0;~%")
-        (format stream "        double _total_s = 0.0;~%")
-        (format stream "        for (int _it = 0; _it < BENCH_ITERS; ++_it) {~%")
-        (format stream "            bool _gotTs = false;~%")
-        (format stream "            if (_tsOk) {~%")
-        (format stream "                zeEventHostReset(_tsEvent);~%")
-        (format stream "                zeCommandQueueExecuteCommandLists(cmdQueue, 1, &_measList, nullptr);~%")
-        (format stream "                zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
-        (format stream "                zeEventHostSynchronize(_tsEvent, UINT64_MAX);~%")
-        (format stream "                ze_kernel_timestamp_result_t _ts = {};~%")
-        (format stream "                if (zeEventQueryKernelTimestamp(_tsEvent, &_ts) == ZE_RESULT_SUCCESS) {~%")
-        (format stream "                    uint64_t _s = _ts.context.kernelStart & _clockMask;~%")
-        (format stream "                    uint64_t _e = _ts.context.kernelEnd   & _clockMask;~%")
-        (format stream "                    uint64_t _d = (_e >= _s) ? (_e - _s) : (_clockMask + 1 - _s + _e);~%")
-        (format stream "                    double _ns = _timerInHz ? ((double)_d * 1e9 / (double)_timerRes)~%")
-        (format stream "                                            : ((double)_d * (double)_timerRes);~%")
-        (format stream "                    _kt[_kn++] = _ns / 1000.0;~%")
-        (format stream "                    _total_s += _ns / 1e9;~%")
-        (format stream "                    _gotTs = true;~%")
-        (format stream "                }~%")
-        (format stream "            }~%")
-        (format stream "            if (!_gotTs) {~%")
-        (format stream "                auto _w0 = std::chrono::high_resolution_clock::now();~%")
-        (format stream "                zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);~%")
-        (format stream "                zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
-        (format stream "                auto _w1 = std::chrono::high_resolution_clock::now();~%")
-        (format stream "                double _ws = std::chrono::duration<double>(_w1 - _w0).count();~%")
-        (format stream "                _kt[_kn++] = _ws * 1e6;~%")
-        (format stream "                _total_s += _ws;~%")
-        (format stream "            }~%")
-        (format stream "        }~%~%")
-
-        (format stream "        // Median via insertion sort (BENCH_ITERS is small; avoids an <algorithm> include).~%")
-        (format stream "        for (int _i = 1; _i < _kn; ++_i) {~%")
-        (format stream "            double _v = _kt[_i]; int _j = _i - 1;~%")
-        (format stream "            while (_j >= 0 && _kt[_j] > _v) { _kt[_j + 1] = _kt[_j]; --_j; }~%")
-        (format stream "            _kt[_j + 1] = _v;~%")
-        (format stream "        }~%")
-        (format stream "        double _med_us = (_kn > 0) ? _kt[_kn / 2] : 0.0;~%")
-        (format stream "        double _min_us = (_kn > 0) ? _kt[0] : 0.0;~%")
-        (format stream "        double _flops = 2.0 * ~d.0 * ~d.0 * ~d.0;~%" m n k)
-        (format stream "        double _gflops = (_med_us > 0.0) ? (_flops / (_med_us / 1e6) / 1e9) : 0.0;~%")
-        (format stream "        std::cout << \"BENCH ~d ~d ~d \" << _gflops << \" GFLOPS (\" << _kn << \" iters, \" << _total_s << \" s)\"~%" m n k)
-        (format stream "                  << \" median_us=\" << _med_us << \" min_us=\" << _min_us~%")
-        (format stream "                  << (_tsOk ? \" method=kernel_timestamp\" : \" method=wallclock_per_iter\")~%")
-        (format stream "                  << std::endl;~%")
-        (format stream "        if (_measList) zeCommandListDestroy(_measList);~%")
-        (format stream "        if (_tsEvent)  zeEventDestroy(_tsEvent);~%")
-        (format stream "        if (_poolOk)   zeEventPoolDestroy(_pool);~%")
-        (format stream "    }~%~%")))
 
     allocations))
 
-(defun generate-kernel-arguments (stream declared-sig)
-  "Generate kernel argument setup code"
-  (format stream "    // Set kernel arguments~%")
-  (let ((arg-index 0))
-    (dolist (param declared-sig)
-      (let ((param-name (getf param :name))
-            (param-type (getf param :type)))
-        ;; For now, just handle scalar types
-        (when (symbolp param-type) ; Simple scalar type
-              (format stream "    ~a ~a_arg = ~d;  // TODO: Set actual value~%"
-                (string-downcase (symbol-name param-type))
-                param-name
-                (+ arg-index 42)) ; Placeholder value
-              (format stream "    zeKernelSetArgumentValue(kernel, ~d, sizeof(~a), &~a_arg);~%~%"
-                arg-index
-                (string-downcase (symbol-name param-type))
-                param-name)
-              (incf arg-index))))
-    (when (> arg-index 0)
-          (format stream "~%"))))
 
 
 ;; Record type helpers
 
-(defun record-base-type (type)
-  "Extract the base record type symbol from a plain symbol or a list-form like (V-POINT EARNESTNESS 3.0)."
-  (if (symbolp type) type (first type)))
 
-(defun find-record-def (type records)
-  "Find the def-record entry matching TYPE in RECORDS.
-   TYPE may be a plain symbol or a parameterized list form."
-  (let ((base (record-base-type type)))
-    (find base records
-      :key #'second
-      :test (lambda (a b) (string-equal (symbol-name a) (symbol-name b))))))
 
-(defun record-type-p (type records)
-  "Returns true if TYPE refers to a def-record in RECORDS."
-  (and (not (cell-type-p type))
-       (not (null (find-record-def type records)))))
 
 
 (defun %record-field-args (stream members var-path arg-index records aliases)
@@ -1325,21 +1098,7 @@
 ;;; Total USM elements = stride_0 * extent_0.
 ;;; -----------------------------------------------------------------------
 
-(defun tensor-type-p (param-type)
-  "Returns T if PARAM-TYPE is a tensor/vector/matrix type specifier."
-  (and (consp param-type)
-       (symbolp (first param-type))
-       (member (symbol-name (first param-type))
-               '("TENSOR" "VECTOR" "MATRIX") :test #'string-equal)))
 
-(defun %tensor-compact-extents-strides (n extents-list)
-  "Returns (values extents strides) for a compact N-dim tensor.
-   Strides are in elements; innermost stride = 1."
-  (let* ((extents (copy-list extents-list))
-         (strides (make-list n :initial-element 1)))
-    (loop for k from (- n 2) downto 0 do
-            (setf (nth k strides) (* (nth (1+ k) strides) (nth (1+ k) extents))))
-    (values extents strides)))
 
 
 
@@ -1390,9 +1149,9 @@
   "Emit one host-to-device copy for every buffer recorded in *L0-STAGING*.
 
    Deliberately its OWN command list and queue rather than an append to `cmdList`.  cmdList
-   is re-executed by the --mma-bench loop, so staging appended there would be re-run and
-   TIMED on every benchmark iteration -- it would show up as kernel time and nobody would see
-   why.  A launcher pays for one extra queue at startup instead."
+   was re-executed by the --mma-bench loop (retired 2026-10-16), so staging appended there would
+   have been re-run and TIMED on every benchmark iteration.  Keeping staging separate costs one
+   extra queue at startup and keeps the kernel's command list a pure launch."
   (when *l0-staging*
     (format stream "~%    // Stage host -> device.~%")
     (format stream "    // The kernel reads DEVICE memory, so a host-side fill that is never~%")
@@ -2081,7 +1840,7 @@
   (declare (ignore param))
   (let* ((base-type (%struct-base-type param-type))
          (resolved-base (resolve-type-alias base-type aliases))
-         (struct-def (%find-struct-def-l0 resolved-base))
+         (struct-def (%find-struct-def resolved-base))
          (struct-members (cddr struct-def))
          (param-name-cpp (format-cpp-identifier param-name))
          (var-name (format nil "~a_val" param-name-cpp))
@@ -2266,7 +2025,7 @@
              (setf arg-index new-idx)
              (when alloc (push alloc allocations))))
 
-         ((struct-type-p-l0 param-type)
+         ((struct-type-p param-type)
            (setf arg-index (%l0-emit-struct-arg stream param param-name param-type aliases arg-index)))
 
          ((record-type-p param-type records)

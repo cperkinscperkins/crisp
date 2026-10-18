@@ -27,9 +27,12 @@ NEXT  (housekeeping-oct)
       pre-order count of tree paths, so a debugger would show the wrong line of the .crisp); (2) cuda-gdb smoke
       test on the next pod rental (break / step / print in a Crisp kernel), alongside the 185 PTX libdevice check
       (tanh / erf / exp2); (3) gdb-oneapi on the BMG once it is not driving the display (iGPU for the monitor?) (L339)
-- [ ] make new prerelease (see Release)
+- [x] make new prerelease (see Release)
 - [ ] set up Claude with runpod.io MCP -- needs guardrails first (spend cap, auto-kill TTL)
-- [ ] Start AG on contest submissions -- spike the submission format first (PTX + cupy/cuda-python loader?)
+- [x] Start AG on contest submissions -- 2026-10-16: LeetGPU challenge 01 (vector add) submitted; the format
+      is Crisp PTX as inline asm inside a CUDA __global__ + a solve() launcher.  H100: 0.16 ms -> 0.12 ms
+      (78th pct) after removing a hand-set occupancy-target that spilled (BUG 124).  Recipe in
+      docs/writing-crisp.md section 12.  Follow-ups: one-thread-per float4 (AG), BUG 125 (.nc through views).
 
 
 OPEN
@@ -68,12 +71,35 @@ OPEN
 - [/] RunPod as a GitHub Actions target (hoist tests only? separate .yml) (L985)
 
 ### Compiler hygiene / refactor
-- [ ] src/specials.lisp: lines after ";;;; end of generated file" hold ~155 hand-folded
-      defvars/defconstants that scripts/gen-specials.lisp WIPES on regeneration. Give them home files. (L864)
-- [ ] warnings when building the compiler; compiler warnings in tests (L862, L863)
-- [ ] overly long functions (L861)
-- [ ] old ersatz output -> log4cl: (format t|*error-output* ...) remains in main.lisp, hoist-l0,
-      hoist-cuda, mma.lisp.  Some of main.lisp is legit CLI output -- sort, don't blanket-convert (L191)
+- [x] src/specials.lisp tail -> src/globals.lisp (hand-written, loaded right after specials; generated file now
+      wholly generated) -- 2026-10-15.  (The generator had carried the tail since 184, not wiped it.)  Regenerating
+      also proclaimed 6 globals that 185 / the adversarial fixes had added without a regen. (L864)
+- [x] warnings when building the compiler: clean build 15 STYLE-WARNINGs -> 0 (2026-10-15).  Left: 20 SBCL
+      "deleting unreachable code" notes -- REVIEWED 2026-10-16 (put_temp_files_here/refactor/unreachable.txt):
+      1 real bug fixed (make-matrix's friendly error came after (* width height), so users got a raw type
+      error; spec 083/errors/02), 1 latent dead branch noted (semantic-literal singleton types (keyword :k)
+      are swallowed by the earlier (listp type-spec) clause; no spec reaches it), 18 harmless (L862, L863)
+- [x] overly long functions (L861) -- refactor-oct phase 3, 2026-10-16: every LOGIC function over 100 CODE
+      lines decomposed (12: generate-backward-walk 550->271, anf-normalize, %emit-launch-base, calculate-
+      uniformity-state, resolve-type-to-llvm, %generate-backward-kernel-ast, parse-cli-args, compile-files,
+      %fused-grid-reduce-form, and the semantic-aref / -coop-op / -make-view codegen).  Each verified
+      byte-identical: compiler corpus (7588 files), hoister corpus (1471), CLI snapshot (16 cases).  Left on
+      purpose: registration tables, %handle-single-value-backward (half documentation), and the rest of
+      generate-backward-walk (its process-form closure -- moving it needs a context object; proposal).
+- [x] --mma-bench retired (2026-10-16): L0 fixture binds SLM scratch (chapters 1-3 moved onto it; Docker
+      agreement within 0.6% to N=1024, 1-6% at 2048/4096), fixture BUILD_FLAGS "" bug fixed, matmul.py
+      auto-bench paths removed (a kernel the fixture cannot run is a loud missing row), results record
+      "harness": "fixture", hoisters refuse --mma-bench / --grid-tile by name.  --mma-test stays.
+- [x] hoister helpers: 18 functionally identical helpers moved into crisp.hoist (2026-10-16); 1471 hoister
+      outputs byte-identical.  Left per-backend: %record-field-args, %mma-parse-args, main.
+- [x] BUG 122 fixed (2026-10-16): log lines no longer leak onto stdout above --log-level=off.
+- [x] reproducible output: initialize-compiler resets *gensym-counter* to *gensym-counter-base* (10000,
+      src/globals.lisp) -- 2026-10-15.  Same source -> byte-identical output across builds (proven with a
+      probe build: 7588/7588 corpus files identical).  Names now read %g10038.
+- [x] ersatz output -> log4cl (2026-10-15): main.lisp progress chatter (Starting pass / passes finished /
+      hoister / FFI linking) and core.lisp's DEBUG prints.  Kept: errors, usage, user WARNINGs, the IR, c-t-output,
+      spec-validator FAIL lines, and the hoisters (no log4cl by design; a --quiet flag if wanted).  Found BUG 122:
+      above --log-level=off every log line ALSO lands on stdout (exe only). (L191)
 - [ ] audit uses of symbolp that assume (symbolp nil) is false (L209)
 - [ ] move validators to their own file(s); only the spec runner loads them (L237)
 - [ ] dump tables like dump-env for *function-table* and others (L303)

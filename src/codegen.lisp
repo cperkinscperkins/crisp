@@ -256,24 +256,6 @@
                (sh    (crisp.llvm-bindings::llvm-build-shl builder pat32 shift "mc_mask32")))
           (llvm-build-trunc builder sh i16 "mc_mask")))))
 
-(defun %module-cluster-extent ()
-  "How many workgroups a :mode :cluster barrier must expect arrivals from.
-
-   Endeavor 152 step 10c: this is now the FULL cluster size (the product of every axis), not
-   a 1-D extent.  That follows directly from the decision above -- if peers arrive cluster-wide
-   then the count must be cluster-wide too.  Getting these two out of step is precisely the
-   failure that hangs a GPU: a barrier initialised for fewer arrivals than it receives releases
-   early, one initialised for more never releases at all.
-
-   *kernel-dispatch-declarations* is cleared per module, so this is module-scoped."
-  (let ((found nil))
-    (maphash (lambda (k plist)
-               (declare (ignore k))
-               (let* ((dims (getf plist :cluster-size))
-                      (e    (and dims (reduce (function *) dims))))
-                 (when (and e (> e 1)) (setf found e))))
-             *kernel-dispatch-declarations*)
-    found))
 
 (defun %gen-multicast-leader-pred (builder module plan &optional rot-src)
   "True in exactly ONE workgroup per multicast group.
@@ -968,14 +950,6 @@
       (llvm-di-builder-create-debug-location (llvm-get-module-context module)
                                              line 0 di-scope (cffi:null-pointer)))))
 
-#|
-(defun %attach-debug-loc (inst node module di-builder di-scope location-map)
-  "Helper: Creates and attaches a debug location to the instruction if metadata is available."
-  (let ((di-loc (%get-di-location node module di-builder di-scope location-map)))
-    (when di-loc
-      (llvm-instruction-set-debug-loc inst di-loc))
-    di-loc))
-    |#
 
 ;; src/codegen.lisp
 ;;
@@ -1935,9 +1909,9 @@
 (defmethod %hw-lower ((op (eql 'op-imad)) builder module arg-vals arg-types result-type)
   "op-imad: widen a and b to the accumulator's type (sext / zext), multiply, add c. Wraps in c's
    type like ordinary integer arithmetic."
+  (declare (ignore result-type))
   (destructuring-bind (a b c) arg-vals
     (destructuring-bind (a-type b-type c-type) arg-types
-      (declare (ignore result-type))
       (llvm-build-add builder
                       (llvm-build-mul builder
                                       (%hw-widen builder module a a-type c-type)
@@ -1952,9 +1926,10 @@
    are extended to W, so their product is exact; c is extended to W; a saturating add in W is then
    the exact sum clamped to W's range; finally, if W is wider than c, clamp to c's range and
    truncate."
+  (declare (ignore result-type))
   (destructuring-bind (a b c) arg-vals
     (destructuring-bind (a-type b-type c-type) arg-types
-      (declare (ignore b-type result-type))
+      (declare (ignore b-type))
       (multiple-value-bind (cat a-bits lanes) (%hw-type-parts a-type)
         (multiple-value-bind (c-cat c-bits) (%hw-type-parts c-type)
           (declare (ignore c-cat))
@@ -2004,13 +1979,12 @@
    Lane extraction (not llvm.vector.reduce.add) keeps the IR in forms both translators accept."
   (destructuring-bind (a b c) arg-vals
     (multiple-value-bind (cat bits lanes) (%hw-type-parts (first arg-types))
-      (declare (ignore cat))
+      (declare (ignore cat bits))
       (multiple-value-bind (c-cat c-bits) (%hw-type-parts result-type)
         (declare (ignore c-cat))
         (let* ((d (%hw-abs-diff-value builder module a b (first arg-types)))
                (d (llvm-build-zext builder d (%hw-int-llvm-type c-bits lanes) "hw_zext"))
                (sum c))
-          (declare (ignore bits))
           (dotimes (i lanes sum)
             (setf sum (llvm-build-add builder sum
                                       (llvm-build-extract-element builder d (llvm-const-int (llvm-int32-type) i 0) "hw_lane")
@@ -2503,37 +2477,8 @@
                       (crisp-type-to-llvm-type type-name module) arg-vals
                       (lambda (b params) (%185-fmod-body b module (first params) (second params) type-name)))))
 
+
 ;; -- comparisons --
-(defun generate-comparison-ir (builder module var-env di-builder di-scope location-map node op-node-int op-node-float)
-  "Helper to generate IR for comparison operators (<, >, =, etc)."
-  (let (;; Oops, semantic-lt etc don't store signature effectively in common way, 
-        ;; but they do store left-arg and right-arg. Let's assume standard accessors.
-        (left-arg (slot-value node 'left-arg))
-        (right-arg (slot-value node 'right-arg)))
-
-    (multiple-value-bind (lhs lhs-loc) (generate-node-ir left-arg builder module var-env di-builder di-scope location-map)
-      (declare (ignore lhs-loc))
-      (multiple-value-bind (rhs rhs-loc) (generate-node-ir right-arg builder module var-env di-builder di-scope location-map)
-        (declare (ignore rhs-loc))
-        (let* ((lhs-type-name (get-single-value-type left-arg))
-               ;; Determine common type (promote to float if mixed, else largest int)
-               ;; For simplicity, we enforce strict typing or assume implicit cast logic is handled by semantic analysis?
-               ;; Semantic analysis usually inserts casts. Let's assume types match or casts are explicit.
-               ;; BUT wait, semantic-add handles implicit casts. Let's reuse build-cast-if-needed logic if possible.
-               ;; Wait, semantic-lt structure: type, left-arg, right-arg.
-               ;; But type is 'int (result). We need args types.
-               (lhs-crisp-type (gethash lhs-type-name *crisp-types*))
-               (cmp-inst
-                (cond
-                 ((member (crisp-type-category lhs-crisp-type) '(:signed-int :unsigned-int))
-                   (llvm-build-icmp builder op-node-int lhs rhs "icmp_tmp"))
-                 ((eq (crisp-type-category lhs-crisp-type) :float)
-                   (llvm-build-fcmp builder op-node-float lhs rhs "fcmp_tmp"))
-                 (t (error "Unsupported comparison type: ~a" lhs-type-name)))))
-
-          ;; Convert i1 result to i32 (0 or 1) because Crisp uses int for booleans
-          (let ((result (llvm-build-zext builder cmp-inst (llvm-int32-type) "bool_ext")))
-            (values result nil)))))))
 
 ;; Redefining to be more generic and careful about accessors
 (defmacro def-comparison-codegen (type-name int-pred float-pred accessor-prefix)
@@ -3293,14 +3238,147 @@
 ;;; =========================================================
 
 
+(defun %aref-cell-spec (array-type)
+  "ARRAY-TYPE canonicalized for semantic-aref's dispatch: a (CELL ...) / (TENSOR ...) spec, unmangled
+   from a template-struct name where it is one."
+  (let* ((resolved (resolve-type-alias array-type))
+         (canon    (canonicalize-type-specifier resolved)))
+    (cond
+     ((and (listp canon) (symbolp (first canon))
+           (string-equal (symbol-name (first canon)) "CELL")) canon)
+     ((and (listp canon) (= (length canon) 1) (symbolp (first canon)))
+      (unmangle-template-struct-name (first canon)))
+     ((symbolp canon)
+      (unmangle-template-struct-name canon))
+     (t canon))))
+
+(defun %aref-fixed-array-ir (array-node array-type index-val builder module var-env
+                             di-builder di-scope location-map)
+  "semantic-aref Case 2: an (array T N) fixed-size array -- GEP into its alloca (or an inline struct
+   field, or an inner aref's pointer).  Returns (values loaded nil elem-ptr)."
+  (let* ((resolved-arr-type (resolve-type-alias array-type))
+         (elem-type-spec    (second resolved-arr-type))
+         (count-raw         (third  resolved-arr-type))
+         (count             (etypecase count-raw
+                              (integer count-raw)
+                              (symbol  (parse-integer (symbol-name count-raw)))))
+         (elem-llvm-type    (crisp-type-to-llvm-type elem-type-spec module))
+         (arr-llvm-type     (crisp.llvm-bindings::llvm-array-type elem-llvm-type count))
+         (arr-ptr
+          (let ((inline-ptr (%try-inline-struct-array-field-ptr
+                             array-node builder module var-env
+                             di-builder di-scope location-map)))
+            (if inline-ptr
+                inline-ptr
+                (if (semantic-var-read-p array-node)
+                    (let ((alloca (gethash (semantic-var-read-name array-node) var-env)))
+                      (unless alloca
+                        (error "array aref: variable ~a not found in var-env"
+                               (semantic-var-read-name array-node)))
+                      alloca)
+                    (multiple-value-bind (sub-val _loc sub-ptr)
+                        (generate-node-ir array-node builder module var-env
+                                          di-builder di-scope location-map)
+                      (declare (ignore _loc))
+                      (cond
+                       (sub-ptr
+                        (log:info "array-aref: using sub-ptr from inner aref (bug 029 path)")
+                        sub-ptr)
+                       ((llvm-type-kind-is-pointer? (llvm-type-of sub-val))
+                        sub-val)
+                       (t
+                        (let ((slot (llvm-build-alloca builder arr-llvm-type "arr_tmp")))
+                          (llvm-build-store builder sub-val slot)
+                          slot))))))))
+         (idx-i64 (llvm-build-sext builder index-val (llvm-int64-type) "arr_idx")))
+
+    (log:info "array-aref: type=(array ~a ~a) ptr=~a idx=~a"
+              elem-type-spec count arr-ptr idx-i64)
+
+    (cffi:with-foreign-object (indices :pointer 2)
+      (setf (cffi:mem-aref indices :pointer 0)
+            (llvm-const-int (llvm-int32-type) 0 nil))
+      (setf (cffi:mem-aref indices :pointer 1) idx-i64)
+      (let* ((elem-ptr (llvm-build-in-bounds-gep2
+                        builder arr-llvm-type arr-ptr indices 2 "arr_elem_ptr"))
+             (loaded   (llvm-build-load2 builder elem-llvm-type elem-ptr "arr_elem")))
+        (values loaded nil elem-ptr)))))
+
+(defun %aref-tensor-ir (array-node cell-spec element-type index-val builder module var-env
+                        di-builder di-scope location-map)
+  "semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the
+   element pointer is the parent storage's base pointer (SROA field 0 of field 0) plus index * sizeof.
+   A read of a read-only kernel-parameter tensor gets !invariant.load.  Returns (values loaded nil ptr)."
+  (let* ((tensor-val     (generate-node-ir array-node builder module var-env
+                                           di-builder di-scope location-map))
+         (elem-type-spec element-type)
+         (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
+         (mangled-name   (mangle-template-struct-name (first cell-spec)
+                                                      (rest cell-spec)))
+         (mark-invariant-p (%array-node-readonly-tensor-param-p array-node)))
+    (log:info "semantic-aref tensor: struct=~a elem=~a invariant=~a"
+              mangled-name elem-type-spec mark-invariant-p)
+    (ensure-struct-llvm-type mangled-name)
+    (let* ((parent-val  (llvm-build-extract-value builder tensor-val 0 "t_parent_val"))
+           (base-ptr    (llvm-build-extract-value builder parent-val 0 "t_base_ptr"))
+           ;; flat element index already incorporates offsets and strides
+           (flat-i64    (llvm-build-sext builder index-val (llvm-int64-type) "t_flat_i64"))
+           (elem-size   (llvm-size-of elem-llvm-type))
+           (byte-off    (llvm-build-mul builder flat-i64 elem-size "t_byte_off")))
+      (cffi:with-foreign-object (indices :pointer 1)
+        (setf (cffi:mem-aref indices :pointer 0) byte-off)
+        (let* ((ptr-i8   (llvm-build-in-bounds-gep2
+                          builder (llvm-int8-type) base-ptr indices 1 "t_ptr_i8"))
+               (ptr-as   (llvm-get-pointer-address-space (llvm-type-of ptr-i8)))
+               (t-ptr    (llvm-build-bit-cast
+                          builder ptr-i8
+                          (llvm-pointer-type elem-llvm-type ptr-as) "t_ptr"))
+               (loaded   (llvm-build-load2 builder elem-llvm-type t-ptr "t_elem")))
+          (when mark-invariant-p
+            (%attach-invariant-load loaded module))
+          (values loaded nil t-ptr))))))
+
+(defun %aref-cell-ir (array-node cell-spec element-type index-val builder module var-env
+                      di-builder di-scope location-map)
+  "semantic-aref Case 1: a CELL.  The element pointer is the parent storage's base pointer plus the
+   cell's byte offset plus index * sizeof.  Returns (values loaded nil ptr)."
+  (let* ((cell-val       (generate-node-ir array-node builder module var-env
+                                           di-builder di-scope location-map))
+         (elem-type-spec element-type)
+         (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
+         (mangled-struct-name (mangle-template-struct-name (first cell-spec)
+                                                            (rest cell-spec))))
+    (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
+    (ensure-struct-llvm-type mangled-struct-name)
+    (log:info "semantic-aref: Using ExtractValue to access Cell Record members.")
+    (let* ((parent-val   (llvm-build-extract-value builder cell-val 0 "parent_val"))
+           (base-ptr     (llvm-build-extract-value builder parent-val 0 "base_ptr"))
+           (cell-offset  (llvm-build-extract-value builder cell-val 1 "cell_offset"))
+           (elem-size    (llvm-size-of elem-llvm-type))
+           (index-i64    (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
+           (index-bytes  (llvm-build-mul builder index-i64 elem-size "index_bytes"))
+           (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
+      (cffi:with-foreign-object (indices :pointer 1)
+        (setf (cffi:mem-aref indices :pointer 0) total-offset)
+        (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2
+                              builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8"))
+               (ptr-as       (llvm-get-pointer-address-space
+                              (llvm-type-of final-ptr-i8)))
+               (target-ptr   (llvm-build-bit-cast
+                              builder final-ptr-i8
+                              (llvm-pointer-type elem-llvm-type ptr-as) "target_ptr"))
+               (loaded-val   (llvm-build-load2
+                              builder elem-llvm-type target-ptr "val")))
+          (values loaded-val nil target-ptr))))))
+
 (defmethod generate-node-ir ((node semantic-aref) builder module var-env
                               di-builder di-scope location-map)
   "Generates IR for array/cell/tensor element access (aref / ~ / ~ref~).
-   Case 2: (array T N) fixed-size array — GEP into alloca (unchanged).
+   Case 2: (array T N) fixed-size array — GEP into alloca (%aref-fixed-array-ir).
    Case 3: TENSOR — parent.address from SROA field 0; byte-off = flat_idx * sizeof(elem);
      GEP i8* + byte-off, bitcast, load.  Load gets !invariant.load when
-     ARRAY-NODE is a direct ref to a read-only kernel-param tensor.
-   Case 1: CELL — original behaviour unchanged.
+     ARRAY-NODE is a direct ref to a read-only kernel-param tensor (%aref-tensor-ir).
+   Case 1: CELL (%aref-cell-ir).
    Returns (values loaded-val nil elem-ptr) so set! can store through the pointer."
   (let* ((array-node   (semantic-aref-array-node node))
          (index-node   (semantic-aref-index-node node))
@@ -3310,146 +3388,28 @@
                              raw)))
          (element-type (semantic-aref-type node))
          (index-val    (generate-node-ir index-node builder module var-env
-                                         di-builder di-scope location-map)))
-
-    (let ((cell-spec (let* ((resolved (resolve-type-alias array-type))
-                            (canon    (canonicalize-type-specifier resolved)))
-                       (cond
-                        ((and (listp canon) (symbolp (first canon))
-                              (string-equal (symbol-name (first canon)) "CELL")) canon)
-                        ((and (listp canon) (= (length canon) 1) (symbolp (first canon)))
-                         (unmangle-template-struct-name (first canon)))
-                        ((symbolp canon)
-                         (unmangle-template-struct-name canon))
-                        (t canon)))))
-
-      (multiple-value-bind (loaded-val _loc target-ptr)
-          (cond
-       ;; Case 2: (array T N) fixed-size array — GEP into alloca (unchanged)
-       ((%array-type-p (resolve-type-alias array-type))
-        (let* ((resolved-arr-type (resolve-type-alias array-type))
-               (elem-type-spec    (second resolved-arr-type))
-               (count-raw         (third  resolved-arr-type))
-               (count             (etypecase count-raw
-                                    (integer count-raw)
-                                    (symbol  (parse-integer (symbol-name count-raw)))))
-               (elem-llvm-type    (crisp-type-to-llvm-type elem-type-spec module))
-               (arr-llvm-type     (crisp.llvm-bindings::llvm-array-type elem-llvm-type count))
-               (arr-ptr
-                (let ((inline-ptr (%try-inline-struct-array-field-ptr
-                                   array-node builder module var-env
-                                   di-builder di-scope location-map)))
-                  (if inline-ptr
-                      inline-ptr
-                      (if (semantic-var-read-p array-node)
-                          (let ((alloca (gethash (semantic-var-read-name array-node) var-env)))
-                            (unless alloca
-                              (error "array aref: variable ~a not found in var-env"
-                                     (semantic-var-read-name array-node)))
-                            alloca)
-                          (multiple-value-bind (sub-val _loc sub-ptr)
-                              (generate-node-ir array-node builder module var-env
-                                                di-builder di-scope location-map)
-                            (declare (ignore _loc))
-                            (cond
-                             (sub-ptr
-                              (log:info "array-aref: using sub-ptr from inner aref (bug 029 path)")
-                              sub-ptr)
-                             ((llvm-type-kind-is-pointer? (llvm-type-of sub-val))
-                              sub-val)
-                             (t
-                              (let ((slot (llvm-build-alloca builder arr-llvm-type "arr_tmp")))
-                                (llvm-build-store builder sub-val slot)
-                                slot))))))))
-               (idx-i64 (llvm-build-sext builder index-val (llvm-int64-type) "arr_idx")))
-
-          (log:info "array-aref: type=(array ~a ~a) ptr=~a idx=~a"
-                    elem-type-spec count arr-ptr idx-i64)
-
-          (cffi:with-foreign-object (indices :pointer 2)
-            (setf (cffi:mem-aref indices :pointer 0)
-                  (llvm-const-int (llvm-int32-type) 0 nil))
-            (setf (cffi:mem-aref indices :pointer 1) idx-i64)
-            (let* ((elem-ptr (llvm-build-in-bounds-gep2
-                              builder arr-llvm-type arr-ptr indices 2 "arr_elem_ptr"))
-                   (loaded   (llvm-build-load2 builder elem-llvm-type elem-ptr "arr_elem")))
-              (values loaded nil elem-ptr)))))
-
-       ;; Case 3: TENSOR — flat index pre-computed; GEP via parent storage pointer.
-       ;; SROA field 0 of tensor is (storage Addr) → {address ptr, byte-size}.
-       ;; Field 0 of storage is the raw pointer.
-       ;; NEW: read-only kernel-param tensor reads get !invariant.load.
-       ((and (listp cell-spec) (symbolp (first cell-spec))
-             (string-equal (symbol-name (first cell-spec)) "TENSOR"))
-        (let* ((tensor-val     (generate-node-ir array-node builder module var-env
-                                                 di-builder di-scope location-map))
-               (elem-type-spec element-type)
-               (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-               (mangled-name   (mangle-template-struct-name (first cell-spec)
-                                                            (rest cell-spec)))
-               (mark-invariant-p (%array-node-readonly-tensor-param-p array-node)))
-          (log:info "semantic-aref tensor: struct=~a elem=~a invariant=~a"
-                    mangled-name elem-type-spec mark-invariant-p)
-          (ensure-struct-llvm-type mangled-name)
-          (let* ((parent-val  (llvm-build-extract-value builder tensor-val 0 "t_parent_val"))
-                 (base-ptr    (llvm-build-extract-value builder parent-val 0 "t_base_ptr"))
-                 ;; flat element index already incorporates offsets and strides
-                 (flat-i64    (llvm-build-sext builder index-val (llvm-int64-type) "t_flat_i64"))
-                 (elem-size   (llvm-size-of elem-llvm-type))
-                 (byte-off    (llvm-build-mul builder flat-i64 elem-size "t_byte_off")))
-            (cffi:with-foreign-object (indices :pointer 1)
-              (setf (cffi:mem-aref indices :pointer 0) byte-off)
-              (let* ((ptr-i8   (llvm-build-in-bounds-gep2
-                                builder (llvm-int8-type) base-ptr indices 1 "t_ptr_i8"))
-                     (ptr-as   (llvm-get-pointer-address-space (llvm-type-of ptr-i8)))
-                     (t-ptr    (llvm-build-bit-cast
-                                builder ptr-i8
-                                (llvm-pointer-type elem-llvm-type ptr-as) "t_ptr"))
-                     (loaded   (llvm-build-load2 builder elem-llvm-type t-ptr "t_elem")))
-                (when mark-invariant-p
-                  (%attach-invariant-load loaded module))
-                (values loaded nil t-ptr))))))
-
-       ;; Case 1: CELL parameterized type (unchanged)
-       ((and (listp cell-spec) (symbolp (first cell-spec))
-             (string-equal (symbol-name (first cell-spec)) "CELL"))
-        (let* ((cell-val       (generate-node-ir array-node builder module var-env
-                                                 di-builder di-scope location-map))
-               (elem-type-spec element-type)
-               (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
-               (mangled-struct-name (mangle-template-struct-name (first cell-spec)
-                                                                  (rest cell-spec))))
-          (log:info "semantic-aref: Resolving cell struct: ~a" mangled-struct-name)
-          (ensure-struct-llvm-type mangled-struct-name)
-          (let ()
-            (log:info "semantic-aref: Using ExtractValue to access Cell Record members.")
-            (let* ((parent-val   (llvm-build-extract-value builder cell-val 0 "parent_val"))
-                   (base-ptr     (llvm-build-extract-value builder parent-val 0 "base_ptr"))
-                   (cell-offset  (llvm-build-extract-value builder cell-val 1 "cell_offset"))
-                   (elem-size    (llvm-size-of elem-llvm-type))
-                   (index-i64    (llvm-build-sext builder index-val (llvm-int64-type) "index_i64"))
-                   (index-bytes  (llvm-build-mul builder index-i64 elem-size "index_bytes"))
-                   (total-offset (llvm-build-add builder cell-offset index-bytes "total_offset")))
-              (cffi:with-foreign-object (indices :pointer 1)
-                (setf (cffi:mem-aref indices :pointer 0) total-offset)
-                (let* ((final-ptr-i8 (llvm-build-in-bounds-gep2
-                                      builder (llvm-int8-type) base-ptr indices 1 "final_ptr_i8"))
-                       (ptr-as       (llvm-get-pointer-address-space
-                                      (llvm-type-of final-ptr-i8)))
-                       (target-ptr   (llvm-build-bit-cast
-                                      builder final-ptr-i8
-                                      (llvm-pointer-type elem-llvm-type ptr-as) "target_ptr"))
-                       (loaded-val   (llvm-build-load2
-                                      builder elem-llvm-type target-ptr "val")))
-                  (values loaded-val nil target-ptr)))))))
-
-       (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)"
-                 array-type cell-spec)))
-        (declare (ignore _loc))
-        (when (gethash node *volatile-var-reads*)
-          (log:debug "aref marked volatile (IGC workaround)")
-          (crisp.llvm-bindings::llvm-set-volatile loaded-val 1))
-        (values loaded-val nil target-ptr)))))
+                                         di-builder di-scope location-map))
+         (cell-spec    (%aref-cell-spec array-type)))
+    (multiple-value-bind (loaded-val _loc target-ptr)
+        (cond
+         ((%array-type-p (resolve-type-alias array-type))
+          (%aref-fixed-array-ir array-node array-type index-val builder module var-env
+                                di-builder di-scope location-map))
+         ((and (listp cell-spec) (symbolp (first cell-spec))
+               (string-equal (symbol-name (first cell-spec)) "TENSOR"))
+          (%aref-tensor-ir array-node cell-spec element-type index-val builder module var-env
+                           di-builder di-scope location-map))
+         ((and (listp cell-spec) (symbolp (first cell-spec))
+               (string-equal (symbol-name (first cell-spec)) "CELL"))
+          (%aref-cell-ir array-node cell-spec element-type index-val builder module var-env
+                         di-builder di-scope location-map))
+         (t (error "generate-node-ir semantic-aref: Unsupported array type: ~a (unmangled: ~a)"
+                   array-type cell-spec)))
+      (declare (ignore _loc))
+      (when (gethash node *volatile-var-reads*)
+        (log:debug "aref marked volatile (IGC workaround)")
+        (crisp.llvm-bindings::llvm-set-volatile loaded-val 1))
+      (values loaded-val nil target-ptr))))
 (defmethod generate-node-ir ((node semantic-sizeof) builder module var-env di-builder di-scope location-map)
   "Generates IR for a sizeof(T) expression. Returns an i64 constant."
   (declare (ignore builder var-env di-builder di-scope location-map))
@@ -3557,6 +3517,65 @@
 
 
 
+(defun %mv-emit-bounds-check (builder module rank explicit-len offset-elems offset-bytes elem-size
+                              src-bytesize)
+  "--runtime-checks: trap unless offset_bytes + view_bytes <= the source's byte size.
+   view_bytes = len_elems * sizeof(elem): 1 element for make-cell, the explicit length when given,
+   else 1 (an auto-length view only has to fit its offset)."
+  (let* ((len-elems (cond ((= rank 0) 1)
+                          (explicit-len explicit-len)
+                          (t 1)))
+         (len-bytes    (llvm-build-mul builder
+                                       (llvm-const-int (llvm-int64-type) len-elems nil)
+                                       elem-size "mv_len_bytes"))
+         (required     (llvm-build-add builder offset-bytes len-bytes "mv_required"))
+         (cmp          (llvm-build-icmp builder +llvm-int-ule+
+                                        required src-bytesize "mv_bounds_ok"))
+         (curr-fn      (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (trap-block   (llvm-append-basic-block curr-fn "mv_trap"))
+         (ok-block     (llvm-append-basic-block curr-fn "mv_ok")))
+    (llvm-build-cond-br builder cmp ok-block trap-block)
+    (llvm-position-builder-at-end builder trap-block)
+    (%handle-die-intrinsic builder module)
+    (llvm-build-br builder ok-block)
+    (llvm-position-builder-at-end builder ok-block)
+    (log:debug "make-view rt-bounds-check emitted: rank=~a offset=~a len=~a"
+               rank offset-elems len-elems)))
+
+(defun %mv-cell-value (builder module addr-space src-parent src-ptr src-bytesize offset-elems
+                       elem-size result-undef)
+  "make-cell (rank 0): { STORAGE, byte-offset-i64 } -- the SOURCE's storage, unbumped, and the offset in
+   bytes."
+  (let* ((orig-storage (%mv-build-storage builder module addr-space
+                                          src-parent src-ptr src-bytesize))
+         (byte-offset-val
+          (if (zerop offset-elems)
+              (llvm-const-int (llvm-int64-type) 0 nil)
+              (llvm-build-mul builder
+                              (llvm-const-int (llvm-int64-type) offset-elems nil)
+                              elem-size "mv_cell_off_bytes")))
+         (c0 (llvm-build-insert-value builder result-undef orig-storage 0 "mv_cell_parent")))
+    (llvm-build-insert-value builder c0 byte-offset-val 1 "mv_cell_offset")))
+
+(defun %mv-tensor-value (builder rank strides extents explicit-len new-bytesize elem-size
+                         result-undef new-storage)
+  "make-vector / -matrix / -tensor (rank >= 1): { STORAGE, offsets (zero), strides, extents, length },
+   strides row-major unless given, length explicit or bytes / sizeof(elem)."
+  (let* ((zero-offsets (%mv-build-zero-i64-array rank))
+         (stride-vals (or strides (%mv-row-major-strides (or extents (make-list rank :initial-element 1)))))
+         (stride-arr  (%mv-build-const-i64-array builder rank stride-vals))
+         (extent-vals (or extents (make-list rank :initial-element 0)))
+         (extent-arr  (%mv-build-const-i64-array builder rank extent-vals))
+         (length-val
+          (if explicit-len
+              (llvm-const-int (llvm-int64-type) explicit-len nil)
+              (llvm-build-udiv builder new-bytesize elem-size "mv_auto_len")))
+         (t0 (llvm-build-insert-value builder result-undef new-storage  0 "mv_t_parent"))
+         (t1 (llvm-build-insert-value builder t0 zero-offsets  1 "mv_t_offsets"))
+         (t2 (llvm-build-insert-value builder t1 stride-arr    2 "mv_t_strides"))
+         (t3 (llvm-build-insert-value builder t2 extent-arr    3 "mv_t_extents")))
+    (llvm-build-insert-value builder t3 length-val    4 "mv_t_length")))
+
 (defmethod generate-node-ir ((node semantic-make-view)
                                builder module var-env
                                di-builder di-scope location-map)
@@ -3628,59 +3647,20 @@
     ;;   make-vector/matrix/tensor with explicit-len: that count
     ;;   auto-length: 1 element (just verify offset fits)
     (when *runtime-checks-enabled*
-      (let* ((len-elems (cond ((= rank 0) 1)
-                              (explicit-len explicit-len)
-                              (t 1)))
-             (len-bytes    (llvm-build-mul builder
-                                           (llvm-const-int (llvm-int64-type) len-elems nil)
-                                           elem-size "mv_len_bytes"))
-             (required     (llvm-build-add builder offset-bytes len-bytes "mv_required"))
-             (cmp          (llvm-build-icmp builder +llvm-int-ule+
-                                            required src-bytesize "mv_bounds_ok"))
-             (curr-fn      (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
-             (trap-block   (llvm-append-basic-block curr-fn "mv_trap"))
-             (ok-block     (llvm-append-basic-block curr-fn "mv_ok")))
-        (llvm-build-cond-br builder cmp ok-block trap-block)
-        (llvm-position-builder-at-end builder trap-block)
-        (%handle-die-intrinsic builder module)
-        (llvm-build-br builder ok-block)
-        (llvm-position-builder-at-end builder ok-block)
-        (log:debug "make-view rt-bounds-check emitted: rank=~a offset=~a len=~a"
-                   rank offset-elems len-elems)))
+      (%mv-emit-bounds-check builder module rank explicit-len offset-elems offset-bytes
+                             elem-size src-bytesize))
 
     (cond
 
      ;; ── cell (rank=0): { STORAGE, byte-offset-i64 } ──────────────────
      ((= rank 0)
-      (let* ((orig-storage (%mv-build-storage builder module addr-space
-                                                 src-parent src-ptr src-bytesize))
-                (byte-offset-val
-                 (if (zerop offset-elems)
-                     (llvm-const-int (llvm-int64-type) 0 nil)
-                     (llvm-build-mul builder
-                                     (llvm-const-int (llvm-int64-type) offset-elems nil)
-                                     elem-size "mv_cell_off_bytes")))
-                (c0 (llvm-build-insert-value builder result-undef orig-storage 0 "mv_cell_parent"))
-                (c1 (llvm-build-insert-value builder c0 byte-offset-val 1 "mv_cell_offset")))
-        c1))
+      (%mv-cell-value builder module addr-space src-parent src-ptr src-bytesize offset-elems
+                      elem-size result-undef))
 
      ;; ── tensor/vector/matrix (rank>=1) ────────────────────────────────
      (t
-      (let* ((zero-offsets (%mv-build-zero-i64-array rank))
-                (stride-vals (or strides (%mv-row-major-strides (or extents (make-list rank :initial-element 1)))))
-                (stride-arr  (%mv-build-const-i64-array builder rank stride-vals))
-                (extent-vals (or extents (make-list rank :initial-element 0)))
-                (extent-arr  (%mv-build-const-i64-array builder rank extent-vals))
-                (length-val
-                 (if explicit-len
-                     (llvm-const-int (llvm-int64-type) explicit-len nil)
-                     (llvm-build-udiv builder new-bytesize elem-size "mv_auto_len")))
-                (t0 (llvm-build-insert-value builder result-undef new-storage  0 "mv_t_parent"))
-                (t1 (llvm-build-insert-value builder t0 zero-offsets  1 "mv_t_offsets"))
-                (t2 (llvm-build-insert-value builder t1 stride-arr    2 "mv_t_strides"))
-                (t3 (llvm-build-insert-value builder t2 extent-arr    3 "mv_t_extents"))
-                (t4 (llvm-build-insert-value builder t3 length-val    4 "mv_t_length")))
-        t4)))))
+      (%mv-tensor-value builder rank strides extents explicit-len new-bytesize elem-size
+                        result-undef new-storage)))))
 
 
 
@@ -4270,86 +4250,6 @@ never implied by an atomic; it comes only from an explicit mem-fence."
          (wid64    (crisp.llvm-bindings::llvm-build-udiv builder llid c32 "warp_id64")))
     (crisp.llvm-bindings::llvm-build-trunc builder wid64 i32-type "warp_id")))
 
-#|
-(defmethod generate-node-ir ((node semantic-gpu-builtin) builder module var-env di-builder di-scope location-map)
-  "Generates LLVM IR for a GPU built-in function call.
-   Endeavor 115 Phase 2: full PTX dispatch for all builtins."
-  (declare (ignore var-env di-builder di-scope location-map))
-  (let* ((bname (semantic-gpu-builtin-builtin-name node))
-         (dim   (semantic-gpu-builtin-dimension node)))
-    (log:info "Generating GPU builtin IR: ~a dim=~a backend=~a" bname dim *target-backend*)
-    (labels
-        ((vec3-or-scalar (spirv-name)
-           (let ((vec (%get-builtin-vec3 builder module spirv-name)))
-             (if dim
-                 (values (%extract-vec3-i64 builder vec dim
-                                            (format nil "~a_~a" (string-downcase spirv-name) dim))
-                         nil)
-                 (values vec nil)))))
-      (case bname
-        ;; --- Primitive 3D/scalar vector builtins ---
-        (:get-global-id       (vec3-or-scalar "GlobalInvocationId"))
-        (:get-local-id        (vec3-or-scalar "LocalInvocationId"))
-        (:get-workgroup-id    (vec3-or-scalar "WorkgroupId"))
-        (:get-num-groups      (vec3-or-scalar "NumWorkgroups"))
-        (:get-local-work-size (vec3-or-scalar "WorkgroupSize"))
-        (:get-global-work-size (vec3-or-scalar "GlobalSize"))
-        (:get-global-offset   (vec3-or-scalar "GlobalOffset"))
-        ;; --- Synthesized: GlobalInvocationId + GlobalOffset ---
-        (:get-global-id-abs
-         (if (eq *target-backend* :ptx)
-             ;; PTX has no GlobalOffset — same as get-global-id
-             (vec3-or-scalar "GlobalInvocationId")
-             (let* ((gid  (%call-spirv-vec3-builtin builder module "GlobalInvocationId"))
-                    (goff (%call-spirv-vec3-builtin builder module "GlobalOffset")))
-               (if dim
-                   (let* ((gid-n  (%extract-vec3-i64 builder gid  dim "gid_n"))
-                          (goff-n (%extract-vec3-i64 builder goff dim "goff_n")))
-                     (values (crisp.llvm-bindings::llvm-build-add builder gid-n goff-n "gid_abs_n") nil))
-                   (values (crisp.llvm-bindings::llvm-build-add builder gid goff "gid_abs") nil)))))
-        ;; --- WorkDim (hidden kernel parameter, uint) ---
-        (:get-work-dim
-         (values (%call-spirv-uint-builtin builder module "WorkDim") nil))
-        ;; --- Synthesized scalar builtins ---
-        (:get-local-linear-id
-         (values (%gen-local-linear-id builder module) nil))
-        (:get-local-linear-size
-         (values (%gen-product-of-vec3 builder module "WorkgroupSize" "local_linear_size") nil))
-        (:get-global-linear-id
-         (values (%gen-global-linear-id builder module) nil))
-        ((:get-global-linear-size :get-total-threads)
-         (values (%gen-product-of-vec3 builder module "GlobalSize" "total_threads") nil))
-        (:get-total-groups
-         (values (%gen-product-of-vec3 builder module "NumWorkgroups" "total_groups") nil))
-        ;; --- 110: warp helpers ---
-        (:warp-id
-         (if (eq *target-backend* :ptx)
-             ;; Endeavor 139: synthesize local-linear-id/32 (stable), NOT %warpid (volatile).
-             (values (%ptx-synthesize-warp-id builder module) nil)
-             (values (%call-spirv-uint-global-builtin builder module "SubgroupId") nil)))
-        (:warp-lane
-         (if (eq *target-backend* :ptx)
-             (values (%ptx-read-warp-sreg builder module "laneid") nil)
-             (values (%call-spirv-uint-global-builtin builder module "SubgroupLocalInvocationId") nil)))
-        (:warp-count
-         (if (eq *target-backend* :ptx)
-             (values (%ptx-synthesize-warp-count builder module) nil)
-             (values (%call-spirv-uint-global-builtin builder module "NumSubgroups") nil)))
-        ;; --- Barriers (void) ---
-        (:sync-workgroup
-         (if (eq *target-backend* :ptx)
-             (%ptx-barrier builder module)
-             (%gen-spirv-control-barrier builder module)))
-        (:sync-warp
-         (if (eq *target-backend* :ptx)
-             (%ptx-syncwarp builder module)
-             (%gen-spirv-warp-barrier builder module)))
-        (:mem-fence
-         (if (eq *target-backend* :ptx)
-             (%ptx-membar-cta builder module)
-             (%gen-spirv-memory-barrier builder module)))
-        (t (error "Unknown GPU builtin ~a" builtin-name))))))
-        |#
 
 
 ;; src/codegen.lisp  (REPLACES generate-node-ir (semantic-gpu-builtin) -- 157 Phase 1)
@@ -4932,23 +4832,6 @@ never implied by an atomic; it comes only from an explicit mem-fence."
     (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
     (llvm-build-call2 builder fn-type fn args 1 "mbar_state")))
 
-(defun %gen-nvvm-mbarrier-test-wait-shared (builder module mbarrier-ptr state-val)
-  "Emits @llvm.nvvm.mbarrier.test.wait.shared(ptr addrspace(3), i64 state) -> i1 bool."
-  (let* ((fn-name    "llvm.nvvm.mbarrier.test.wait.shared")
-         (i1-type    (llvm-int1-type))
-         (i64-type   (llvm-int64-type))
-         (i8-type    (llvm-int8-type))
-         (ptr-as3    (llvm-pointer-type i8-type 3))
-         (param-types (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 2)))
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 0) ptr-as3)
-                        (setf (cffi:mem-aref arr 'llvm-type-ref 1) i64-type)
-                        arr))
-         (fn-type    (llvm-function-type i1-type param-types 2 nil))
-         (fn         (%spirv-get-or-create-fn module fn-name i1-type param-types 2))
-         (args       (cffi:foreign-alloc 'llvm-value-ref :count 2)))
-    (setf (cffi:mem-aref args 'llvm-value-ref 0) mbarrier-ptr)
-    (setf (cffi:mem-aref args 'llvm-value-ref 1) state-val)
-    (llvm-build-call2 builder fn-type fn args 2 "mbar_ready")))
 
 ;; Endeavor 137 (Chapter 1.5) — NVIDIA :block TMA.  A monotonic counter naming the per-CTA
 ;; SLM mbarrier globals (one per :block barrier binding).
@@ -5881,6 +5764,98 @@ never implied by an atomic; it comes only from an explicit mem-fence."
 
 ;; src/codegen.lisp  (REPLACES generate-node-ir semantic-coop-op -- 156 Step 2:
 ;; :load/:store hand the tensor and unfolded origins to the lowering)
+(defun %coop-var-storage (node name var-env)
+  "The storage (alloca) of variable NAME in VAR-ENV, for a cooperative-matrix map; refuses when absent."
+  (or (gethash name var-env)
+      (error 'crisp-compiler-error
+             :message (format nil "cooperative-matrix map: no storage found for variable ~a." name)
+             :source-location (semantic-coop-op-source-location node))))
+
+(defun %coop-emit-map-loop (node builder module rows cols use primary-ptr per-elem)
+  "Emits a loop over every element of the cooperative matrix stored at PRIMARY-PTR, calling PER-ELEM
+   with the element index (i64) inside the body.  Endeavour 155: the map loops extract SCALAR elements
+   into f32 allocas (cm_elem / cm_prm / cm_adj), so a 16-bit matrix is refused rather than
+   miscompiled.  Returns (values nil nil)."
+  (unless (eq (%coop-node-elem node) 'float)
+    (error 'crisp-compiler-error
+           :message (format nil "cooperative-matrix elementwise map is only implemented for float (fp32) matrices; this one is ~a.  The map loop extracts scalar elements through f32 temporaries, which would silently truncate a ~:*~a matrix."
+                            (%coop-node-elem node))
+           :source-location (semantic-coop-op-source-location node)))
+  (let* ((i32 (llvm-int32-type))
+         (i64 (llvm-int64-type))
+         (f32 (llvm-float-type))
+         (coop-ty (%coop-type f32 rows cols use))
+         (mat (llvm-build-load2 builder coop-ty primary-ptr "cm_map_mat"))
+         (len (%coop-length builder module mat f32 rows cols use))
+         (current-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (i-alloca (llvm-build-alloca builder i32 "cm_i"))
+         (check-block (llvm-append-basic-block current-fn "cm_check"))
+         (body-block  (llvm-append-basic-block current-fn "cm_body"))
+         (exit-block  (llvm-append-basic-block current-fn "cm_exit")))
+    (llvm-build-store builder (llvm-const-int i32 0 0) i-alloca)
+    (llvm-build-br builder check-block)
+    (llvm-position-builder-at-end builder check-block)
+    (let* ((i-val  (llvm-build-load2 builder i32 i-alloca "cm_i_v"))
+           (cond-v (llvm-build-icmp builder +llvm-int-slt+ i-val len "cm_cond")))
+      (llvm-build-cond-br builder cond-v body-block exit-block))
+    (llvm-position-builder-at-end builder body-block)
+    (let* ((i-val (llvm-build-load2 builder i32 i-alloca "cm_i_b"))
+           (i-x   (llvm-build-sext builder i-val i64 "cm_i64")))
+      (funcall per-elem i-x)
+      (let* ((i-cur  (llvm-build-load2 builder i32 i-alloca "cm_i_c"))
+             (i-next (llvm-build-add builder i-cur (llvm-const-int i32 1 0) "cm_i_n")))
+        (llvm-build-store builder i-next i-alloca)))
+    (unless (terminator-p (llvm-get-insert-block builder))
+      (llvm-build-br builder check-block))
+    (llvm-position-builder-at-end builder exit-block)
+    (values nil nil)))
+
+(defun %coop-map-ir (node builder module var-env di-builder di-scope location-map rows cols use)
+  ":map -- rewrite every element of the target matrix in place: bind the element to the map's temp and
+   store back the value of the body."
+  (let* ((f32 (llvm-float-type))
+         (tgt (%coop-var-storage node (semantic-coop-op-ty node) var-env))
+         (temp-name (semantic-coop-op-tx node))
+         (body-node (semantic-coop-op-tensor-node node))
+         (t-alloca (llvm-build-alloca builder f32 "cm_elem")))
+    (%coop-emit-map-loop node builder module rows cols use tgt
+              (lambda (i-x)
+                (let* ((ep   (%coop-access-chain builder module tgt i-x))
+                       (elem (llvm-build-load2 builder f32 ep "cm_elem_v"))
+                       (benv (alexandria:copy-hash-table var-env)))
+                  (llvm-build-store builder elem t-alloca)
+                  (setf (gethash temp-name benv) t-alloca)
+                  (let ((res (generate-node-ir body-node builder module benv
+                                               di-builder di-scope location-map)))
+                    (llvm-build-store builder res ep)))))))
+
+(defun %coop-map2-ir (node builder module var-env di-builder di-scope location-map rows cols use)
+  ":map2 -- the two-matrix map (adjoint, primal): bind both elements to the map's temps and store the
+   body's value back into the adjoint matrix."
+  (let* ((f32 (llvm-float-type))
+         (adj-ptr (%coop-var-storage node (semantic-coop-op-ty node) var-env))
+         (prm-ptr (%coop-var-storage node (semantic-coop-op-tx node) var-env))
+         (temps   (semantic-coop-op-layout node))
+         (tp-name (first temps))
+         (ta-name (second temps))
+         (body-node (semantic-coop-op-tensor-node node))
+         (tp-alloca (llvm-build-alloca builder f32 "cm_prm"))
+         (ta-alloca (llvm-build-alloca builder f32 "cm_adj")))
+    (%coop-emit-map-loop node builder module rows cols use adj-ptr
+              (lambda (i-x)
+                (let* ((ep-a (%coop-access-chain builder module adj-ptr i-x))
+                       (ep-p (%coop-access-chain builder module prm-ptr i-x))
+                       (v-a  (llvm-build-load2 builder f32 ep-a "cm_adj_v"))
+                       (v-p  (llvm-build-load2 builder f32 ep-p "cm_prm_v"))
+                       (benv (alexandria:copy-hash-table var-env)))
+                  (llvm-build-store builder v-p tp-alloca)
+                  (llvm-build-store builder v-a ta-alloca)
+                  (setf (gethash tp-name benv) tp-alloca)
+                  (setf (gethash ta-name benv) ta-alloca)
+                  (let ((res (generate-node-ir body-node builder module benv
+                                               di-builder di-scope location-map)))
+                    (llvm-build-store builder res ep-a)))))))
+
 (defmethod generate-node-ir ((node semantic-coop-op) builder module var-env di-builder di-scope location-map)
   "Cooperative-matrix op: fill / load / store / prefetch / map / map2."
   (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
@@ -5890,54 +5865,12 @@ never implied by an atomic; it comes only from an explicit mem-fence."
           (use  (semantic-coop-op-use node))
           (layout (semantic-coop-op-layout node))
           (i64 (llvm-int64-type))
-          (f32 (llvm-float-type))
           ;; Endeavour 155: the matrix's REAL component type.  See header.
           (elem-llvm (%coop-op-elem-llvm node)))
-      (labels ((origin (dim-node dim)
-                 (llvm-build-mul builder
-                                 (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
-                                 (llvm-const-int i64 dim nil) "coop_orig"))
-               (ptr-of (name)
-                 (or (gethash name var-env)
-                     (error 'crisp-compiler-error
-                            :message (format nil "cooperative-matrix map: no storage found for variable ~a." name)
-                            :source-location (semantic-coop-op-source-location node))))
-               (map-loop (primary-ptr per-elem)
-                 ;; Endeavour 155: the map loops extract SCALAR elements into f32 allocas
-                 ;; (cm_elem / cm_prm / cm_adj below).  For a 16-bit matrix those would be the
-                 ;; wrong width, so refuse rather than miscompile.  See header for why this is a
-                 ;; refusal and not a fix.
-                 (unless (eq (%coop-node-elem node) 'float)
-                   (error 'crisp-compiler-error
-                          :message (format nil "cooperative-matrix elementwise map is only implemented for float (fp32) matrices; this one is ~a.  The map loop extracts scalar elements through f32 temporaries, which would silently truncate a ~:*~a matrix."
-                                           (%coop-node-elem node))
-                          :source-location (semantic-coop-op-source-location node)))
-                 (let* ((i32 (llvm-int32-type))
-                        (coop-ty (%coop-type f32 rows cols use))
-                        (mat (llvm-build-load2 builder coop-ty primary-ptr "cm_map_mat"))
-                        (len (%coop-length builder module mat f32 rows cols use))
-                        (current-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
-                        (i-alloca (llvm-build-alloca builder i32 "cm_i"))
-                        (check-block (llvm-append-basic-block current-fn "cm_check"))
-                        (body-block  (llvm-append-basic-block current-fn "cm_body"))
-                        (exit-block  (llvm-append-basic-block current-fn "cm_exit")))
-                   (llvm-build-store builder (llvm-const-int i32 0 0) i-alloca)
-                   (llvm-build-br builder check-block)
-                   (llvm-position-builder-at-end builder check-block)
-                   (let* ((i-val  (llvm-build-load2 builder i32 i-alloca "cm_i_v"))
-                          (cond-v (llvm-build-icmp builder +llvm-int-slt+ i-val len "cm_cond")))
-                     (llvm-build-cond-br builder cond-v body-block exit-block))
-                   (llvm-position-builder-at-end builder body-block)
-                   (let* ((i-val (llvm-build-load2 builder i32 i-alloca "cm_i_b"))
-                          (i-x   (llvm-build-sext builder i-val i64 "cm_i64")))
-                     (funcall per-elem i-x)
-                     (let* ((i-cur  (llvm-build-load2 builder i32 i-alloca "cm_i_c"))
-                            (i-next (llvm-build-add builder i-cur (llvm-const-int i32 1 0) "cm_i_n")))
-                       (llvm-build-store builder i-next i-alloca)))
-                   (unless (terminator-p (llvm-get-insert-block builder))
-                     (llvm-build-br builder check-block))
-                   (llvm-position-builder-at-end builder exit-block)
-                   (values nil nil))))
+      (flet ((origin (dim-node dim)
+               (llvm-build-mul builder
+                               (llvm-build-sext builder (gen dim-node) i64 "coop_tid")
+                               (llvm-const-int i64 dim nil) "coop_orig")))
         (ecase kind
           (:fill
            (values (%coop-fill builder module (gen (semantic-coop-op-value-node node))
@@ -5969,43 +5902,9 @@ never implied by an atomic; it comes only from an explicit mem-fence."
                (%block-prefetch builder module ptr stride rows cols (%elem-llvm-bytes elem-llvm))
                (values nil nil))))
           (:map
-           (let* ((tgt (ptr-of (semantic-coop-op-ty node)))
-                  (temp-name (semantic-coop-op-tx node))
-                  (body-node (semantic-coop-op-tensor-node node))
-                  (t-alloca (llvm-build-alloca builder f32 "cm_elem")))
-             (map-loop tgt
-                       (lambda (i-x)
-                         (let* ((ep   (%coop-access-chain builder module tgt i-x))
-                                (elem (llvm-build-load2 builder f32 ep "cm_elem_v"))
-                                (benv (alexandria:copy-hash-table var-env)))
-                           (llvm-build-store builder elem t-alloca)
-                           (setf (gethash temp-name benv) t-alloca)
-                           (let ((res (generate-node-ir body-node builder module benv
-                                                        di-builder di-scope location-map)))
-                             (llvm-build-store builder res ep)))))))
+           (%coop-map-ir node builder module var-env di-builder di-scope location-map rows cols use))
           (:map2
-           (let* ((adj-ptr (ptr-of (semantic-coop-op-ty node)))
-                  (prm-ptr (ptr-of (semantic-coop-op-tx node)))
-                  (temps   (semantic-coop-op-layout node))
-                  (tp-name (first temps))
-                  (ta-name (second temps))
-                  (body-node (semantic-coop-op-tensor-node node))
-                  (tp-alloca (llvm-build-alloca builder f32 "cm_prm"))
-                  (ta-alloca (llvm-build-alloca builder f32 "cm_adj")))
-             (map-loop adj-ptr
-                       (lambda (i-x)
-                         (let* ((ep-a (%coop-access-chain builder module adj-ptr i-x))
-                                (ep-p (%coop-access-chain builder module prm-ptr i-x))
-                                (v-a  (llvm-build-load2 builder f32 ep-a "cm_adj_v"))
-                                (v-p  (llvm-build-load2 builder f32 ep-p "cm_prm_v"))
-                                (benv (alexandria:copy-hash-table var-env)))
-                           (llvm-build-store builder v-p tp-alloca)
-                           (llvm-build-store builder v-a ta-alloca)
-                           (setf (gethash tp-name benv) tp-alloca)
-                           (setf (gethash ta-name benv) ta-alloca)
-                           (let ((res (generate-node-ir body-node builder module benv
-                                                        di-builder di-scope location-map)))
-                             (llvm-build-store builder res ep-a))))))))))))
+           (%coop-map2-ir node builder module var-env di-builder di-scope location-map rows cols use)))))))
 
 ;;;; ============================================================================================
 ;;;; Folded in from overlays/crisp-compiler-overlay.lisp on 2026-08-26.
@@ -6353,17 +6252,6 @@ never implied by an atomic; it comes only from an explicit mem-fence."
       (unless (cffi:null-pointer-p i)
         (crisp.llvm-bindings::llvm-get-instruction-opcode i)))))
 
-(defun %llvm-binop-with-const (val opcode)
-  "Match VAL as `<OPCODE> %x, <const>` and return (values %x const), or NIL when it does not match.
-
-   Only the SECOND operand is tested for constness: LLVM canonicalises commutative operations to put
-   the constant on the right, and both producers here -- the fragment-index add and the
-   fragment-extent multiply -- are built that way explicitly."
-  (when (eql (%llvm-instr-opcode val) opcode)
-    (let* ((op0 (crisp.llvm-bindings::llvm-get-operand val 0))
-           (op1 (crisp.llvm-bindings::llvm-get-operand val 1))
-           (c   (%llvm-const-int-value op1)))
-      (when c (values op0 c)))))
 
 ;;
 ;; The first cut wrote an !spirv.ExecutionMode entry, exactly as endeavour 126 does for the denorm

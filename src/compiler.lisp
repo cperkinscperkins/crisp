@@ -441,25 +441,6 @@ from a fixed !100."
 ;; in the toolchain still work; on Linux/CI/RunPod with `opt-21` on PATH
 ;; (via CRISP_USE_SYSTEM_TOOLS) the optimization runs automatically.
 
-(defun %opt-available-p ()
-  "Returns the resolved opt tool path if findable, NIL otherwise.
-   We probe rather than assume, so machines without opt installed still
-   produce PTX / SPV (just unoptimized)."
-  (let ((tool (resolve-tool-executable "opt")))
-    ;; If resolve returns a bundled path, it's definitively present.
-    ;; If it returns a bare name (versioned or not), probe with --version.
-    (cond
-      ((probe-file tool) tool)
-      (t
-       (handler-case
-           (multiple-value-bind (out err code)
-               (uiop:run-program (list tool "--version")
-                                 :output nil :error-output nil
-                                 :ignore-error-status t)
-             (declare (ignore out err))
-             (when (zerop code) tool))
-         (error () nil))))))
-
 
 
 (defvar *nvptx-target-initialized* nil
@@ -1204,6 +1185,33 @@ from a fixed !100."
   "Endeavor 130: profile name (string) requested via --hardware-profile, or NIL.
    Resolved lazily against *hardware-profiles* by active-hardware-profile.")
 
+(defun %drop-terminal-io-log-appender ()
+  "Removes the root logger's plain CONSOLE-APPENDER, leaving the stderr one (BUG 122).
+   log4cl's `(log:config :sane :stream S level)` installs TWO root appenders: :SANE's console
+   appender, which writes to the dynamic value of *TERMINAL-IO*, and a TRICKY-CONSOLE-APPENDER on S.
+   In the crisp-compile executable *TERMINAL-IO* is the process's stdout, so above --log-level=off
+   every log line also landed in the IR stream (measured: 303 <INFO> lines on BOTH stdout and stderr
+   for 001/01).  Under `sbcl --script` *TERMINAL-IO* is not stdout, which is why no in-process run
+   ever showed it.  Logging belongs on stderr only."
+  (dolist (a (copy-list (log4cl:logger-appenders log4cl:*root-logger*)))
+    (when (eq (type-of a) 'log4cl:console-appender)
+      (log4cl:remove-appender log4cl:*root-logger* a))))
+
+(defun %reset-gensym-counter ()
+  "Sets *GENSYM-COUNTER* to *GENSYM-COUNTER-BASE*, so gensym-derived names in the output are the
+   same for every build and every position in a multi-compilation run (see src/globals.lisp).
+   On the first call of the process it first checks that the base exceeds every gensym the image
+   has already made; if not, it raises the base above them -- names stay unique, at the cost of
+   reproducibility -- and warns that *GENSYM-COUNTER-BASE* needs raising."
+  (unless *gensym-base-checked*
+    (setf *gensym-base-checked* t)
+    (when (>= *gensym-counter* *gensym-counter-base*)
+      (log:warn "*gensym-counter-base* (~a) is not above the image's gensym count (~a); output names are no longer reproducible across builds.  Raise *gensym-counter-base* in src/globals.lisp."
+                *gensym-counter-base* *gensym-counter*)
+      (setf *gensym-counter-base* (* 10 *gensym-counter*))))
+  (log:debug "%reset-gensym-counter: ~a -> ~a" *gensym-counter* *gensym-counter-base*)
+  (setf *gensym-counter* *gensym-counter-base*))
+
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
                                  (math-precision :ieee) (force-math-precision nil)
                                  (denormal-handling :preserve)
@@ -1226,7 +1234,11 @@ from a fixed !100."
 
   (if (eq log-level :off)
       (log:config :off)
-      (log:config :sane :stream *error-output* log-level))
+      (progn
+        (log:config :sane :stream *error-output* log-level)
+        (%drop-terminal-io-log-appender)))
+  ;; Reproducible output: every compilation numbers its gensyms from the same base.
+  (%reset-gensym-counter)
 
   (initialize-crisp-types)
   (initialize-crisp-types)

@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "compile-time integer literals"
+;; make-matrix's width and height size a VIEW at compile time, so a runtime width must be refused with
+;; that message.  Until 2026-10-16 the product (* width height) was computed BEFORE the check, so a NIL
+;; width died in a raw Lisp type error instead (SBCL deleted the check as unreachable).
+
+(def-type int-vec-t (vector int :align :compact :address-space :global))
+
+(def-function runtime-width-view (v w)
+  (declare #'(int-vec-t int => ulong))
+  (let ((M (make-matrix v int w 3)))
+    (num-rows M)))

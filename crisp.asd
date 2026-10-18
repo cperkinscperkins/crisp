@@ -19,6 +19,9 @@
                                              ;;     A `let` on a not-yet-special *var* compiles to a LEXICAL
                                              ;;     binding, silently.  GENERATED -- see scripts/gen-specials.lisp.
                                              (:file "src/specials")
+                                             ;; 1.6 Hand-written globals that must exist early (order-sensitive;
+                                             ;;     was the hand-folded tail of src/specials.lisp until 2026-10-15).
+                                             (:file "src/globals")
                                              (:file "src/llvm-bindings") ; 2. Uses one package, defines FFI
                                              (:file "src/utils")
                                              (:file "src/session") ;; NEW - Compiler Session

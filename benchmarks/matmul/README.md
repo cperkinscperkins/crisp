@@ -6,6 +6,12 @@
 The macro owns the grid-stride tile walk, the K-loop, and the auto-store; the body just
 stages + accumulates.
 
+> **How numbers are measured now.**  Every Crisp point comes from the reviewed fixture
+> (`crisp/bench_harness.cu`, `crisp/bench_harness_l0.cpp`) and records `"harness": "fixture"`; see
+> [../README.md](../README.md).  The chapter notes below that cite `crisp-hoist-cuda --mma-bench` /
+> `--grid-tile` describe how THOSE historical numbers were taken, and are kept as written.  That
+> generated per-kernel harness was retired on 2026-10-16 and the flags are refused by name.
+
 Because the tensor-core shape genuinely differs per vendor, there are TWO kernels (not a
 shape swap):
 - **NVIDIA** (`matmul.crisp`): `(16 8 8)` tf32 MMA, **B col-major**, 64×64 register tile

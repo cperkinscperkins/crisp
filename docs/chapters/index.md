@@ -207,10 +207,10 @@
 
 ## Math Operations & Arithmetic ✅
 - [Floating Point Precision ✅](32_math_operations_arithmetic/01_floating_point_precision.md)
-- [Floating Point Only Operations ⚠️](32_math_operations_arithmetic/02_floating_point_only_operations.md)
+- [Floating Point Only Operations ✅](32_math_operations_arithmetic/02_floating_point_only_operations.md)
 - [Transcendental Functions ✅](32_math_operations_arithmetic/03_transcendental_functions.md)
 - [Floating Point and Integer Operations ✅](32_math_operations_arithmetic/04_floating_point_and_integer_operations.md)
-- [Integer Only Operations 📝](32_math_operations_arithmetic/05_integer_only_operations.md)
+- [Integer Only Operations ✅](32_math_operations_arithmetic/05_integer_only_operations.md)
 - [Integer Division ✅](32_math_operations_arithmetic/06_integer_division.md)
 - [Hardware Supported Math Operations ✅](32_math_operations_arithmetic/07_hardware_supported_math_operations.md)
 
