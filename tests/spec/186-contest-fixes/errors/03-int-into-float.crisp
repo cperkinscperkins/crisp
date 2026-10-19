@@ -1,0 +1,15 @@
+;; CHECK-FAIL: "convert it explicitly"
+;;
+;; Endeavour 186 (BUG 059) -- a set! into a storage element must store the ELEMENT's type.  Before 186
+;; it stored the value at its own width, silently: a int into a float element wrote the int's bytes
+;; (a wider value overran into the next element; an int and a float swapped bit patterns).  Plain
+;; variables already refused a mismatched set!; elements now refuse it too and name the conversion.
+
+(def-type src-vec (vector int :address-space :global :align :compact))
+(def-type dst-vec (vector float :address-space :global :align :compact))
+
+(def-kernel store_mismatch (A &out B)
+  (declare #'(src-vec &out dst-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ B i) (~ A i))))

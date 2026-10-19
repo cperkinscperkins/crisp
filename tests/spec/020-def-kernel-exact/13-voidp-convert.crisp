@@ -9,5 +9,5 @@
                 ulong voidp ulong))
     (let ((c1 (marshall-cell out-c byte-size-1 ptr-1 offset-1))
           (c2 (marshall-cell out-c byte-size-2 ptr-2 offset-2)))
-        (set! (~ c1) (to ulong ptr-1))
-        (set! (~ c2) (as ulong ptr-2))))
+        (set! (~ c1) (to long ptr-1))
+        (set! (~ c2) (as long ptr-2))))

@@ -103,10 +103,13 @@ Builtins have fixed types worth knowing: `get-global-id`, `get-local-linear-id`,
 `get-local-work-size`, `get-global-work-size`, `get-num-groups` return `ulong`; `warp-size`, `warp-lane`,
 `warp-id` return `uint`.
 
-Avoid scalar `bfloat16` arithmetic on SPIR-V for now (BUG 121); `bfloat16` / `half` are well supported
-inside the MMA paths.  **Never `set!` a `float` value into a `half` / `bfloat16` element**: it stores 4
-bytes into a 2-byte slot, silently (BUG 059), and `to-half` does not exist in a kernel body yet.  A `half`
-literal (`1.5h`) or a `half`-typed value stores correctly.
+**An element holds exactly its own type.**  `(set! (~ v i) x)` with an `x` of any other type is a compile
+error ("convert it explicitly") -- the rule a plain variable's `set!` always had.  That includes literals:
+a `long` element takes `7l`, a `ulong` one `8ul`, a `double` one `1.0d` or `(to-double x)`.  Narrow a
+float into a 16-bit element with `(to-half x)` / `(to-bfloat16 x)`, both round-to-nearest-even (before
+endeavour 186 such a store silently wrote 4 bytes into a 2-byte slot, BUG 059).  Avoid the scalar
+`bfloat16` literal and scalar `bfloat16` arithmetic on SPIR-V for now (BUG 121); `bfloat16` / `half` are
+well supported inside the MMA paths.
 
 ---
 
@@ -311,8 +314,10 @@ Measured on LeetGPU's H100 (challenge 01, 2026-10-16), one change at a time:
 
 So: no hand-set occupancy target, keep the unroll, and prefer `float4` -- it was a wash on H100 but is the
 form that matters on older GPUs.  Still open: whether one `float4` per thread
-(`:strategy :one-thread-per`, no loop) beats the strided loop on H100, and BUG 125 (a view of a read-only
-input loses the `.nc` read-only load).
+(`:strategy :one-thread-per`, no loop) beats the strided loop on H100.  The `float4` rows were measured
+before endeavour 186 fixed BUG 125: a view of a read-only input now keeps the `.nc` read-only load
+(`ld.global.nc.v4`), so they may improve.  The CUDA launcher Crisp hoists now prints the registers and
+local (spill) bytes the driver reports, so a spill shows up without `ptxas -v`.
 
 ---
 

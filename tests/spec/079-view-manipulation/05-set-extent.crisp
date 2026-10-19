@@ -7,5 +7,5 @@
 (def-function test-set-extent (m)
     (declare #'(int-mat-t => ulong))
   (let ((view (make-matrix m int 4 4)))
-    (set! (~ (extents~ view) 1) 8)
+    (set! (~ (extents~ view) 1) 8ul)
     (~ (extents~ view) 1)))

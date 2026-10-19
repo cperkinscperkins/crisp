@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-18T01:38:57.931435Z
+Generated on 2026-10-19T00:48:04.694308Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -294,6 +294,13 @@ Generated on 2026-10-18T01:38:57.931435Z
 - **Args**: `(OP-NAME MODE LOCATION)`
 
   > Endeavor 139 (decision B): inside a with-warp-specialization role block, only a :block (TMA,  >    leader-issued) tile op is safe.  A synchronous (no-barrier) or :linear tile op is a WORKGROUP  >    COLLECTIVE — its cooperative copy has all threads participate — so with only one role's warps  >    present it deadlocks.  MODE is the resolved barrier :mode, or NIL for a synchronous op.
+
+
+---
+### DEFUN `ANALYZE-%ELEMENT-OF-CAST-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 186 (BUG 059 fallout): (%element-of-cast TILE VALUE) analyses as (to ELEM VALUE), ELEM  >    being TILE's element type.  Internal: emitted by the load-tile-at expansions for the identity.  >   >    The out-of-bounds fill is an element store, (set! (~ tile ..) ident), and an element holds  >    exactly its own type.  The default identity was the int literal 0: harmless bits for a float  >    tile, but a 4-byte store into each 2-byte slot of a half/bfloat16 tile and half of each 8-byte  >    slot of a double tile.  The identity is a FILL VALUE named by the op, not a value the user  >    computes, so converting it is the op's own semantics rather than an implicit cast.  >   >    TILE is the expansion's let-bound gensym, so analysing it is a pure variable read, whatever  >    the user's destination form was (a symbol, a ring-get, ...).  When no element type can be  >    found VALUE is analysed unchanged, and the element-store check reports any mismatch.
 
 
 ---
@@ -3019,6 +3026,13 @@ Generated on 2026-10-18T01:38:57.931435Z
 
 
 ---
+### DEFUN `%CHECK-ELEMENT-STORE-TYPE`
+- **Args**: `(TARGET-NODE VALUE-NODE LOCATION)`
+
+  > Endeavour 186 (BUG 059): a set! into a storage ELEMENT must store the element's own type, the rule  >    a plain variable's set! already enforces (types-compatible-p: same type, a derived type of it, an  >    enum's keyword, ...).  Before 186 an element store was not checked at all and codegen wrote the  >    value at ITS width -- a float into a half element wrote 4 bytes into a 2-byte slot, a double into a  >    float overran the next element, an int and a float swapped bit patterns -- all silently.  Crisp asks  >    for an explicit conversion wherever data can be lost or reinterpreted, so this refuses and names it.  >   >    The value is taken in single-value context (get-single-value-type): (floor x) is (int float) and  >    stores its primary int.  A BRANDED value is compared by its base type.  A value whose type does not  >    resolve (a brand whose base is still a template parameter, or a brand renamed by --differentiate)  >    has no concrete type to compare and is let through.
+
+
+---
 ### DEFUN `%ANALYZE-SET!-CALL-ACCESSOR`
 - **Args**: `(TARGET-FORM VALUE-NODE ENV CONTEXT LOCATION)`
 
@@ -5286,7 +5300,21 @@ Generated on 2026-10-18T01:38:57.931435Z
 ### DEFUN `%ARRAY-NODE-READONLY-TENSOR-PARAM-P`
 - **Args**: `(ARRAY-NODE)`
 
-  > Returns T if ARRAY-NODE is a direct reference (semantic-var-read)  >    to a kernel-param symbol in *KERNEL-READONLY-TENSOR-SYMS*.  Aliased  >    references (let-bindings, function-call results) return NIL — they  >    degrade gracefully to a plain load.
+  > Returns T if ARRAY-NODE is a direct reference (semantic-var-read)  >    to a symbol in *KERNEL-READONLY-TENSOR-SYMS*: a read-only kernel-param  >    tensor, or (endeavour 186) a let-bound view of one -- see  >    %readonly-syms-after-binding.  Other aliases (function-call results,  >    ...) return NIL — they degrade gracefully to a plain load.
+
+
+---
+### DEFUN `%KERNEL-ENTRY-REASSEMBLY-P`
+- **Args**: `(NAME NODE)`
+
+  > Endeavour 186: T if NODE is the kernel-entry reassembly of tensor parameter NAME -- a struct  >    construction that reads NAME's own exploded pointer, the variable NAME_PTR, somewhere in its  >    (possibly nested, possibly cast) field values.  A user's (let ((A ...)) ..) builds no such struct, so it shadows.
+
+
+---
+### DEFUN `%READONLY-SYMS-AFTER-BINDING`
+- **Args**: `(SYMS BINDING)`
+
+  > Endeavour 186 (BUG 125): the read-only set SYMS as it stands after the let BINDING (NAME . NODE).  >   >    A view (make-vector / make-matrix / make-tensor / make-cell) only re-describes the bytes of its  >    source, so a view of a read-only tensor is read-only too and its loads earn !invariant.load --  >    before 186 a float4 view of a read-only input loaded with ld.global.v4, not ld.global.nc.v4.  >    A view of such a view chains, because the inner view's name is then in the set; so does a plain  >    alias (let ((v2 v)) ..) of a name in the set.  >   >    Any OTHER binding of a name in the set shadows it, and is removed: the body's reads of that name  >    are no longer reads of the read-only tensor.  SYMS is never mutated (it is the enclosing scope's  >    set); a changed set is a copy, which the caller binds for the let body only.
 
 
 ---
@@ -6577,6 +6605,20 @@ Generated on 2026-10-18T01:38:57.931435Z
 
 
 ---
+### DEFUN `%BF16-DEST-AS-I16-P`
+- **Args**: `(TO-TYPE-NAME TO-LLVM-TYPE)`
+
+  > T when a cast's DESTINATION is a bfloat16 carried as i16 (the SPIR-V backend, endeavour 155) -- the  >    destination-side twin of %bf16-as-i16-p.  Checks both the Crisp type and the LLVM type, so a backend  >    that keeps a native bfloat is unaffected.
+
+
+---
+### DEFUN `%F32-TO-BF16-BITS-RNE`
+- **Args**: `(BUILDER F32-VAL)`
+
+  > Endeavour 186 (BUG 059 / 121): the bfloat16 bit pattern of F32-VAL as an i16, ROUNDED TO NEAREST  >    EVEN -- what `fptrunc float to bfloat` gives on a backend with a native bfloat type, so (to-bfloat16 x)  >    means the same thing on SPIR-V and PTX.  bfloat16 is the top half of an IEEE f32:  >      bits    = bitcast f32 -> i32  >      rounded = bits + 0x7FFF + ((bits >> 16) & 1)     ; ties go to the even upper half  >      result  = trunc (rounded >> 16) to i16  >    A NaN would round into an infinity's pattern, so NaN maps to the canonical quiet NaN 0x7FC0.  >    (%coop-coerce-scalar's fill TRUNCATES instead; it only ever encodes 0.0, where the two agree.)
+
+
+---
 ### DEFUN `%BF16-AS-I16-P`
 - **Args**: `(VAL FROM-TYPE)`
 
@@ -7626,6 +7668,13 @@ Generated on 2026-10-18T01:38:57.931435Z
 - **Args**: `(DISPATCH-INFO)`
 
   > Total declared threads per workgroup from DISPATCH-INFO, or NIL when no compile-time local-size  >    was declared.  Reads (local-size :set-to ...) exactly as %emit-launch-base does, so the scratch  >    size and the block size cannot disagree about what the workgroup is.
+
+
+---
+### DEFUN `EMIT-KERNEL-RESOURCE-REPORT`
+- **Args**: `(STREAM)`
+
+  > Endeavour 186 (BUG 124): emit C++ that prints the loaded kernel's registers per thread and local  >    memory per thread, as the CUDA driver reports them (cuFuncGetAttribute NUM_REGS /  >    LOCAL_SIZE_BYTES) -- the same numbers as `ptxas -v`, but measured where the kernel actually runs,  >    so it needs no ptxas on the build machine and reflects the target GPU.  >   >    A non-zero local size is flagged.  It is a register SPILL or a stack-resident local array, and it  >    is invisible from Crisp: measured on an H100, (occupancy-target 2048) capped a vector add at 32  >    registers, ptxas spilled 72 B, and the kernel ran 25% slower.  Crisp cannot know the count before  >    ptxas runs, so the launcher reports it on every run.
 
 
 ---

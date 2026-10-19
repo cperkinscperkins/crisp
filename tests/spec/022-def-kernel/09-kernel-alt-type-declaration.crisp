@@ -7,4 +7,4 @@
 
 (def-kernel return_7 (c)
     (declare (type c out-c))
-    (set! (~ c) 7))
+    (set! (~ c) 7l))

@@ -136,7 +136,10 @@
   (let ((ir (%167-compile-bmg-ir "04-let-no-redundant-reset-bmg")))
     (is = 1 (%167-tally "@__spirv_CompositeConstruct_2_8_16(float 0.000000e+00)" ir)
         "A :let-bound register accumulator should be zero-initialised exactly once.")
-    (is = 0 (%167-tally "store float 0.000000e+00" ir)
+    ;; Endeavour 186: the needle names the SLM address space.  load-tile-at's out-of-bounds
+    ;; identity is now a float (it was an int 0), so its private %ident alloca's initialiser
+    ;; reads `store float 0.0, ptr %ident..` -- not a fill, and not what this counts.
+    (is = 0 (%167-tally "store float 0.000000e+00, ptr addrspace(3)" ir)
         "No scalar fill loop should be emitted for a register accumulator."))
 
   ;; --- spec 07: a :let SCRATCH accumulator gets the macro's fill + barrier ---------
@@ -144,7 +147,7 @@
   ;; bound.  Endeavour 167 made that the macro's job (pre-167 the reset was gated on
   ;; REGISTER-P and scratch got nothing).
   (let ((ir (%167-compile-bmg-ir "07-scratch-accumulator-reset-bmg")))
-    (true (plusp (%167-tally "store float 0.000000e+00" ir))
+    (true (plusp (%167-tally "store float 0.000000e+00, ptr addrspace(3)" ir))
           "A scratch accumulator should be filled by the macro.")
     (true (plusp (%167-tally "ControlBarrier" ir))
           "The scratch fill is workgroup-collective, so the macro supplies a barrier."))

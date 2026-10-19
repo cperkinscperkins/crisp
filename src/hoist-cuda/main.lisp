@@ -534,6 +534,27 @@
 ;;; %cuda-scratch-warp-size) makes the profile irrelevant here, so the extra parse went away.  The
 ;;; workgroup size is the only geometry this needs, and emit-main already has it.
 
+(defun emit-kernel-resource-report (stream)
+  "Endeavour 186 (BUG 124): emit C++ that prints the loaded kernel's registers per thread and local
+   memory per thread, as the CUDA driver reports them (cuFuncGetAttribute NUM_REGS /
+   LOCAL_SIZE_BYTES) -- the same numbers as `ptxas -v`, but measured where the kernel actually runs,
+   so it needs no ptxas on the build machine and reflects the target GPU.
+
+   A non-zero local size is flagged.  It is a register SPILL or a stack-resident local array, and it
+   is invisible from Crisp: measured on an H100, (occupancy-target 2048) capped a vector add at 32
+   registers, ptxas spilled 72 B, and the kernel ran 25% slower.  Crisp cannot know the count before
+   ptxas runs, so the launcher reports it on every run."
+  (format stream "    {~%")
+  (format stream "        int crisp_num_regs = 0, crisp_local_bytes = 0;~%")
+  (format stream "        CUDA_CHECK(cuFuncGetAttribute(&crisp_num_regs, CU_FUNC_ATTRIBUTE_NUM_REGS, kernel));~%")
+  (format stream "        CUDA_CHECK(cuFuncGetAttribute(&crisp_local_bytes, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, kernel));~%")
+  (format stream "        std::cout << \"Kernel resources: registers=\" << crisp_num_regs~%")
+  (format stream "                  << \" local_bytes=\" << crisp_local_bytes << std::endl;~%")
+  (format stream "        if (crisp_local_bytes > 0)~%")
+  (format stream "            std::cout << \"WARNING: \" << crisp_local_bytes << \" bytes of local memory per thread\"~%")
+  (format stream "                      << \" (register spill or stack array) -- check (occupancy-target ...)\" << std::endl;~%")
+  (format stream "    }~%~%"))
+
 (defun %emit-main-base (stream kernel-name ptx-path declared-sig aliases records &optional dispatch-info compute-units)
   "Generate C++ main function for CUDA Driver API launcher.
 COMPUTE-UNITS, when non-NIL, is the active hardware profile's :compute-units and
@@ -551,6 +572,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
   (format stream "    CUfunction kernel;~%")
   (format stream "    CUDA_CHECK(cuModuleGetFunction(&kernel, module, \"~a\"));~%" kernel-name)
   (format stream "    std::cout << \"Kernel function loaded\" << std::endl;~%~%")
+
+  ;; Endeavour 186 (BUG 124): report what ptxas gave the kernel.
+  (emit-kernel-resource-report stream)
 
   ;; Allocate and set up args; returns list of allocations for readback
   (let ((allocations (emit-kernel-args stream declared-sig aliases records dispatch-info)))

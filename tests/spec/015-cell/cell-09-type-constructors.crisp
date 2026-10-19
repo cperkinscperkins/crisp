@@ -11,7 +11,7 @@
 
 (def-function kernel-proximate (A B C)
     (declare #'((cell long :address-space :global) (cell long :address-space :local) (cell long :address-space :local) => nil))
-    (set! (~ C) (to-float (+ (~ A) (~ B)))))
+    (set! (~ C) (+ (~ A) (~ B))))
 
 (def-function change-order (A B C)
     (declare #'((cell float :address-space :local)

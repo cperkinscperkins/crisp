@@ -21,7 +21,7 @@ NEXT  (housekeeping-oct)
       matters for fp16 contest work.
 - [x] docs for AI: docs/writing-crisp.md (linked from README, CLAUDE.md, ANTIGRAVITY.md); stale reduction docs fixed -- 2026-10-13
 - [x] revisit docs/criticsms.md: status table added at the top -- 2026-10-13
-- [ ] refactor (narrow: specials.lisp tail, build warnings; long functions after the first contest)
+- [x] refactor (narrow: specials.lisp tail, build warnings; long functions after the first contest)
 - [ ] debugging: (1) --debug also writes a listing (myfile.crisp.dbg) whose line N is virtual line N --
       the s-expression path and its form -- and the DWARF file entry points at it (today DWARF 'lines' are a
       pre-order count of tree paths, so a debugger would show the wrong line of the .crisp); (2) cuda-gdb smoke
@@ -33,6 +33,11 @@ NEXT  (housekeeping-oct)
       is Crisp PTX as inline asm inside a CUDA __global__ + a solve() launcher.  H100: 0.16 ms -> 0.12 ms
       (78th pct) after removing a hand-set occupancy-target that spilled (BUG 124).  Recipe in
       docs/writing-crisp.md section 12.  Follow-ups: one-thread-per float4 (AG), BUG 125 (.nc through views).
+- [x] 186 contest-fixes (branch contest-fixes) -- 2026-10-18: BUG 059 element stores type-checked +
+      to-half / to-bfloat16 (BMG-verified RNE); BUG 125 read-only through views (ld.global.nc.v4);
+      BUG 124 option (b), the launcher + harnesses report registers / local bytes.  Exposed BUG 126 (AD of
+      a cell-of-struct stores a float adjoint).  tests/spec/186-contest-fixes/contest-fixes.md.
+      Open: re-measure the float4 kernel on H100 (the .nc effect + the new resource line).
 
 
 OPEN
@@ -103,8 +108,11 @@ OPEN
 - [ ] audit uses of symbolp that assume (symbolp nil) is false (L209)
 - [ ] move validators to their own file(s); only the spec runner loads them (L237)
 - [ ] dump tables like dump-env for *function-table* and others (L303)
-- [ ] the "volatile" BUG 030 workaround: confirm it touches only differentiating kernels, and only
-      --ir-target=spv (L607)
+- [x] the "volatile" BUG 030 workaround -- CHECKED 2026-10-18 against the corpus: FORWARD kernels never get it
+      (1 of 1111 has a volatile access: 118/02 arrival-sync's deliberate %volatile-read spin -- correct, not
+      030).  BACKWARD: 8 of 1111, all struct-at-kernel-boundary (009/12, 056/*, 103/02) -- 030's own pattern.
+      But it is NOT SPIR-V-only: it is in the generic IR, so CUDA struct _GRAD kernels pay it too, though the
+      IGC bug does not exist there.  Optional follow-up: gate it on :spirv. (L607)
 
 ### Errors and flags
 - [ ] unknown / misspelled CLI flags should be a compilation error (L148, L975)
@@ -114,6 +122,10 @@ OPEN
 - [ ] audit errors: some don't show the location (L474)
 - [ ] FAIL-WITH[--differentiate] message isn't checked for "normal" tests (L475)
 - [ ] 02-kernel-illegal-voidp and friends: no CHECK-FAIL header (L476)
+
+### AutoDifferentiation
+- [ ] cannot differentiate float4 (or other machine vector types)
+- [ ] cannot differentiate "shadowed" vars. see 186/04.  Fix? Document Limitation?
 
 ### Language
 - [ ] bool type and literal `true` / `false` (analysis/control.lisp: "no boolean literal yet") (L163, L174, L387, L613)

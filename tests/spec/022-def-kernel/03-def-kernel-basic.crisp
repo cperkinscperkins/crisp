@@ -8,4 +8,4 @@
 
 (def-kernel return_7 (&out c)
     (declare #'(&out out-c))
-    (set! (~ c) 7))
+    (set! (~ c) 7l))

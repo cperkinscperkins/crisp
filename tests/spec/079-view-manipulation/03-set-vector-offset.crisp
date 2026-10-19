@@ -8,5 +8,5 @@
 (def-function test-set-vector-offset (v)
     (declare #'(int-vec-t => ulong))
   (let ((view (make-vector v int :length 4)))
-    (set! (~ (offset~ view) 0) 2)
+    (set! (~ (offset~ view) 0) 2ul)
     (~ (offset~ view) 0)))

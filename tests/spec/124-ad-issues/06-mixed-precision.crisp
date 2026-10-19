@@ -15,4 +15,4 @@
 
 (def-kernel mixed_sq (x &out y)
   (declare #'(in-f &out out-d))
-  (set! (~ y) (* (~ x) (~ x))))
+  (set! (~ y) (to-double (* (~ x) (~ x)))))

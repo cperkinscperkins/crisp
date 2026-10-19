@@ -8,7 +8,7 @@
 
 (def-function store-7-return-8 (&out c)
     (declare #'(&out out-c => long))
-    (set! (~ c) 7)
+    (set! (~ c) 7l)
     (as-long 8))
 
 (def-kernel-exact call_function (byte-size ptr offset)
