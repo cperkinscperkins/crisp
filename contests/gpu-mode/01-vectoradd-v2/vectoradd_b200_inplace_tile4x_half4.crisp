@@ -1,0 +1,63 @@
+;; GPU MODE Challenge: vectoradd_v2 (B200 In-Place Variant 3: Direct 4x half4 = 32B per thread)
+;; Uses def-hardware-profile for B200 and in-place read-modify-write (B A) with 4x half4
+;; per thread at constant +256 stride ([+2048], [+4096], [+6144] immediate offsets).
+
+(def-hardware-profile b200
+  :simd-width 32
+  :compute-units 148
+  :max-registers-per-cu 65536
+  :max-registers-per-thread 255
+  :max-total-threads-per-block 1024
+  :max-work-group-dims '(1024 1024 64)
+  :max-shared-memory-per-block 227KB
+  :l2-cache-size 128MB
+  :native-cache-line-size 128
+  :mma-shapes '((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4)))
+
+(def-type in-vec    (vector half :address-space :global :align :compact))
+(def-type inout-vec (vector half :address-space :global :align :compact))
+
+(def-kernel vector_add_f16 (B A)
+  (declare #'(in-vec inout-vec => nil)
+           (global-size :derive-from B :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((bid  (to-ulong (get-workgroup-id 0)))
+        (tid  (to-ulong (get-local-id 0)))
+        (base (+ (* bid 1024ul) tid))
+        (n    (length~ B))
+        (n4   (/ n 4ul))
+        (b4   (make-vector B half4 :length n4))
+        (a4   (make-vector A half4 :length n4)))
+    (if (< (+ (* bid 1024ul) 1023ul) n4)
+        (let ((v0 (+ (~ a4 base)           (~ b4 base)))
+              (v1 (+ (~ a4 (+ base 256ul)) (~ b4 (+ base 256ul))))
+              (v2 (+ (~ a4 (+ base 512ul)) (~ b4 (+ base 512ul))))
+              (v3 (+ (~ a4 (+ base 768ul)) (~ b4 (+ base 768ul)))))
+          (set! (~ a4 base)           v0)
+          (set! (~ a4 (+ base 256ul)) v1)
+          (set! (~ a4 (+ base 512ul)) v2)
+          (set! (~ a4 (+ base 768ul)) v3))
+        (progn
+          (if (< base n4)
+              (set! (~ a4 base) (+ (~ a4 base) (~ b4 base)))
+              (let ((tail0 (+ (* n4 4ul) (- base n4))))
+                (when (< tail0 n)
+                  (set! (~ A tail0) (+ (~ A tail0) (~ B tail0))))))
+          (let ((idx1 (+ base 256ul)))
+            (if (< idx1 n4)
+                (set! (~ a4 idx1) (+ (~ a4 idx1) (~ b4 idx1)))
+                (let ((tail1 (+ (* n4 4ul) (- idx1 n4))))
+                  (when (< tail1 n)
+                    (set! (~ A tail1) (+ (~ A tail1) (~ B tail1)))))))
+          (let ((idx2 (+ base 512ul)))
+            (if (< idx2 n4)
+                (set! (~ a4 idx2) (+ (~ a4 idx2) (~ b4 idx2)))
+                (let ((tail2 (+ (* n4 4ul) (- idx2 n4))))
+                  (when (< tail2 n)
+                    (set! (~ A tail2) (+ (~ A tail2) (~ B tail2)))))))
+          (let ((idx3 (+ base 768ul)))
+            (if (< idx3 n4)
+                (set! (~ a4 idx3) (+ (~ a4 idx3) (~ b4 idx3)))
+                (let ((tail3 (+ (* n4 4ul) (- idx3 n4))))
+                  (when (< tail3 n)
+                    (set! (~ A tail3) (+ (~ A tail3) (~ B tail3)))))))))))

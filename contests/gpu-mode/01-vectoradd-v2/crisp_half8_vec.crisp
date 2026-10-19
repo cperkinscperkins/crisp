@@ -1,0 +1,27 @@
+;; Test: Does accessing two adjacent half4s (2*i and 2*i+1) merge into ld.global.v4.b32 (128-bit = 8 halfs)?
+
+(def-type in-vec  (vector half :address-space :global :align :compact))
+(def-type out-vec (vector half :address-space :global :align :compact))
+
+(def-kernel vector_add_f16 (A B &out C)
+  (declare #'(in-vec in-vec &out out-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n   (length~ A))
+        (n8  (/ n 8ul))
+        (n4  (* n8 2ul))
+        (a4  (make-vector A half4 :length n4))
+        (b4  (make-vector B half4 :length n4))
+        (c4  (make-vector C half4 :length n4))
+        (idx (make-vector A half4 :length n8)))
+    (loop-vector-stride idx (i)
+      (let ((i0 (* i 2ul))
+            (i1 (+ i0 1ul))
+            (v0 (+ (~ a4 i0) (~ b4 i0)))
+            (v1 (+ (~ a4 i1) (~ b4 i1))))
+        (set! (~ c4 i0) v0)
+        (set! (~ c4 i1) v1)))
+    (let ((tail (+ (* n8 8ul) (get-global-id 0))))
+      (when (< tail n)
+        (set! (~ C tail) (+ (~ A tail) (~ B tail)))))))
+

@@ -1,0 +1,33 @@
+;; GPU MODE Challenge: vectoradd_v2 (Direct 2x half4 per thread, +256 stride)
+;; Each block of 256 threads processes 512 half4s (2048 halfs = 4 KB) at offsets +0 and +256
+;; using PTX constant immediate displacement [+2048], issuing both 64-bit loads before storing.
+
+(def-type in-vec  (vector half :address-space :global :align :compact))
+(def-type out-vec (vector half :address-space :global :align :compact))
+
+(def-kernel vector_add_f16 (A B &out C)
+  (declare #'(in-vec in-vec &out out-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((bid  (to-ulong (get-workgroup-id 0)))
+        (tid  (to-ulong (get-local-id 0)))
+        (base (+ (* bid 512ul) tid))
+        (n    (length~ A))
+        (n4   (/ n 4ul))
+        (a4   (make-vector A half4 :length n4))
+        (b4   (make-vector B half4 :length n4))
+        (c4   (make-vector C half4 :length n4)))
+    (if (< (+ (* bid 512ul) 511ul) n4)
+        (let ((v0 (+ (~ a4 base)           (~ b4 base)))
+              (v1 (+ (~ a4 (+ base 256ul)) (~ b4 (+ base 256ul)))))
+          (set! (~ c4 base)           v0)
+          (set! (~ c4 (+ base 256ul)) v1))
+        (progn
+          (when (< base n4)
+            (set! (~ c4 base) (+ (~ a4 base) (~ b4 base))))
+          (when (< (+ base 256ul) n4)
+            (set! (~ c4 (+ base 256ul)) (+ (~ a4 (+ base 256ul)) (~ b4 (+ base 256ul)))))
+          (let ((tail (+ (* n4 4ul) tid)))
+            (when (and (= bid 0ul) (< tail n))
+              (set! (~ C tail) (+ (~ A tail) (~ B tail)))))))))
+
