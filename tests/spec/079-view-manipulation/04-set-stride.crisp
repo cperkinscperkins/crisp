@@ -7,5 +7,5 @@
 (def-function test-set-stride (m)
     (declare #'(int-mat-t => ulong))
   (let ((view (make-matrix m int 4 4)))
-    (set! (~ (strides~ view) 0) 8)
+    (set! (~ (strides~ view) 0) 8ul)
     (~ (strides~ view) 0)))

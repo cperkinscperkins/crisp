@@ -75,6 +75,15 @@ int main(int argc, char** argv) {
     CUfunction kernel;
     CUDA_CHECK(cuModuleGetFunction(&kernel, module, "sum_reduce"));
 
+    // Endeavour 186 (BUG 124): what ptxas gave the kernel, as the driver reports it on THIS GPU.
+    // local_bytes > 0 is a register spill (or a stack array).  Reported in the JSON, flagged here.
+    int num_regs = 0, local_bytes = 0;
+    CUDA_CHECK(cuFuncGetAttribute(&num_regs, CU_FUNC_ATTRIBUTE_NUM_REGS, kernel));
+    CUDA_CHECK(cuFuncGetAttribute(&local_bytes, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, kernel));
+    if (local_bytes > 0)
+        fprintf(stderr, "WARNING: kernel uses %d bytes of local memory per thread (register spill or stack array)\n",
+                local_bytes);
+
     float* h_input = new float[N];
     for (int i = 0; i < N; i++) h_input[i] = 1.0f;
 
@@ -199,6 +208,8 @@ int main(int argc, char** argv) {
     printf("  \"warmup\": %d,\n", warmup);
     printf("  \"iterations\": %d,\n", iterations);
     printf("  \"correct\": %s,\n", correct ? "true" : "false");
+    printf("  \"num_regs\": %d,\n", num_regs);
+    printf("  \"local_bytes\": %d,\n", local_bytes);
     printf("  \"result\": %.1f,\n", result);
     printf("  \"expected\": %.1f,\n", expected);
     printf("  \"kernel_median_us\": %.2f,\n", k_median * 1000.0f);

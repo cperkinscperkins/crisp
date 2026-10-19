@@ -10,5 +10,5 @@
     ;; the cell type expression passed to marshall-cell must be complete.
     ;; "(cell int)", for example, would not work.
     (let ((c (marshall-cell out-c byte-size ptr offset)))
-        (set! (~ c) 7)))
+        (set! (~ c) 7l)))
 

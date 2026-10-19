@@ -590,6 +590,38 @@
          :value-node update-node
          :source-location location)))))
 
+(defun %check-element-store-type (target-node value-node location)
+  "Endeavour 186 (BUG 059): a set! into a storage ELEMENT must store the element's own type, the rule
+   a plain variable's set! already enforces (types-compatible-p: same type, a derived type of it, an
+   enum's keyword, ...).  Before 186 an element store was not checked at all and codegen wrote the
+   value at ITS width -- a float into a half element wrote 4 bytes into a 2-byte slot, a double into a
+   float overran the next element, an int and a float swapped bit patterns -- all silently.  Crisp asks
+   for an explicit conversion wherever data can be lost or reinterpreted, so this refuses and names it.
+
+   The value is taken in single-value context (get-single-value-type): (floor x) is (int float) and
+   stores its primary int.  A BRANDED value is compared by its base type.  A value whose type does not
+   resolve (a brand whose base is still a template parameter, or a brand renamed by --differentiate)
+   has no concrete type to compare and is let through."
+  (let* ((elem-type (semantic-node-type target-node))
+         (raw-type  (get-single-value-type value-node))
+         ;; a dependent brand's INSTANCE type (VALUE-T-10043 for (value-t fc)) names its brand here
+         (brand-def (ignore-errors (is-brand-type-p (or (gethash raw-type *brand-instance-types*)
+                                                        raw-type))))
+         (val-type  (if brand-def (brand-definition-base-type brand-def) raw-type)))
+    ;; A type that does not resolve -- a brand's template-parameter base, or the uninterned brand
+    ;; the --differentiate pass renames (#:VALUE-T-10014) -- has nothing concrete to compare.
+    (unless (ignore-errors (valid-type-p val-type))
+      (log:debug "186: element store of ~s (as ~s, not a resolvable type) not checked" raw-type val-type)
+      (return-from %check-element-store-type nil))
+    (unless (types-compatible-p val-type elem-type)
+      (let ((elem-name (if (and (consp elem-type) (null (rest elem-type))) (first elem-type) elem-type))
+            (val-name  (if (and (consp val-type) (null (rest val-type))) (first val-type) val-type)))
+        (log:debug "186: element store refused: ~s into a ~s element" val-type elem-type)
+        (error 'crisp-type-error
+               :message (format nil "set!: storing a ~(~a~) into an element of type ~(~a~) -- an element holds exactly its own type, so convert it explicitly, e.g. (to-~(~a~) x)."
+                                val-name elem-name elem-name)
+               :source-location location)))))
+
 (defun %analyze-set!-call-accessor (target-form value-node env context location)
   "Helper to analyze set! when target is a function call or struct accessor."
   (let* ((op           (first target-form))
@@ -650,7 +682,8 @@
              (progn
                ;; Array boundary immutability check
                (when (semantic-aref-p target-node)
-                 (%check-aref-boundary-mutation target-node location))
+                 (%check-aref-boundary-mutation target-node location)
+                 (%check-element-store-type target-node value-node location))
                (make-semantic-set!
                 :target-node target-node
                 :value-node value-node

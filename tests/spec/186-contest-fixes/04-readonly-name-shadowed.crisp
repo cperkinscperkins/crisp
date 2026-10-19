@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;;
+;; Endeavour 186 (BUG 125) -- the read-only set is a property of NAMES in scope, so a let that rebinds
+;; a read-only parameter's name to something else takes the name out of it for the let body.  Here A
+;; is rebound to a workgroup scratch vector: the body's (~ A i) reads SLM, which the kernel writes, and
+;; must NOT be marked !invariant.load.  B's read, outside any shadowing, still is.
+;; The IR claims are in contest-fixes.unit.lisp.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel shadowed_readonly (A B &out C)
+  (declare #'(f-vec f-vec &out f-vec => nil)
+           (global-size :set-to 4)
+           (local-size :set-to 4))
+  (let ((lid (get-local-id 0))
+        (A (make-scratch-vector float :match-workgroup-size)))
+    (set! (~ A lid) (~ B lid))
+    (sync-workgroup)
+    (set! (~ C lid) (~ A lid))))

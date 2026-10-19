@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER b: 16256 16256 16256 16257
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;;
+;; Endeavour 186 (BUG 059, BUG 121) -- (to-bfloat16 x) narrows a float to bfloat16,
+;; round-to-nearest-even, stored at the element's width.  Printed as raw bits.  bf16 keeps 7 mantissa
+;; bits, so its ulp at 1.0 is 2^-7:
+;;   1.0              -> 0x3F80 = 16256
+;;   1 + 2^-9         -> below half an ulp (2^-8): rounds down          16256
+;;   1 + 2^-8         -> EXACTLY half an ulp: ties to even             16256
+;;   1 + 3*2^-9       -> above half an ulp: rounds up, 0x3F81          16257
+;; On SPIR-V bf16 is carried as i16 (endeavour 155), so the narrowing is an explicit encoding there;
+;; on PTX it is LLVM's fptrunc to bfloat.  Both must round the same way.
+
+(def-type b-vec (vector bfloat16 :address-space :global :align :compact))
+
+(def-kernel to_bf16_rne (&out b)
+  (declare #'(&out b-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-float (get-workgroup-id 0))))
+    (set! (~ b 0) (to-bfloat16 (+ z 1.0)))
+    (set! (~ b 1) (to-bfloat16 (+ z 1.001953125)))
+    (set! (~ b 2) (to-bfloat16 (+ z 1.00390625)))
+    (set! (~ b 3) (to-bfloat16 (+ z 1.005859375)))))

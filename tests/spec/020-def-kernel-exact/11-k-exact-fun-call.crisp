@@ -9,7 +9,7 @@
 
 (def-function store-7-return-8 (&out c)
     (declare #'(&out out-c => long))
-    (set! (~ c) 7)
+    (set! (~ c) 7l)
     (as-long 8))
 
 ;; kernel ALWAYS return nil, no matter what operation is in "last place'.

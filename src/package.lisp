@@ -342,6 +342,10 @@
    #:to-long #:as-long
    #:to-float #:as-float
    #:to-double #:as-double
+   ;; Endeavour 186 (BUG 059): the 16-bit float conversions.  Their analyzers were always registered
+   ;; (one per *crisp-types* entry), but unexported, so a kernel's (to-half x) was a different symbol.
+   #:to-half #:as-half
+   #:to-bfloat16 #:as-bfloat16
    #:to-uchar #:as-uchar
    #:to-ushort #:as-ushort
    #:to-uint #:as-uint
@@ -566,6 +570,8 @@
                 #:to-long #:as-long
                 #:to-float #:as-float
                 #:to-double #:as-double
+                #:to-half #:as-half
+                #:to-bfloat16 #:as-bfloat16
                 #:to-uchar #:as-uchar
                 #:to-ushort #:as-ushort
                 #:to-uint #:as-uint

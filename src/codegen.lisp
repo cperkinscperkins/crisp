@@ -730,13 +730,67 @@
 
 (defun %array-node-readonly-tensor-param-p (array-node)
   "Returns T if ARRAY-NODE is a direct reference (semantic-var-read)
-   to a kernel-param symbol in *KERNEL-READONLY-TENSOR-SYMS*.  Aliased
-   references (let-bindings, function-call results) return NIL — they
-   degrade gracefully to a plain load."
+   to a symbol in *KERNEL-READONLY-TENSOR-SYMS*: a read-only kernel-param
+   tensor, or (endeavour 186) a let-bound view of one -- see
+   %readonly-syms-after-binding.  Other aliases (function-call results,
+   ...) return NIL — they degrade gracefully to a plain load."
   (and *kernel-readonly-tensor-syms*
        (semantic-var-read-p array-node)
        (gethash (semantic-var-read-name array-node)
                 *kernel-readonly-tensor-syms*)))
+
+(defun %kernel-entry-reassembly-p (name node)
+  "Endeavour 186: T if NODE is the kernel-entry reassembly of tensor parameter NAME -- a struct
+   construction that reads NAME's own exploded pointer, the variable NAME_PTR, somewhere in its
+   (possibly nested, possibly cast) field values.  A user's (let ((A ...)) ..) builds no such struct, so it shadows."
+  (let ((ptr-name (format nil "~a_PTR" (symbol-name name))))
+    (labels ((reads-ptr-p (n)
+               (cond ((semantic-var-read-p n)
+                      (string= (symbol-name (semantic-var-read-name n)) ptr-name))
+                     ((semantic-struct-construction-p n)
+                      (some #'reads-ptr-p (semantic-struct-construction-args n)))
+                     ;; the storage field holds the pointer through a value cast
+                     ((semantic-cast-p n) (reads-ptr-p (semantic-cast-arg n)))
+                     (t nil))))
+      (let ((result (and (semantic-struct-construction-p node) (reads-ptr-p node) t)))
+        (log:debug "186: kernel-entry reassembly check ~a (~a): ~a" name (type-of node) result)
+        result))))
+
+(defun %readonly-syms-after-binding (syms binding)
+  "Endeavour 186 (BUG 125): the read-only set SYMS as it stands after the let BINDING (NAME . NODE).
+
+   A view (make-vector / make-matrix / make-tensor / make-cell) only re-describes the bytes of its
+   source, so a view of a read-only tensor is read-only too and its loads earn !invariant.load --
+   before 186 a float4 view of a read-only input loaded with ld.global.v4, not ld.global.nc.v4.
+   A view of such a view chains, because the inner view's name is then in the set; so does a plain
+   alias (let ((v2 v)) ..) of a name in the set.
+
+   Any OTHER binding of a name in the set shadows it, and is removed: the body's reads of that name
+   are no longer reads of the read-only tensor.  SYMS is never mutated (it is the enclosing scope's
+   set); a changed set is a copy, which the caller binds for the let body only."
+  (let ((name (car binding))
+        (node (cdr binding)))
+    (cond
+      ((null syms) nil)
+      ((or (and (semantic-make-view-p node)
+                (%array-node-readonly-tensor-param-p (semantic-make-view-source-node node)))
+           ;; a plain alias, (let ((v2 v)) ..), as loop macros bind their array gensyms
+           (%array-node-readonly-tensor-param-p node))
+       (log:debug "186: let-bound view/alias ~a of a read-only tensor is read-only" name)
+       (let ((copy (alexandria:copy-hash-table syms)))
+         (setf (gethash name copy) t)
+         copy))
+      ((and (gethash name syms) (%kernel-entry-reassembly-p name node))
+       ;; Kernel entry explodes a tensor param into (NAME_PTR NAME_BYTE_SIZE ...) and re-binds NAME to
+       ;; the struct built from them: the SAME tensor, and the binding the read-only set was named for.
+       (log:debug "186: let binding ~a is the kernel-entry reassembly of a read-only tensor" name)
+       syms)
+      ((gethash name syms)
+       (log:debug "186: let binding ~a shadows a read-only tensor (node ~a)" name (type-of node))
+       (let ((copy (alexandria:copy-hash-table syms)))
+         (remhash name copy)
+         copy))
+      (t syms))))
 
 
 (defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
@@ -1338,7 +1392,16 @@
                        (to-size (crisp-type-size to-type)))
                    (cond
                     ((< to-size from-size)
-                      (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast"))
+                      ;; Endeavour 186: on SPIR-V a bfloat16 is carried as i16 (endeavour 155), and
+                      ;; `fptrunc float ... to i16` is not a legal cast -- encode the bits instead,
+                      ;; rounding to nearest-even exactly as fptrunc does on a native-bfloat backend.
+                      (if (%bf16-dest-as-i16-p to-type-name to-llvm-type)
+                          (%f32-to-bf16-bits-rne
+                           builder
+                           (if (cffi:pointer-eq (llvm-type-of from-val) (llvm-float-type))
+                               from-val
+                               (llvm-build-fp-trunc builder from-val (llvm-float-type) "bf16_via_f32")))
+                          (llvm-build-fp-trunc builder from-val to-llvm-type "fptrunc_cast")))
                     ((> to-size from-size)
                       ;; Endeavour 156: a bfloat16 reaches codegen as i16 on the SPIR-V backend
                       ;; (endeavour 155 rewrote the type so Intel sees raw 16-bit integers), so
@@ -2764,11 +2827,15 @@
   "Generates IR for a let expression."
   ;; Create a new environment for the let block that inherits from the outer one.
   (let ((let-env (alexandria:copy-hash-table var-env))
-        (memoized-aggregates (make-hash-table :test 'eq)))
+        (memoized-aggregates (make-hash-table :test 'eq))
+        ;; Endeavour 186 (BUG 125): rebound so a view's read-only-ness is scoped to this let.
+        (*kernel-readonly-tensor-syms* *kernel-readonly-tensor-syms*))
 
     ;; Generate code for each binding
     (dolist (binding (semantic-let-bindings node))
-      (%generate-let-binding binding builder module let-env di-builder di-scope location-map memoized-aggregates))
+      (%generate-let-binding binding builder module let-env di-builder di-scope location-map memoized-aggregates)
+      (setf *kernel-readonly-tensor-syms*
+            (%readonly-syms-after-binding *kernel-readonly-tensor-syms* binding)))
 
     ;; Generate code for the body, using the extended environment.
     ;; The result of the let is the result of the last expression in the body.
@@ -7172,6 +7239,38 @@ never implied by an atomic; it comes only from an explicit mem-fence."
            :source-location nil)))))
 
 ;;;; Endeavour 156 — two bf16 gaps surfaced by building the 16-bit chapter ladder.
+(defun %bf16-dest-as-i16-p (to-type-name to-llvm-type)
+  "T when a cast's DESTINATION is a bfloat16 carried as i16 (the SPIR-V backend, endeavour 155) -- the
+   destination-side twin of %bf16-as-i16-p.  Checks both the Crisp type and the LLVM type, so a backend
+   that keeps a native bfloat is unaffected."
+  (and to-type-name
+       (string-equal (string (if (consp to-type-name) (first to-type-name) to-type-name)) "BFLOAT16")
+       to-llvm-type
+       (let ((s (crisp.llvm-bindings::llvm-print-type-to-string to-llvm-type)))
+         (and s (string= (string-trim " " s) "i16")))))
+
+(defun %f32-to-bf16-bits-rne (builder f32-val)
+  "Endeavour 186 (BUG 059 / 121): the bfloat16 bit pattern of F32-VAL as an i16, ROUNDED TO NEAREST
+   EVEN -- what `fptrunc float to bfloat` gives on a backend with a native bfloat type, so (to-bfloat16 x)
+   means the same thing on SPIR-V and PTX.  bfloat16 is the top half of an IEEE f32:
+     bits    = bitcast f32 -> i32
+     rounded = bits + 0x7FFF + ((bits >> 16) & 1)     ; ties go to the even upper half
+     result  = trunc (rounded >> 16) to i16
+   A NaN would round into an infinity's pattern, so NaN maps to the canonical quiet NaN 0x7FC0.
+   (%coop-coerce-scalar's fill TRUNCATES instead; it only ever encodes 0.0, where the two agree.)"
+  (let* ((i32   (crisp.llvm-bindings::llvm-int32-type))
+         (i16   (crisp.llvm-bindings::llvm-int16-type))
+         (bits  (crisp.llvm-bindings::llvm-build-bit-cast builder f32-val i32 "bf16_bits"))
+         (hi    (crisp.llvm-bindings::llvm-build-l-shr builder bits (llvm-const-int i32 16 nil) "bf16_hi"))
+         (lsb   (crisp.llvm-bindings::llvm-build-and builder hi (llvm-const-int i32 1 nil) "bf16_lsb"))
+         (bias  (llvm-build-add builder lsb (llvm-const-int i32 #x7FFF nil) "bf16_bias"))
+         (rnd   (llvm-build-add builder bits bias "bf16_rounded"))
+         (top   (crisp.llvm-bindings::llvm-build-l-shr builder rnd (llvm-const-int i32 16 nil) "bf16_top"))
+         (enc   (llvm-build-trunc builder top i16 "bf16_rne"))
+         (nan-p (crisp.llvm-bindings::llvm-build-fcmp builder crisp.llvm-bindings::+llvm-real-uno+
+                                                      f32-val f32-val "bf16_isnan")))
+    (crisp.llvm-bindings::llvm-build-select builder nan-p (llvm-const-int i16 #x7FC0 nil) enc "bf16_val")))
+
 (defun %bf16-as-i16-p (val from-type)
   "T when VAL is a bfloat16 that has already been rewritten to the i16 LLVM type.
 

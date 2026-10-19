@@ -1,4 +1,7 @@
 ;; TEST-WITH[--differentiate]
+;; KNOWN-ISSUE[differentiate]: BUG-126
+;; (BUG 126: the backward pass stores a FLOAT adjoint into the point-typed A_GRAD cell -- 4 bytes
+;; into an 8-byte struct.  It compiled silently until endeavour 186 typed element stores.)
 
 (def-struct point (x float) (y float))
 

@@ -199,6 +199,17 @@ int main(int argc, char **argv) {
     const double kernel_create_ms =
         std::chrono::duration<double, std::milli>(t_k1 - t_k0).count();
 
+    // Endeavour 186 (BUG 124): what ptxas gave the kernel, as the driver reports it on THIS GPU.
+    // local_bytes > 0 is a register spill (or a stack array) -- e.g. an (occupancy-target N) set
+    // above what the kernel needs.  Reported in the JSON and flagged on stderr.
+    int num_regs = 0, local_bytes = 0;
+    CU_OK(cuFuncGetAttribute(&num_regs, CU_FUNC_ATTRIBUTE_NUM_REGS, kernel), "cuFuncGetAttribute(NUM_REGS)");
+    CU_OK(cuFuncGetAttribute(&local_bytes, CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, kernel),
+          "cuFuncGetAttribute(LOCAL_SIZE_BYTES)");
+    if (local_bytes > 0)
+        std::cerr << "WARNING: kernel uses " << local_bytes
+                  << " bytes of local memory per thread (register spill or stack array)\n";
+
     // Opt in to >48KB dynamic shared memory when the kernel asks for it; without this the launch
     // fails rather than silently under-allocating.
     if (shared_bytes > 48u * 1024u) {
@@ -455,6 +466,8 @@ int main(int argc, char **argv) {
               << "  \"fill_ms\": " << fill_ms << ",\n"
               << "  \"driver_jit_ms\": " << driver_jit_ms << ",\n"
               << "  \"kernel_create_ms\": " << kernel_create_ms << ",\n"
+              << "  \"num_regs\": " << num_regs << ",\n"
+              << "  \"local_bytes\": " << local_bytes << ",\n"
               << "  \"wall_time_ms\": " << (wall_us / 1000.0) << ",\n"
               << "  \"wall_per_iter_us\": " << wall_us << ",\n"
               << "  \"gflops_from_wall\": "

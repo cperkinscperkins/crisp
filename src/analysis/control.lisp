@@ -683,7 +683,8 @@
             (append
               (list (list src-sym src-form)
                     (list tile-sym tile-form)
-                    (list ident-sym identity-form))
+                    ;; Endeavour 186: the identity is converted to the tile's element type.
+                    (list ident-sym (list (intern "%ELEMENT-OF-CAST" cl-pkg) tile-sym identity-form)))
               ;; Origin coords are wrapped in (to-ulong ...) so that the inner
               ;; arithmetic (+ origin tile-coord) is type-consistent regardless
               ;; of whether the user passed int literals or already-ulong values.
@@ -770,7 +771,8 @@
             (append
               (list (list src-sym src-form)
                     (list tile-sym tile-form)
-                    (list ident-sym identity-form))
+                    ;; Endeavour 186: the identity is converted to the tile's element type.
+                    (list ident-sym (list (intern "%ELEMENT-OF-CAST" cl-pkg) tile-sym identity-form)))
               (loop for i from 0 below n
                     for o-sym in origin-syms
                     collect (list o-sym (list to-ulong-sym (nth i origin-list))))
@@ -1062,6 +1064,28 @@
                    "~A inside a with-warp-specialization role block must use a :block barrier — a ~A tile op is a workgroup-collective cooperative copy that deadlocks when only some warps run the block.  Stage with (make-async-barrier[-ring] :mode :block) on the producer; for the consumer's write-back use per-thread stores or a warp-scoped path (there is no :block store yet)."
                    op-name (if mode (string-downcase (symbol-name mode)) "synchronous"))
       :source-location location)))
+
+(defun analyze-%element-of-cast-expression (expr env context location)
+  "Endeavour 186 (BUG 059 fallout): (%element-of-cast TILE VALUE) analyses as (to ELEM VALUE), ELEM
+   being TILE's element type.  Internal: emitted by the load-tile-at expansions for the identity.
+
+   The out-of-bounds fill is an element store, (set! (~ tile ..) ident), and an element holds
+   exactly its own type.  The default identity was the int literal 0: harmless bits for a float
+   tile, but a 4-byte store into each 2-byte slot of a half/bfloat16 tile and half of each 8-byte
+   slot of a double tile.  The identity is a FILL VALUE named by the op, not a value the user
+   computes, so converting it is the op's own semantics rather than an implicit cast.
+
+   TILE is the expansion's let-bound gensym, so analysing it is a pure variable read, whatever
+   the user's destination form was (a symbol, a ring-get, ...).  When no element type can be
+   found VALUE is analysed unchanged, and the element-store check reports any mismatch."
+  (destructuring-bind (tile value) (rest expr)
+    (let* ((tile-node (analyze-expression tile env context (append location '(1))))
+           (elem (get-array-element-type (semantic-node-type tile-node))))
+      (log:debug "186: %element-of-cast ~s: element type ~s" value elem)
+      (analyze-expression (if elem
+                              (list (intern "TO" (find-package :crisp-language)) elem value)
+                              value)
+                          env context location))))
 
 (defun analyze-load-tile-at-expression (expr env context location)
   "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
@@ -5303,6 +5327,12 @@
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%cp-async-copy-elem-expression)
     (unless (eq sym-cl sym-cc)
       (setf (gethash sym-cc *expression-analyzers*) #'analyze-%cp-async-copy-elem-expression)))
+  ;; Endeavour 186: the load-tile-at identity, converted to the tile's element type.
+  (let ((sym-cl (intern "%ELEMENT-OF-CAST" (find-package :crisp-language)))
+        (sym-cc (intern "%ELEMENT-OF-CAST" (find-package :crisp.compiler))))
+    (setf (gethash sym-cl *expression-analyzers*) #'analyze-%element-of-cast-expression)
+    (unless (eq sym-cl sym-cc)
+      (setf (gethash sym-cc *expression-analyzers*) #'analyze-%element-of-cast-expression)))
   (let ((sym-cl (intern "%CP-ASYNC-COMMIT" (find-package :crisp-language)))
         (sym-cc (intern "%CP-ASYNC-COMMIT" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-%cp-async-commit-expression)

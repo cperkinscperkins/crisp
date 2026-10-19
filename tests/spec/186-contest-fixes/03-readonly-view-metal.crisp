@@ -1,0 +1,27 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER c: 0 2 4 6
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;;
+;; Endeavour 186 (BUG 125) -- a view of a read-only input is read-only too.  A and B precede &out, so
+;; their loads carry !invariant.load (ld.global.nc on PTX).  Before 186 that held only for a DIRECT
+;; read of the parameter: the float4 views a4 / b4 below loaded with plain ld.global.v4.  Now a let-bound
+;; make-vector over a read-only tensor joins the read-only set for the let body (b4 is a view of a
+;; view, so the rule chains), while c4 -- a view of the OUTPUT -- does not.
+;; The IR claims are in contest-fixes.unit.lisp; on metal this is the LeetGPU recipe's float4 add,
+;; C = A + B over the hoister's 0 1 2 3 inputs.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel readonly_view_add (A B &out C)
+  (declare #'(f-vec f-vec &out f-vec => nil)
+           (global-size :set-to 4))
+  (let ((n  (length~ A))
+        (n4 (/ n 4ul))
+        (a4 (make-vector A float4 :length n4))
+        (bv (make-vector B float :length n))
+        (b4 (make-vector bv float4 :length n4))
+        (c4 (make-vector C float4 :length n4)))
+    (loop-vector-stride a4 (i)
+      (set! (~ c4 i) (+ (~ a4 i) (~ b4 i))))))

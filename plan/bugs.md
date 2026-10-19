@@ -2196,7 +2196,25 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (narrow in N -- the fragment is 16x8, not square, so a check guarding one dimension would
         look correct against half the cases).
 
-[ ] 059 set! OF A float VALUE INTO A half / bfloat16 TENSOR ELEMENT STORES A 4-BYTE FLOAT INTO A
+[x] 059 set! OF A float VALUE INTO A half / bfloat16 TENSOR ELEMENT STORES A 4-BYTE FLOAT INTO A
+        CLOSED 2026-10-18 (endeavour 186, tests/spec/186-contest-fixes/).  Both defects below were real
+        and WIDER than the 16-bit types: a set! into ANY storage element (vector / matrix / tensor / cell)
+        was never type-checked, and codegen stored the value at its own width.  Probed before the fix:
+        double into float wrote 8 bytes, float into double 4, int<->float swapped bit patterns.
+          * %check-element-store-type (src/analysis/structs.lisp) now refuses a mismatched element store
+            with the rule a plain variable's set! already had -- "convert it explicitly, e.g. (to-half x)"
+            (errors/01-03).  Single-value context ((floor x) stores its int); brands compare by base.
+          * to-half / as-half / to-bfloat16 / as-bfloat16 were always registered but never exported, so a
+            kernel's (to-half x) was a different symbol.  Exported + imported (src/package.lisp).
+          * (to bfloat16 x) on SPIR-V emitted `fptrunc float to i16` (bf16 is carried as i16 there): now
+            the round-to-nearest-even bit encoding, NaN -> 0x7FC0 (build-cast-if-needed, codegen.lisp).
+          * On metal (BMG): 01/02 store exactly the RNE bits, ties-to-even included.
+        FALLOUT, all fixed: load-tile-at's default :identity 0 was an INT stored into every tile slot (a
+        4-byte store into 2-byte half slots) -- now converted to the tile's element type
+        (%element-of-cast).  11 specs stored an int literal into long/ulong elements, a float into a
+        long/double cell, or ulong into long; their sources now say 7l / 8ul / (to-double ..).  Two AD
+        specs exposed a real backward-pass bug, filed as BUG 126.
+        NOT DONE: benchmarks/matmul/common/fill.crisp still uses the fill_u16 workaround below.
         RE-VERIFIED 2026-10-13 (housekeeping review): still SILENT -- (set! (~ B i) 1.5) into a (vector half ...) emits `store float 1.5, ..., align 4`.
         2-BYTE ELEMENT.  Silent: no compile error, no warning, and the kernel runs and writes garbage.
         Found 2026-09-13 while writing benchmarks/matmul/common/fill.crisp (the device-side operand
@@ -4092,6 +4110,8 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         workaround?).  Probes 17b (passes) / 17c (fails) differ only in an extra store of z.
 
 [ ] 121 A SCALAR bfloat16 LITERAL CRASHES THE COMPILER ON SPIR-V; to-bfloat16 DOES NOT EXIST.
+        PARTLY FIXED 2026-10-18 (endeavour 186, see BUG 059): to-bfloat16 / as-bfloat16 now exist and
+        (to-bfloat16 x) stores correct RNE bits on BMG.  The scalar 1.0bf LITERAL on SPIR-V is NOT addressed.
 
         FOUND 2026-10-12 while verifying docs/writing-crisp.md.
           (def-function f () (declare #'(=> bfloat16)) 1.0bf)   --ir-target=spv -> crisp-compile.exe dies with
@@ -4139,6 +4159,14 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         run with a larger --dynamic-space-size to see whether the crash point moves.
 
 [ ] 124 (occupancy-target N) CAN SILENTLY FORCE REGISTER SPILLS -- and Crisp cannot see it coming.
+        OPTION (b) DONE 2026-10-18 (endeavour 186), NOT YET RUN ON A GPU: the CUDA hoister's launcher
+        (emit-kernel-resource-report, src/hoist-cuda/main.lisp) and both bench harnesses
+        (benchmarks/{matmul,reduction}/crisp/bench_harness.cu) query cuFuncGetAttribute NUM_REGS +
+        LOCAL_SIZE_BYTES after cuModuleGetFunction -- ptxas's numbers, as the driver reports them on the
+        GPU in use, so no ptxas is needed on the build box.  The launcher prints "Kernel resources:
+        registers=N local_bytes=M" and a WARNING when M > 0; the harnesses add "num_regs" / "local_bytes"
+        to their JSON (scripts/crisp_bench does not surface them yet) and warn on stderr.  Option (c), a
+        compile-time heuristic, not attempted.  Leave open until a pod run shows the numbers.
         MEASURED 2026-10-16/17, LeetGPU challenge 01 (vector add), H100.  The first AntiGravity submission
         declared (occupancy-target 2048) on a loop-vector-stride kernel with (unroll 4).  That is
         __launch_bounds__(256, 8) -> 2048 threads/SM -> a 32-register cap, but the unrolled loop wants ~56-64
@@ -4154,8 +4182,18 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         when it builds, and flags a non-zero stack; (c) a compile-time WARNING when a declared target implies
         <= 32 registers on a kernel with an unrolled stream loop (a heuristic, not a proof).
 
-[ ] 125 READ-ONLY LOADS ARE NOT CARRIED THROUGH VIEWS: a make-vector / make-matrix view of a read-only
+[x] 125 READ-ONLY LOADS ARE NOT CARRIED THROUGH VIEWS: a make-vector / make-matrix view of a read-only
         kernel input loads with plain ld.global, not ld.global.nc (!invariant.load).
+        FIXED 2026-10-18 (endeavour 186; specs 186/03-04 + contest-fixes.unit.lisp).  The read-only set
+        is now updated per let binding, scoped to the let body (%readonly-syms-after-binding, codegen.lisp):
+        a view (make-vector/-matrix/-tensor/-cell) or plain alias of a read-only name joins it; any other
+        binding of such a name shadows it and leaves.  The kernel-entry reassembly (A re-bound to the
+        struct built from A_PTR ...) is recognised as the same tensor (%kernel-entry-reassembly-p) -- the
+        first cut missed that and dropped EVERY param.  186/03's float4 add now emits only
+        ld.global.nc.v4.b32 for its operands.  PERF NOT MEASURED -- the LeetGPU float4 kernel would show it.
+        CAVEAT (pre-existing, not changed): "params before &out are read-only" is ASSUMED, not enforced --
+        (set! (~ A i) ..) into an input compiles, directly or through a view, while A's other reads are
+        marked invariant.  Probe: put_temp_files_here/186/probe-write-*.crisp.
         SEEN 2026-10-17, LeetGPU challenge 01 experiment B: (make-vector A float4 :length n4) over the
         read-only input A gave `ld.global.v4.b32`; the scalar original gave `ld.global.nc.b32`.
         CAUSE: %array-node-readonly-tensor-param-p (src/codegen.lisp) marks a load only when the array node
@@ -4164,3 +4202,17 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FIX SKETCH: record read-only-ness for a let-bound view whose source is a read-only param (a view
         only re-describes the same bytes), so its reads get !invariant.load too.  Impact is likely a few
         percent on streaming kernels -- worth it, but measure.
+
+[ ] 126 THE BACKWARD PASS STORES A float ADJOINT INTO A STRUCT-TYPED GRAD CELL (cell point -> A_GRAD).
+        FOUND 2026-10-18 (endeavour 186) when element stores became type-checked (BUG 059).  Before that it
+        compiled silently, which means a WRONG GRADIENT: 4 bytes into an 8-byte point.
+          052-differentiate-sub-functions/19-struct-propery-accessors and /21-overloaded-struct-prop-function:
+            (def-struct point (x float) (y float)); kernel (A &out C) over (cell point :global);
+            (set! (x~ (~ C)) (some-operation (x~ (~ A)) (y~ (~ A))))
+          --differentiate -> "set!: storing a float into an element of type point" at the generated
+          (set! (~ A_GRAD) A_ADJ), where A_ADJ has type FLOAT.  The adjoint of a cell-of-struct input is
+          collapsed to one float instead of a point-shaped adjoint (x_adj, y_adj).
+        Both specs carry KNOWN-ISSUE[differentiate]: BUG-126, so the suite expects the failure and will
+        report UNEXPECTED-PASS once it is fixed.  CAUSE NOT INVESTIGATED; compare the shadow-struct work
+        (NAME_ADJ for structs at the kernel boundary), which handles a struct PARAM but evidently not a
+        cell OF a struct read through field accessors.
