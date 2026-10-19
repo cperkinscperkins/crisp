@@ -1,0 +1,33 @@
+;; GPU MODE Challenge: vectoradd_v2 (B200 In-Place Variant 1: Direct 1x half4 per thread)
+;; Uses def-hardware-profile for B200 and in-place read-modify-write (B A) so A += B
+;; reuses A's L2 cache lines and TLB entries without allocating a third 537 MB buffer.
+
+(def-hardware-profile b200
+  :simd-width 32
+  :compute-units 148
+  :max-registers-per-cu 65536
+  :max-registers-per-thread 255
+  :max-total-threads-per-block 1024
+  :max-work-group-dims '(1024 1024 64)
+  :max-shared-memory-per-block 227KB
+  :l2-cache-size 128MB
+  :native-cache-line-size 128
+  :mma-shapes '((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4)))
+
+(def-type in-vec    (vector half :address-space :global :align :compact))
+(def-type inout-vec (vector half :address-space :global :align :compact))
+
+(def-kernel vector_add_f16 (B A)
+  (declare #'(in-vec inout-vec => nil)
+           (global-size :derive-from B :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((gid (get-global-id 0))
+        (n   (length~ B))
+        (n4  (/ n 4ul))
+        (b4  (make-vector B half4 :length n4))
+        (a4  (make-vector A half4 :length n4)))
+    (if (< gid n4)
+        (set! (~ a4 gid) (+ (~ a4 gid) (~ b4 gid)))
+        (let ((tail (+ (* n4 4ul) (- gid n4))))
+          (when (< tail n)
+            (set! (~ A tail) (+ (~ A tail) (~ B tail))))))))

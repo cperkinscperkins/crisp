@@ -1,0 +1,22 @@
+;; GPU MODE Challenge: vectoradd_v2 (Variant 3: Stride loop over half4 with 8x unroll & multi-wave grid)
+;; Uses (declare (unroll 8)) with 8 waves per SM to eliminate straggler SM tail idle time.
+
+(def-type in-vec  (vector half :address-space :global :align :compact))
+(def-type out-vec (vector half :address-space :global :align :compact))
+
+(def-kernel vector_add_f16 (A B &out C)
+  (declare #'(in-vec in-vec &out out-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n  (length~ A))
+        (n4 (/ n 4ul))
+        (a4 (make-vector A half4 :length n4))
+        (b4 (make-vector B half4 :length n4))
+        (c4 (make-vector C half4 :length n4)))
+    (loop-vector-stride a4 (i)
+      (declare (unroll 8))
+      (set! (~ c4 i) (+ (~ a4 i) (~ b4 i))))
+    (let ((tail (+ (* n4 4ul) (get-global-id 0))))
+      (when (< tail n)
+        (set! (~ C tail) (+ (~ A tail) (~ B tail)))))))
+
