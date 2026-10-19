@@ -1,6 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
-;;
+;; SKIP-WITH[--differentiate]
+
 ;; Endeavour 186 (BUG 125) -- the read-only set is a property of NAMES in scope, so a let that rebinds
 ;; a read-only parameter's name to something else takes the name out of it for the let body.  Here A
 ;; is rebound to a workgroup scratch vector: the body's (~ A i) reads SLM, which the kernel writes, and

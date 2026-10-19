@@ -123,6 +123,10 @@ OPEN
 - [ ] FAIL-WITH[--differentiate] message isn't checked for "normal" tests (L475)
 - [ ] 02-kernel-illegal-voidp and friends: no CHECK-FAIL header (L476)
 
+### AutoDifferentiation
+- [ ] cannot differentiate float4 (or other machine vector types)
+- [ ] cannot differentiate "shadowed" vars. see 186/04.  Fix? Document Limitation?
+
 ### Language
 - [ ] bool type and literal `true` / `false` (analysis/control.lisp: "no boolean literal yet") (L163, L174, L387, L613)
 - [ ] variadic + * < = etc, up to 5 or 7 args (L170, L283)

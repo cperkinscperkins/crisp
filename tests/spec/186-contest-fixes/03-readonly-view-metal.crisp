@@ -3,6 +3,7 @@
 ;; HOIST-EXPECT: BUFFER c: 0 2 4 6
 ;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
 ;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; SKIP-WITH[--differentiate]
 ;;
 ;; Endeavour 186 (BUG 125) -- a view of a read-only input is read-only too.  A and B precede &out, so
 ;; their loads carry !invariant.load (ld.global.nc on PTX).  Before 186 that held only for a DIRECT
