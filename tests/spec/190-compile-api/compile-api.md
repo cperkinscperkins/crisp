@@ -217,6 +217,23 @@ S4  Dogfood hoist: a host program that embeds the kernel string, calls the API, 
 S5  Python ctypes smoke test; then a toy torch.autograd.Function with a Crisp forward + _grad.
 S6  Docs: writing-crisp.md, INSTALL.md, reference/call_graph regen, definition-of-done.
 
+Progress
+========
+2026-10-19  S1 header draft: c-api/include/crisp.h (accepted; compiles as C99 + C++11 -pedantic).
+2026-10-19  B1: src/api.lisp (NEW file, + crisp.asd line) -- crisp.main::compile-sources.
+            Spec tests/spec/190-compile-api/compile-sources.unit.lisp: 72/73 pass; the 1 failure is
+            the S2 claim (--differentiate describes the primal kernel too), expected until S2.
+            Verified by hand: API .spv byte-identical to crisp-compile.exe's for the same source;
+            slots/roles match the hoister's layout; errors -> diagnostics, nothing on stdout.
+            It writes the sources into a private temp dir and reuses the CLI helpers
+            (%read-crisp-forms, %emit-target-output, %generate-file-metadata); compile-files is
+            NOT refactored onto it (yet).  Kernel facts are read back from the .metacrisp (D7).
+            Notes: unknown flags are REJECTED (the CLI ignores them); non-crisp Lisp errors during
+            a compile count as :compile-error, as the CLI treats them; diagnostic :file is the
+            primary (last) source unless a reader error names its own stream.
+            Inherited quirk: `--math-precision=fast` ALWAYS warns "the `preserve` request is not
+            honored", because :preserve is the DEFAULT -- the CLI does the same (parse-cli-args).
+
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 
 Don't forget (definition of done)

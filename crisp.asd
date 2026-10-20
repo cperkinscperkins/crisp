@@ -57,6 +57,7 @@
                                              (:file "src/metadata-val") ; 10. Metadata validators
                                              (:file "src/reader")
                                              (:file "src/main") ; 11. Uses compiler, defines main
+                                             (:file "src/api") ; Endeavor 190 — compile API core (compile-sources)
 
                                              ;; overlays - when testings out new functions, we just
                                              ;;            amend them to the overlay for that package
