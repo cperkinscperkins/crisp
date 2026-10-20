@@ -15,9 +15,14 @@ parameter becomes a pointer, a byte size, an offset / stride / extent per axis a
 caller asks by ROLE rather than learning that layout.  BYTE_SIZE is in bytes; offsets, strides,
 extents and length are in elements.
 
-`crisp_param_layout` matters to anyone holding a non-contiguous view: a `:compact` tensor kernel
-reads neither offsets nor strides (the data must be dense and start at the pointer), a
-`:compact-offset` one adds the offsets, and only a `:strided` one honours both.
+`crisp_param_layout` reports the alignment the kernel's author declared for each tensor (`:align`
+in its `def-type`), which tells the caller what data it may pass.  A `:compact` tensor is the fast
+path: the kernel indexes by extents alone, with no offset or stride reads, so it must be given
+dense, row-major data starting at the pointer (in PyTorch terms, a contiguous tensor; call
+`.contiguous()` on a view first).  `:compact-offset` adds the per-axis offsets.  A `:strided`
+tensor honours offsets and strides, so a view's strides and storage offset pass straight through
+with no copy; write the kernel that way to accept arbitrary views.  The choice stays with the
+kernel's author; the API only stops the caller from guessing.
 
 For a `_grad` kernel, `crisp_kernel_grad_of` names its primal, and `crisp_param_adjoint_of` says
 which primal parameter each adjoint belongs to.  An IN adjoint carries the incoming gradient of an

@@ -256,9 +256,10 @@
           :direction (or (getf decl :direction) :in)
           :element-type element
           :rank (if (eq kind :tensor) rank 0)
-          ;; Which of offset / stride the KERNEL reads (analyze-aref-expression): :compact reads
-          ;; neither, :compact-offset reads offsets only, :strided (also the fallback) reads both.
-          ;; A caller with a non-contiguous view needs this.
+          ;; The :align the kernel's author declared, reported so the caller passes matching data
+          ;; (analyze-aref-expression): :compact is the fast path (extents only, no offset or stride
+          ;; reads -- give it contiguous data), :compact-offset adds offsets, :strided (also the
+          ;; fallback) honours both, so a PyTorch view passes through uncopied.
           :layout (when (eq kind :tensor)
                     (case (getf decl :align)
                       (:compact :compact)

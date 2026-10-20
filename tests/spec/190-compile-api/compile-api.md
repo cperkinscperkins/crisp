@@ -302,9 +302,13 @@ R2  Adjoint pairing is DERIVED in the API from the AD pass's naming (<p>_grad), 
 R3  The fast-vs-preserve warning fires only on an EXPLICIT --denormal-handling=preserve (API only).
     The CLI still warns on every --math-precision=fast.  Candidate for bugs.md.
 R4  Unknown flags are rejected by the API (the CLI silently ignores them).
-R5  Tensor layout is exposed (crisp_param_layout): a :compact kernel IGNORES offsets and strides
-    (analyze-aref-expression), so a caller holding a non-contiguous view must know.  Not in A3's
-    original list; added because PyTorch-style callers will hit it at once.
+R5  Tensor layout is REPORTED (crisp_param_layout): the :align the kernel's author declared.  No
+    compiler behaviour changed -- :compact keeps its fast path (extents only, no offset/stride
+    reads), so its caller must pass contiguous data; a :strided kernel takes a PyTorch view's
+    strides and offset uncopied.  The author chooses; the API just stops the caller guessing
+    (passing a view to a :compact kernel would otherwise be silently wrong).  Not in A3's original
+    list; added because PyTorch-style callers hit it at once.  (Wording clarified 2026-10-20 with
+    Chris.)
 R6  Kernel order under --differentiate: each forward kernel, then its _grad.
 R7  compile-files is NOT rebuilt on compile-sources (yet); they share helpers.  The byte-identical
     .spv check and the A6(A) pass guard against drift.

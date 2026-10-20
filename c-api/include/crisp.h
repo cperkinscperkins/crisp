@@ -245,10 +245,16 @@ CRISP_API crisp_direction  crisp_param_direction   (const crisp_context* context
 CRISP_API crisp_type       crisp_param_element_type(const crisp_context* context, size_t module, size_t kernel, size_t param);
 /* Number of dimensions of a tensor (1 = vector, 2 = matrix ...); 0 for anything else. */
 CRISP_API uint32_t         crisp_param_rank        (const crisp_context* context, size_t module, size_t kernel, size_t param);
-/* Which layout parts a tensor kernel actually READS -- what a caller holding a non-contiguous view
-   must know.  COMPACT: indexes by extents alone; offsets and strides are ignored, so the data must
-   be dense, row-major, starting at the pointer.  COMPACT_OFFSET: also adds the offsets.  STRIDED:
-   offsets and strides both honoured.  CRISP_LAYOUT_INVALID for anything but a tensor. */
+/* The tensor layout the kernel's author declared (the def-type's :align), i.e. what the caller must
+   hand it.  The author picks it; this call reports it so the caller does not have to guess.
+     COMPACT        -- the FAST path: the kernel indexes by extents alone, with no offset or stride
+                       reads.  Give it dense, row-major data starting at the pointer (in PyTorch
+                       terms: a contiguous tensor -- call .contiguous() on a view first).  Offset
+                       and stride slots must still be set, but the kernel does not read them.
+     COMPACT_OFFSET -- dense like COMPACT, plus the per-axis offsets are honoured.
+     STRIDED        -- offsets and strides both honoured: pass a view's strides and storage offset
+                       straight through, no copy.  Write the kernel this way to accept any view.
+   CRISP_LAYOUT_INVALID for anything but a tensor. */
 typedef enum crisp_layout {
     CRISP_LAYOUT_INVALID        = 0,
     CRISP_LAYOUT_COMPACT        = 1,
