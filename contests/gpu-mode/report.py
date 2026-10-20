@@ -146,7 +146,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
             continue
         spec = gpu_specs.get(gpu, {})
         arch = spec.get("arch", "—")
-        rank_str = f"**#{st['rank']}** / {st['total_entrants']}"
+        rank_str = f"**#{st['rank']}** / {st['total_entrants']}" if st.get("rank") is not None else f"— / {st.get('total_entrants', '?')}"
         pub_us = st.get("public_score_us")
         sec_us = st.get("secret_score_us")
         pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
@@ -160,7 +160,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
         if crisp_f and py_f:
             kernel_link = f"[`{fname}`]({py_f}) ([`.crisp`]({crisp_f}))"
         else:
-            kernel_link = f"`{fname}`"
+            kernel_link = f"`{fname}`" if fname else "—"
         prof = f"`{st['hardware_profile']}`" if st.get("hardware_profile") else "—"
         cap = st.get("captured_at", "?")[:16].replace("T", " ")
         L.append(
@@ -296,7 +296,7 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
             st = standings.get(gpu)
             if not st:
                 continue
-            rank_str = f"**#{st['rank']}** / {st['total_entrants']}"
+            rank_str = f"**#{st['rank']}** / {st['total_entrants']}" if st.get("rank") is not None else "—"
             pub_us = st.get("public_score_us")
             sec_us = st.get("secret_score_us")
             pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
@@ -307,7 +307,7 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
             crisp_f = st.get("crisp_file", "")
             py_f = st.get("py_file", "")
             fname = st.get("file_name", "")
-            k_link = f"[`{fname}`]({py_f}) ([`.crisp`]({crisp_f}))" if (crisp_f and py_f) else f"`{fname}`"
+            k_link = f"[`{fname}`]({py_f}) ([`.crisp`]({crisp_f}))" if (crisp_f and py_f) else (f"`{fname}`" if fname else "—")
             cap = st.get("captured_at", "?")[:16].replace("T", " ")
             L.append(
                 f"| [`{prob}`](REPORT-{prob}.md) | **{gpu}** | {rank_str} | {pub_str} | {sec_str} | {bw_str} | {pct_str} | {k_link} | `{cap}` |"
@@ -324,8 +324,34 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
     return "\n".join(L)
 
 
+def inspect_leaderboard(lb_id: int) -> None:
+    url = f"https://www.gpumode.com/api/leaderboard/{lb_id}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    data = payload.get("data", {})
+    lb = data.get("leaderboard", {})
+    print(f"=== Leaderboard #{lb_id}: {lb.get('name')} ===")
+    print("GPUs:", data.get("gpu_types"))
+    print("\n--- description ---")
+    print(lb.get("description", ""))
+    print("\n--- reference ---")
+    print(lb.get("reference", ""))
+    rankings = data.get("rankings", {})
+    for gpu, rows in rankings.items():
+        print(f"\n--- {gpu} ({len(rows)} entrants) ---")
+        for r in rows[:10]:
+            print(f"  #{r['rank']:3d}  {r['user_name']:<20s}  {r['score']*1e6:8.2f} us  ({r['file_name']})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Crisp GPU MODE Contest Report Generator")
+    parser.add_argument(
+        "--inspect",
+        type=int,
+        default=None,
+        help="Inspect a GPU MODE leaderboard ID from gpumode.com API",
+    )
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -337,6 +363,10 @@ def main() -> None:
         help="Write contests/gpu-mode/REPORT.md and per-contest REPORT-<problem>.md files",
     )
     args = parser.parse_args()
+
+    if args.inspect is not None:
+        inspect_leaderboard(args.inspect)
+        return
 
     json_files = sorted(RESULTS_DIR.glob("*.json"))
     problems: List[Dict[str, Any]] = []

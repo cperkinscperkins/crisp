@@ -1,0 +1,49 @@
+;; GPU MODE Challenge: vectorsum_v2 (float32 vector sum reduction)
+;;
+;; Strategy (warp_atomic):
+;;   Phase 1: float4 (128-bit) vector loads in loop-vector-stride with 4 accumulators (16 bytes/iter)
+;;   Phase 2: Warp shuffle-xor reduction across 32 lanes (5 instructions in registers)
+;;   Phase 3: Warp leader (lane 0) atomic-adds warp sum directly to global result cell.
+;;
+;; Advantages:
+;;   - Zero shared memory allocation (no pointer or address-space issues)
+;;   - Zero workgroup barriers (bar.sync)
+;;   - Maximum memory throughput from 128-bit vector loads
+;;   - Minimal atomics: only 1 atomic per warp (e.g. 512 blocks * 8 warps = 4,096 atomics for 52M elements)
+
+(def-type in-vec   (vector float :address-space :global :align :compact))
+(def-type out-cell (cell float :address-space :global))
+
+(def-kernel vectorsum_kernel (input result)
+  (declare #'(in-vec out-cell => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((lane (to-ulong (warp-lane)))
+        (n    (length~ input))
+        (n4   (/ n 4ul))
+        (in4  (make-vector input float4 :length n4))
+        (a0   0.0)
+        (a1   0.0)
+        (a2   0.0)
+        (a3   0.0))
+    ;; Phase 1: 128-bit vector grid-stride loop with 4 accumulators
+    (loop-vector-stride in4 (i)
+      (let ((v (~ in4 i)))
+        (set! a0 (+ a0 (x~ v)))
+        (set! a1 (+ a1 (y~ v)))
+        (set! a2 (+ a2 (z~ v)))
+        (set! a3 (+ a3 (w~ v)))))
+    ;; Tail for elements beyond n4 * 4
+    (let ((tail_start (* n4 4ul))
+          (gid (to-ulong (get-global-id 0))))
+      (let ((t (+ tail_start gid)))
+        (when (< t n)
+          (set! a0 (+ a0 (~ input t))))))
+    ;; Sum the 4 accumulators
+    (let ((acc (+ (+ a0 a1) (+ a2 a3))))
+      ;; Phase 2: Intra-warp reduction with shuffle-xor (32 -> 1)
+      (dec-times-by-half+ (m (/ (to-ulong (warp-size)) 2ul))
+        (set! acc (+ acc (shuffle-xor acc m))))
+      ;; Phase 3: Warp leader issues atomic-add to global result cell
+      (when (= lane 0ul)
+        (atomic-add! (~ result) acc)))))

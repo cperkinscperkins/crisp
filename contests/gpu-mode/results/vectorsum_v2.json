@@ -1,0 +1,191 @@
+{
+  "problem": "vectorsum_v2",
+  "title": "Vector Sum Reduction (float32, 1.64M to 52.4M elements)",
+  "leaderboard_id": 544,
+  "leaderboard_url": "https://www.gpumode.com/leaderboard/544?tab=rankings",
+  "directory": "02-vectorsum-v2",
+  "crisp_commit": "024fb362",
+  "workload": {
+    "dtype": "float32",
+    "sizes": [
+      1638400,
+      3276800,
+      6553600,
+      13107200,
+      26214400,
+      52428800
+    ],
+    "bytes_range": "6.55 MB to 209.72 MB",
+    "description": "Sum reduction of 1D float32 tensor across 6 benchmark sizes from 1,638,400 to 52,428,800 elements"
+  },
+  "gpu_specs": {
+    "B200": {
+      "arch": "Blackwell (sm_100)",
+      "sms": 148,
+      "l2_mb": 128,
+      "hbm_peak_gbps": 8000.0
+    },
+    "H100": {
+      "arch": "Hopper (sm_90)",
+      "sms": 132,
+      "l2_mb": 50,
+      "hbm_peak_gbps": 3350.0
+    },
+    "A100": {
+      "arch": "Ampere (sm_80)",
+      "sms": 108,
+      "l2_mb": 40,
+      "hbm_peak_gbps": 2039.0
+    },
+    "L4": {
+      "arch": "Ada Lovelace (sm_89)",
+      "sms": 58,
+      "l2_mb": 48,
+      "hbm_peak_gbps": 300.0
+    }
+  },
+  "standings": {
+    "B200": {
+      "captured_at": "2026-10-19T21:00:00Z",
+      "user_name": "cperkinscperkins",
+      "rank": null,
+      "total_entrants": 80,
+      "file_name": null,
+      "crisp_file": null,
+      "py_file": null,
+      "hardware_profile": null,
+      "public_score_us": null,
+      "secret_score_us": null,
+      "top1_score_us": 37.08,
+      "top1_user": "zjsxply",
+      "median_score_us": 42.5
+    },
+    "H100": {
+      "captured_at": "2026-10-19T21:00:00Z",
+      "user_name": "cperkinscperkins",
+      "rank": null,
+      "total_entrants": 65,
+      "file_name": null,
+      "crisp_file": null,
+      "py_file": null,
+      "hardware_profile": null,
+      "public_score_us": null,
+      "secret_score_us": null,
+      "top1_score_us": 67.92,
+      "top1_user": "salad",
+      "median_score_us": 80.15
+    },
+    "A100": {
+      "captured_at": "2026-10-19T21:00:00Z",
+      "user_name": "cperkinscperkins",
+      "rank": null,
+      "total_entrants": 110,
+      "file_name": null,
+      "crisp_file": null,
+      "py_file": null,
+      "hardware_profile": null,
+      "public_score_us": null,
+      "secret_score_us": null,
+      "top1_score_us": 116.89,
+      "top1_user": "zjsxply",
+      "median_score_us": 135.2
+    },
+    "L4": {
+      "captured_at": "2026-10-19T21:00:00Z",
+      "user_name": "cperkinscperkins",
+      "rank": null,
+      "total_entrants": 42,
+      "file_name": null,
+      "crisp_file": null,
+      "py_file": null,
+      "hardware_profile": null,
+      "public_score_us": null,
+      "secret_score_us": null,
+      "top1_score_us": 692.02,
+      "top1_user": "zjsxply",
+      "median_score_us": 860.0
+    }
+  },
+  "kernels": [
+    {
+      "step": "0",
+      "key": "baseline_torch",
+      "crisp_file": "02-vectorsum-v2/baseline_torch.py",
+      "py_file": "02-vectorsum-v2/baseline_torch.py",
+      "strategy": "PyTorch native inp.sum() reference",
+      "inplace": false,
+      "bytes_per_thread": null,
+      "block_size": null,
+      "registers": null,
+      "hardware_profile": null
+    },
+    {
+      "step": "1",
+      "key": "crisp_vectorsum_warp_reduce",
+      "crisp_file": "02-vectorsum-v2/vectorsum_warp_reduce.crisp",
+      "py_file": "02-vectorsum-v2/crisp_vectorsum_warp_reduce.py",
+      "strategy": "float4 (128-bit) vector loads + 4 independent accumulators + warp shuffle-xor + SLM warp reduction + atomic add",
+      "inplace": false,
+      "bytes_per_thread": 16,
+      "block_size": 256,
+      "registers": 24,
+      "hardware_profile": null
+    },
+    {
+      "step": "2",
+      "key": "crisp_vectorsum_b200_2xfloat4",
+      "crisp_file": "02-vectorsum-v2/vectorsum_b200_2xfloat4.crisp",
+      "py_file": "02-vectorsum-v2/crisp_vectorsum_b200_2xfloat4.py",
+      "strategy": "2x float4 (128-bit) vector loads (32 B/thread) + 8 accumulators + b200 hardware profile + warp shuffle-xor + SLM reduction + atomic add",
+      "inplace": false,
+      "bytes_per_thread": 32,
+      "block_size": 256,
+      "registers": 28,
+      "hardware_profile": "b200"
+    }
+  ],
+  "runs": [
+    {
+      "timestamp": "2026-10-20T03:45:32Z",
+      "gpu": "H100",
+      "kernel_key": "baseline_torch",
+      "file_name": "baseline_torch.py",
+      "mode": "benchmark",
+      "submission_id": 963689,
+      "benchmark_mean_us": 87.8,
+      "benchmark_std_us": 0.09,
+      "benchmark_best_us": 86.4,
+      "benchmark_worst_us": 89.2,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-20T04:46:12Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_vectorsum_warp_reduce",
+      "file_name": "crisp_vectorsum_warp_reduce.py",
+      "mode": "test",
+      "submission_id": null,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-20T05:53:40Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_vectorsum_warp_reduce",
+      "file_name": "crisp_vectorsum_warp_reduce.py",
+      "mode": "test",
+      "submission_id": null,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    }
+  ]
+}
