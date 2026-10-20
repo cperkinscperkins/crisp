@@ -218,6 +218,29 @@ Supports one or more .crisp source files: the last file is treated as the primar
 
     (values source-files nil debug-p single-pass-p targets metadata-p hoist-targets bc-files)))
 
+(defvar *hoister-extra-args* nil
+  "Endeavour 190: extra arguments for the hoister -- the --hoist-kernel=source request, the source
+   files to embed and the flags to compile them with (see %hoist-kernel-source-args).")
+
+(defparameter +api-unforwarded-flag-prefixes+
+  '("--hoist" "--metadata" "--ir-target=" "--log-level=")
+  "Flags a --hoist-kernel=source launcher does NOT pass to the compile API: they are about this
+   invocation's outputs, and the API refuses them (src/api.lisp +api-rejected-flag-prefixes+).")
+
+(defun %hoist-kernel-source-args (args)
+  "Endeavour 190: the hoister arguments for `--hoist-kernel=source` -- one --kernel-source=<path> per
+   .crisp source and one --kernel-flag=<flag> per flag the generated launcher must hand the compile
+   API, so the kernel it compiles at run time is the one hoisted now."
+  (append (list "--hoist-kernel=source")
+          (loop for a in args
+                when (and (plusp (length a)) (char/= (cl:char a 0) #\-)
+                          (not (string-equal (pathname-type a) "bc")))
+                  collect (format nil "--kernel-source=~a" (uiop:native-namestring (uiop:truename* a))))
+          (loop for a in args
+                when (and (plusp (length a)) (char= (cl:char a 0) #\-)
+                          (notany (lambda (p) (alexandria:starts-with-subseq p a)) +api-unforwarded-flag-prefixes+))
+                  collect (format nil "--kernel-flag=~a" a))))
+
 (defun get-hoister-binary-path (hoist-id)
   "Returns path to crisp-hoist-{id}.exe on Windows or crisp-hoist-{id} on Unix"
   (let* ((bin-name (format nil "crisp-hoist-~(~a~)" hoist-id))
@@ -239,8 +262,9 @@ Supports one or more .crisp source files: the last file is treated as the primar
          ;; uiop:run-program with :ignore-error-status t returns exit code as first value
          (let ((exit-code (uiop:wait-process
                             (uiop:launch-program
-                              (list (uiop:native-namestring hoister-bin)
-                                    (uiop:native-namestring metacrisp-file))
+                              (append (list (uiop:native-namestring hoister-bin))
+                                      *hoister-extra-args*
+                                      (list (uiop:native-namestring metacrisp-file)))
                               :output :interactive
                               :error-output :interactive))))
            (if (zerop exit-code)
@@ -443,11 +467,30 @@ compile-unit filepath."
             (%run-hoisters hoist-targets generated-metacrisp-files)))))
 
 (defun main ()
-  "Main entry point for the crisp-compile executable."
+  "Main entry point for the crisp-compile executable.  `crisp-compile --serve` runs the compile
+   server instead (endeavour 190; serve-main, in src/api.lisp)."
   (let ((args (uiop:command-line-arguments)))
-    (multiple-value-bind (source-files output-file debug-p single-pass-p targets metadata-p hoist-targets bc-files)
-        (parse-cli-args args)
-      (compile-files source-files output-file debug-p single-pass-p targets metadata-p hoist-targets bc-files))))
+    (if (equal (first args) "--serve")
+        (serve-main)
+        ;; Endeavour 190: --hoist-kernel=file|source.  `source` makes the launcher embed the .crisp
+        ;; text and compile it at run time through the C API.
+        (let* ((hk (find-if (lambda (a) (alexandria:starts-with-subseq "--hoist-kernel=" a)) args))
+               (mode (and hk (subseq hk (length "--hoist-kernel="))))
+               (args (remove-if (lambda (a) (alexandria:starts-with-subseq "--hoist-kernel=" a)) args)))
+          (cond ((or (null mode) (string-equal mode "file")))
+                ((string-equal mode "source")
+                 (unless (member "--hoist=l0" args :test #'string-equal)
+                   (format *error-output* "ERROR: --hoist-kernel=source needs --hoist=l0 (the only hoister that supports it so far).~%")
+                   (uiop:quit 1))
+                 (when (some (lambda (a) (string-equal (pathname-type a) "bc")) args)
+                   (format *error-output* "ERROR: --hoist-kernel=source cannot embed foreign .bc libraries.~%")
+                   (uiop:quit 1))
+                 (setf *hoister-extra-args* (%hoist-kernel-source-args args)))
+                (t (format *error-output* "ERROR: unknown --hoist-kernel '~a' (expected file|source).~%" mode)
+                   (uiop:quit 1)))
+          (multiple-value-bind (source-files output-file debug-p single-pass-p targets metadata-p hoist-targets bc-files)
+              (parse-cli-args args)
+            (compile-files source-files output-file debug-p single-pass-p targets metadata-p hoist-targets bc-files))))))
 
 
 

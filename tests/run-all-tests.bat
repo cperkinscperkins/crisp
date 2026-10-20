@@ -74,6 +74,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ---------------------------------------------------
+REM 4. Compile API (Endeavour 190): bin\crisp.dll, built by build\build.lisp, through ctypes
+REM ---------------------------------------------------
+echo.
+echo --- Running Compile API Suite ---
+if not exist "bin\crisp.dll" (
+    echo [FAILED] bin\crisp.dll not found -- build/build.lisp builds it when a C compiler is on PATH.
+    exit /b 1
+)
+python tests\api\test_crisp_api.py
+if errorlevel 1 (
+    echo [FAILED] Compile API suite failed.
+    exit /b 1
+)
+
 echo.
 echo =================================================
 echo            All Tests Passed!

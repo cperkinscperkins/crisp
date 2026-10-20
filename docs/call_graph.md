@@ -81,6 +81,1326 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%CUDA-CLUSTER-GRID-FIXUP-STRING DISPATCH-INFO)  hoist-cuda/main.lisp
 - - - - - (EMIT-READBACK STREAM ALLOCATIONS)  hoist-cuda/main.lisp
 - - - - - - (%CUDA-EMIT-MMA-REFERENCE STREAM ALLOCATIONS)  hoist-cuda/main.lisp
+- - (SERVE-MAIN) :CRISP.MAIN  api.lisp
+- - - (%PROTO-WRITE-RECORD STREAM TAG PAYLOAD) :CRISP.MAIN  api.lisp
+- - - - (%PROTO-OCTETS PAYLOAD) :CRISP.MAIN  api.lisp
+- - - - - (%PROTO-OCTETS PAYLOAD) :CRISP.MAIN  api.lisp [RECURSION]
+- - - (SERVE-REQUESTS IN OUT) :CRISP.MAIN  api.lisp
+- - - - (%PROTO-READ-REQUEST STREAM) :CRISP.MAIN  api.lisp
+- - - - - (%PROTO-READ-RECORD STREAM) :CRISP.MAIN  api.lisp
+- - - - (%PROTO-WRITE-RESULT STREAM RESULT) :CRISP.MAIN  api.lisp
+- - - - - (%PROTO-WRITE-RECORD STREAM TAG PAYLOAD) :CRISP.MAIN  api.lisp [See above]
+- - - - (%API-DIAGNOSTIC SEVERITY MESSAGE &KEY FILE (LINE 0) (COLUMN 0)) :CRISP.MAIN  api.lisp
+- - - - (COMPILE-SOURCES SOURCES &KEY (TARGET spv) FLAGS) :CRISP.MAIN  api.lisp
+- - - - - (%API-PARSE-TARGET TARGET) :CRISP.MAIN  api.lisp
+- - - - - (%API-DIAGNOSTIC SEVERITY MESSAGE &KEY FILE (LINE 0) (COLUMN 0)) :CRISP.MAIN  api.lisp [See above]
+- - - - - (%API-PARSE-FLAGS FLAGS) :CRISP.MAIN  api.lisp
+- - - - - (%API-MAKE-TEMP-DIR) :CRISP.MAIN  api.lisp
+- - - - - (%API-WRITE-SOURCES SOURCES DIR) :CRISP.MAIN  api.lisp
+- - - - - (%API-COMPILE-IN-DIR FILES NAMES SETTINGS BACKEND) :CRISP.MAIN  api.lisp
+- - - - - - (%API-VIRTUAL-NAME PATHNAME NAMES) :CRISP.MAIN  api.lisp
+- - - - - - (INITIALIZE-COMPILER &KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE
+                                                                            NIL) (MATH-PRECISION
+                                                                                  IEEE) (FORCE-MATH-PRECISION
+                                                                                         NIL) (DENORMAL-HANDLING
+                                                                                               PRESERVE) (HARDWARE-PROFILE
+                                                                                                          NIL))  compiler.lisp
+- - - - - - - (%DROP-TERMINAL-IO-LOG-APPENDER)  compiler.lisp
+- - - - - - - (%RESET-GENSYM-COUNTER)  compiler.lisp
+- - - - - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
+- - - - - - - (INITIALIZE-TYPE-HIERARCHY)  types/hierarchy.lisp
+- - - - - - - (INITIALIZE-EXPRESSION-ANALYZERS)  analysis/core.lisp
+- - - - - - - - (REGISTER-OPS-ANALYZERS)  analysis/ops.lisp
+- - - - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp
+- - - - - - - - - (%185-REGISTER-MATH-OP-ANALYZERS)  analysis/ops.lisp
+- - - - - - - - (REGISTER-CONTROL-ANALYZERS)  analysis/control.lisp
+- - - - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
+- - - - - - - - - (REGISTER-LOOP-VARIANT-ANALYZERS)  analysis/control.lisp
+- - - - - - - - - (REGISTER-WARP-BUILTINS)  analysis/core.lisp
+- - - - - - - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - (%WARP-SPEC-CHECK-SYNC BUILTIN-KW NAME-STR LOCATION)  analysis/control.lisp
+- - - - - - - - - - - (%GPU-BUILTIN-INFO BUILTIN-KW)  analysis/core.lisp
+- - - - - - - - - (%RFL-WRAP-STRIDE-ANALYZER NAME ANALYZER)  analysis/control.lisp
+- - - - - - - - - - (%RFL-FREE-IN-FORMS-P FORMS)  analysis/control.lisp
+- - - - - - - - - - - (%RFL-HEAD-NAME FORM)  analysis/control.lisp
+- - - - - - - - (REGISTER-STRUCT-ANALYZERS)  analysis/structs.lisp
+- - - - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
+- - - - - - - - (REGISTER-MMA-ANALYZERS)  mma.lisp
+- - - - - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - - - - - (INITIALIZE-ADVISEMENTS) :CRISP.UTILS  utils.lisp
+- - - - - - - - (ADVISE-FUNCTION FN-SYMBOL) :CRISP.UTILS  utils.lisp
+- - - - - - - (REGISTER-BUILTINS)  compiler.lisp
+- - - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp
+- - - - - - - (REGISTER-MMA-TYPES)  mma.lisp
+- - - - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY
+                                                                    STRUCT))  structs.lisp
+- - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp
+- - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [RECURSION]
+- - - - - - - - - (COMPUTE-RECORD-LAYOUT MEMBERS)  structs.lisp
+- - - - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp
+- - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp
+- - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [RECURSION]
+- - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - (VALID-BASIC-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - (VALID-FUNCTION-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - (VALID-PARAMETERIZED-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - (%EXPAND-VECTOR-TYPE-SPECIFIER ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - (%BARE-STORAGE-HANDLE-VALUE-ERROR ITEM SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - (%EXPAND-MATRIX-TYPE-SPECIFIER ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - (%BARE-STORAGE-HANDLE-VALUE-ERROR ITEM SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - (%EXPAND-TENSOR-TYPE-SPECIFIER BASE ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - (%EXPAND-CELL-TYPE-SPECIFIER BASE ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - (EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS ARGS NUM-PARAMS)  types/validation.lisp
+- - - - - - - - - - - - - - (VALIDATE-TEMPLATE-ARG ARG TYPE NAME)  types/validation.lisp
+- - - - - - - - - - - - - (EXCLUDED-TEMPLATE-BASE-TYPE-P BASE-TYPE)  types/validation.lisp
+- - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - (VALID-BASIC-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - (%VALIDATE-TEMPLATE-INSTANTIATION BASE-TYPE TEMPLATE-ARGS)  types/validation.lisp
+- - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - (%INSTANTIATE-TEMPLATE-IF-NEEDED BASE-TYPE TEMPLATE-ARGS MANGLED-NAME)  types/validation.lisp
+- - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - - - - - - - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - (%PROCESS-DECLAIM FORM)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp
+- - - - - - - - - - - - - - - - - - (%DECLARED-REDUCTION-VJP FORM)  analysis/ops.lisp
+- - - - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - (ANALYZE-RETURN-TYPE-FROM-SPEC FN-SPEC)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (VALID-FUNCTION-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - (EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS ARGS NUM-PARAMS)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (ANALYZE-RETURN-TYPE-FROM-LIST DECLARATIONS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - (ANALYZE-ENVIRONMENT-FROM-SPEC PARAMS FN-SPEC)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (ANALYZE-ENVIRONMENT-FROM-LIST PARAMS DECLARATIONS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (RESOLVE-PARAMETERIZED-BRAND-IN-ENV BRAND-SPEC ENV)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - (RESOLVE-OWNER-TYPE-TO-MANGLED TYPE-SPEC)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - (VALIDATE-DEPENDENT-BRAND-TYPES DECLARE-FORMS ENV)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%REGISTER-GENERIC-FUNCTION NAME PARAMS ENV RETURN-TYPES DECLARE-FORMS EXTRACTED-DEFAULTS KEY-IDX BODY LOCATION)  environment.lisp
+- - - - - - - - - - - - - - - - - - (%REGISTER-STANDARD-FUNCTION NAME ENV RETURN-TYPES DECLARE-FORMS LOCATION)  environment.lisp
+- - - - - - - - - - - - - - - - - - - (%FIND-ENTRY-POINT-DECLARATION DECLARE-FORMS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - (%VALIDATE-KERNEL-RETURN-TYPE RETURN-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - (%176-GENERIC-SKIP-SCRATCH NAME BODY)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
+- - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
+- - - - - - - - - - - - - - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
+                                                          (EQL
+                                                           'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%MMTS-SCAN-SECTIONS ARGS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SPLIT-SECTIONS BODY &OPTIONAL LOCATION)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%MMTS-SECTION-ERROR MESSAGE LOCATION)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (%SCAN-REGISTER-TMA-DESCRIPTOR ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
+                                                            (EQL
+                                                             'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%RESOLVE-ASYNC-BARRIER-MODE-SCAN ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-BLOCK-P ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVED-TARGET-ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%REGISTER-SCRATCH-TENSOR-IMPLICIT OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC-BASE OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%175-SCRATCH-ADDRESS-SPACE ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - (%SCAN-GENERIC-DEFAULT-SCRATCH FN-NAME)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - (%COMPILE-STANDARD-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (%KERNEL-MMA-LOWERING SEMANTIC-FUNCTION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - (GENERATE-FUNCTION-PROTOTYPE SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (CREATE-LLVM-FUNCTION-TYPE MODULE RETURN-TYPES PARAM-NODES &OPTIONAL IS-ENTRY-POINT FN-NAME)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%DERIVED-TYPE-ACTUAL-SYMBOL TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - (%TEMPLATE-STRUCT-TYPE-SPEC-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - (FIND-TEMPLATE-ROBUST NAME)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-ONE-ARG TOKENS PACKAGE)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - (%RESOLVE-TEMPLATE-STRUCT-NAME TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%RESOLVE-TEMPLATE-NAME NAME)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (TRY-INFER-TEMPLATE-TYPES NAME ARGUMENT-TYPES)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%INFER-FROM-SINGLE-TEMPLATE TMPL ARGUMENT-TYPES)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%UNWRAP-FUNCTION-SIGNATURE RAW-SIG)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (NORMALIZE-TEMPLATE-SIG-TYPE TYPE)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-FUNCTION-SIGNATURE PATTERN-SIG CONCRETE-SIG INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-LIST-STRUCTURE SIG-LIST ARG-LIST INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (STRIP-KEYWORD-LABELS TYPE-LIST TEMPLATE-PARAMS)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%SHOULD-INSTANTIATE-TEMPLATE KEY STATUS IS-COMPILING)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (VALIDATE-TEMPLATE-ARG ARG TYPE NAME)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%INSTANTIATE-STRUCTURE-TEMPLATE NAME BODY SUBSTITUTIONS CONCRETE-TYPES)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%DISPATCH-INCOMPLETE-TEMPLATE TEMPLATE-NAME ALL-ARGS)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%INSTANTIATE-CALLABLE-TEMPLATE NAME BODY SUBSTITUTIONS OVERRIDE-NAME)  templates.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (IS-GLOBAL-STORAGE-HANDLE-P TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
+- - - - - - - - - - - - - - - - - - - - - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%VERIFY-PTX-ENTRY-EXPANDED-TYPES EXPANDED-TYPES FN-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-ENTRY-ILLEGAL-ADDRSPACE-P AS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%CHECK-EXISTING-FUNCTION EXISTING FN-NAME DI-BUILDER DI-COMPILE-UNIT FUNC CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC MODULE FN-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (GET-OR-CREATE-DI-TYPE CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%CREATE-NEW-FUNCTION FN-NAME FN-TYPE MODULE DI-BUILDER DI-COMPILE-UNIT CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (ENSURE-OPENCL-KERNEL-METADATA FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%APPLY-DENORMAL-ATTRIBUTE FUNC MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-DENORM-EXECUTION-MODE FUNC MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-SUBGROUP-SIZE-EXECUTION-MODE FUNC MODULE SEMANTIC-FUNCTION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp
+- - - - - - - - - - - - - - - - - - - - - (%175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING SEMANTIC-FUNCTION PINNED-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%175-REACHES-WARP-COLLECTIVE-P KNAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%175-FN-USES-WARP-COLLECTIVE-P NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%175-USES-WARP-COLLECTIVE-P X)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%APPLY-CLUSTER-DIMS-ATTRIBUTE FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%RECORD-EFFECTIVE-CLUSTER-DIMS KERNEL-NAME DIMS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%WARN-CLUSTER-DEGRADED KERNEL-NAME DECLARED)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%APPLY-OCCUPANCY-BOUND FUNC KNAME MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%EFFECTIVE-OCCUPANCY-TARGET KNAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (GENERATE-FUNCTION-BODY SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (INITIALIZE-FUNCTION-PARAMETERS BUILDER FUNC PARAM-NODES MODULE VAR-ENV &OPTIONAL IS-ENTRY-POINT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%PTX-ENTRY-RESTORE-SHARED-PTRS-FOR-IMPLODE BUILDER COMPONENTS TYPE-SPEC MODULE IS-ENTRY-POINT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-ENTRY-ILLEGAL-ADDRSPACE-P AS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-DYNAMIC-SMEM-BASE BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
+- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%COLLECT-READONLY-TENSOR-PARAM-SYMS SEMANTIC-FUNCTION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                             SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                               SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GENERATE-KEYWORD-LITERAL-IR VALUE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-KEYWORD-CONSTANT KW)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GENERATE-CELL-LITERAL-IR BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GENERATE-TENSOR-SCRATCH-LITERAL-IR BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GENERATE-ENUM-LITERAL-IR BUILDER VALUE LLVM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-KEYWORD-CONSTANT KW)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GENERATE-SCALAR-LITERAL-IR BUILDER VALUE LLVM-TYPE CRISP-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (BUILD-CAST-IF-NEEDED BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GET-TYPE-CAT-SAFE TYPE-NAME TYPE-OBJ)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BF16-DEST-AS-I16-P TO-TYPE-NAME TO-LLVM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%F32-TO-BF16-BITS-RNE BUILDER F32-VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BF16-AS-I16-P VAL FROM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%ARITH-CATEGORY TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%HW-LOWER (OP (EQL '%185-FMOD)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                       hw_tmp))  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-SUFFIX TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-WIDEN BUILDER MODULE VALUE FROM-TYPE TO-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-FLOAT-CONST BUILDER MODULE TYPE-NAME VALUE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-SPLAT BUILDER ELEM-CONST LANES LLVM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-LLVM-INT-TYPE BITS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                       hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-INT-CONST BUILDER BITS LANES VALUE SIGNED-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-SPLAT BUILDER ELEM-CONST LANES LLVM-TYPE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-LLVM-INT-TYPE BITS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-ABS-DIFF-VALUE BUILDER MODULE A B A-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-LOWER-MIN-MAX-3 BUILDER MODULE ARG-VALS TYPE-NAME FLOAT-BASE INT-BASE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-APPROX-FLAGS INST)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                     hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-APPROX-TRANSCENDENTAL BUILDER MODULE X X-TYPE BASE NATIVE LIBDEVICE LIBDEVICE-FAST)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-VIA-FLOAT BUILDER MODULE X X-TYPE FN)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-NAMED BASE-NAME LANES)  analysis/ops.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%LIBDEVICE-FN-NAME BASE F32-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%NATIVE-BUILTIN-MANGLED-NAME BASE-NAME ARITY)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-APPROX-FLAGS INST)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                       hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%185-LOWER-DIVMOD BUILDER MODULE MODE ARG-VALS ARG-TYPES RESULT-TYPE TWO-VALUES-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%185-INT-DIVMOD BUILDER MODULE MODE A B TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%185-DIVMOD-HELPER MODULE MODE TYPE-NAME TWO-VALUES-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%185-INT-DIVMOD BUILDER MODULE MODE A B TYPE-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%185-LOWER-FP-TO-INT BUILDER MODULE BASE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%185-SQRT-CALL BUILDER MODULE X TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                       hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-LOWER (OP (EQL '%185-FMOD)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%185-HELPER-CALL BUILDER MODULE NAME RET-TYPE ARG-VALS BODY-FN)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (BUILD-CAST-IF-NEEDED BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%185-ASH-BODY BUILDER MODULE X C X-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%185-TRANSCENDENTAL-CALL BUILDER MODULE X TYPE-NAME BASE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%LIBDEVICE-FN-NAME BASE F32-P)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%185-OCL-BUILTIN-NAME BASE BITS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                       hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%185-FMOD-BODY BUILDER MODULE X Y TYPE-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%HW-FLOAT-CONST BUILDER MODULE TYPE-NAME VALUE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%BUILD-LLVM-FUNCTION-TYPE MODULE RETURN-TYPE-NAMES PARAM-TYPES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%BUILD-FUNCTION-CALL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT RETURN-TYPE-NAMES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                   SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GENERATE-LET-BINDING BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP MEMOIZED-AGGREGATES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%READONLY-SYMS-AFTER-BINDING SYMS BINDING)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-NODE-READONLY-TENSOR-PARAM-P ARRAY-NODE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%KERNEL-ENTRY-REASSEMBLY-P NAME NODE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%IF-RESULT-LLVM-TYPE TYPE-SPEC MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%MEMBER-ACCESS-STRUCT-NAME OBJ-TYPE)  structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%AREF-CELL-SPEC ARRAY-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%AREF-FIXED-ARRAY-IR ARRAY-NODE ARRAY-TYPE INDEX-VAL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%TRY-INLINE-STRUCT-ARRAY-FIELD-PTR ARRAY-NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%LOOKUP-FIELD-PHYSICAL-INDEX STRUCT-DEF FIELD-NAME-STR)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                   SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%AREF-TENSOR-IR ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-NODE-READONLY-TENSOR-PARAM-P ARRAY-NODE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%ATTACH-INVARIANT-LOAD LOADED-INST MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%AREF-CELL-IR ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%DVEC-COERCE-ELEMENT-IR ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (%COERCE-TO-I64 BUILDER VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%MV-BUMP-PTR BUILDER BASE-PTR OFFSET-BYTES ADDR-SPACE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%MV-SOURCE-ADDR CANON)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%MV-BUILD-STORAGE BUILDER MODULE ADDR-SPACE SRC-PARENT NEW-PTR NEW-BYTESIZE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%MV-EMIT-BOUNDS-CHECK BUILDER MODULE RANK EXPLICIT-LEN OFFSET-ELEMS OFFSET-BYTES ELEM-SIZE SRC-BYTESIZE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%MV-CELL-VALUE BUILDER MODULE ADDR-SPACE SRC-PARENT SRC-PTR SRC-BYTESIZE OFFSET-ELEMS ELEM-SIZE RESULT-UNDEF)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%MV-BUILD-STORAGE BUILDER MODULE ADDR-SPACE SRC-PARENT NEW-PTR NEW-BYTESIZE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%MV-TENSOR-VALUE BUILDER RANK STRIDES EXTENTS EXPLICIT-LEN NEW-BYTESIZE ELEM-SIZE RESULT-UNDEF NEW-STORAGE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%MV-BUILD-ZERO-I64-ARRAY RANK)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%MV-ROW-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%MV-BUILD-CONST-I64-ARRAY BUILDER RANK VALUES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%184-DEVICE-SYNC-SCOPE MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%SV-TO-I64 BUILDER VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-VEC3 BUILDER MODULE SREG-BASE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-SCALAR BUILDER MODULE SREG-BASE DIM)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-GLOBAL-ID-VEC3 BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-SCALAR BUILDER MODULE SREG-BASE DIM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-GLOBAL-SIZE-VEC3 BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-SCALAR BUILDER MODULE SREG-BASE DIM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%PTX-ZERO-VEC3 BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-VEC3-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-VEC3-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-UINT-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-LOCAL-LINEAR-ID BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-FLAT-LINEAR-ID-FROM-VECS BUILDER LID-VEC LWS-VEC NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-PRODUCT-OF-VEC3 BUILDER MODULE SPIRV-NAME RESULT-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-GLOBAL-LINEAR-ID BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-FLAT-LINEAR-ID-FROM-VECS BUILDER LID-VEC LWS-VEC NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-WARP-ID BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-LOCAL-LINEAR-ID BUILDER MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-UINT-GLOBAL-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-WARP-SREG BUILDER MODULE SREG-NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-WARP-COUNT BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CLUSTER-BARRIER BUILDER)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-BARRIER BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-CONTROL-BARRIER BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-SPLIT-BARRIER BUILDER MODULE PHASE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-SYNCWARP BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-WARP-BARRIER BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-MEMBAR-GL BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%PTX-MEMBAR-CTA BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER-WORKGROUP BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%ATTACH-LOOP-UNROLL-METADATA LATCH-BR MODULE SPEC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%EFFECTIVE-LOOP-UNROLL SPEC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%LOOP-VARIANT-COERCE BUILDER VALUE LLVM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                   hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%184-CALL-WITH-LOOP-EXIT-TARGET BUILDER THUNK)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-MBAR-GLOBAL MODULE &OPTIONAL (COUNT
+                                                                                         1))  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-X BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Y BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Z BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-INIT-SHARED BUILDER MODULE MBARRIER-PTR COUNT-VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBAR-SLOT-PTR BUILDER MBAR-BASE I)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%MODULE-HAS-CLUSTER-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-X BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Y BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Z BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-ASYNC-WORK-GROUP-COPY BUILDER MODULE DST-AS3 SRC-AS1 NUM-I64 EVENT-IN ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-MANGLE-ELEM ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-WAIT-GROUP-EVENTS BUILDER MODULE EVENTS-AS4-PTR)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-ELEM BUILDER MODULE DST-PTR SRC-PTR ELEM-BYTES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-COMMIT-GROUP BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%VECTOR-ELEM-TYPE TILE-TYPE-SPEC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-MBARRIER-ARRIVE-NOINC-SHARED BUILDER MODULE MBARRIER-PTR)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-WAIT-GROUP BUILDER MODULE N)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%TMA-LOOKUP-DESCRIPTOR-PTR BUILDER VAR-ENV SRC-NAME GLOB-PTR-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%COERCE-TO-I32 BUILDER VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-EXPECT-TX BUILDER MBAR-ADDR-I32 TX-BYTES-I32)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-MULTICAST-LEADER-PRED BUILDER MODULE PLAN &OPTIONAL ROT-SRC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-WARP-SREG BUILDER MODULE SREG-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-SREG AXIS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1 &OPTIONAL (MCAST-MASK
+                                                                                                                                                          0) (MCAST-P
+                                                                                                                                                              NIL))  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-MULTICAST-MASK-VALUE BUILDER MODULE PLAN)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-STRIDES DIMS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-WARP-SREG BUILDER MODULE SREG-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-SREG AXIS)  analysis/control.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-TRY-WAIT-PARITY BUILDER MBAR-ADDR-I32 PHASE-I32)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MAPA-SHARED-CLUSTER BUILDER ADDR-I32 RANK-I32)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-CLUSTER BUILDER PEER-ADDR-I32)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-SHARED BUILDER MODULE MBARRIER-PTR)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-OP-ELEM-LLVM NODE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-NODE-ELEM NODE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-FILL BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-FILL-IMPL (LOWERING
+                                                                (EQL XE-NATIVE)) BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
+                                                                    (EQL
+                                                                     XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%XE-NATIVE-SUBGROUP-WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%XE-NOTE-OPERAND-ELEM KIND)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%XE-NATIVE-ELEM-KIND ELEM-LLVM)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-COERCE-SCALAR BUILDER VAL WANT-TY NAME)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%LLVM-FLOAT-WIDTH TY)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
+                                                                  (EQL
+                                                                   XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-LOAD BUILDER MODULE TENSOR-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-LOAD-IMPL (LOWERING
+                                                                (EQL XE-NATIVE)) BUILDER MODULE TENSOR-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE-IMPL (LOWERING
+                                                                                 (EQL
+                                                                                  XE-NATIVE)) BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-SPLIT-ORIGIN BUILDER ORIGIN)  compiler.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE-IMPL (LOWERING
+                                                                                   (EQL
+                                                                                    XE-NATIVE)) BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - (%ATTACH-CACHE-CONTROL-LOAD PTR MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%ELEM-LLVM-BYTES ELEM-LLVM)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%LLVM-FLOAT-WIDTH TY)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
+                                                                  (EQL
+                                                                   XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%XE-SURFACE BUILDER TENSOR-VAL ELEM-BYTES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%XE-COORD BUILDER OROW OCOL)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-STORE BUILDER MODULE TENSOR-VAL MATRIX-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-STORE-IMPL (LOWERING
+                                                                 (EQL
+                                                                  XE-NATIVE)) BUILDER MODULE TENSOR-VAL MATRIX-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%ELEM-LLVM-BYTES ELEM-LLVM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%XE-SURFACE BUILDER TENSOR-VAL ELEM-BYTES)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%XE-COORD BUILDER OROW OCOL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%BLOCK-PREFETCH BUILDER MODULE PTR STRIDE-VAL ROWS COLS &OPTIONAL (ELEM-BYTES
+                                                                                                                4))  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%ELEM-LLVM-BYTES ELEM-LLVM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-MAP-IR NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ROWS COLS USE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-VAR-STORAGE NODE NAME VAR-ENV)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-EMIT-MAP-LOOP NODE BUILDER MODULE ROWS COLS USE PRIMARY-PTR PER-ELEM)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-NODE-ELEM NODE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-LENGTH BUILDER MODULE MAT-VAL ELEM-LLVM ROWS COLS USE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-ACCESS-CHAIN BUILDER MODULE MAT-PTR IDX-I64)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-MAP2-IR NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ROWS COLS USE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-VAR-STORAGE NODE NAME VAR-ENV)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-EMIT-MAP-LOOP NODE BUILDER MODULE ROWS COLS USE PRIMARY-PTR PER-ELEM)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-ACCESS-CHAIN BUILDER MODULE MAT-PTR IDX-I64)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-INDEX-I32 BUILDER IDX-VAL IDX-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I32 BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-PTX BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-SPV BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-CHECK-PINNED LOCATION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-UINT-GLOBAL-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-SPV-TARGET BUILDER LANE OP IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I64 BUILDER MODULE OP VAL64 IDX WIDTH)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I32 BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%175-CAS-INT-WIDTH-FOR ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P (K
+                                                                                                                               8) ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%PTX-BARRIER BUILDER MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%EMIT-WGMMA-MMA-ONLY BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF &OPTIONAL ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-MAKE-DESC BUILDER BASE-PTR &OPTIONAL SWIZZLE-P (KSLICE-BYTE-OFF
+                                                                                                        0))  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-ASM-STRING NACC N &OPTIONAL ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-OPERAND-MNEMONIC ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-CONSTRAINTS NACC)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-STRUCT-OF-FLOATS MODULE NACC)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-FOR-ELEM SHAPES ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-TYPE ENTRY)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-DIMS ENTRY)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-DIMS ENTRY)  mma.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%COOP-MMA BUILDER MODULE A-VAL B-VAL C-VAL ELEM-LLVM M N K)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%COOP-MMA-IMPL (LOWERING
+                                                               (EQL XE-NATIVE)) BUILDER MODULE A-VAL B-VAL C-VAL ELEM-LLVM M N K)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%NVVM-FRAG-FORMAT LLVM-ELEM-TYPE)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA-F64 BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%MODULE-HAS-CLUSTER-P)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CLUSTER-BARRIER BUILDER)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp
+- - - - - - - - - - - - - - - - - (%GENERATE-BACKWARD-FUNCTION-AST NAME PARAMS DECLARATIONS BODY-FORMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%TRIVIAL-ACCESSOR-BODY-P BODY-FORMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%COLLECT-RECORD-PARAM-INFO ENV PKG)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS PD-TYPE)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%CRISP-TENSOR-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%CRISP-CELL-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-PARAM-SET PARAMS BODY-FORMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%ASV-UNION EXPRS ENV)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - (%COLLECT-ALL-DIFF-PARAM-SYMS-FOR-RETURN ENV RECORD-PARAM-INFO &OPTIONAL ACTIVE-SET)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%COUNT-ACTIVE-CONTRIBUTIONS PD-TYPE SYM ACTIVE-SET &OPTIONAL RECORD-INFO)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%COUNT-DIFFERENTIABLE-CONTRIBUTIONS PD-TYPE &OPTIONAL RECORD-INFO)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%BUILD-RECORD-PARAM-FIELD-ADJS-HT RECORD-PARAM-INFO)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%COUNT-ACTIVE-CONTRIBUTIONS PD-TYPE SYM ACTIVE-SET &OPTIONAL RECORD-INFO)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%HAS-TENSOR-DIFF-PARAM-P ENV)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - (%REGISTER-HOF-DIFFERENTIABLE-FUNCTION NAME ENV FLOAT-PARAM-SYMS FN-PARAM-ENTRIES N-RETURN BODY-FORMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - (%GENERATE-BACKWARD-COMPANION-AST-BODY NAME PARAMS ENV DECLARATIONS BODY-FORMS PKG N-FLOAT-PARAMS N-RETURN RETURN-TYPES-NON-VOID RECORD-PARAM-INFO RECORD-PARAM-FIELD-ADJS-HT ALL-DIFF-PARAM-SYMS-FOR-RETURN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-CELL-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%INTEGER-CELL-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-CELL-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%AD-ENUM-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%AD-SCALAR-ADJOINT-TYPE TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%AD-PROMOTES-TO-DOUBLE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (%COLLECT-TENSOR-PARAM-INFO ENV PKG)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%CRISP-TENSOR-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp
+- - - - - - - - - - - - - - - - - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%CHECK-FN-BODY-FOR-MUTATIONS BODY-FORMS PARAM-NAMES FN-NAME)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL TENSOR-INPUTS-HT ANY-DOUBLE RETURN-ADJ-TYPES)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                                    T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HW-OP-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%175-RAW-INTEGER-LITERAL FORM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-WIDTH-FORM EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%175-BROADCAST-VJP-FORM G VALUE-ADJ IDX TAIL WIDTH-FORM ZERO)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-BACKWARD-BASE V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-WIDTH-FORM EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%AD-REM-OR-MOD-FORM-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%AD-HANDLE-REM-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%AD-WIDENING-CONVERSION-FORM-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%AD-HANDLE-WIDENING-CONVERSION-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%AD-INERT-RING-GET-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%185-MATH-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%185-CRISP-SYM NAME)  analysis/ops.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%185-OP-NAMED-P SYM NAME)  analysis/ops.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HANDLE-MATH-AND-TRIG-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HANDLE-TILDE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - (%HANDLE-SUB-FN-CALL-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN HOF-HANDLER-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
+                                                                                                                                        BW))  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%IS-ACCESSOR-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P-145P1 FN-SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P-145P1-BASE FN-SYM)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HANDLE-ACCESSOR-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%STRIP-ACCESSOR-TILDES ACCESSOR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HANDLE-CONSTRUCTOR-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%VALUE-IF-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-IF-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                                  T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%BACKWARD-VALUE-EXPR V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                               T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%VALUE-IF-P EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-IF-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                                      T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%VALUE-LET-P EXPR)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-LET-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                                       T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%BACKWARD-VALUE-EXPR V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                                   T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                                          T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (%FORMS->PROGN FORMS)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - (%VALUE-LET-P EXPR)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-LET-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
+                                                                                                                                   T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
+                                                                                                                                    BW))  autodiff.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
+- - - - - - - - - - - - - - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%VALIDATE-GRID-FUNCTION-RETURN-TYPE RETURN-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - (%PARSE-MMA-LOWERING-DECL DECL KERNEL-NAME PROFILE)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%HP-MMA-LOWERINGS PROFILE)  hardware-profile.lisp
+- - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%PARSE-CLUSTER-SIZE-DECL DECL KERNEL-NAME DECLARATIONS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - (%PARSE-OCCUPANCY-TARGET-DECL NAME DECLARATIONS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%HP-CHECK-WORKGROUP-BOUNDS KERNEL-NAME LOCAL-SIZE-DECL PROFILE)  hardware-profile.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (MULTI-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES CONTEXT)  type-checker.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (INSTANTIATE-GENERIC-FUNCTION GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-ARGUMENT-BINDINGS GENERIC-DEF EXPLICIT-ARG-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%BIND-DEFAULTS-TO-DEFAULT-SCRATCH FN-NAME INJECTED-BINDINGS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-NAME BASE-NAME ACTIVE-ENV)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-ALREADY-GENERATED VARIANT-NAME PARAM-TYPES &OPTIONAL (LLVM-PARAM-TYPES
+                                                                                                                             PARAM-TYPES))  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-LLVM-NAME VARIANT-NAME PARAM-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%GENERATE-LAZY-VARIANT-IR AST-NODE VARIANT-NAME &OPTIONAL BASE-NAME)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%CHECK-STRUCT-MUTATING-CALL OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-OF-ALL NODES ENV)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-JOIN STATES)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%VALIDATE-DERIVED-TYPE-REGISTRATION NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%UPDATE-DERIVED-TYPE-RELATIONSHIPS NEW-NODE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%REGISTER-DERIVED-IN-CRISP-TYPES NEW-TYPE-NAME BASE-TYPE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - (%EXTRACT-FN-BODY-AND-DECLARATIONS BODY-AND-LOC)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - (%DETECT-HOF-PARAM-VIA-FUNCALL PARAMS FN-BODY)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - (%TREE-HAS-FUNCALL-P TREE TARGET-SYM)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - (%TREE-HAS-FUNCALL-P TREE TARGET-SYM)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - (%REGISTER-HOF-ENTRY NAME TYPE-DESC PARAMS FN-PARAM-IDX FN-PARAM-SYM FLOAT-PARAM-SYMS CLEAN-BODY N-FLOAT-PARAMS N-RETURN)  analysis/core.lisp
+- - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - (COMPUTE-NATIVE-LAYOUT MEMBERS)  structs.lisp
+- - - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
+- - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
+- - - - - - - - - - - (%STRUCT-NATIVE-ALIGNMENT STRUCT-NAME)  structs.lisp
+- - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
+- - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [See above]
+- - - - - - - - - - (CALCULATE-NATIVE-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
+- - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - (REGISTER-BUILTIN-HARDWARE-PROFILES)  mma.lisp
+- - - - - - - - - (REGISTER-HARDWARE-PROFILE NAME PROPLIST)  hardware-profile.lisp
+- - - - - - - - - - (%HP-VALIDATE-VALUE PROFILE-NAME KEY TYPE RAW)  hardware-profile.lisp
+- - - - - - - - - - - (%HP-UNQUOTE V)  hardware-profile.lisp
+- - - - - - - - - - - (%HP-PARSE-SIZE V)  hardware-profile.lisp
+- - - - - - - - - - - (%HP-3-POS-INTS-P X)  hardware-profile.lisp
+- - - - - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp
+- - - - - - (%COMPILE-FILES-SINGLE-PASS FILES MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT) :CRISP.MAIN  main.lisp
+- - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+- - - - - - (%READ-CRISP-FORMS FILES) :CRISP.MAIN  main.lisp
+- - - - - - (GENERATE-LOCATION-MAP FORMS)  analysis/core.lisp
+- - - - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp
+- - - - - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp [RECURSION]
+- - - - - - (COMPILE-MODULE FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - - - (%INJECT-SHADOW-STRUCT-FORMS FORMS)  autodiff.lisp
+- - - - - - - - (%COLLECT-STRUCT-NAMES-FROM-FORMS FORMS)  autodiff.lisp
+- - - - - - - - (%GENERATE-SHADOW-DEF-STRUCT-FORM DEF-STRUCT-FORM &OPTIONAL STRUCT-NAME-SET)  autodiff.lisp
+- - - - - - - - - (%ADJ-TYPE-FOR-FIELD FORWARD-TYPE &OPTIONAL STRUCT-NAME-SET)  autodiff.lisp
+- - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - (BRAND &REST ARGS)  macros.lisp
+- - - - - - - - - (DEF-STRUCT NAME &REST MEMBERS)  macros.lisp
+- - - - - - - - - - (BRAND &REST ARGS)  macros.lisp [See above]
+- - - - - - - - - - (REGISTER-BRAND-DEFINITION STRUCT-NAME BRAND-FORM)  types/brand.lisp
+- - - - - - - - - - - (PARSE-BRAND-DECLARATION BRAND-FORM)  types/brand.lisp
+- - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
+- - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp [See above]
+- - - - - - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY
+                                                                        STRUCT))  structs.lisp [See above]
+- - - - - - - - - - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp
+- - - - - - - (ANALYZE-SIGNATURES-PASS FORMS)  analysis/core.lisp
+- - - - - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS &OPTIONAL RECORD-INFO)  analysis/core.lisp
+- - - - - - - - - (%SCAN-FORMS-FOR-RECORD-INFO FORMS)  autodiff.lisp
+- - - - - - - - - (%EXTRACT-FN-BODY-AND-DECLARATIONS BODY-AND-LOC)  analysis/core.lisp [See above]
+- - - - - - - - - (%LAMBDA-LIST-GENERIC-P PARAMS)  analysis/core.lisp
+- - - - - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
+- - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - (%ACTIVE-SCALAR-PARAM-SET PARAMS BODY-FORMS)  autodiff.lisp [See above]
+- - - - - - - - - (%COUNT-ACTIVE-CONTRIBUTIONS PD-TYPE SYM ACTIVE-SET &OPTIONAL RECORD-INFO)  autodiff.lisp [See above]
+- - - - - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
+- - - - - - - - - (%HAS-TENSOR-DIFF-PARAM-P ENV)  autodiff.lisp [See above]
+- - - - - - - - - (%REGISTER-HOF-ENTRY NAME TYPE-DESC PARAMS FN-PARAM-IDX FN-PARAM-SYM FLOAT-PARAM-SYMS CLEAN-BODY N-FLOAT-PARAMS N-RETURN)  analysis/core.lisp [See above]
+- - - - - - - - - (%REGISTER-STANDARD-DIFFERENTIABLE-ENTRY NAME TYPE-DESC N-FLOAT-PARAMS N-RETURN &KEY OPTIMISTIC-P)  analysis/core.lisp
+- - - - - - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS &OPTIONAL RECORD-INFO)  analysis/core.lisp [RECURSION]
+- - - - - - - - - (%DETECT-HOF-PARAM-VIA-FUNCALL PARAMS FN-BODY)  analysis/core.lisp [See above]
+- - - - - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp
+- - - - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [See above]
+- - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
+- - - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
+- - - - - - - - (%SCAN-GENERIC-DEFAULT-SCRATCH FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp [See above]
+- - - - - - - - (INFER-PARAM-UNIFORMITY)  analysis/core.lisp
+- - - - - - - - - (%UNI-TOPO-ORDER NODES)  analysis/core.lisp
+- - - - - - - - - (%UNI-PARAM-NAMES PARAMS)  analysis/core.lisp
+- - - - - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp
+- - - - - - - - - - (%UNI-BUILTIN-STATE OP)  analysis/core.lisp
+- - - - - - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - (%UNI-ANALYZE-LET FORM ENV)  analysis/core.lisp
+- - - - - - - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - (%UNI-COMBINE STATES)  analysis/core.lisp
+- - - - - - - - - - (%UNI-PARAM-NAMES PARAMS)  analysis/core.lisp [See above]
+- - - - - - - - - - (%UNI-CONTRIBUTE CALLEE PARAM-NAME STATE)  analysis/core.lisp
+- - - - - - - - - - - (%UNI-COMBINE STATES)  analysis/core.lisp [See above]
+- - - - - - - (FINALIZE-STRUCT-DEFINITIONS)  structs.lisp
+- - - - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY
+                                                                    STRUCT))  structs.lisp [See above]
+- - - - - - - (PROPAGATE-IMPLICIT-ARGUMENTS)  analysis/core.lisp
+- - - - - - - (COMPILE-FORMS-PASS FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
+- - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
+- - - - - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp [See above]
+- - - - - - - (RESOLVE-TMA-DESCRIPTORS)  analysis/core.lisp
+- - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp
+- - - - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp
+- - - - - - - - - (%TMA-CLASSIFY FN SYM KIND)  analysis/core.lisp
+- - - - - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp
+- - - - - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - (%TMA-DOWNSTREAM-CARRIER FN UNAME)  analysis/core.lisp
+- - - - - - - - - - (%FN-CARRIES-DESCRIPTOR-P FN-NAME UNAME)  analysis/core.lisp
+- - - - - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp [RECURSION]
+- - - - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - (%KERNEL-PARAM-CONTIGUOUS-TERM KERNEL SYM)  analysis/core.lisp
+- - - - - - - (CHECK-FOR-RECURSION-CYCLES)  analysis/core.lisp
+- - - - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp
+- - - - - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp [RECURSION]
+- - - - - - - (%HP-CHECK-ALL-SHARED-MEMORY)  hardware-profile.lisp
+- - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - (%HP-CHECK-SHARED-MEMORY KERNEL-NAME PROFILE)  hardware-profile.lisp
+- - - - - - - - - (%HP-KERNEL-SHARED-BYTES KERNEL-NAME)  hardware-profile.lisp
+- - - - - - - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp
+- - - - - - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp
+- - - - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp
+- - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp
+- - - - - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp
+- - - - - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [RECURSION]
+- - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
+- - - - - - - - - - (%HP-SCRATCH-ELEM-BYTES ELEM-TYPE)  hardware-profile.lisp
+- - - - - - - - (%HP-REPORT-SHARED-MEMORY KERNEL-NAME PROFILE)  hardware-profile.lisp
+- - - - - - - - - (%HP-KERNEL-SHARED-BYTES KERNEL-NAME)  hardware-profile.lisp [See above]
+- - - - - - - - (%HP-REPORT-REGISTER-OCCUPANCY KERNEL-NAME PROFILE)  hardware-profile.lisp
+- - - - - - - - - (%KERNEL-REGISTERS-PER-THREAD KERNEL-NAME)  mma.lisp
+- - - - - - - - - - (%SPV-KERNEL-REGISTER-DEMAND KERNEL-NAME)  mma.lisp
+- - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
+- - - - - - - - (%SPV-DECIDE-REGISTER-MODE KERNEL-NAME PROFILE)  mma.lisp
+- - - - - - - - - (%HP-REGISTER-MODES &OPTIONAL (PROFILE
+                                                 (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp
+- - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - (%SPV-KERNEL-REGISTER-DEMAND KERNEL-NAME)  mma.lisp [See above]
+- - - - - - (%EMIT-TARGET-OUTPUT TARGET-BACKEND MODULE FILEPATH DEBUG-P) :CRISP.MAIN  main.lisp
+- - - - - - - (%OUTPUT-BASE-NAME FILEPATH) :CRISP.MAIN  main.lisp
+- - - - - - - (COMPILE-TO-SPIRV MODULE OUTPUT-PATH &KEY DEBUG-P)  compiler.lisp
+- - - - - - - - (%REMOVE-DEAD-ARRAY-RETURNING-FUNCTIONS MODULE)  compiler.lisp
+- - - - - - - - - (LLVM-TYPE-KIND-IS-ARRAY? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
+- - - - - - - - (%MODULE-USES-NATIVE-BUILTIN-P MODULE)  codegen.lisp
+- - - - - - - - (%MODULE-USES-ASYNC-COPY-BUILTIN-P MODULE)  codegen.lisp
+- - - - - - - - (%EMIT-OPENCL-VERSION-METADATA MODULE)  codegen.lisp
+- - - - - - - - (INJECT-SPIR-KERNEL-METADATA IR-TEXT)  compiler.lisp
+- - - - - - - - - (FIND-SPIR-KERNELS IR-TEXT)  compiler.lisp
+- - - - - - - - - - (%EXTRACT-SPIR-KERNEL-INFO IR-TEXT KERNEL-POS)  compiler.lisp
+- - - - - - - - - (%MAX-METADATA-ID IR-TEXT)  compiler.lisp
+- - - - - - - - - (EXTRACT-KERNEL-PARAMS IR-TEXT FUNC-START FUNC-END)  compiler.lisp
+- - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
+- - - - - - - - - (GENERATE-KERNEL-METADATA PARAMS METADATA-ID-BASE)  compiler.lisp
+- - - - - - - - - - (IR-TYPE-TO-OPENCL-METADATA IR-TYPE)  compiler.lisp
+- - - - - - - - (%RUN-OPT-PIPELINE INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp
+- - - - - - - - - (%RUN-PASSES-IN-PROCESS INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp
+- - - - - - - - - - (%MAKE-TARGET-MACHINE-FOR-MODULE MODULE)  compiler.lisp
+- - - - - - - - - - - (%ENSURE-NVPTX-TARGET-INITIALIZED)  compiler.lisp
+- - - - - - - - - (%LL-HAS-SPIRV-ILLEGAL-INT-P LL-FILE)  compiler.lisp
+- - - - - - - - (%INJECT-CACHE-CONTROL-DECORATIONS LL-PATH)  compiler.lisp
+- - - - - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
+- - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
+- - - - - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp
+- - - - - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp
+- - - - - - - - (%LL-USES-FP16-ATOMIC-FADD-P LL-PATH)  compiler.lisp
+- - - - - - - - (%175-LL-USES-FLOAT-ATOMIC-MINMAX-P LL-PATH)  compiler.lisp
+- - - - - - - - (%MODULE-USES-COOP-MATRIX-P MODULE)  compiler.lisp
+- - - - - - - - (%MODULE-USES-2D-BLOCK-IO-P MODULE)  compiler.lisp
+- - - - - - - - (%MODULE-USES-SUBGROUP-MMA-P MODULE)  compiler.lisp
+- - - - - - - - (%MODULE-USES-SPLIT-BARRIER-P MODULE)  compiler.lisp
+- - - - - - - - (%MODULE-USES-BFLOAT-P MODULE)  compiler.lisp
+- - - - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
+- - - - - - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)  compiler.lisp
+- - - - - - - - (%PTX-FINALIZE-LIBDEVICE MODULE)  codegen.lisp
+- - - - - - - - - (%SET-NVVM-REFLECT-FTZ MODULE FTZ-P)  codegen.lisp
+- - - - - - - - (%RUN-OPT-O3 INPUT-LL-FILE OUTPUT-LL-FILE)  compiler.lisp
+- - - - - - - - - (%RUN-PASSES-IN-PROCESS INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp [See above]
+- - - - - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
+- - - - - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp [See above]
+- - - - - - - (PTX-COMPUTE-CAPABILITY-STRING)  types/registry.lisp
+- - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
+- - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - - - - (%API-DIAGNOSTIC SEVERITY MESSAGE &KEY FILE (LINE 0) (COLUMN 0)) :CRISP.MAIN  api.lisp [See above]
+- - - - - - (%API-CONDITION-MESSAGE C) :CRISP.MAIN  api.lisp
+- - - - - - (%GENERATE-FILE-METADATA FILEPATH GENERATED-OUTPUTS CAPTURED-FORMS) :CRISP.MAIN  main.lisp
+- - - - - - - (%OUTPUT-BASE-NAME FILEPATH) :CRISP.MAIN  main.lisp [See above]
+- - - - - - - (GENERATE-METADATA-FOR-FILE INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS
+                                                                       NIL) (SOURCE-FILE
+                                                                             NIL) (FORMS
+                                                                                   NIL))  metadata.lisp
+- - - - - - - - (EXTRACT-DEFINED-KERNELS FORMS)  metadata.lisp
+- - - - - - - - (%ONLY-FORWARD-KERNELS NAMES)  metadata.lisp
+- - - - - - - - (COLLECT-KERNEL-DEPENDENCIES KERNEL-NAMES)  metadata.lisp
+- - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - (%BWD-FIXUP-DECLARED-TYPES BWD-K-NAME)  metadata.lisp
+- - - - - - - - - (%BWD-RESOLVE-TYPE TYPE-SPEC &OPTIONAL NEW-ACCESS)  metadata.lisp
+- - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp
+- - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp
+- - - - - - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp
+- - - - - - - - - (%SERIALIZE-RECORDS STREAM STRUCTS-HASH)  metadata.lisp
+- - - - - - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp
+- - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp [See above]
+- - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - (%HP-SERIALIZE-ACTIVE-PROFILE STREAM)  hardware-profile.lisp
+- - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - (%HP-SELECTED-REGISTERS-PER-THREAD)  hardware-profile.lisp
+- - - - - - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp
+- - - - - - - - - (GENERATE-PHYSICAL-SIGNATURE SIG-OR-PARAMS)  metadata.lisp
+- - - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp [See above]
+- - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [See above]
+- - - - - - - - - (GENERATE-DECLARED-SIGNATURE SIG &OPTIONAL DECLARED-PARAMS)  metadata.lisp
+- - - - - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp [See above]
+- - - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
+- - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
+- - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - (%REDUCTION-LAUNCH-INIT-FOR KERNEL-NAME PARAM-NAME)  metadata.lisp
+- - - - - - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp [See above]
+- - - - - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp [See above]
+- - - - - - - - - (%MODULE-USES-CLUSTER-REACH-P)  metadata.lisp
+- - - - - - - - - (%EFFECTIVE-CLUSTER-DIMS DISPATCH DECLARED)  analysis/control.lisp
+- - - - - - (%API-DIFFERENTIATE-KERNELS FILEPATH OUTPUT CAPTURED-FORMS GRAD-META-PATHS) :CRISP.MAIN  api.lisp
+- - - - - - - (EXTRACT-DEFINED-KERNELS FORMS)  metadata.lisp [See above]
+- - - - - - - (%ONLY-FORWARD-KERNELS NAMES)  metadata.lisp [See above]
+- - - - - - - (%API-KERNELS-OF-METACRISP PATH) :CRISP.MAIN  api.lisp
+- - - - - - - - (%API-READ-METACRISP PATH) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-METADATA-PACKAGE) :CRISP.MAIN  api.lisp
+- - - - - - - - (%API-SECTION FORMS KEY) :CRISP.MAIN  api.lisp
+- - - - - - - - (%API-PARAM DECL ALIASES RECORD-NAMES) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-RESOLVE-TYPE TYPE ALIASES) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-KW SYM) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-ROLES KIND RANK FIRST LAST) :CRISP.MAIN  api.lisp
+- - - - - - - - (%API-MARK-POINTER-SLOTS SLOTS PARAMS) :CRISP.MAIN  api.lisp
+- - - - - - - (%API-WRITE-KERNEL-METACRISP KERNEL PATH SOURCE OUTPUT-TARGETS) :CRISP.MAIN  api.lisp
+- - - - - - - - (COLLECT-KERNEL-DEPENDENCIES KERNEL-NAMES)  metadata.lisp [See above]
+- - - - - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp [See above]
+- - - - - - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp [See above]
+- - - - - - - - (%HP-SERIALIZE-ACTIVE-PROFILE STREAM)  hardware-profile.lisp [See above]
+- - - - - - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp [See above]
+- - - - - - (%API-KERNELS-OF-METACRISP PATH) :CRISP.MAIN  api.lisp [See above]
+- - - - - - (%API-PAIR-ADJOINTS KERNELS) :CRISP.MAIN  api.lisp
+- - - - - - (%API-READ-OCTETS PATH) :CRISP.MAIN  api.lisp
+- - - - - (%API-CONDITION-MESSAGE C) :CRISP.MAIN  api.lisp [See above]
+- - - - - (%API-FLAG-WARNINGS SETTINGS) :CRISP.MAIN  api.lisp
+- - - - - - (%API-DIAGNOSTIC SEVERITY MESSAGE &KEY FILE (LINE 0) (COLUMN 0)) :CRISP.MAIN  api.lisp [See above]
+- - - - - (%API-STDERR-DIAGNOSTICS TEXT) :CRISP.MAIN  api.lisp
+- - - - - - (%API-DIAGNOSTIC SEVERITY MESSAGE &KEY FILE (LINE 0) (COLUMN 0)) :CRISP.MAIN  api.lisp [See above]
+- - (%HOIST-KERNEL-SOURCE-ARGS ARGS) :CRISP.MAIN  main.lisp
 - - (PARSE-CLI-ARGS ARGS) :CRISP.MAIN  main.lisp
 - - - (%FLAG-VALUE FLAGS PREFIX) :CRISP.MAIN  main.lisp
 - - - (%PARSE-CHOICE-FLAG VALUE CHOICES DEFAULT LABEL EXPECTED) :CRISP.MAIN  main.lisp
@@ -91,1270 +1411,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                             IEEE) (FORCE-MATH-PRECISION
                                                                                    NIL) (DENORMAL-HANDLING
                                                                                          PRESERVE) (HARDWARE-PROFILE
-                                                                                                    NIL))  compiler.lisp
-- - - - (%DROP-TERMINAL-IO-LOG-APPENDER)  compiler.lisp
-- - - - (%RESET-GENSYM-COUNTER)  compiler.lisp
-- - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
-- - - - (INITIALIZE-TYPE-HIERARCHY)  types/hierarchy.lisp
-- - - - (INITIALIZE-EXPRESSION-ANALYZERS)  analysis/core.lisp
-- - - - - (REGISTER-OPS-ANALYZERS)  analysis/ops.lisp
-- - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp
-- - - - - - (%185-REGISTER-MATH-OP-ANALYZERS)  analysis/ops.lisp
-- - - - - (REGISTER-CONTROL-ANALYZERS)  analysis/control.lisp
-- - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
-- - - - - - (REGISTER-LOOP-VARIANT-ANALYZERS)  analysis/control.lisp
-- - - - - - (REGISTER-WARP-BUILTINS)  analysis/core.lisp
-- - - - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - (%WARP-SPEC-CHECK-SYNC BUILTIN-KW NAME-STR LOCATION)  analysis/control.lisp
-- - - - - - - - (%GPU-BUILTIN-INFO BUILTIN-KW)  analysis/core.lisp
-- - - - - - (%RFL-WRAP-STRIDE-ANALYZER NAME ANALYZER)  analysis/control.lisp
-- - - - - - - (%RFL-FREE-IN-FORMS-P FORMS)  analysis/control.lisp
-- - - - - - - - (%RFL-HEAD-NAME FORM)  analysis/control.lisp
-- - - - - (REGISTER-STRUCT-ANALYZERS)  analysis/structs.lisp
-- - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
-- - - - - (REGISTER-MMA-ANALYZERS)  mma.lisp
-- - - - - (%ANALYZE-GPU-BUILTIN BUILTIN-KW NAME-STR EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - - - (INITIALIZE-ADVISEMENTS) :CRISP.UTILS  utils.lisp
-- - - - - (ADVISE-FUNCTION FN-SYMBOL) :CRISP.UTILS  utils.lisp
-- - - - (REGISTER-BUILTINS)  compiler.lisp
-- - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp
-- - - - (REGISTER-MMA-TYPES)  mma.lisp
-- - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp
-- - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp
-- - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [RECURSION]
-- - - - - - (COMPUTE-RECORD-LAYOUT MEMBERS)  structs.lisp
-- - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp
-- - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp
-- - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [RECURSION]
-- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - (VALID-BASIC-TYPE-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - (VALID-FUNCTION-TYPE-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - (VALID-PARAMETERIZED-TYPE-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp
-- - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp
-- - - - - - - - - - - - (%EXPAND-VECTOR-TYPE-SPECIFIER ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
-- - - - - - - - - - - - - (%BARE-STORAGE-HANDLE-VALUE-ERROR ITEM SPEC)  types/validation.lisp
-- - - - - - - - - - - - (%EXPAND-MATRIX-TYPE-SPECIFIER ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
-- - - - - - - - - - - - - (%BARE-STORAGE-HANDLE-VALUE-ERROR ITEM SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - (%EXPAND-TENSOR-TYPE-SPECIFIER BASE ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
-- - - - - - - - - - - - (%EXPAND-CELL-TYPE-SPECIFIER BASE ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
-- - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - (EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS ARGS NUM-PARAMS)  types/validation.lisp
-- - - - - - - - - - - (VALIDATE-TEMPLATE-ARG ARG TYPE NAME)  types/validation.lisp
-- - - - - - - - - - (EXCLUDED-TEMPLATE-BASE-TYPE-P BASE-TYPE)  types/validation.lisp
-- - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - (VALID-BASIC-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - (%VALIDATE-TEMPLATE-INSTANTIATION BASE-TYPE TEMPLATE-ARGS)  types/validation.lisp
-- - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - (%INSTANTIATE-TEMPLATE-IF-NEEDED BASE-TYPE TEMPLATE-ARGS MANGLED-NAME)  types/validation.lisp
-- - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
-- - - - - - - - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp
-- - - - - - - - - - - - - - (%PROCESS-DECLAIM FORM)  analysis/core.lisp
-- - - - - - - - - - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
-- - - - - - - - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp
-- - - - - - - - - - - - - - - (%DECLARED-REDUCTION-VJP FORM)  analysis/ops.lisp
-- - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp
-- - - - - - - - - - - - - - - - (ANALYZE-RETURN-TYPE-FROM-SPEC FN-SPEC)  environment.lisp
-- - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp
-- - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - (VALID-FUNCTION-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - (EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS ARGS NUM-PARAMS)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - (ANALYZE-RETURN-TYPE-FROM-LIST DECLARATIONS)  environment.lisp
-- - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - (ANALYZE-ENVIRONMENT-FROM-SPEC PARAMS FN-SPEC)  environment.lisp
-- - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - (ANALYZE-ENVIRONMENT-FROM-LIST PARAMS DECLARATIONS)  environment.lisp
-- - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - (PARSE-TYPE-SPECIFIER SPEC)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - (RESOLVE-PARAMETERIZED-BRAND-IN-ENV BRAND-SPEC ENV)  types/brand.lisp
-- - - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - (RESOLVE-OWNER-TYPE-TO-MANGLED TYPE-SPEC)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - (VALIDATE-DEPENDENT-BRAND-TYPES DECLARE-FORMS ENV)  types/brand.lisp
-- - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - (%REGISTER-GENERIC-FUNCTION NAME PARAMS ENV RETURN-TYPES DECLARE-FORMS EXTRACTED-DEFAULTS KEY-IDX BODY LOCATION)  environment.lisp
-- - - - - - - - - - - - - - - (%REGISTER-STANDARD-FUNCTION NAME ENV RETURN-TYPES DECLARE-FORMS LOCATION)  environment.lisp
-- - - - - - - - - - - - - - - - (%FIND-ENTRY-POINT-DECLARATION DECLARE-FORMS)  environment.lisp
-- - - - - - - - - - - - - - - - (%VALIDATE-KERNEL-RETURN-TYPE RETURN-TYPES)  environment.lisp
-- - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
-- - - - - - - - - - - - - - (%176-GENERIC-SKIP-SCRATCH NAME BODY)  analysis/core.lisp
-- - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp
-- - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp
-- - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - (WITH-PEEK-SCRATCH-COUNTER &BODY BODY)  macros.lisp
-- - - - - - - - - - - - - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
-                                                    (EQL 'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - (%MMTS-SCAN-SECTIONS ARGS)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (%MMTS-SPLIT-SECTIONS BODY &OPTIONAL LOCATION)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - (%MMTS-SECTION-ERROR MESSAGE LOCATION)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (%SCAN-REGISTER-TMA-DESCRIPTOR ARGS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
-                                                      (EQL
-                                                       'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%RESOLVE-ASYNC-BARRIER-MODE-SCAN ARGS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-BLOCK-P ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (RESOLVED-TARGET-ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - (%REGISTER-SCRATCH-TENSOR-IMPLICIT OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC-BASE OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%175-SCRATCH-ADDRESS-SPACE ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - (%SCAN-GENERIC-DEFAULT-SCRATCH FN-NAME)  analysis/core.lisp
-- - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp
-- - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp
-- - - - - - - - - - - - - - (%COMPILE-STANDARD-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
-- - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - (%KERNEL-MMA-LOWERING SEMANTIC-FUNCTION)  codegen.lisp
-- - - - - - - - - - - - - - - - (GENERATE-FUNCTION-PROTOTYPE SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - (CREATE-LLVM-FUNCTION-TYPE MODULE RETURN-TYPES PARAM-NODES &OPTIONAL IS-ENTRY-POINT FN-NAME)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%DERIVED-TYPE-ACTUAL-SYMBOL TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp
-- - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (%TEMPLATE-STRUCT-TYPE-SPEC-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - (FIND-TEMPLATE-ROBUST NAME)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-ONE-ARG TOKENS PACKAGE)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-N-ARGS TOKENS N PACKAGE)  mangling.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - (RECONSTRUCT-TEMPLATE-ARGS TOKENS PACKAGE)  mangling.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (%RESOLVE-TEMPLATE-STRUCT-NAME TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%RESOLVE-TEMPLATE-NAME NAME)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (TRY-INFER-TEMPLATE-TYPES NAME ARGUMENT-TYPES)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%INFER-FROM-SINGLE-TEMPLATE TMPL ARGUMENT-TYPES)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%UNWRAP-FUNCTION-SIGNATURE RAW-SIG)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (NORMALIZE-TEMPLATE-SIG-TYPE TYPE)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-FUNCTION-SIGNATURE PATTERN-SIG CONCRETE-SIG INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-LIST-STRUCTURE SIG-LIST ARG-LIST INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (STRIP-KEYWORD-LABELS TYPE-LIST TEMPLATE-PARAMS)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (MATCH-TEMPLATE-ARG RAW-SIG-TYPE ARG-TYPE INFERENCE-MAP TEMPLATE-PARAMS)  templates.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (%SHOULD-INSTANTIATE-TEMPLATE KEY STATUS IS-COMPILING)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (INSTANTIATE-TEMPLATE NAME-OR-TMPL CONCRETE-TYPES &OPTIONAL OVERRIDE-NAME)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (VALIDATE-TEMPLATE-ARG ARG TYPE NAME)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (%INSTANTIATE-STRUCTURE-TEMPLATE NAME BODY SUBSTITUTIONS CONCRETE-TYPES)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (%DISPATCH-INCOMPLETE-TEMPLATE TEMPLATE-NAME ALL-ARGS)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%INSTANTIATE-CALLABLE-TEMPLATE NAME BODY SUBSTITUTIONS OVERRIDE-NAME)  templates.lisp
-- - - - - - - - - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp
-- - - - - - - - - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (IS-GLOBAL-STORAGE-HANDLE-P TYPE-SPEC)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
-- - - - - - - - - - - - - - - - - - - (ENCODE-ADDRESS-SPACE AS)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%VERIFY-PTX-ENTRY-EXPANDED-TYPES EXPANDED-TYPES FN-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%PTX-ENTRY-ILLEGAL-ADDRSPACE-P AS)  codegen.lisp
-- - - - - - - - - - - - - - - - - (%CHECK-EXISTING-FUNCTION EXISTING FN-NAME DI-BUILDER DI-COMPILE-UNIT FUNC CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC MODULE FN-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (GET-OR-CREATE-DI-TYPE CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)  codegen.lisp
-- - - - - - - - - - - - - - - - - (%CREATE-NEW-FUNCTION FN-NAME FN-TYPE MODULE DI-BUILDER DI-COMPILE-UNIT CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - (ENSURE-OPENCL-KERNEL-METADATA FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - (%APPLY-DENORMAL-ATTRIBUTE FUNC MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - (%EMIT-SPIRV-DENORM-EXECUTION-MODE FUNC MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - (%EMIT-SPIRV-SUBGROUP-SIZE-EXECUTION-MODE FUNC MODULE SEMANTIC-FUNCTION)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp
-- - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp
-- - - - - - - - - - - - - - - - - - (%175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING SEMANTIC-FUNCTION PINNED-P)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%175-REACHES-WARP-COLLECTIVE-P KNAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%175-FN-USES-WARP-COLLECTIVE-P NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%175-USES-WARP-COLLECTIVE-P X)  codegen.lisp
-- - - - - - - - - - - - - - - - - (%APPLY-CLUSTER-DIMS-ATTRIBUTE FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp
-- - - - - - - - - - - - - - - - - - - (%ARCH-VENDOR ARCH)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%ARCH-SM-NUMBER ARCH)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%RECORD-EFFECTIVE-CLUSTER-DIMS KERNEL-NAME DIMS)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (%WARN-CLUSTER-DEGRADED KERNEL-NAME DECLARED)  codegen.lisp
-- - - - - - - - - - - - - - - - - (%APPLY-OCCUPANCY-BOUND FUNC KNAME MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (%EFFECTIVE-OCCUPANCY-TARGET KNAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - (GENERATE-FUNCTION-BODY SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - (INITIALIZE-FUNCTION-PARAMETERS BUILDER FUNC PARAM-NODES MODULE VAR-ENV &OPTIONAL IS-ENTRY-POINT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%PTX-ENTRY-RESTORE-SHARED-PTRS-FOR-IMPLODE BUILDER COMPONENTS TYPE-SPEC MODULE IS-ENTRY-POINT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%PTX-ENTRY-ILLEGAL-ADDRSPACE-P AS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%PTX-DYNAMIC-SMEM-BASE BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (IMPLODE-VALUE BUILDER COMPONENTS TYPE-SPEC MODULE)  codegen/abi.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
-- - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - (%COLLECT-READONLY-TENSOR-PARAM-SYMS SEMANTIC-FUNCTION)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                       SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp
-- - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                         SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GENERATE-KEYWORD-LITERAL-IR VALUE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-KEYWORD-CONSTANT KW)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GENERATE-CELL-LITERAL-IR BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GENERATE-TENSOR-SCRATCH-LITERAL-IR BUILDER MODULE VAR-ENV TYPE-SPEC VALUE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GENERATE-ENUM-LITERAL-IR BUILDER VALUE LLVM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-KEYWORD-CONSTANT KW)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GENERATE-SCALAR-LITERAL-IR BUILDER VALUE LLVM-TYPE CRISP-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (BUILD-CAST-IF-NEEDED BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (GET-TYPE-CAT-SAFE TYPE-NAME TYPE-OBJ)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BF16-DEST-AS-I16-P TO-TYPE-NAME TO-LLVM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%F32-TO-BF16-BITS-RNE BUILDER F32-VAL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BF16-AS-I16-P VAL FROM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%ARITH-CATEGORY TYPE-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%HW-LOWER (OP (EQL '%185-FMOD)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
-                                                                                                 hw_tmp))  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-SUFFIX TYPE-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-WIDEN BUILDER MODULE VALUE FROM-TYPE TO-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-FLOAT-CONST BUILDER MODULE TYPE-NAME VALUE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-SPLAT BUILDER ELEM-CONST LANES LLVM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-LLVM-INT-TYPE BITS)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
-                                                                                                 hw_tmp))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-INT-CONST BUILDER BITS LANES VALUE SIGNED-P)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-SPLAT BUILDER ELEM-CONST LANES LLVM-TYPE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-LLVM-INT-TYPE BITS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-INT-LLVM-TYPE BITS LANES)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-ABS-DIFF-VALUE BUILDER MODULE A B A-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-LOWER-MIN-MAX-3 BUILDER MODULE ARG-VALS TYPE-NAME FLOAT-BASE INT-BASE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-INT-INTRINSIC BUILDER MODULE BASE CAT BITS LANES &REST ARGS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-APPROX-FLAGS INST)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
-                                                                                               hw_tmp))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-APPROX-TRANSCENDENTAL BUILDER MODULE X X-TYPE BASE NATIVE LIBDEVICE LIBDEVICE-FAST)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-VIA-FLOAT BUILDER MODULE X X-TYPE FN)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-NAMED BASE-NAME LANES)  analysis/ops.lisp
-- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%LIBDEVICE-FN-NAME BASE F32-P)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%NATIVE-BUILTIN-MANGLED-NAME BASE-NAME ARITY)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-APPROX-FLAGS INST)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
-                                                                                                 hw_tmp))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%185-LOWER-DIVMOD BUILDER MODULE MODE ARG-VALS ARG-TYPES RESULT-TYPE TWO-VALUES-P)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%185-INT-DIVMOD BUILDER MODULE MODE A B TYPE-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%185-DIVMOD-HELPER MODULE MODE TYPE-NAME TWO-VALUES-P)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%185-INT-DIVMOD BUILDER MODULE MODE A B TYPE-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%185-LOWER-FP-TO-INT BUILDER MODULE BASE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%185-SQRT-CALL BUILDER MODULE X TYPE-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
-                                                                                                 hw_tmp))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-LOWER (OP (EQL '%185-FMOD)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%185-HELPER-CALL BUILDER MODULE NAME RET-TYPE ARG-VALS BODY-FN)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (BUILD-CAST-IF-NEEDED BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%185-ASH-BODY BUILDER MODULE X C X-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%185-TRANSCENDENTAL-CALL BUILDER MODULE X TYPE-NAME BASE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%MATH-CALL-NAME INTRINSIC-NAME NATIVE-NAME LIBDEVICE-BASE LIBDEVICE-FAST-BASE ARITY SIZE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%LIBDEVICE-FN-NAME BASE F32-P)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%185-OCL-BUILTIN-NAME BASE BITS)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
-                                                                                                 hw_tmp))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%185-FMOD-BODY BUILDER MODULE X Y TYPE-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%HW-FLOAT-CONST BUILDER MODULE TYPE-NAME VALUE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%BUILD-LLVM-FUNCTION-TYPE MODULE RETURN-TYPE-NAMES PARAM-TYPES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%BUILD-FUNCTION-CALL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT RETURN-TYPE-NAMES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                             SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%RECORD-BASE-FROM-LIST-FORM TYPE-SPEC)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GENERATE-LET-BINDING BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP MEMOIZED-AGGREGATES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%READONLY-SYMS-AFTER-BINDING SYMS BINDING)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%ARRAY-NODE-READONLY-TENSOR-PARAM-P ARRAY-NODE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%KERNEL-ENTRY-REASSEMBLY-P NAME NODE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%IF-RESULT-LLVM-TYPE TYPE-SPEC MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%MEMBER-ACCESS-STRUCT-NAME OBJ-TYPE)  structs.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-TO-LLVM TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%AREF-CELL-SPEC ARRAY-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%AREF-FIXED-ARRAY-IR ARRAY-NODE ARRAY-TYPE INDEX-VAL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%TRY-INLINE-STRUCT-ARRAY-FIELD-PTR ARRAY-NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%LOOKUP-FIELD-PHYSICAL-INDEX STRUCT-DEF FIELD-NAME-STR)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                             SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                           SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%AREF-TENSOR-IR ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                           SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%ARRAY-NODE-READONLY-TENSOR-PARAM-P ARRAY-NODE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%ATTACH-INVARIANT-LOAD LOADED-INST MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%AREF-CELL-IR ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                           SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%DVEC-COERCE-ELEMENT-IR ELEM-NODE COMP-TYPE COMP-LLVM-TYPE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                           SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (%COERCE-TO-I64 BUILDER VAL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%MV-BUMP-PTR BUILDER BASE-PTR OFFSET-BYTES ADDR-SPACE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%MV-SOURCE-ADDR CANON)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - (%MV-SOURCE-HEAD CANON)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - (%MV-BUILD-STORAGE BUILDER MODULE ADDR-SPACE SRC-PARENT NEW-PTR NEW-BYTESIZE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%MV-EMIT-BOUNDS-CHECK BUILDER MODULE RANK EXPLICIT-LEN OFFSET-ELEMS OFFSET-BYTES ELEM-SIZE SRC-BYTESIZE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%MV-CELL-VALUE BUILDER MODULE ADDR-SPACE SRC-PARENT SRC-PTR SRC-BYTESIZE OFFSET-ELEMS ELEM-SIZE RESULT-UNDEF)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%MV-BUILD-STORAGE BUILDER MODULE ADDR-SPACE SRC-PARENT NEW-PTR NEW-BYTESIZE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%MV-TENSOR-VALUE BUILDER RANK STRIDES EXTENTS EXPLICIT-LEN NEW-BYTESIZE ELEM-SIZE RESULT-UNDEF NEW-STORAGE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%MV-BUILD-ZERO-I64-ARRAY RANK)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%MV-ROW-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - (%MV-BUILD-CONST-I64-ARRAY BUILDER RANK VALUES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%184-DEVICE-SYNC-SCOPE MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%SV-TO-I64 BUILDER VAL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-VEC3 BUILDER MODULE SREG-BASE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-SCALAR BUILDER MODULE SREG-BASE DIM)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-GLOBAL-ID-VEC3 BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-SCALAR BUILDER MODULE SREG-BASE DIM)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-GLOBAL-SIZE-VEC3 BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-SCALAR BUILDER MODULE SREG-BASE DIM)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%PTX-ZERO-VEC3 BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-VEC3-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-VEC3-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-UINT-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-LOCAL-LINEAR-ID BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%GEN-FLAT-LINEAR-ID-FROM-VECS BUILDER LID-VEC LWS-VEC NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-PRODUCT-OF-VEC3 BUILDER MODULE SPIRV-NAME RESULT-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-GLOBAL-LINEAR-ID BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%GEN-FLAT-LINEAR-ID-FROM-VECS BUILDER LID-VEC LWS-VEC NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%EXTRACT-VEC3-I64 BUILDER VEC-VAL DIM NAME-SUFFIX)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-WARP-ID BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%GEN-LOCAL-LINEAR-ID BUILDER MODULE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-UINT-GLOBAL-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%PTX-READ-WARP-SREG BUILDER MODULE SREG-NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%PTX-SYNTHESIZE-WARP-COUNT BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CLUSTER-BARRIER BUILDER)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%PTX-BARRIER BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-CONTROL-BARRIER BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-SPLIT-BARRIER BUILDER MODULE PHASE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%PTX-SYNCWARP BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-WARP-BARRIER BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%PTX-MEMBAR-GL BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%PTX-MEMBAR-CTA BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-MEMORY-BARRIER-WORKGROUP BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%ATTACH-LOOP-UNROLL-METADATA LATCH-BR MODULE SPEC)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%EFFECTIVE-LOOP-UNROLL SPEC)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%LOOP-VARIANT-COERCE BUILDER VALUE LLVM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
-                                                                                             hw_tmp))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%184-CALL-WITH-LOOP-EXIT-TARGET BUILDER THUNK)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-MBAR-GLOBAL MODULE &OPTIONAL (COUNT
-                                                                                   1))  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-X BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Y BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Z BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-INIT-SHARED BUILDER MODULE MBARRIER-PTR COUNT-VAL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBAR-SLOT-PTR BUILDER MBAR-BASE I)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%MODULE-HAS-CLUSTER-P)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-X BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Y BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Z BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-ASYNC-WORK-GROUP-COPY BUILDER MODULE DST-AS3 SRC-AS1 NUM-I64 EVENT-IN ELEM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-MANGLE-ELEM ELEM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-WAIT-GROUP-EVENTS BUILDER MODULE EVENTS-AS4-PTR)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-ELEM BUILDER MODULE DST-PTR SRC-PTR ELEM-BYTES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-COMMIT-GROUP BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%VECTOR-ELEM-TYPE TILE-TYPE-SPEC)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-MBARRIER-ARRIVE-NOINC-SHARED BUILDER MODULE MBARRIER-PTR)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-WAIT-GROUP BUILDER MODULE N)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%TMA-LOOKUP-DESCRIPTOR-PTR BUILDER VAR-ENV SRC-NAME GLOB-PTR-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%COERCE-TO-I32 BUILDER VAL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-EXPECT-TX BUILDER MBAR-ADDR-I32 TX-BYTES-I32)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-MULTICAST-LEADER-PRED BUILDER MODULE PLAN &OPTIONAL ROT-SRC)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%PTX-READ-WARP-SREG BUILDER MODULE SREG-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-SREG AXIS)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1 &OPTIONAL (MCAST-MASK
-                                                                                                                                                    0) (MCAST-P
-                                                                                                                                                        NIL))  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-MULTICAST-MASK-VALUE BUILDER MODULE PLAN)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-STRIDES DIMS)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - (%PTX-READ-WARP-SREG BUILDER MODULE SREG-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-SREG AXIS)  analysis/control.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-TRY-WAIT-PARITY BUILDER MBAR-ADDR-I32 PHASE-I32)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MAPA-SHARED-CLUSTER BUILDER ADDR-I32 RANK-I32)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-CLUSTER BUILDER PEER-ADDR-I32)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-SHARED BUILDER MODULE MBARRIER-PTR)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%COOP-OP-ELEM-LLVM NODE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-NODE-ELEM NODE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%COOP-FILL BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-FILL-IMPL (LOWERING
-                                                          (EQL XE-NATIVE)) BUILDER MODULE INIT-VAL ELEM-LLVM ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
-                                                              (EQL XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (%XE-NATIVE-SUBGROUP-WIDTH)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (%XE-NOTE-OPERAND-ELEM KIND)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%XE-NATIVE-ELEM-KIND ELEM-LLVM)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-COERCE-SCALAR BUILDER VAL WANT-TY NAME)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%LLVM-FLOAT-WIDTH TY)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
-                                                            (EQL XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%COOP-LOAD BUILDER MODULE TENSOR-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-LOAD-IMPL (LOWERING
-                                                          (EQL XE-NATIVE)) BUILDER MODULE TENSOR-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE-IMPL (LOWERING
-                                                                           (EQL
-                                                                            XE-NATIVE)) BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%COOP-SPLIT-ORIGIN BUILDER ORIGIN)  compiler.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE-IMPL (LOWERING
-                                                                             (EQL
-                                                                              XE-NATIVE)) BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (%ATTACH-CACHE-CONTROL-LOAD PTR MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%ELEM-LLVM-BYTES ELEM-LLVM)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%LLVM-FLOAT-WIDTH TY)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE-IMPL (LOWERING
-                                                            (EQL XE-NATIVE)) ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%XE-SURFACE BUILDER TENSOR-VAL ELEM-BYTES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%XE-COORD BUILDER OROW OCOL)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%COOP-STORE BUILDER MODULE TENSOR-VAL MATRIX-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-STORE-IMPL (LOWERING
-                                                           (EQL XE-NATIVE)) BUILDER MODULE TENSOR-VAL MATRIX-VAL OROW OCOL ELEM-LLVM ROWS COLS USE LAYOUT)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%ELEM-LLVM-BYTES ELEM-LLVM)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%XE-SURFACE BUILDER TENSOR-VAL ELEM-BYTES)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%XE-COORD BUILDER OROW OCOL)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%COOP-TENSOR-PTR+STRIDE BUILDER TENSOR-VAL OROW OCOL LAYOUT &OPTIONAL ELEM-LLVM)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%BLOCK-PREFETCH BUILDER MODULE PTR STRIDE-VAL ROWS COLS &OPTIONAL (ELEM-BYTES
-                                                                                                          4))  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%PTR-AS PTR-VAL)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%ELEM-LLVM-BYTES ELEM-LLVM)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%COOP-MAP-IR NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-VAR-STORAGE NODE NAME VAR-ENV)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%COOP-EMIT-MAP-LOOP NODE BUILDER MODULE ROWS COLS USE PRIMARY-PTR PER-ELEM)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-NODE-ELEM NODE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-LENGTH BUILDER MODULE MAT-VAL ELEM-LLVM ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%COOP-TYPE ELEM-LLVM ROWS COLS USE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (TERMINATOR-P BLOCK)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%COOP-ACCESS-CHAIN BUILDER MODULE MAT-PTR IDX-I64)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-PTR-TYPE &OPTIONAL (AS 1))  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                           SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (%COOP-MAP2-IR NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ROWS COLS USE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-VAR-STORAGE NODE NAME VAR-ENV)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%COOP-EMIT-MAP-LOOP NODE BUILDER MODULE ROWS COLS USE PRIMARY-PTR PER-ELEM)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%COOP-ACCESS-CHAIN BUILDER MODULE MAT-PTR IDX-I64)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
-                                                           SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (%SHUFFLE-INDEX-I32 BUILDER IDX-VAL IDX-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I32 BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-PTX BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-SPV BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-CHECK-PINNED LOCATION)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%CALL-SPIRV-UINT-GLOBAL-BUILTIN BUILDER MODULE SPIRV-NAME)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-SPV-TARGET BUILDER LANE OP IDX WIDTH)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I64 BUILDER MODULE OP VAL64 IDX WIDTH)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-EMIT-I32 BUILDER MODULE OP VAL IDX WIDTH)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%175-CAS-INT-WIDTH-FOR ELEM-TYPE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp
-- - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P (K
-                                                                                                                         8) ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%PTX-BARRIER BUILDER MODULE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%EMIT-WGMMA-MMA-ONLY BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF &OPTIONAL ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%WGMMA-MAKE-DESC BUILDER BASE-PTR &OPTIONAL SWIZZLE-P (KSLICE-BYTE-OFF
-                                                                                                  0))  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%WGMMA-ASM-STRING NACC N &OPTIONAL ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%WGMMA-OPERAND-MNEMONIC ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%WGMMA-CONSTRAINTS NACC)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%WGMMA-STRUCT-OF-FLOATS MODULE NACC)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-FOR-ELEM SHAPES ELEM)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-TYPE ENTRY)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-DIMS ENTRY)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - (%MMA-SHAPE-ENTRY-DIMS ENTRY)  mma.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%COOP-MMA BUILDER MODULE A-VAL B-VAL C-VAL ELEM-LLVM M N K)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - (%COOP-MMA-IMPL (LOWERING
-                                                         (EQL XE-NATIVE)) BUILDER MODULE A-VAL B-VAL C-VAL ELEM-LLVM M N K)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - (%NVVM-FRAG-FORMAT LLVM-ELEM-TYPE)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA-F64 BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
-- - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - - - - (%MODULE-HAS-CLUSTER-P)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - (%ARCH-SUPPORTS-CLUSTERS-P ARCH)  types/registry.lisp [See above]
-- - - - - - - - - - - - - - - - - (%GEN-NVVM-CLUSTER-BARRIER BUILDER)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
-- - - - - - - - - - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp
-- - - - - - - - - - - - - - (%GENERATE-BACKWARD-FUNCTION-AST NAME PARAMS DECLARATIONS BODY-FORMS)  autodiff.lisp
-- - - - - - - - - - - - - - - (%TRIVIAL-ACCESSOR-BODY-P BODY-FORMS)  autodiff.lisp
-- - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
-- - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - (%COLLECT-RECORD-PARAM-INFO ENV PKG)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS PD-TYPE)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%CRISP-TENSOR-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%IS-TENSOR-ALIAS SYM)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - (%CRISP-CELL-PARAM-TYPE-P PD-TYPE)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - - - - (%ACTIVE-SCALAR-PARAM-SET PARAMS BODY-FORMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%ASV-UNION EXPRS ENV)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%ACTIVE-SCALAR-VARS EXPR ENV)  autodiff.lisp [RECURSION]
-- - - - - - - - - - - - - - - (%COLLECT-ALL-DIFF-PARAM-SYMS-FOR-RETURN ENV RECORD-PARAM-INFO &OPTIONAL ACTIVE-SET)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - (%COUNT-ACTIVE-CONTRIBUTIONS PD-TYPE SYM ACTIVE-SET &OPTIONAL RECORD-INFO)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%COUNT-DIFFERENTIABLE-CONTRIBUTIONS PD-TYPE &OPTIONAL RECORD-INFO)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%RESOLVE-TO-BASE-TYPE-FOR-STRUCTS-OR-RECORDS PD-TYPE)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-RECORD-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-STRUCT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%GET-RECORD-RUNTIME-FIELDS REC-TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - (%BUILD-RECORD-PARAM-FIELD-ADJS-HT RECORD-PARAM-INFO)  autodiff.lisp
-- - - - - - - - - - - - - - - (%COUNT-ACTIVE-CONTRIBUTIONS PD-TYPE SYM ACTIVE-SET &OPTIONAL RECORD-INFO)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - (%HAS-TENSOR-DIFF-PARAM-P ENV)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - (%REGISTER-HOF-DIFFERENTIABLE-FUNCTION NAME ENV FLOAT-PARAM-SYMS FN-PARAM-ENTRIES N-RETURN BODY-FORMS)  autodiff.lisp
-- - - - - - - - - - - - - - - (%GENERATE-BACKWARD-COMPANION-AST-BODY NAME PARAMS ENV DECLARATIONS BODY-FORMS PKG N-FLOAT-PARAMS N-RETURN RETURN-TYPES-NON-VOID RECORD-PARAM-INFO RECORD-PARAM-FIELD-ADJS-HT ALL-DIFF-PARAM-SYMS-FOR-RETURN)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - (%CRISP-INTEGER-CELL-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%INTEGER-CELL-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-CELL-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%AD-ENUM-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - (%AD-SCALAR-ADJOINT-TYPE TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%AD-PROMOTES-TO-DOUBLE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%PROMOTE-TO-FLOAT-ADJOINT TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - (%COLLECT-TENSOR-PARAM-INFO ENV PKG)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%INTEGER-TENSOR-ELEM-TO-FLOAT TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%CRISP-TENSOR-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%ENSURE-TENSOR-READ-WRITE TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%CRISP-HANDLE-PARAM-TYPE-P PD-TYPE)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - (FLATTEN-ANF-BODY ANF-BODY)  anf-transform.lisp
-- - - - - - - - - - - - - - - - (%EXTRACT-RETURN-VARS FLAT-ANF)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%CHECK-FN-BODY-FOR-MUTATIONS BODY-FORMS PARAM-NAMES FN-NAME)  autodiff.lisp
-- - - - - - - - - - - - - - - - (%GENERATE-BACKWARD-FUNCTION-WALK FLAT-ANF FLOAT-PARAM-SYMS T-GRAD-SYMS RETURN-VARS &OPTIONAL TENSOR-INPUTS-HT ANY-DOUBLE RETURN-ADJ-TYPES)  autodiff.lisp
-- - - - - - - - - - - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                              T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%HW-OP-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%HW-OP-FORM-OP EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%SHUFFLE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%175-RAW-INTEGER-LITERAL FORM)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-WIDTH-FORM EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%175-BROADCAST-VJP-FORM G VALUE-ADJ IDX TAIL WIDTH-FORM ZERO)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%SHUFFLE-BACKWARD-BASE V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-OP EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%SHUFFLE-FORM-WIDTH-FORM EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%AD-REM-OR-MOD-FORM-P EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%AD-HANDLE-REM-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%AD-WIDENING-CONVERSION-FORM-P EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%AD-HANDLE-WIDENING-CONVERSION-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%AD-INERT-RING-GET-P EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%185-MATH-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%185-CRISP-SYM NAME)  analysis/ops.lisp
-- - - - - - - - - - - - - - - - - - - (%185-OP-NAMED-P SYM NAME)  analysis/ops.lisp
-- - - - - - - - - - - - - - - - - - (%HANDLE-MATH-AND-TRIG-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%HANDLE-TILDE-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%AD-RESOLVE-VIEW-ALIAS SYM)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - (%AD-VIEW-ADJOINT VIEW)  autodiff.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - (%HANDLE-SUB-FN-CALL-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN HOF-HANDLER-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%EMIT-FOREIGN-BACKWARD FN ARGS T-ADJ-FORMS PKG EMIT-FN LOCAL-ADJ-FN)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
-                                                                                                                                  BW))  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%IS-ACCESSOR-P EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P FN-SYM)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P-145P1 FN-SYM)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - (%BACKWARD-SKIP-FN-P-145P1-BASE FN-SYM)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%HANDLE-ACCESSOR-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%STRIP-ACCESSOR-TILDES ACCESSOR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%NESTED-FIELD-INFO-P FIELD-INFO)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%HANDLE-CONSTRUCTOR-BACKWARD V EXPR EMIT-FN LOCAL-ADJ-FN ADJOINT-MAP)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%VALUE-IF-P EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-IF-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                            T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - (%BACKWARD-VALUE-EXPR V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                         T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - (%VALUE-IF-P EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-IF-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                                T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (%VALUE-LET-P EXPR)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-LET-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                                 T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - - (%BACKWARD-VALUE-EXPR V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                             T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (%HANDLE-SINGLE-VALUE-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                                    T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (%FORMS->PROGN FORMS)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - (%VALUE-LET-P EXPR)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%HANDLE-VALUE-LET-BACKWARD V EXPR ADJOINT-MAP EMIT-FN LOCAL-ADJ-FN &KEY HOF-HANDLER-FN (ERROR-ON-UNKNOWN
-                                                                                                                             T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
-                                                                                                                              BW))  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
-- - - - - - - - - - - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%VALIDATE-GRID-FUNCTION-RETURN-TYPE RETURN-TYPES)  environment.lisp
-- - - - - - - - - - - - - - - - - - (%PARSE-MMA-LOWERING-DECL DECL KERNEL-NAME PROFILE)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - (%HP-MMA-LOWERINGS PROFILE)  hardware-profile.lisp
-- - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%PARSE-CLUSTER-SIZE-DECL DECL KERNEL-NAME DECLARATIONS)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - (%PARSE-OCCUPANCY-TARGET-DECL NAME DECLARATIONS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - (%HP-CHECK-WORKGROUP-BOUNDS KERNEL-NAME LOCAL-SIZE-DECL PROFILE)  hardware-profile.lisp
-- - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
-- - - - - - - - - - - - - - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (MULTI-PASS-MODE-P)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES CONTEXT)  type-checker.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (INSTANTIATE-GENERIC-FUNCTION GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-ARGUMENT-BINDINGS GENERIC-DEF EXPLICIT-ARG-TYPES)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%BIND-DEFAULTS-TO-DEFAULT-SCRATCH FN-NAME INJECTED-BINDINGS)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-NAME BASE-NAME ACTIVE-ENV)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-ALREADY-GENERATED VARIANT-NAME PARAM-TYPES &OPTIONAL (LLVM-PARAM-TYPES
-                                                                                                                       PARAM-TYPES))  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-LLVM-NAME VARIANT-NAME PARAM-TYPES)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - (%GENERATE-LAZY-VARIANT-IR AST-NODE VARIANT-NAME &OPTIONAL BASE-NAME)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (%CHECK-STRUCT-MUTATING-CALL OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-OF-ALL NODES ENV)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-JOIN STATES)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (%VALIDATE-DERIVED-TYPE-REGISTRATION NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (%UPDATE-DERIVED-TYPE-RELATIONSHIPS NEW-NODE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%REGISTER-DERIVED-IN-CRISP-TYPES NEW-TYPE-NAME BASE-TYPE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp
-- - - - - - - - - - - - - - (%EXTRACT-FN-BODY-AND-DECLARATIONS BODY-AND-LOC)  analysis/core.lisp
-- - - - - - - - - - - - - - (%DETECT-HOF-PARAM-VIA-FUNCALL PARAMS FN-BODY)  analysis/core.lisp
-- - - - - - - - - - - - - - - (%TREE-HAS-FUNCALL-P TREE TARGET-SYM)  analysis/core.lisp
-- - - - - - - - - - - - - - - - (%TREE-HAS-FUNCALL-P TREE TARGET-SYM)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - (%REGISTER-HOF-ENTRY NAME TYPE-DESC PARAMS FN-PARAM-IDX FN-PARAM-SYM FLOAT-PARAM-SYMS CLEAN-BODY N-FLOAT-PARAMS N-RETURN)  analysis/core.lisp
-- - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - (COMPUTE-NATIVE-LAYOUT MEMBERS)  structs.lisp
-- - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp
-- - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
-- - - - - - - - (%STRUCT-NATIVE-ALIGNMENT STRUCT-NAME)  structs.lisp
-- - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - (GET-NATIVE-BASE-ALIGNMENT TYPE-SPEC)  structs.lisp [RECURSION]
-- - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - - - (GET-NATIVE-SIZE TYPE-SPEC)  structs.lisp [See above]
-- - - - - - - (CALCULATE-NATIVE-PADDING CURRENT-OFFSET ALIGNMENT)  structs.lisp
-- - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
-- - - - - (REGISTER-BUILTIN-HARDWARE-PROFILES)  mma.lisp
-- - - - - - (REGISTER-HARDWARE-PROFILE NAME PROPLIST)  hardware-profile.lisp
-- - - - - - - (%HP-VALIDATE-VALUE PROFILE-NAME KEY TYPE RAW)  hardware-profile.lisp
-- - - - - - - - (%HP-UNQUOTE V)  hardware-profile.lisp
-- - - - - - - - (%HP-PARSE-SIZE V)  hardware-profile.lisp
-- - - - - - - - (%HP-3-POS-INTS-P X)  hardware-profile.lisp
+                                                                                                    NIL))  compiler.lisp [See above]
 - - - (%RECONCILE-HOIST-TARGET TARGETS HOIST-NAME TARGET-NAME TARGET-KW) :CRISP.MAIN  main.lisp
 - - (COMPILE-FILES FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P HOIST-TARGETS &OPTIONAL BC-FILES) :CRISP.MAIN  main.lisp
-- - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp
-- - - (%COMPILE-FILES-SINGLE-PASS FILES MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT) :CRISP.MAIN  main.lisp
-- - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
-- - - (%READ-CRISP-FORMS FILES) :CRISP.MAIN  main.lisp
-- - - (GENERATE-LOCATION-MAP FORMS)  analysis/core.lisp
-- - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp
-- - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp [RECURSION]
-- - - (COMPILE-MODULE FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
-- - - - (%INJECT-SHADOW-STRUCT-FORMS FORMS)  autodiff.lisp
-- - - - - (%COLLECT-STRUCT-NAMES-FROM-FORMS FORMS)  autodiff.lisp
-- - - - - (%GENERATE-SHADOW-DEF-STRUCT-FORM DEF-STRUCT-FORM &OPTIONAL STRUCT-NAME-SET)  autodiff.lisp
-- - - - - - (%ADJ-TYPE-FOR-FIELD FORWARD-TYPE &OPTIONAL STRUCT-NAME-SET)  autodiff.lisp
-- - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - (%CRISP-INTEGER-SCALAR-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - (%INTEGER-SCALAR-TO-FLOAT-SCALAR TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - - (BRAND &REST ARGS)  macros.lisp
-- - - - - - (DEF-STRUCT NAME &REST MEMBERS)  macros.lisp
-- - - - - - - (BRAND &REST ARGS)  macros.lisp [See above]
-- - - - - - - (REGISTER-BRAND-DEFINITION STRUCT-NAME BRAND-FORM)  types/brand.lisp
-- - - - - - - - (PARSE-BRAND-DECLARATION BRAND-FORM)  types/brand.lisp
-- - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
-- - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp [See above]
-- - - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY
-                                                                  STRUCT))  structs.lisp [See above]
-- - - - - - - (VALIDATE-AND-REORDER-STRUCT-ARGS STRUCT-NAME DEFINED-MEMBERS ARGS)  structs.lisp
-- - - - (ANALYZE-SIGNATURES-PASS FORMS)  analysis/core.lisp
-- - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS &OPTIONAL RECORD-INFO)  analysis/core.lisp
-- - - - - - (%SCAN-FORMS-FOR-RECORD-INFO FORMS)  autodiff.lisp
-- - - - - - (%EXTRACT-FN-BODY-AND-DECLARATIONS BODY-AND-LOC)  analysis/core.lisp [See above]
-- - - - - - (%LAMBDA-LIST-GENERIC-P PARAMS)  analysis/core.lisp
-- - - - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
-- - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
-- - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - (%ACTIVE-SCALAR-PARAM-SET PARAMS BODY-FORMS)  autodiff.lisp [See above]
-- - - - - - (%COUNT-ACTIVE-CONTRIBUTIONS PD-TYPE SYM ACTIVE-SET &OPTIONAL RECORD-INFO)  autodiff.lisp [See above]
-- - - - - - (%CRISP-FUNCTION-TYPE-P TYPE-SPEC)  autodiff.lisp [See above]
-- - - - - - (%HAS-TENSOR-DIFF-PARAM-P ENV)  autodiff.lisp [See above]
-- - - - - - (%REGISTER-HOF-ENTRY NAME TYPE-DESC PARAMS FN-PARAM-IDX FN-PARAM-SYM FLOAT-PARAM-SYMS CLEAN-BODY N-FLOAT-PARAMS N-RETURN)  analysis/core.lisp [See above]
-- - - - - - (%REGISTER-STANDARD-DIFFERENTIABLE-ENTRY NAME TYPE-DESC N-FLOAT-PARAMS N-RETURN &KEY OPTIMISTIC-P)  analysis/core.lisp
-- - - - - - (%PRE-REGISTER-DIFFERENTIABLE-FNS FORMS &OPTIONAL RECORD-INFO)  analysis/core.lisp [RECURSION]
-- - - - - - (%DETECT-HOF-PARAM-VIA-FUNCALL PARAMS FN-BODY)  analysis/core.lisp [See above]
-- - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp
-- - - - - - (VISIT-TOPLEVEL-FORM FORM LOCATION VISITOR-FN)  analysis/core.lisp [See above]
-- - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
-- - - - - (SHALLOW-ANALYZE-BODY FORMS)  analysis/core.lisp [See above]
-- - - - - (%SCAN-GENERIC-DEFAULT-SCRATCH FN-NAME)  analysis/core.lisp [See above]
-- - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp [See above]
-- - - - - (INFER-PARAM-UNIFORMITY)  analysis/core.lisp
-- - - - - - (%UNI-TOPO-ORDER NODES)  analysis/core.lisp
-- - - - - - (%UNI-PARAM-NAMES PARAMS)  analysis/core.lisp
-- - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp
-- - - - - - - (%UNI-BUILTIN-STATE OP)  analysis/core.lisp
-- - - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp [RECURSION]
-- - - - - - - (%UNI-ANALYZE-LET FORM ENV)  analysis/core.lisp
-- - - - - - - - (%UNI-ANALYZE FORM ENV)  analysis/core.lisp [RECURSION]
-- - - - - - - (%UNI-COMBINE STATES)  analysis/core.lisp
-- - - - - - - (%UNI-PARAM-NAMES PARAMS)  analysis/core.lisp [See above]
-- - - - - - - (%UNI-CONTRIBUTE CALLEE PARAM-NAME STATE)  analysis/core.lisp
-- - - - - - - - (%UNI-COMBINE STATES)  analysis/core.lisp [See above]
-- - - - (FINALIZE-STRUCT-DEFINITIONS)  structs.lisp
-- - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))  structs.lisp [See above]
-- - - - (PROPAGATE-IMPLICIT-ARGUMENTS)  analysis/core.lisp
-- - - - (COMPILE-FORMS-PASS FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
-- - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
-- - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp [See above]
-- - - - (RESOLVE-TMA-DESCRIPTORS)  analysis/core.lisp
-- - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp
-- - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp
-- - - - - - (%TMA-CLASSIFY FN SYM KIND)  analysis/core.lisp
-- - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp
-- - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
-- - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
-- - - - - - (%TMA-DOWNSTREAM-CARRIER FN UNAME)  analysis/core.lisp
-- - - - - - - (%FN-CARRIES-DESCRIPTOR-P FN-NAME UNAME)  analysis/core.lisp
-- - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp [RECURSION]
-- - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp [See above]
-- - - - - (%KERNEL-PARAM-CONTIGUOUS-TERM KERNEL SYM)  analysis/core.lisp
-- - - - (CHECK-FOR-RECURSION-CYCLES)  analysis/core.lisp
-- - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp
-- - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp [RECURSION]
-- - - - (%HP-CHECK-ALL-SHARED-MEMORY)  hardware-profile.lisp
-- - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - (%HP-CHECK-SHARED-MEMORY KERNEL-NAME PROFILE)  hardware-profile.lisp
-- - - - - - (%HP-KERNEL-SHARED-BYTES KERNEL-NAME)  hardware-profile.lisp
-- - - - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp
-- - - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp
-- - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp
-- - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp
-- - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp
-- - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [RECURSION]
-- - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
-- - - - - - - (%HP-SCRATCH-ELEM-BYTES ELEM-TYPE)  hardware-profile.lisp
-- - - - - (%HP-REPORT-SHARED-MEMORY KERNEL-NAME PROFILE)  hardware-profile.lisp
-- - - - - - (%HP-KERNEL-SHARED-BYTES KERNEL-NAME)  hardware-profile.lisp [See above]
-- - - - - (%HP-REPORT-REGISTER-OCCUPANCY KERNEL-NAME PROFILE)  hardware-profile.lisp
-- - - - - - (%KERNEL-REGISTERS-PER-THREAD KERNEL-NAME)  mma.lisp
-- - - - - - - (%SPV-KERNEL-REGISTER-DEMAND KERNEL-NAME)  mma.lisp
-- - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
-- - - - - (%SPV-DECIDE-REGISTER-MODE KERNEL-NAME PROFILE)  mma.lisp
-- - - - - - (%HP-REGISTER-MODES &OPTIONAL (PROFILE (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp
-- - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - (%SPV-KERNEL-REGISTER-DEMAND KERNEL-NAME)  mma.lisp [See above]
+- - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp [See above]
+- - - (%COMPILE-FILES-SINGLE-PASS FILES MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT) :CRISP.MAIN  main.lisp [See above]
+- - - (%READ-CRISP-FORMS FILES) :CRISP.MAIN  main.lisp [See above]
+- - - (GENERATE-LOCATION-MAP FORMS)  analysis/core.lisp [See above]
+- - - (COMPILE-MODULE FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 - - - (LINK-FOREIGN-BITCODE MODULE BC-FILES) :CRISP.MAIN  main.lisp
-- - - (%EMIT-TARGET-OUTPUT TARGET-BACKEND MODULE FILEPATH DEBUG-P) :CRISP.MAIN  main.lisp
-- - - - (%OUTPUT-BASE-NAME FILEPATH) :CRISP.MAIN  main.lisp
-- - - - (COMPILE-TO-SPIRV MODULE OUTPUT-PATH &KEY DEBUG-P)  compiler.lisp
-- - - - - (%REMOVE-DEAD-ARRAY-RETURNING-FUNCTIONS MODULE)  compiler.lisp
-- - - - - - (LLVM-TYPE-KIND-IS-ARRAY? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
-- - - - - (%MODULE-USES-NATIVE-BUILTIN-P MODULE)  codegen.lisp
-- - - - - (%MODULE-USES-ASYNC-COPY-BUILTIN-P MODULE)  codegen.lisp
-- - - - - (%EMIT-OPENCL-VERSION-METADATA MODULE)  codegen.lisp
-- - - - - (INJECT-SPIR-KERNEL-METADATA IR-TEXT)  compiler.lisp
-- - - - - - (FIND-SPIR-KERNELS IR-TEXT)  compiler.lisp
-- - - - - - - (%EXTRACT-SPIR-KERNEL-INFO IR-TEXT KERNEL-POS)  compiler.lisp
-- - - - - - (%MAX-METADATA-ID IR-TEXT)  compiler.lisp
-- - - - - - (EXTRACT-KERNEL-PARAMS IR-TEXT FUNC-START FUNC-END)  compiler.lisp
-- - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
-- - - - - - (GENERATE-KERNEL-METADATA PARAMS METADATA-ID-BASE)  compiler.lisp
-- - - - - - - (IR-TYPE-TO-OPENCL-METADATA IR-TYPE)  compiler.lisp
-- - - - - (%RUN-OPT-PIPELINE INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp
-- - - - - - (%RUN-PASSES-IN-PROCESS INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp
-- - - - - - - (%MAKE-TARGET-MACHINE-FOR-MODULE MODULE)  compiler.lisp
-- - - - - - - - (%ENSURE-NVPTX-TARGET-INITIALIZED)  compiler.lisp
-- - - - - - (%LL-HAS-SPIRV-ILLEGAL-INT-P LL-FILE)  compiler.lisp
-- - - - - (%INJECT-CACHE-CONTROL-DECORATIONS LL-PATH)  compiler.lisp
-- - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
-- - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
-- - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp
-- - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp
-- - - - - (%LL-USES-FP16-ATOMIC-FADD-P LL-PATH)  compiler.lisp
-- - - - - (%175-LL-USES-FLOAT-ATOMIC-MINMAX-P LL-PATH)  compiler.lisp
-- - - - - (%MODULE-USES-COOP-MATRIX-P MODULE)  compiler.lisp
-- - - - - (%MODULE-USES-2D-BLOCK-IO-P MODULE)  compiler.lisp
-- - - - - (%MODULE-USES-SUBGROUP-MMA-P MODULE)  compiler.lisp
-- - - - - (%MODULE-USES-SPLIT-BARRIER-P MODULE)  compiler.lisp
-- - - - - (%MODULE-USES-BFLOAT-P MODULE)  compiler.lisp
-- - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
-- - - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)  compiler.lisp
-- - - - - (%PTX-FINALIZE-LIBDEVICE MODULE)  codegen.lisp
-- - - - - - (%SET-NVVM-REFLECT-FTZ MODULE FTZ-P)  codegen.lisp
-- - - - - (%RUN-OPT-O3 INPUT-LL-FILE OUTPUT-LL-FILE)  compiler.lisp
-- - - - - - (%RUN-PASSES-IN-PROCESS INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp [See above]
-- - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
-- - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp [See above]
-- - - - (PTX-COMPUTE-CAPABILITY-STRING)  types/registry.lisp
-- - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
-- - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - (%EMIT-TARGET-OUTPUT TARGET-BACKEND MODULE FILEPATH DEBUG-P) :CRISP.MAIN  main.lisp [See above]
 - - - (PRINT-COMPILER-ERROR C FILENAME) :CRISP.MAIN  main.lisp
-- - - (%GENERATE-FILE-METADATA FILEPATH GENERATED-OUTPUTS CAPTURED-FORMS) :CRISP.MAIN  main.lisp
-- - - - (%OUTPUT-BASE-NAME FILEPATH) :CRISP.MAIN  main.lisp [See above]
-- - - - (GENERATE-METADATA-FOR-FILE INPUT-PATH OUTPUT-PATH &KEY (OUTPUT-TARGETS
-                                                                 NIL) (SOURCE-FILE
-                                                                       NIL) (FORMS
-                                                                             NIL))  metadata.lisp
-- - - - - (EXTRACT-DEFINED-KERNELS FORMS)  metadata.lisp
-- - - - - (%ONLY-FORWARD-KERNELS NAMES)  metadata.lisp
-- - - - - (COLLECT-KERNEL-DEPENDENCIES KERNEL-NAMES)  metadata.lisp
-- - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
-- - - - - (%BWD-FIXUP-DECLARED-TYPES BWD-K-NAME)  metadata.lisp
-- - - - - - (%BWD-RESOLVE-TYPE TYPE-SPEC &OPTIONAL NEW-ACCESS)  metadata.lisp
-- - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp
-- - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
-- - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp
-- - - - - (SERIALIZE-STRUCTS STREAM STRUCTS-HASH)  metadata.lisp
-- - - - - - (%SERIALIZE-RECORDS STREAM STRUCTS-HASH)  metadata.lisp
-- - - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp
-- - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
-- - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - (SORT-STRUCTS-BY-DEPENDENCY STRUCT-NAMES)  metadata.lisp [See above]
-- - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
-- - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - (%HP-SERIALIZE-ACTIVE-PROFILE STREAM)  hardware-profile.lisp
-- - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - (%HP-SELECTED-REGISTERS-PER-THREAD)  hardware-profile.lisp
-- - - - - (SERIALIZE-KERNELS OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)  metadata.lisp
-- - - - - - (GENERATE-PHYSICAL-SIGNATURE SIG-OR-PARAMS)  metadata.lisp
-- - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
-- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp [See above]
-- - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [See above]
-- - - - - - (GENERATE-DECLARED-SIGNATURE SIG &OPTIONAL DECLARED-PARAMS)  metadata.lisp
-- - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp [See above]
-- - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp [See above]
-- - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
-- - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - (%REDUCTION-LAUNCH-INIT-FOR KERNEL-NAME PARAM-NAME)  metadata.lisp
-- - - - - - (GENERATE-IMPLICIT-SIGNATURE SIG DECLARED-PARAMS)  metadata.lisp [See above]
-- - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp [See above]
-- - - - - - (%MODULE-USES-CLUSTER-REACH-P)  metadata.lisp
-- - - - - - (%EFFECTIVE-CLUSTER-DIMS DISPATCH DECLARED)  analysis/control.lisp
+- - - (%GENERATE-FILE-METADATA FILEPATH GENERATED-OUTPUTS CAPTURED-FORMS) :CRISP.MAIN  main.lisp [See above]
 - - - (%RUN-HOISTERS HOIST-TARGETS METACRISP-FILES) :CRISP.MAIN  main.lisp
 - - - - (INVOKE-HOISTER HOIST-ID METACRISP-FILE) :CRISP.MAIN  main.lisp
 - - - - - (GET-HOISTER-BINARY-PATH HOIST-ID) :CRISP.MAIN  main.lisp
@@ -1572,6 +1640,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%ANALYZE-WARP-SIZE EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
 - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
+
+- (%API-SLOT ENTRY) :CRISP.MAIN  api.lisp
+- - (%API-KW SYM) :CRISP.MAIN  api.lisp [See above]
 
 - (%COMBINER-CALL COMBINER ARGS)  analysis/ops.lisp
 - - (%FUNCTION-FORM-P X)  analysis/ops.lisp [See above]
@@ -2733,6 +2804,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
 - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp [See above]
 - - - (%ANALYZE-SET!-STRUCT-ACCESSOR OP ARG-NODES VALUE-NODE ENV CONTEXT LOCATION TARGET-FORM)  analysis/structs.lisp

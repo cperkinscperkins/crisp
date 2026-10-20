@@ -22,6 +22,191 @@
   "Endeavour 175: the active hardware profile's :simd-width (lanes per warp), or NIL.
    Latched by %l0-latch-hardware-profile; consumed by the symbolic scratch-size resolver.")
 
+;;; ------------------------------------------------------------------------------------------------
+;;; Endeavour 190: --hoist-kernel=source.  The launcher EMBEDS the .crisp text and the compile flags,
+;;; compiles them at run time through the compile API (c-api/include/crisp.h), and takes each
+;;; argument slot from the API's answers (crisp_param_slot) instead of the index baked in here.
+;;; The emitters below write the ordinary launcher; in source mode generate-l0-launcher then rewrites
+;;; every `zeKernelSetArgumentValue(kernel, N,` into `zeKernelSetArgumentValue(kernel, crisp_slot[N],`
+;;; -- all 48 emit sites share that exact spelling, so one rewrite covers them.
+;;; ------------------------------------------------------------------------------------------------
+
+(defvar *hoist-kernel-source-mode* nil
+  "Endeavour 190: T when crisp-compile asked for --hoist-kernel=source.")
+
+(defvar *hoist-kernel-sources* nil
+  "Endeavour 190: the .crisp paths to embed, in compile order (from --kernel-source=).")
+
+(defvar *hoist-kernel-flags* nil
+  "Endeavour 190: the compile flags to embed, in order (from --kernel-flag=).")
+
+(defvar *hoist-current-kernel-name* nil
+  "Endeavour 190: the kernel being emitted, for the source-mode slot map.")
+
+(defvar *hoist-current-signature* nil
+  "Endeavour 190: (DECLARED-SIG FULL-SIG ALIASES RECORDS) of the kernel being emitted.")
+
+(defun %hk-extract-args (args)
+  "Splits the endeavour-190 arguments out of ARGS, setting the *hoist-kernel-...* specials.
+   Returns the remaining arguments (for %mma-parse-args)."
+  (loop for a in args
+        if (string= a "--hoist-kernel=source")
+          do (setf *hoist-kernel-source-mode* t)
+        else if (uiop:string-prefix-p "--kernel-source=" a)
+          do (setf *hoist-kernel-sources* (append *hoist-kernel-sources* (list (subseq a (length "--kernel-source=")))))
+        else if (uiop:string-prefix-p "--kernel-flag=" a)
+          do (setf *hoist-kernel-flags* (append *hoist-kernel-flags* (list (subseq a (length "--kernel-flag=")))))
+        else collect a))
+
+(defun %hk-c-string (s)
+  "S as a C string literal."
+  (with-output-to-string (out)
+    (write-char #\" out)
+    (loop for ch across s
+          do (case ch
+               (#\\ (write-string "\\\\" out))
+               (#\" (write-string "\\\"" out))
+               (#\Newline (write-string "\\n" out))
+               (#\Return (write-string "\\r" out))
+               (#\Tab (write-string "\\t" out))
+               (t (write-char ch out))))
+    (write-char #\" out)))
+
+(defun %hk-source-literal (text)
+  "TEXT as a C++ raw string literal (an escaped ordinary literal if TEXT contains the delimiter)."
+  (if (search ")CRISP_SOURCE\"" text)
+      (%hk-c-string text)
+      (format nil "R\"CRISP_SOURCE(~a)CRISP_SOURCE\"" text)))
+
+(defun %hk-emit-embedded-sources (stream)
+  "File-scope C++: the compile API header, the embedded sources and the flags."
+  (format stream "// Endeavour 190 (--hoist-kernel=source): the kernel is compiled at RUN time from this source,~%")
+  (format stream "// through the Crisp compile API.  Link with crisp.dll / libcrisp.so; it finds crisp-compile beside itself.~%")
+  (format stream "#include \"crisp.h\"~%~%")
+  (format stream "static const char* const crisp_kernel_sources[] = {~%")
+  (dolist (path *hoist-kernel-sources*)
+    (format stream "    ~a,~%" (%hk-source-literal (uiop:read-file-string path))))
+  (format stream "};~%")
+  (format stream "static const char* const crisp_kernel_source_names[] = {~%")
+  (dolist (path *hoist-kernel-sources*)
+    (format stream "    ~a,~%" (%hk-c-string (file-namestring path))))
+  (format stream "};~%")
+  (format stream "static const size_t crisp_kernel_source_count = ~d;~%" (length *hoist-kernel-sources*))
+  (format stream "static const char* const crisp_kernel_flags[] = {~%")
+  (dolist (f *hoist-kernel-flags*)
+    (format stream "    ~a,~%" (%hk-c-string f)))
+  (format stream "    nullptr~%};~%")
+  (format stream "static const size_t crisp_kernel_flag_count = ~d;~%~%" (length *hoist-kernel-flags*)))
+
+(defun %hk-param-roles (param aliases records)
+  "The (BAKED-SLOT ROLE AXIS) of each slot of the declared PARAM, by the layout the hoist emits
+   against (cell ~L1210, tensor ~L1387) -- the same layout src/api.lisp %api-roles describes, which
+   is the point: the launcher asks the API and the run proves the two agree."
+  (let* ((type (resolve-type-alias (getf param :type) aliases))
+         (range (getf param :range))
+         (first-slot (first range))
+         (last-slot (second range))
+         (rank (getf param :rank)))
+    (cond
+      (rank
+       (append (list (list first-slot "CRISP_ROLE_POINTER" 0) (list (+ first-slot 1) "CRISP_ROLE_BYTE_SIZE" 0))
+               (loop for k below rank collect (list (+ first-slot 2 k) "CRISP_ROLE_OFFSET" k))
+               (loop for k below rank collect (list (+ first-slot 2 rank k) "CRISP_ROLE_STRIDE" k))
+               (loop for k below rank collect (list (+ first-slot 2 (* 2 rank) k) "CRISP_ROLE_EXTENT" k))
+               (list (list (+ first-slot 2 (* 3 rank)) "CRISP_ROLE_LENGTH" 0))))
+      ((cell-type-p type)
+       (list (list first-slot "CRISP_ROLE_POINTER" 0) (list (+ first-slot 1) "CRISP_ROLE_BYTE_SIZE" 0)
+             (list (+ first-slot 2) "CRISP_ROLE_OFFSET" 0)))
+      ((or (record-type-p type records) (struct-type-p type))
+       (loop for slot from first-slot to last-slot for i from 0 collect (list slot "CRISP_ROLE_FIELD" i)))
+      (t (list (list first-slot "CRISP_ROLE_VALUE" 0))))))
+
+(defun %hk-emit-compile-and-slot-map (stream)
+  "main()-scope C++: compile the embedded source through the API into spirv_data, find this
+   launcher's kernel in the result, and build crisp_slot[] -- baked argument index -> the slot the
+   API says.  Implicit parameters (scratch ...) are not yet described by the API (crisp.h PLANNED),
+   so their entries stay identity."
+  (destructuring-bind (declared full aliases records) *hoist-current-signature*
+    (let* ((total (loop for p in full for r = (getf p :range) when (consp r) maximize (1+ (second r))))
+           (total (or total 0)))
+      (format stream "    // Endeavour 190: compile the embedded Crisp source NOW, through the compile API~%")
+      (format stream "    crisp_context* crisp_ctx = nullptr;~%")
+      (format stream "    if (crisp_context_create(\"spv\", &crisp_ctx) != CRISP_OK) {~%")
+      (format stream "        std::cerr << \"ERROR: crisp_context_create failed\" << std::endl;~%")
+      (format stream "        return 1;~%")
+      (format stream "    }~%")
+      (format stream "    crisp_set_flags(crisp_ctx, crisp_kernel_flags, crisp_kernel_flag_count);~%")
+      (format stream "    for (size_t i = 0; i < crisp_kernel_source_count; i++)~%")
+      (format stream "        crisp_add_source(crisp_ctx, crisp_kernel_sources[i], crisp_kernel_source_names[i]);~%")
+      (format stream "    crisp_status crisp_st = crisp_compile(crisp_ctx);~%")
+      (format stream "    if (crisp_st != CRISP_OK) {~%")
+      (format stream "        std::cerr << \"ERROR: crisp_compile: \" << crisp_status_string(crisp_st) << std::endl~%")
+      (format stream "                  << crisp_diagnostics_text(crisp_ctx);~%")
+      (format stream "        return 1;~%")
+      (format stream "    }~%")
+      (format stream "    const void* crisp_bin = nullptr;~%")
+      (format stream "    size_t crisp_bin_size = 0;~%")
+      (format stream "    crisp_module_binary(crisp_ctx, 0, &crisp_bin, &crisp_bin_size);~%")
+      (format stream "    std::vector<uint8_t> spirv_data((const uint8_t*)crisp_bin, (const uint8_t*)crisp_bin + crisp_bin_size);~%")
+      (format stream "    std::cout << \"Kernel compiled at run time through the Crisp compile API (\" << crisp_bin_size << \" bytes)\" << std::endl;~%~%")
+      (format stream "    // ... and ask it where each argument goes~%")
+      (format stream "    size_t crisp_k = (size_t)-1;~%")
+      (format stream "    for (size_t i = 0; i < crisp_kernel_count(crisp_ctx, 0); i++)~%")
+      (format stream "        if (std::strcmp(crisp_kernel_name(crisp_ctx, 0, i), ~a) == 0) crisp_k = i;~%"
+              (%hk-c-string *hoist-current-kernel-name*))
+      (format stream "    if (crisp_k == (size_t)-1) {~%")
+      (format stream "        std::cerr << \"ERROR: the compile API produced no kernel ~a\" << std::endl;~%" *hoist-current-kernel-name*)
+      (format stream "        return 1;~%")
+      (format stream "    }~%")
+      (format stream "    auto crisp_param = [&](const char* name) -> size_t {~%")
+      (format stream "        for (size_t p = 0; p < crisp_param_count(crisp_ctx, 0, crisp_k); p++)~%")
+      (format stream "            if (std::strcmp(crisp_param_name(crisp_ctx, 0, crisp_k, p), name) == 0) return p;~%")
+      (format stream "        return (size_t)-1;~%")
+      (format stream "    };~%")
+      (format stream "    if (crisp_slot_count(crisp_ctx, 0, crisp_k) != ~d) {~%" total)
+      (format stream "        std::cerr << \"ERROR: the compile API reports \" << crisp_slot_count(crisp_ctx, 0, crisp_k)~%")
+      (format stream "                  << \" argument slots; this launcher was generated for ~d\" << std::endl;~%" total)
+      (format stream "        return 1;~%")
+      (format stream "    }~%")
+      (format stream "    size_t crisp_slot[~d];~%" (max total 1))
+      (format stream "    for (size_t i = 0; i < ~d; i++) crisp_slot[i] = i;   // implicit params: not yet in the API~%" total)
+      (let ((mapped 0))
+        (dolist (p declared)
+          (when (consp (getf p :range))
+            (dolist (e (%hk-param-roles p aliases records))
+              (destructuring-bind (baked role axis) e
+                (incf mapped)
+                (format stream "    crisp_slot[~d] = crisp_param_slot(crisp_ctx, 0, crisp_k, crisp_param(~a), ~a, ~d);~%"
+                        baked (%hk-c-string (getf p :name)) role axis)))))
+        (format stream "    for (size_t i = 0; i < ~d; i++) {~%" total)
+        (format stream "        if (crisp_slot[i] == CRISP_NO_SLOT) {~%")
+        (format stream "            std::cerr << \"ERROR: the compile API has no slot for hoisted argument \" << i << std::endl;~%")
+        (format stream "            return 1;~%")
+        (format stream "        }~%")
+        (format stream "        if (crisp_slot[i] != i)~%")
+        (format stream "            std::cout << \"NOTE: the compile API moved argument \" << i << \" to slot \" << crisp_slot[i] << std::endl;~%")
+        (format stream "    }~%")
+        (format stream "    std::cout << \"Argument slots from the compile API: ~d of ~d\" << std::endl;~%~%" mapped total)))))
+
+(defun %hk-rewrite-arg-indices (text)
+  "TEXT with every `zeKernelSetArgumentValue(kernel, <digits>,` rewritten to
+   `zeKernelSetArgumentValue(kernel, crisp_slot[<digits>],`."
+  (let ((needle "zeKernelSetArgumentValue(kernel, ")
+        (start 0))
+    (with-output-to-string (out)
+      (loop
+        (let ((hit (search needle text :start2 start)))
+          (unless hit
+            (write-string text out :start start)
+            (return))
+          (let* ((num-start (+ hit (length needle)))
+                 (num-end (or (position-if-not #'digit-char-p text :start num-start) (length text))))
+            (write-string text out :start start :end num-start)
+            (if (and (> num-end num-start) (< num-end (length text)) (char= (char text num-end) #\,))
+                (format out "crisp_slot[~a]" (subseq text num-start num-end))
+                (write-string text out :start num-start :end num-end))
+            (setf start num-end)))))))
+
 (defun %l0-latch-hardware-profile (data)
   "Endeavor 144: cache the active hardware profile's L0-relevant decisions in the specials
    above, from an already-parsed metacrisp plist.
@@ -73,7 +258,7 @@
         (unless args
           (format t "Usage: crisp-hoist-l0 [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
+        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args (%hk-extract-args args))
           (setf *mma-test-dims* dims)
           (setf *mma-scale* scale)
           (unless (and metacrisp-path (probe-file metacrisp-path))
@@ -174,15 +359,20 @@
                   kernel-name)
                 (progn
                  (format t "  Generating: ~a~%" output-name)
-                 (let ((dvec-types (%collect-dvec-types declared-sig aliases)))
+                 (let* ((dvec-types (%collect-dvec-types declared-sig aliases))
+                        (*hoist-current-kernel-name* kernel-name)
+                        (*hoist-current-signature* (list declared-sig full-sig aliases (metacrisp-records data)))
+                        (text (with-output-to-string (stream)
+                                (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
+                                (generate-cpp-includes stream)
+                                (generate-cpp-typedefs stream aliases)
+                                (generate-cpp-dvec-typedefs stream dvec-types)
+                                (generate-cpp-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
+                                (generate-cpp-helpers stream)
+                                (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data) dispatch-info))))
+                   ;; Endeavour 190: in source mode every argument index comes from the API's slot map
                    (with-open-file (stream output-path :direction :output :if-exists :supersede)
-                     (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
-                     (generate-cpp-includes stream)
-                     (generate-cpp-typedefs stream aliases)
-                     (generate-cpp-dvec-typedefs stream dvec-types)
-                     (generate-cpp-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
-                     (generate-cpp-helpers stream)
-                     (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data) dispatch-info)))
+                     (write-string (if *hoist-kernel-source-mode* (%hk-rewrite-arg-indices text) text) stream)))
                  (format t "  Done: ~a~%" (namestring output-path))))))))))
 
 (defun generate-cpp-preamble (stream metacrisp-path kernel-name output-name)
@@ -210,7 +400,9 @@
   (format stream "#include <vector>~%")
   (format stream "#include <cstring>~%")
   (format stream "#include <cstdint>~%")
-  (format stream "#include <chrono>~%~%"))
+  (format stream "#include <chrono>~%~%")
+  (when *hoist-kernel-source-mode*
+    (%hk-emit-embedded-sources stream)))
 
 
 (defun generate-cpp-structs (stream structs)
@@ -514,7 +706,15 @@
   "Generate SPIR-V module loading code.
 
    Endeavor 144 Phase 4: pBuildFlags now carries the compiler-selected register allocation
-   (see %l0-register-build-flags) instead of being unconditionally nullptr."
+   (see %l0-register-build-flags) instead of being unconditionally nullptr.
+   Endeavour 190: under --hoist-kernel=source the SPIR-V comes from the compile API at run time."
+  (if *hoist-kernel-source-mode*
+      (%hk-emit-compile-and-slot-map stream)
+      (%l0-emit-spirv-file-read stream spv-path))
+  (%l0-emit-module-create stream))
+
+(defun %l0-emit-spirv-file-read (stream spv-path)
+  "The launcher's spirv_data, read from SPV-PATH (the ordinary --hoist-kernel=file launcher)."
   (format stream "    // Load SPIR-V module~%")
   (format stream "    const char* spv_path = \"~a\";~%" (namestring spv-path))
   (format stream "    std::vector<uint8_t> spirv_data;~%")
@@ -523,8 +723,11 @@
   (format stream "    } catch (const std::exception& e) {~%")
   (format stream "        std::cerr << \"ERROR: \" << e.what() << std::endl;~%")
   (format stream "        return 1;~%")
-  (format stream "    }~%~%")
+  (format stream "    }~%~%"))
 
+(defun %l0-emit-module-create (stream)
+  "zeModuleCreate over the launcher's spirv_data (however it was obtained), with the
+   compiler-selected register build flags (Endeavor 144 Phase 4)."
   (let ((flags (%l0-register-build-flags)))
     (when flags
       (format stream "    // Endeavor 144: the kernel's register-tile demand (~a registers/thread)~%"

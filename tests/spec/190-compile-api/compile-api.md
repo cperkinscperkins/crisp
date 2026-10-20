@@ -233,6 +233,137 @@ Progress
             primary (last) source unless a reader error names its own stream.
             Inherited quirk: `--math-precision=fast` ALWAYS warns "the `preserve` request is not
             honored", because :preserve is the DEFAULT -- the CLI does the same (parse-cli-args).
+            (Chris's read: the denormal default is :preserve, so the warning can't tell asked-for
+            from defaulted.  Fixed in the API -- see R3; the CLI is unchanged, BUG candidate.)
+2026-10-19  S2 (API side): a --differentiate compile describes each primal kernel AND its _grad,
+            with explicit :grad-of / :adjoint-of; tensor :layout added.  Spec 103/103.
+            Verified by hand: primal from a --differentiate compile == plain compile's (slots +
+            params); user param `w_grad` stays an input, `w_grad_grad` pairs with it.
+            Header: + crisp_kernel_grad_of, crisp_param_adjoint_of, crisp_param_layout; units
+            documented.  Build 0 warnings; run-ci passes.
+2026-10-19  S3: the server, the C library, the Python suite.
+            - `crisp-compile --serve` (src/api.lisp serve-main; 2-line dispatch in src/main.lisp main).
+              Framing documented at the top of api.lisp's server section.  Probe: hello in ~0.3-0.5 s
+              cold; warm compiles ~250 ms; the server's .spv is byte-identical to the CLI's.
+            - c-api/src/crisp.c + c-api/build.sh -> bin/crisp.dll (Windows) / bin/libcrisp.so
+              (Linux).  -Wall -Wextra -pedantic clean on both (Linux built in crisp-c-validator);
+              Linux exports exactly the 36 CRISP_API functions.
+            - tests/api/test_crisp_api.py (+ crisp_ctypes.py): 25 tests, all pass, ~6 s, Windows.
+              Covers NULLs/bad indexes, NO_RESULT, copies, NUL-terminated PTX, unicode names, the
+              flag table, --differentiate pairing, 6 parallel threads, shutdown + restart, a
+              missing compiler + recovery.  No helper processes or temp dirs left behind.
+            - Found + fixed on the way: (1) log4cl writes to the REAL stdout -> the server turns
+              logging off (TODO: opt-in log to stderr/file); (2) every compile after the first in
+              an image re-runs template DEFMACROs -> SBCL "redefining" warnings became caller
+              diagnostics -> muffled in compile-sources; (3) PTX's .metacrisp records pointer
+              slots as ULONG -> pointer-ness now comes from the param roles (R10).
+            NOT verified: the Linux library at RUN time (no Linux crisp-compile build locally; CI
+            builds one -- step 13.5 will be the first real Linux run).
+2026-10-20  S4: the dogfood launcher, ON METAL (BMG).  Specs 01 (one kernel) and 02 (two kernels
+            in one source + a scalar; each launcher finds its own kernel by name) PASS: "Kernel
+            compiled at run time through the Crisp compile API", "Argument slots from the compile
+            API: 12 of 12" / "13 of 13", expected buffers.  The FILE-mode launcher is byte-identical
+            to the pre-190 hoister's output (checked on 006-branching/10).
+            Before S4: E2E 1498/1498, negative 354/354 (the --serve dispatch broke nothing).
+            A6(A), first full run: 150 L0 launchers compiled their kernel through the API and took
+            their slots from it; the API never moved a slot ("NOTE ... moved": 0).  Failures were
+            all the PASS'S fault, not the API's: 4 FFI specs (source mode refuses .bc, R18) and
+            10-tile-stride (a TEXT validator expecting literal `kernel, 0,`).  Then the runner
+            itself died (exit 139) in an in-process Default compile of
+            176/14-diff-grid-reduce-independent, ~3/4 through; that spec passes alone, also under
+            the pass.  Cause unknown.  Suspect removed anyway: the runner had been setenv'ing PATH
+            ~300 times; launchers now get an explicit :environment instead (R24).
+            A6(A), second full run: Spec Summary 1500/1500 (incl. the two 190 specs).  183 L0
+            launchers compiled through the API and ran on the BMG against UNCHANGED expectations;
+            slots moved by the API: 0.  114 fully mapped; 69 also take implicit params (scratch
+            ...) that stay identity until the API describes them -- the next API facts.  No crash.
+            Final: run-ci passes, negative 354/354, Python API suite 25/25, no stray helpers.
+            S6: ideal_001.md chapter rewritten as "Compile API" (tree-shaking, --hoist-dynamic and
+            the old status codes removed; --hoist-kernel documented); chapters, reference.md,
+            call graph, globals and specials regenerated; INSTALL.md section; ci.yml step 13.5 +
+            run-all-tests.bat run the Python suite; build/build.lisp builds the library.
+            ci-stop.txt -> 190-compile-api.
+
+
+Decisions for review (made while Chris was away, 2026-10-19 night)
+==================================================================
+Each one is reversible; say the word and it changes.
+
+R1  S2 lives in the API, NOT in crisp-compile's .metacrisp files.  Under --differentiate the API
+    writes the primal's .metacrisp into its private temp dir with the same serializer
+    (src/api.lisp %api-write-kernel-metacrisp).  Why: tests/run-specs.lisp tells a backward
+    metacrisp by searching its TEXT for `_grad"` and then asserts (by text) it has no forward
+    scheduling declarations (%152-backward-metacrisp-p, %152-assert-no-schedule-leak); a primal
+    added to that file would trip it, and a separate primal file next to it would confuse
+    %152-find-metacrisp.  Alternative: change the CLI files + those runner helpers.
+R2  Adjoint pairing is DERIVED in the API from the AD pass's naming (<p>_grad), guarded so a
+    user's own `x_grad` parameter is not misread (P pairs with Q iff P = Q_grad, Q is a primal
+    param, P is not).  Alternative: have the AD pass emit :adjoint-of into the metacrisp.
+R3  The fast-vs-preserve warning fires only on an EXPLICIT --denormal-handling=preserve (API only).
+    The CLI still warns on every --math-precision=fast.  Candidate for bugs.md.
+R4  Unknown flags are rejected by the API (the CLI silently ignores them).
+R5  Tensor layout is exposed (crisp_param_layout): a :compact kernel IGNORES offsets and strides
+    (analyze-aref-expression), so a caller holding a non-contiguous view must know.  Not in A3's
+    original list; added because PyTorch-style callers will hit it at once.
+R6  Kernel order under --differentiate: each forward kernel, then its _grad.
+R7  compile-files is NOT rebuilt on compile-sources (yet); they share helpers.  The byte-identical
+    .spv check and the A6(A) pass guard against drift.
+R8  The server is `crisp-compile --serve` (one binary to ship).  The dispatch is a 2-line edit to
+    `main` IN src/main.lisp, not an override: a later (defun main) in api.lisp put a "redefining
+    CRISP.MAIN:MAIN" WARNING into the build, crisp.main has no overlay, and muffling warnings for
+    all of api.lisp would hide real ones.
+R9  Protocol: one framing both ways, `<tag> <len>\n<bytes>\n`; a hello record with a protocol
+    version on start.  Binary-safe; unknown response tags are skipped by the client (a newer server
+    can add fields).  A malformed request ends the server (stream out of sync); the client kills it.
+R10 A slot's pointer-ness comes from the parameter roles, not the target's .metacrisp (PTX writes
+    ULONG for a pointer).
+R11 crisp_set_flags only copies; the SERVER validates flags at compile time, so the flag list lives
+    in one place (Lisp).  Header comment updated.
+R12 Finding the compiler: $CRISP_COMPILE_EXE, else $CRISP_HOME/bin/, else next to the library.  The
+    helper's working directory = the exe's directory's parent (today's bin/ layout, no compiler
+    change).  So the install is <root>/bin/{crisp-compile, LLVM-C.dll, llvm tools, crisp.dll}.
+R13 Helpers live in an idle POOL shared by all contexts (max 4 idle).  A compile takes one or starts
+    one (outside the lock), gives it back if healthy; a broken one is killed, never reused.
+R14 Linux: a socketpair, not pipes, so send(MSG_NOSIGNAL) cannot raise SIGPIPE in the caller.  Both
+    platforms: the helper's stderr goes to the null device (a pipe nobody drains could block it).
+R15 The C client builds results as plain arrays; returned strings are the payload buffers
+    themselves (already NUL-terminated), so a module binary is NUL-terminated for free.
+R16 Python suite uses stdlib unittest + ctypes only (no pytest dependency).
+R17 `--hoist-kernel=source` plumbing: crisp-compile's main strips the flag and hands the hoister
+    `--hoist-kernel=source --kernel-source=<abs path>... --kernel-flag=<flag>...` (invoke-hoister
+    appends *hoister-extra-args*).  The forwarded flags are the invocation's own minus
+    --hoist*/--metadata/--ir-target=/--log-level= (the API refuses those).  Nothing is added to
+    the .metacrisp.
+R18 Only the L0 hoister has a source mode; `--hoist-kernel=source` without --hoist=l0 is an error.
+    Foreign .bc libraries cannot be embedded -> error.
+R19 The launcher's slot map: the hoister emits the ordinary launcher, then rewrites every
+    `zeKernelSetArgumentValue(kernel, N,` to `crisp_slot[N]` (all 48 emit sites share that exact
+    spelling), and crisp_slot[] is filled at run time from crisp_param_slot for every DECLARED
+    param's slot.  Implicit params (scratch, debug log, tensor maps) stay identity until the API
+    describes them (crisp.h PLANNED).  The launcher also checks crisp_slot_count, prints a NOTE if
+    the API moves a slot, and fails if the API has no slot for one.
+R20 I edited src/hoist-l0/main.lisp and src/main.lisp DIRECTLY (additive: new functions + small
+    dispatch edits), not via overlays/hoist-l0/ -- I only found that overlay directory afterwards.
+    The runner changes DID go to overlays/spec-runner-overlay.lisp (script-extracted copies of
+    run-spec-with-hoist and validate-l0-host-run, then edited).  Happy to move the hoister ones.
+R21 Runner: per-spec directive `HOIST-KERNEL: source|file`, plus a runner option
+    `--hoist-kernel=source` that puts EVERY L0 hoist spec through the API (the A6(A) pass); a spec
+    saying `file` opts out.  A compile-API launcher is linked with -I c-api/include + the import
+    library, and run with bin/ on PATH.
+R22 tests/ci-stop.txt bumped to 190-compile-api now (your done-list item): the runner would not
+    see the 190 specs otherwise.  On CI the L0 metal specs skip (no Intel GPU), so CI runs the
+    unit spec and the default/--debug/--single-pass/--differentiate compiles of 01/02.
+R23 The C library is built by build/build-c-api.lisp, which build/build.lisp now runs: $CC, else
+    gcc, else clang; NO compiler -> warning + skip (the compiler itself does not need it).
+    c-api/build.sh just calls it.  On Windows a running launcher locks bin/crisp.dll, so a
+    rebuild during a hoist run can fail (seen once tonight; harmless, retry).
+R24 The A6(A) pass (runner --hoist-kernel=source) applies source mode only where it means
+    something: specs whose TEST-HOIST[L0] validator RUNS the launcher (validate-l0-host-run /
+    validate-l0-mma-run) and that link no FFI .bc.  Text-inspecting validators keep file mode.
+    A HOIST-KERNEL directive still overrides.  Launchers get PATH via an explicit :environment
+    (sb-ext:run-program); the runner never setenv's.
+NOTE The --differentiate pass SKIPS hoists, so A6(A)'s "forward + grad at run time" cannot come
+    through TEST-HOIST; it needs VERIFY-AUTODIFF to use the API.  Open.
 
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 

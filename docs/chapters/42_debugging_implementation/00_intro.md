@@ -12,5 +12,5 @@ Crisp attempts to ameliorate that by providing SUBDIVIDED logging, as well as "f
 message options to address debug buffer overflow. What this means is the debug buffer handed to the kernel
 can be divided in differrent ways, ways to limit who logs, or ways to ensure that certain critical logging is performed and accessible.  Unfortunately, these options have to be
 selected at compile time, rather than when enqueueing the kernel. Perhaps some intrepid user
-can use the [In-Memory Compilation API](#in-memory-compilation-api) to make a handy tool.
+can use the [Compile API](#compile-api) to make a handy tool.
 

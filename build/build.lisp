@@ -19,6 +19,7 @@
 (run-build-script "build/build-compiler.lisp")
 (run-build-script "build/build-hoist-l0.lisp")
 (run-build-script "build/build-hoist-cuda.lisp")
+(run-build-script "build/build-c-api.lisp")   ; Endeavour 190: the compile API library (skips without a C compiler)
 
 (format t "~%;;; ======================================================================~%")
 (format t ";;; ALL BUILDS COMPLETE~%")

@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-KERNEL: source
+;; HOIST-EXPECT: compiled at run time through the Crisp compile API
+;; HOIST-EXPECT: BUFFER out: 42 43 44 45
+;;
+;; Endeavour 190, S4 -- two kernels in one source, with a scalar parameter.  One launcher is
+;; generated per kernel; each embeds the WHOLE source, so the module compiled at run time holds
+;; both kernels and each launcher must find its own by name (the second one is kernel index 1).
+;; The hoist gives a scalar parameter the value 42 + its slot (here slot 0, so 42), and inputs are
+;; pre-filled 0 1 2 3; both kernels compute out[k] = s + xs[k] -> 42 43 44 45, so one expectation
+;; holds for both launchers.
+
+(def-type ivec-t (vector int :address-space :global :align :compact))
+
+(def-kernel add_scalar_first (s xs &out out)
+  (declare #'(int ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (set! (~ out 0) (+ s (~ xs 0)))
+  (set! (~ out 1) (+ s (~ xs 1)))
+  (set! (~ out 2) (+ s (~ xs 2)))
+  (set! (~ out 3) (+ s (~ xs 3))))
+
+(def-kernel add_scalar_second (s xs &out out)
+  (declare #'(int ivec-t &out ivec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (set! (~ out 0) (+ (~ xs 0) s))
+  (set! (~ out 1) (+ (~ xs 1) s))
+  (set! (~ out 2) (+ (~ xs 2) s))
+  (set! (~ out 3) (+ (~ xs 3) s)))

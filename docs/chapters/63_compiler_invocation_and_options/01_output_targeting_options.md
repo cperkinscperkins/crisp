@@ -100,7 +100,7 @@ The hoist file name will be `<output-base-name>_<orchestration>_<ID>.<extension>
 | `PyLevelZero`   | `py`      | Python LevelZero   |
 | `PyCUDA`        | `py`      | PyCUDA             |
 
-There are other flags that interoperate with the hoisting, such as `--hoist-dynamic`
+There are other flags that interoperate with the hoisting, such as `--hoist-kernel=source`
 
 One hoisting file is output per orchestration.
 

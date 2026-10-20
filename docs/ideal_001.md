@@ -10778,7 +10778,7 @@ Crisp attempts to ameliorate that by providing SUBDIVIDED logging, as well as "f
 message options to address debug buffer overflow. What this means is the debug buffer handed to the kernel
 can be divided in differrent ways, ways to limit who logs, or ways to ensure that certain critical logging is performed and accessible.  Unfortunately, these options have to be
 selected at compile time, rather than when enqueueing the kernel. Perhaps some intrepid user
-can use the [In-Memory Compilation API](#in-memory-compilation-api) to make a handy tool.
+can use the [Compile API](#compile-api) to make a handy tool.
 
 ### So You Want Debug Logging 
 
@@ -13791,7 +13791,7 @@ The hoist file name will be `<output-base-name>_<orchestration>_<ID>.<extension>
 | `PyLevelZero`   | `py`      | Python LevelZero   |
 | `PyCUDA`        | `py`      | PyCUDA             |
 
-There are other flags that interoperate with the hoisting, such as `--hoist-dynamic`
+There are other flags that interoperate with the hoisting, such as `--hoist-kernel=source`
 
 One hoisting file is output per orchestration.
 
@@ -13856,10 +13856,10 @@ do with the debug output once it is retrieved. The hoisting code typically model
 When outputting LLVM-IR, include DWARF symbols
 
 
-#### `--hoist-dynamic=<KERNELNAME>` 📝
-This flag can be used repeatedly, each occurrence with a different KERNELNAME.  For each kernel named, the hoisting 
-code will demonstrate how to compile that same kernel by invoking the in-memory compilation API on the string that is that
-kernel. 
+#### `--hoist-kernel=file|source` ✅
+With `--hoist=l0`: where the generated launcher gets its kernel.  `file` (the default) loads the
+compiled `.spv`.  `source` embeds the `.crisp` source and the compile flags, compiles them at run
+time through the [Compile API](#compile-api), and takes every argument slot from the API.
 
 #### `--re-output-crisp=<DIRECTORY>` 📝
 This flag is passed a directory. The .crisp files that are being compiled will be copied into that directory. But they will 
@@ -13897,32 +13897,6 @@ regularly performs, including error checks that the documentation elsewhere says
 When this flag is on, the compiler only performs the minimal checks required to
 move forward. This is inherently unsafe. 
 
-#### `--tree-shaking` 📝
-
-The `--tree-shaking` flag causes the compiler to carefully evaluate which functions and subfunctions are ACTUALLY 
-called by the kernels and only incorporate those into the final binaries.  This can make the compilation pass
-a little slower, but makes the kernel smaller, faster, and faster to load.
-
-But there is a second side effect that happens when tree shaking. Both the functions used and not from any 
-library files are precompiled for the compilation targets into .crisp_lib and .crisp_libc files and these
-files will make any future compilations that use these same libraries to these same targets MUCH
-faster. 
-
-<!--  Do we need flags to control where these lib files get written / read ?  Answer: YES -->
-
-<!-- NOTE
-1 - .crisp files with no kernels are automatically identified as "library" files.
-2a. - the user invokes the full compilation command. There is a --tree-shaking flag. It runs slow. We compile for whatever targets they specified, be they IR or binary.
-2b - when tree shaking, each "library" gets its entry point functions (*) compiled into their own little thing, one for each target. Bound up with a map into a big blob.
-2c - and the entry point functions that are actually used by my_kernel also get put into a second little thing, one for each target. blobbed together.
-     if a function is inlined when tree shaking, that is noted too. 
-3 - the NEXT invocation of the compiler we lean on 2c to really speed things up and fall back to 2b if necessary. If something was inlined before, 
-    we just do it again.
-4 - assuming the output target profile is the same, other kernel .crisp files could benefit from 2b at very least. 
--->
-
-<!--  (declare entry-point inline)  both need definitions -->
-
 ### Compiliation Flags ✅
 
 #### `-D` 📝
@@ -13958,26 +13932,10 @@ Static analysis is slow. If you have opt-in static analysis in your .crisp file,
 Type inference slows the compiler down. Declare all types if possible.  Use the `--no-inference` or `--re-output-crisp` flags to help
 kick the habit.
 
-#### Use Tree Shaking
+#### Compile API
 
-The `--tree-shaking` flag makes for a slow compilation.  BUT the benefit for any future compilations to the same set of targets, especially
-for the same set of libraries or kernels, is extreme. Be sure to use tree shaking from time to time to update the lib caches for your files.
-Tree shaking can make the compilation of OTHER kernels faster too if they use some of the same libraries. It's clutch.
-
-The `--tree-shaking` flag can be used with library .crisp files and no kernels at all. Given a set of targets it can still generate .crisp_lib files
-for those libraries which will speed up future compilations of anything to any of those targets.  Note that many of the compilation flags
-must be used consistently by both the tree shaking and future compilation passes:
-- `-DXXXX`
-- `--IR-target`
-- `--binary-GPU-target`
-- `--logging-output`
-- `--runtime-checks`
-- `--math-precision`
-
-#### In Memory Compilation
-
-There is ( soon? ) both a Python and a C++ API for performing in-memory compilation, including support for in-memory lib and lib caches. 
-With this there is no disk IO and compilation can be performed nearly instantaneaously. 
+To compile kernels from a running program -- strings in, binaries and launch facts out -- use
+the [Compile API](#compile-api).  It keeps compiler processes warm between compiles.
 
 #### Danger
 If you are confident that the code you are compiling is completely ready and error free, use the flag that skips the compile time
@@ -14020,157 +13978,110 @@ The hoisting code that Crisp outputs demonstrates the following:
 - - waiting for it to complete
 - - enqueing any "copy back" operations for result vectors.
 
-Further, if the `--hoist-dynamic` flag is used, then the example code will actually 
-include the string of that kernel and pass it to the in-memory compilation API (etc.).
+Further, with `--hoist-kernel=source` (L0) the launcher instead holds the kernel's Crisp source
+and compiles it at run time through the [Compile API](#compile-api) -- see there.
 
 
-## In-Memory Compilation API 📝
+## Compile API ✅
 
-### C API 📝
+Crisp kernels can be compiled from a running program: hand the compile API Crisp source as
+strings, plus flags, and get back the compiled kernel (SPIR-V or PTX) and everything needed to
+launch it -- the kernels in it, their arguments, and which argument slot each part of each
+parameter goes in.  The caller brings its own enqueue code (Level Zero, CUDA, OpenCL ...).  The
+intended callers are frameworks that need forward (and backward) kernels compiled interactively,
+such as PyTorch, through any FFI.
 
-<!-- NOTE  Let's rename "tree shaking" throughout. set_cache_directory() ??  But also change the flag -->
+The authoritative reference is the header, `c-api/include/crisp.h`.  This section is the overview.
 
-#### `new_context( target_identifier )`   📝 
-    
-`target_identifier` is one ID from either IR or binary target flags.
-returns a pointer to a context.
+### Shape of it ✅
 
-#### `set_tree_shake_directory( context, path )` 📝
+```c
+crisp_context* ctx = NULL;
+crisp_context_create("spv", &ctx);                       /* one target per context: "spv" or "ptx" */
+const char* flags[] = { "--hardware-profile=bmg", "--differentiate" };
+crisp_set_flags(ctx, flags, 2);                          /* replaces, not additive */
+crisp_add_source(ctx, my_source_text, "my_kernel.crisp"); /* several sources compile as one file */
+if (crisp_compile(ctx) != CRISP_OK)
+    fputs(crisp_diagnostics_text(ctx), stderr);
 
-`path` is null terminated C string.
-
-if the `--tree-shaking` compilation was performed earlier, then its output directory can be 
-used as the input tree_shake directory for the in-memory compiler. This can 
-greatly speed up in-memory compilation.
-
-The relevant flags used (and recorded) in that compilation will be used. 
-See the section on `flags` below.
-
-#### `add_input_file( context, file.crisp )` 📝
-
-Reads in the file and adds the crisp source to the context.  Returns an error if the file could not be read.
-
-#### `add_input_string ( context, crisp_string, virtual_file_name )` 📝
-
-Adds the crisp source to the context. The `virtual_file_name` (e.g. "my_dynamic_kernel.crisp")
-can help make compilation error messages more understandable.
-
-
-#### `set_flags( context, string )` 📝
-
-This is a just a string of flags and values like you would submit
-to the crisp.exe compiler. If using `set_tree_shake_director()` then
-this call is likely not needed .  See the section on `flags` below. 
-
-Example:
-```
-  set_flags(ctx, "-DMAX_INDEX=40 --single-pass --no-inference");
-```
-#### `get_flags( context, char** flagHandle, size_t* sz )` 📝
-
-
-If using `set_tree_shake_director()` then this populates the flagHandle with the flags
-passed when the tree shaking was performed. Otherwise it returns nothing.
-
-Call with nullptr for `flagHandle` to have the `sz` set to the size needed, then
-call again with both set.
-
-#### `compile(context, size_t* sz)` 📝
-
-compiles everything. If this is the first call and `set_tree_shake_directory( path )` was 
-called earlier then there may be file I/O as the files from the tree shaking get read in.
-
-returns a status code. If successful `sz` will be set to the size of the binary.
-See "Status Codes" below.
-
-#### `compile( context,  string, size_t* sz )` 📝
-
-adds string to the context and compiles everything. If the string has definitions
-that have the same name as others that were loaded into the context earlier, 
-it does not trigger an error. Instead, any definitions in string are presumed to override.
-
-returns a status code. If successful `sz` will be set to the size of the binary.
-See "Status Codes" below.
-
-
-#### `bool get_binary(context, const void** out_data, size_t* out_size)` 📝
-
-Gets the size and a pointer to the compiled binary from the last successful compilation.
-return true on success, false if no binary is available.
-
-The binary/ir result of the compilation. Something that can be passed 
-to `clCreateProgramWithBinary` or its equivalent.
-
-#### `long get_compilation_error_code(context)` 📝
-
-Retrieve the actual compilation error code from the last compilation attempt. 0 if successful.
-
-#### `const char* get_messages(context)` 📝
-
-Gets any error or warning messages from the last compilation attempt (successful or not).
-
-#### `const char* get_metadata(context)` 📝
-
-Gets the metadata from the last successful compilation. Format TBD.
-
-#### `destroy_context( context )` 📝
-
-Destroys the context. 
-
-### Status Codes ✅
-
-When using the In Memory Compilation API in conjunction with the "tree shaking cache" <!-- RENAME -->
-it is important to preserve the API between the host and the kernels it may be enqueuing.
-
-For example, if some kernel in the cache required only 1000 bytes of scratch memory, but 
-after recompilation by In Memory Compilation API it now requires 10,000 bytes, that would
-be a breaking change.  The kernel, if enqueued as before, would no longer function correctly.
-
-Other changes could result in even more severe API breakage. Query the metadata to see
-if the kernel you intend to call was effected and how before attempting to use it.
-
-
-```
-typedef enum {
-    /* The kernel compiled successfully and is compatible with the previous
-        hoisting/launch requirements from the cache. */
-    SUCCESS_COMPATIBLE = 0,
-
-    /* The kernel compiled successfully, BUT its hoisting/launch requirements
-        (e.g., arguments, scratch sizes) have changed. The host MUST
-        re-query the kernel metadata before launching. */
-    SUCCESS_BREAKING_CHANGE = 1,
-
-    /* The kernel failed to compile.  Use get_compilation_error_code() to retrieve the actual ec.*/
-    ERROR_COMPILE_FAILURE = -1,
-
-}
+const void* bin; size_t size;
+crisp_module_binary(ctx, 0, &bin, &size);                /* -> zeModuleCreate / cuModuleLoadData */
+const char* entry = crisp_kernel_name(ctx, 0, 0);        /* -> zeKernelCreate / cuModuleGetFunction */
+size_t s = crisp_param_slot(ctx, 0, 0, /*param*/ 0, CRISP_ROLE_STRIDE, 1);  /* where axis 1's stride goes */
+crisp_context_destroy(ctx);
 ```
 
+- **Strings in, bytes out.**  Inputs are copied during each call.  Everything returned is owned by
+  the context and stays valid until the next compile, `crisp_clear_sources` or
+  `crisp_context_destroy`.
+- **One target per context.**  A second target is a second context.
+- **Results are plural.**  A compile yields modules (exactly one today; `def-orchestration` will
+  make it N), each holding kernels.  Under `--differentiate` a module holds each primal kernel
+  followed by its `<name>_grad` kernel.
+- **Facts come from small getters, one value per call**, not from structs: easy from any FFI, and a
+  new fact is a new function, so adding one never breaks the ABI.  A bad index gets the getter's
+  "nothing" value (0, NULL, the enum's `*_INVALID`, or `CRISP_NO_SLOT`).
+- **Diagnostics** are structured (severity, message, file, line, column) and also available as one
+  block of text.  Line and column are 0 today: Crisp locates errors by form path. 📝
 
-### Flags
-If using the `set_tree_shake_directory()` call, then the compilation environment will
-load the flags from the record there.  This ensures maximum reuse of the .crisp_lib files
-that are there and keeps compilation speed at its highest.
+### What a caller can ask ✅
 
-If you need to override or change, use the `set_flags()` call.  But note that
-this call is singular and should be complete. The flags set with this call are
-not "additive".  Any call to `set_flags()` should include ALL the relevant flags
-you want on the next call to `compile()`.
+| About | Calls |
+| --- | --- |
+| the compile | `crisp_compile`, `crisp_status_string`, `crisp_diagnostic_*`, `crisp_diagnostics_text` |
+| modules | `crisp_module_count`, `crisp_module_binary` (PTX is also NUL-terminated) |
+| kernels | `crisp_kernel_count`, `crisp_kernel_name`, `crisp_kernel_grad_of` |
+| physical argument slots | `crisp_slot_count`, `crisp_slot_type`, `crisp_slot_size`, `crisp_slot_address_space` |
+| declared parameters | `crisp_param_count`, `crisp_param_name`, `crisp_param_kind_of`, `crisp_param_direction`, `crisp_param_element_type`, `crisp_param_rank`, `crisp_param_layout`, `crisp_param_address_space`, `crisp_param_adjoint_of` |
+| where a part goes | `crisp_param_slot(ctx, m, k, p, ROLE, axis)` -- ROLE is VALUE, POINTER, BYTE_SIZE, OFFSET, STRIDE, EXTENT, LENGTH or FIELD |
 
-However, nearly all flags are ignored by the In Memory Compilation API. 
-The only flags it respects are
+A parameter is what the Crisp source declares; a SLOT is what the launch API receives.  A tensor
+parameter becomes a pointer, a byte size, an offset / stride / extent per axis and a length.  The
+caller asks by ROLE rather than learning that layout.  BYTE_SIZE is in bytes; offsets, strides,
+extents and length are in elements.
 
-- `--single-pass`
-- `--no-inference`
-- `--skip-c-t-checks`
-- `--no-static-analysis`
-- `-D`
-- `--math-precision` (and `--force-math-precision` but discouraged)
-- flags governing errors and warnings (TBD)
+`crisp_param_layout` matters to anyone holding a non-contiguous view: a `:compact` tensor kernel
+reads neither offsets nor strides (the data must be dense and start at the pointer), a
+`:compact-offset` one adds the offsets, and only a `:strided` one honours both.
 
-> NOTE: revisit the above assertion about "only" flags. We have added some, like --denormal-handling. Why are most flags ignored anyway? The destination and target ones make sense to skip. What about --debug , logging, log-level ?
+For a `_grad` kernel, `crisp_kernel_grad_of` names its primal, and `crisp_param_adjoint_of` says
+which primal parameter each adjoint belongs to.  An IN adjoint carries the incoming gradient of an
+`&out`; an OUT adjoint receives the computed gradient of an input.  A scalar's gradient comes back
+through memory, as an OUT cell.
 
+Still to come, added as the dogfood launcher (below) needs them 📝: implicit parameters the caller
+must supply (scratch buffers and their sizes, the debug log, tensor-map descriptors), and launch
+geometry (global / local size and group counts, which can be derived from argument values).
+
+### Flags ✅
+
+`crisp_set_flags` takes the same flags as `crisp-compile`, as an array.  The compiler checks them,
+so a bad one surfaces from `crisp_compile` as `CRISP_ERROR_INVALID_ARGUMENT` with a diagnostic
+naming it.  Refused: unknown flags, bad values, `--ir-target` (fixed by the context),
+`--hoist...`, `--metadata` (metadata is always produced; query it instead), and `--log-level`.
+
+### How it runs ✅
+
+The library (`crisp.dll` / `libcrisp.so`) is small and written in C: no Lisp and no LLVM are loaded
+into the caller's process.  Compiles are done by `crisp-compile --serve` helper processes, started
+on the first compile and kept in a small pool shared by all contexts, so different contexts compile
+in parallel.  A helper that dies costs that one compile (`CRISP_ERROR_COMPILER_PROCESS`); the next
+compile starts a fresh one.  `crisp_shutdown()` stops them early.
+
+Install layout: the library sits in `<root>/bin/` beside `crisp-compile` and the LLVM tools, and
+finds them there.  `CRISP_HOME` (the `<root>`) or `CRISP_COMPILE_EXE` (the full path) override.
+`build/build.lisp` builds the library whenever a C compiler (`$CC`, `gcc` or `clang`) is on PATH.
+
+A warm compile of a small kernel takes about 250 ms (Windows); most of that is the LLVM back end,
+not Crisp.
+
+### Dogfood: `--hoist-kernel=source` ✅
+
+`crisp-compile --hoist=l0 --hoist-kernel=source` generates a launcher that holds the `.crisp`
+source and the compile flags as strings, compiles them at run time through this API, and takes
+every argument slot from the API's answers instead of indices baked in at hoist time.  It is the
+test that the API is enough to launch a kernel (the spec runner's `--hoist-kernel=source` option
+runs every L0 hoist spec that way, against the same expectations).  L0 only, for now.
 
 ## APPENDIX #1 - Summary: set / get vars, storage handles, and structs 
 

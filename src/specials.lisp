@@ -185,4 +185,20 @@
           +SPV-OPT-PIPELINE+
           ))
 
+(in-package :crisp.main)
+
+(declaim (special
+          *API-RANDOM-STATE*
+          *API-TEMP-COUNTER*
+          *API-TEMP-ROOT*
+          *HOISTER-EXTRA-ARGS*
+          +API-BOOLEAN-FLAGS+
+          +API-CHOICE-FLAGS+
+          +API-FREE-VALUE-FLAGS+
+          +API-PROTOCOL-VERSION+
+          +API-REJECTED-FLAG-PREFIXES+
+          +API-SCALAR-SIZES+
+          +API-UNFORWARDED-FLAG-PREFIXES+
+          ))
+
 ;;;; end of generated file

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-19T00:48:04.694308Z
+Generated on 2026-10-20T06:50:04.804792Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -3029,7 +3029,7 @@ Generated on 2026-10-19T00:48:04.694308Z
 ### DEFUN `%CHECK-ELEMENT-STORE-TYPE`
 - **Args**: `(TARGET-NODE VALUE-NODE LOCATION)`
 
-  > Endeavour 186 (BUG 059): a set! into a storage ELEMENT must store the element's own type, the rule  >    a plain variable's set! already enforces (types-compatible-p: same type, a derived type of it, an  >    enum's keyword, ...).  Before 186 an element store was not checked at all and codegen wrote the  >    value at ITS width -- a float into a half element wrote 4 bytes into a 2-byte slot, a double into a  >    float overran the next element, an int and a float swapped bit patterns -- all silently.  Crisp asks  >    for an explicit conversion wherever data can be lost or reinterpreted, so this refuses and names it.  >   >    The value is taken in single-value context (get-single-value-type): (floor x) is (int float) and  >    stores its primary int.  A BRANDED value is compared by its base type.  A value whose type does not  >    resolve (a brand whose base is still a template parameter, or a brand renamed by --differentiate)  >    has no concrete type to compare and is let through.
+  > Endeavour 186 (BUG 059): a set! into a storage ELEMENT must store the element's own type, the rule  >    a plain variable's set! already enforces (types-compatible-p: same type, a derived type of it, an  >    enum's keyword, ...).  Before 186 an element store was not checked at all and codegen wrote the  >    value at ITS width -- a float into a half element wrote 4 bytes into a 2-byte slot, a double into a  >    float overran the next element, an int and a float swapped bit patterns -- all silently.  Crisp asks  >    for an explicit conversion wherever data can be lost or reinterpreted, so this refuses and names it.  >   >    The value is taken in single-value context (get-single-value-type): (floor x) is (int float) and  >    stores its primary int.  A BRANDED value is compared by its base type.  A value whose type does not  >    resolve (a brand whose base is still a template parameter, or a brand renamed by --differentiate)  >    has no concrete type to compare and is let through.  Stores in an AD-generated _GRAD function are  >    not checked (see the scope note in the body).
 
 
 ---
@@ -3459,6 +3459,283 @@ Generated on 2026-10-19T00:48:04.694308Z
 - **Args**: `(ANF-BODY)`
 
   > Flattens an ANF body into a sequential list of bindings and side-effects.  > Returns a list of elements formatted as either (var expr), (var0 var1 expr) for  > multi-value bindings, or just expr (for side-effects).  > Accepts bindings of length >= 2 (fix: was = 2, dropping multi-value bindings).
+
+
+---
+## File: `C:\Users\cperk\Documents\crisp-man\src\api.lisp`
+
+### DEFVAR `*API-TEMP-ROOT*`
+
+  > Directory under which COMPILE-SOURCES makes one private temp directory per compile.  NIL means  >    <system temp>/crisp-api/.  Tests rebind it so 'no files left behind' is checkable.
+
+
+---
+### DEFVAR `*API-TEMP-COUNTER*`
+
+  > Makes temp directory names unique within this image (a random part makes them unique across images).
+
+
+---
+### DEFVAR `*API-RANDOM-STATE*`
+
+  > Seeded on first use, at RUN time: a saved image's default random state is identical in every  >    process started from it, so two compile servers would otherwise pick the same temp names.
+
+
+---
+### DEFPARAMETER `+API-REJECTED-FLAG-PREFIXES+`
+
+  > Flags the compile API refuses, with the reason.  Matched as prefixes.
+
+
+---
+### DEFPARAMETER `+API-CHOICE-FLAGS+`
+
+  > Valued flags with a fixed set of spellings: (PREFIX SETTING-KEY CHOICES).
+
+
+---
+### DEFPARAMETER `+API-FREE-VALUE-FLAGS+`
+
+  > Valued flags whose value is checked later by the compiler itself: (PREFIX SETTING-KEY).
+
+
+---
+### DEFPARAMETER `+API-BOOLEAN-FLAGS+`
+
+  > Flags that switch something on: (FLAG SETTING-KEY).
+
+
+---
+### DEFUN `%API-PARSE-FLAGS`
+- **Args**: `(FLAGS)`
+
+  > FLAGS (a list of strings, as crisp-compile takes them) as a settings plist.  >    Returns (values SETTINGS NIL) or (values NIL MESSAGE) -- MESSAGE names the offending flag.  >    Unknown flags are REJECTED (the CLI ignores them; an API caller deserves to hear about a typo).
+
+
+---
+### DEFUN `%API-PARSE-TARGET`
+- **Args**: `(TARGET)`
+
+  > TARGET ("spv", "spirv" or "ptx", any case) as a backend keyword, or NIL if unknown.
+
+
+---
+### DEFUN `%API-FLAG-WARNINGS`
+- **Args**: `(SETTINGS)`
+
+  > The warnings crisp-compile prints for SETTINGS (parse-cli-args), as diagnostics.  >    One deliberate difference: the fast-vs-preserve warning needs an EXPLICIT --denormal-handling=preserve.  >    parse-cli-args warns whenever precision is fast, because :preserve is merely the default there.
+
+
+---
+### DEFUN `%API-DIAGNOSTIC`
+- **Args**: `(SEVERITY MESSAGE &KEY FILE (LINE 0) (COLUMN 0))`
+
+  > One diagnostic plist.  LINE / COLUMN are 1-based, 0 when unknown -- always 0 today: Crisp locates  >    errors by form path, not by line (TODO(190)).
+
+
+---
+### DEFUN `%API-CONDITION-MESSAGE`
+- **Args**: `(C)`
+
+  > C's report as one string, with its source location (a form path) when it has one -- the same text  >    print-compiler-error writes, without the 'Crisp compilation failed in' header.
+
+
+---
+### DEFUN `%API-STDERR-DIAGNOSTICS`
+- **Args**: `(TEXT)`
+
+  > Lines of TEXT (what the compile wrote to *error-output*) that start with WARNING: as :warning diagnostics.
+
+
+---
+### DEFUN `%API-MAKE-TEMP-DIR`
+
+  > A fresh, empty, private directory for one compile.
+
+
+---
+### DEFUN `%API-WRITE-SOURCES`
+- **Args**: `(SOURCES DIR)`
+
+  > Writes each (TEXT . VIRTUAL-NAME) of SOURCES as DIR/<i>/<name> and returns  >    (values FILES NAME-BY-PATH) -- the files in order, and an alist from namestring to virtual name.  >    Each source gets its own subdirectory, so two sources may share a virtual name.
+
+
+---
+### DEFUN `%API-VIRTUAL-NAME`
+- **Args**: `(PATHNAME NAMES)`
+
+  > The virtual name of the temp file PATHNAME (see %api-write-sources), or NIL.
+
+
+---
+### DEFUN `%API-METADATA-PACKAGE`
+
+  > A private package to read .metacrisp text into, so its symbols never land in a compiler package.
+
+
+---
+### DEFUN `%API-READ-METACRISP`
+- **Args**: `(PATH)`
+
+  > Every top-level form of the .metacrisp at PATH, read safely (*read-eval* off, private package).
+
+
+---
+### DEFUN `%API-SECTION`
+- **Args**: `(FORMS KEY)`
+
+  > The body of the top-level (KEY ...) form in FORMS.
+
+
+---
+### DEFUN `%API-KW`
+- **Args**: `(SYM)`
+
+  > SYM (from the private package) as a keyword.
+
+
+---
+### DEFPARAMETER `+API-SCALAR-SIZES+`
+
+  > Bytes of each scalar type a physical slot can carry.
+
+
+---
+### DEFUN `%API-SLOT`
+- **Args**: `(ENTRY)`
+
+  > One :physical-signature ENTRY, (INDEX TYPE), as a slot plist.
+
+
+---
+### DEFUN `%API-RESOLVE-TYPE`
+- **Args**: `(TYPE ALIASES)`
+
+  > TYPE with def-type aliases followed (ALIASES: alist of symbol-name -> type form).
+
+
+---
+### DEFUN `%API-ROLES`
+- **Args**: `(KIND RANK FIRST LAST)`
+
+  > The (ROLE AXIS SLOT) entries of a parameter of KIND / RANK spanning physical slots FIRST..LAST.  >    The layout is the one the hoisters fill (src/hoist-l0/main.lisp, cell ~L1210, tensor ~L1387).
+
+
+---
+### DEFUN `%API-PARAM`
+- **Args**: `(DECL ALIASES RECORD-NAMES)`
+
+  > One :declared-signature DECL as a parameter plist.
+
+
+---
+### DEFUN `%API-KERNELS-OF-METACRISP`
+- **Args**: `(PATH)`
+
+  > The kernel plists described by the .metacrisp at PATH.
+
+
+---
+### DEFUN `%API-MARK-POINTER-SLOTS`
+- **Args**: `(SLOTS PARAMS)`
+
+  > SLOTS with every parameter's :pointer-role slot reported as a pointer in that parameter's address  >    space.  The .metacrisp records the TARGET's view of the slot: SPIR-V says (C-POINTER ADDRESS-SPACE  >    GLOBAL), but PTX says ULONG (PTX passes a pointer as a .param .b64).  The roles are the same on  >    every target, so they decide.
+
+
+---
+### DEFUN `%API-WRITE-KERNEL-METACRISP`
+- **Args**: `(KERNEL PATH SOURCE OUTPUT-TARGETS)`
+
+  > Writes a .metacrisp for the one KERNEL (a symbol) at PATH -- the same sequence  >    generate-metadata-for-file writes per kernel, minus its --differentiate redirection to K_GRAD.
+
+
+---
+### DEFUN `%API-DIFFERENTIATE-KERNELS`
+- **Args**: `(FILEPATH OUTPUT CAPTURED-FORMS GRAD-META-PATHS)`
+
+  > The kernels of a --differentiate compile, in order: each forward kernel, then its _grad.  >    crisp-compile's .metacrisp describes ONLY the _grad kernel (F4), though the module holds both,  >    so the primal's is written here, into the compile's private temp directory -- the CLI's files  >    are untouched (tests/run-specs.lisp tells a backward metacrisp by its text, so a primal added  >    to that file would trip %152-assert-no-schedule-leak).  >    GRAD-META-PATHS are generate-metadata-for-file's, one per forward kernel in the same order as  >    the names below (it derives them the same way).
+
+
+---
+### DEFUN `%API-PAIR-ADJOINTS`
+- **Args**: `(KERNELS)`
+
+  > KERNELS with :grad-of on every kernel and :adjoint-of on every parameter (NIL when not a gradient).  >    A kernel <K>_grad is the gradient of kernel K when both are present.  In it, parameter P is the  >    adjoint of Q when P is <Q>_grad, Q is a parameter of K, and P is NOT -- so a user's own parameter  >    named x_grad is never mistaken for an adjoint.  The AD pass names adjoints this way; deriving the  >    pairing here keeps the compiler untouched (decision for review: it could instead be emitted by  >    the AD pass into the metacrisp).
+
+
+---
+### DEFUN `%API-READ-OCTETS`
+- **Args**: `(PATH)`
+
+  > The bytes of the file at PATH.
+
+
+---
+### DEFUN `%API-COMPILE-IN-DIR`
+- **Args**: `(FILES NAMES SETTINGS BACKEND)`
+
+  > Compiles FILES (the temp copies of the sources) for BACKEND with SETTINGS.  Returns the result  >    plist.  Mirrors compile-files for ONE target, with metadata always on and every failure caught.
+
+
+---
+### DEFUN `COMPILE-SOURCES`
+- **Args**: `(SOURCES &KEY (TARGET spv) FLAGS)`
+
+  > The compile API's Lisp core (endeavour 190).  Compiles SOURCES -- a list of (TEXT . VIRTUAL-NAME),  >    compiled in order as if one file -- for TARGET ("spv" or "ptx") with FLAGS (strings, as  >    crisp-compile takes them).  Never quits, never writes to *standard-output*, leaves no files.  >    Returns a plist:  >      (:status :ok | :compile-error | :invalid-argument | :internal-error  >       :diagnostics ((:severity :error|:warning|:note :message STR :file STR :line N :column N) ...)  >       :modules ((:binary OCTETS  >                  :kernels ((:name STR  >                             :slots ((:type KW :size N :address-space KW-or-NIL) ...)      ; physical args  >                             :params ((:name STR :kind :scalar|:cell|:tensor|:record :direction :in|:out  >                                       :element-type KW :rank N :address-space KW-or-NIL  >                                       :roles ((ROLE AXIS SLOT) ...)) ...)) ...)))))  >    v1 always yields exactly one module on success.
+
+
+---
+### DEFPARAMETER `+API-PROTOCOL-VERSION+`
+
+  > Bumped on any incompatible change to the server framing or record set.
+
+
+---
+### DEFUN `%PROTO-OCTETS`
+- **Args**: `(PAYLOAD)`
+
+  > PAYLOAD (a string, an integer, a keyword or an octet vector) as an octet vector.
+
+
+---
+### DEFUN `%PROTO-WRITE-RECORD`
+- **Args**: `(STREAM TAG PAYLOAD)`
+
+  > Writes one record (see the framing above) to the octet STREAM.  A NIL payload writes nothing.
+
+
+---
+### DEFUN `%PROTO-READ-RECORD`
+- **Args**: `(STREAM)`
+
+  > Reads one record from the octet STREAM: (values TAG PAYLOAD-OCTETS), or NIL at end of file.  >    Signals an error on a malformed record.
+
+
+---
+### DEFUN `%PROTO-READ-REQUEST`
+- **Args**: `(STREAM)`
+
+  > Reads one request from STREAM.  Returns (values TARGET FLAGS SOURCES), or NIL at end of file.  >    SOURCES is a list of (TEXT . VIRTUAL-NAME), as compile-sources takes it.
+
+
+---
+### DEFUN `%PROTO-WRITE-RESULT`
+- **Args**: `(STREAM RESULT)`
+
+  > Writes RESULT (a compile-sources plist) to STREAM as a RESPONSE (see the framing above).
+
+
+---
+### DEFUN `SERVE-REQUESTS`
+- **Args**: `(IN OUT)`
+
+  > The compile server loop: reads requests from the octet stream IN until end of file, answers each  >    on the octet stream OUT.  A malformed request is answered with internal-error and ends the loop  >    (the stream can no longer be trusted to be in sync); the client then starts a fresh server.
+
+
+---
+### DEFUN `SERVE-MAIN`
+
+  > `crisp-compile --serve`: speaks the compile-server protocol on the process's stdin / stdout.  >    The protocol owns stdout, so every Lisp stream that might print is pointed at stderr first.
 
 
 ---
@@ -7982,6 +8259,85 @@ Generated on 2026-10-19T00:48:04.694308Z
 
 
 ---
+### DEFVAR `*HOIST-KERNEL-SOURCE-MODE*`
+
+  > Endeavour 190: T when crisp-compile asked for --hoist-kernel=source.
+
+
+---
+### DEFVAR `*HOIST-KERNEL-SOURCES*`
+
+  > Endeavour 190: the .crisp paths to embed, in compile order (from --kernel-source=).
+
+
+---
+### DEFVAR `*HOIST-KERNEL-FLAGS*`
+
+  > Endeavour 190: the compile flags to embed, in order (from --kernel-flag=).
+
+
+---
+### DEFVAR `*HOIST-CURRENT-KERNEL-NAME*`
+
+  > Endeavour 190: the kernel being emitted, for the source-mode slot map.
+
+
+---
+### DEFVAR `*HOIST-CURRENT-SIGNATURE*`
+
+  > Endeavour 190: (DECLARED-SIG FULL-SIG ALIASES RECORDS) of the kernel being emitted.
+
+
+---
+### DEFUN `%HK-EXTRACT-ARGS`
+- **Args**: `(ARGS)`
+
+  > Splits the endeavour-190 arguments out of ARGS, setting the *hoist-kernel-...* specials.  >    Returns the remaining arguments (for %mma-parse-args).
+
+
+---
+### DEFUN `%HK-C-STRING`
+- **Args**: `(S)`
+
+  > S as a C string literal.
+
+
+---
+### DEFUN `%HK-SOURCE-LITERAL`
+- **Args**: `(TEXT)`
+
+  > TEXT as a C++ raw string literal (an escaped ordinary literal if TEXT contains the delimiter).
+
+
+---
+### DEFUN `%HK-EMIT-EMBEDDED-SOURCES`
+- **Args**: `(STREAM)`
+
+  > File-scope C++: the compile API header, the embedded sources and the flags.
+
+
+---
+### DEFUN `%HK-PARAM-ROLES`
+- **Args**: `(PARAM ALIASES RECORDS)`
+
+  > The (BAKED-SLOT ROLE AXIS) of each slot of the declared PARAM, by the layout the hoist emits  >    against (cell ~L1210, tensor ~L1387) -- the same layout src/api.lisp %api-roles describes, which  >    is the point: the launcher asks the API and the run proves the two agree.
+
+
+---
+### DEFUN `%HK-EMIT-COMPILE-AND-SLOT-MAP`
+- **Args**: `(STREAM)`
+
+  > main()-scope C++: compile the embedded source through the API into spirv_data, find this  >    launcher's kernel in the result, and build crisp_slot[] -- baked argument index -> the slot the  >    API says.  Implicit parameters (scratch ...) are not yet described by the API (crisp.h PLANNED),  >    so their entries stay identity.
+
+
+---
+### DEFUN `%HK-REWRITE-ARG-INDICES`
+- **Args**: `(TEXT)`
+
+  > TEXT with every `zeKernelSetArgumentValue(kernel, <digits>,` rewritten to  >    `zeKernelSetArgumentValue(kernel, crisp_slot[<digits>],`.
+
+
+---
 ### DEFUN `%L0-LATCH-HARDWARE-PROFILE`
 - **Args**: `(DATA)`
 
@@ -8082,7 +8438,21 @@ Generated on 2026-10-19T00:48:04.694308Z
 ### DEFUN `GENERATE-MODULE-LOADING`
 - **Args**: `(STREAM SPV-PATH)`
 
-  > Generate SPIR-V module loading code.  >   >    Endeavor 144 Phase 4: pBuildFlags now carries the compiler-selected register allocation  >    (see %l0-register-build-flags) instead of being unconditionally nullptr.
+  > Generate SPIR-V module loading code.  >   >    Endeavor 144 Phase 4: pBuildFlags now carries the compiler-selected register allocation  >    (see %l0-register-build-flags) instead of being unconditionally nullptr.  >    Endeavour 190: under --hoist-kernel=source the SPIR-V comes from the compile API at run time.
+
+
+---
+### DEFUN `%L0-EMIT-SPIRV-FILE-READ`
+- **Args**: `(STREAM SPV-PATH)`
+
+  > The launcher's spirv_data, read from SPV-PATH (the ordinary --hoist-kernel=file launcher).
+
+
+---
+### DEFUN `%L0-EMIT-MODULE-CREATE`
+- **Args**: `(STREAM)`
+
+  > zeModuleCreate over the launcher's spirv_data (however it was obtained), with the  >    compiler-selected register build flags (Endeavor 144 Phase 4).
 
 
 ---
@@ -9511,6 +9881,25 @@ Generated on 2026-10-19T00:48:04.694308Z
 
 
 ---
+### DEFVAR `*HOISTER-EXTRA-ARGS*`
+
+  > Endeavour 190: extra arguments for the hoister -- the --hoist-kernel=source request, the source  >    files to embed and the flags to compile them with (see %hoist-kernel-source-args).
+
+
+---
+### DEFPARAMETER `+API-UNFORWARDED-FLAG-PREFIXES+`
+
+  > Flags a --hoist-kernel=source launcher does NOT pass to the compile API: they are about this  >    invocation's outputs, and the API refuses them (src/api.lisp +api-rejected-flag-prefixes+).
+
+
+---
+### DEFUN `%HOIST-KERNEL-SOURCE-ARGS`
+- **Args**: `(ARGS)`
+
+  > Endeavour 190: the hoister arguments for `--hoist-kernel=source` -- one --kernel-source=<path> per  >    .crisp source and one --kernel-flag=<flag> per flag the generated launcher must hand the compile  >    API, so the kernel it compiles at run time is the one hoisted now.
+
+
+---
 ### DEFUN `GET-HOISTER-BINARY-PATH`
 - **Args**: `(HOIST-ID)`
 
@@ -9584,7 +9973,7 @@ Generated on 2026-10-19T00:48:04.694308Z
 ---
 ### DEFUN `MAIN`
 
-  > Main entry point for the crisp-compile executable.
+  > Main entry point for the crisp-compile executable.  `crisp-compile --serve` runs the compile  >    server instead (endeavour 190; serve-main, in src/api.lisp).
 
 
 ---

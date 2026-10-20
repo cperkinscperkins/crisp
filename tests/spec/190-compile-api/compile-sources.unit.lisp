@@ -97,7 +97,8 @@
 (defun role-slot (p role axis)
   (third (find-if (lambda (e) (and (eq (first e) role) (= (second e) axis))) (getf p :roles))))
 (defun errors-of (r) (remove :error (getf r :diagnostics) :key (lambda (d) (getf d :severity)) :test-not #'eq))
-(defun binary-text (r) (map 'string #'code-char (getf (first (modules r)) :binary)))
+(defun kernels-without-binary (r) (kernels r))
+(defun binary-text (r)(map 'string #'code-char (getf (first (modules r)) :binary)))
 (defun temp-root-empty-p ()
   (null (append (uiop:directory-files *190-temp-root*) (uiop:subdirectories *190-temp-root*))))
 
@@ -123,7 +124,21 @@
     (is eq :ok (getf r :status))
     (true (search ".entry k_one" (binary-text r)))
     (true (search ".entry k_two" (binary-text r)))
+    ;; PTX's .metacrisp records a pointer slot as ULONG (.param .b64); the API still says pointer
+    (let ((s0 (first (getf (kernel r "k_one") :slots))))
+      (is eq :pointer (getf s0 :type))
+      (is eq :global (getf s0 :address-space)))
     (true (temp-root-empty-p))))
+
+;; A long-lived server compiles many times in ONE image; the second compile must look like the first.
+(define-test (compile-api repeat-compiles-are-identical)
+  (let ((first-r (compile-quietly (list (cons +two-kernels+ "two.crisp"))))
+        (ptx-r (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx"))
+        (again (compile-quietly (list (cons +two-kernels+ "two.crisp")))))
+    (false (getf ptx-r :diagnostics) "no 'redefining ... DEFMACRO' noise")
+    (false (getf again :diagnostics))
+    (is equalp (getf (first (modules first-r)) :binary) (getf (first (modules again)) :binary))
+    (is equal (kernels-without-binary first-r) (kernels-without-binary again))))
 
 (define-test (compile-api tensor-params-and-slots)
   (let* ((r (compile-quietly (list (cons +two-kernels+ "two.crisp"))))
@@ -138,6 +153,7 @@
     (is eq :float (getf a :element-type))
     (is = 1 (getf a :rank))
     (is eq :global (getf a :address-space))
+    (is eq :compact (getf a :layout) "fvec is :align :compact: the kernel ignores offsets and strides")
     ;; two rank-1 tensors: 3N+3 = 6 slots each
     (is = 12 (length (getf k :slots)))
     (let ((s0 (first (getf k :slots))) (s1 (second (getf k :slots))))
@@ -165,11 +181,35 @@
     (is eq :scalar (getf s :kind))
     (is eq :float (getf s :element-type))
     (is = 0 (getf s :rank))
+    (false (getf s :layout) "layout is a tensor-only fact")
     (is = 0 (role-slot s :value 0))
     (let ((slot0 (first (getf k :slots))))
       (is eq :float (getf slot0 :type))
       (is = 4 (getf slot0 :size))
       (false (getf slot0 :address-space)))))
+
+(defparameter +strided-matrix+
+  "(def-type smat (matrix float :address-space :global :align :strided))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k_mat (M &out C)
+  (declare #'(smat &out out-c))
+  (set! (~ C) (~ M 1 2)))
+")
+
+(define-test (compile-api strided-matrix-roles)
+  (let* ((r (compile-quietly (list (cons +strided-matrix+ "mat.crisp"))))
+         (m (param (kernel r "k_mat") "m")))
+    (is eq :ok (getf r :status))
+    (is eq :strided (getf m :layout))
+    (is = 2 (getf m :rank))
+    ;; rank 2: PTR, BYTE_SIZE, OFF0, OFF1, STR0, STR1, EXT0, EXT1, LENGTH = 3N+3 = 9 slots
+    (is equal '(0 1 2 3 4 5 6 7 8)
+        (list (role-slot m :pointer 0) (role-slot m :byte-size 0)
+              (role-slot m :offset 0) (role-slot m :offset 1)
+              (role-slot m :stride 0) (role-slot m :stride 1)
+              (role-slot m :extent 0) (role-slot m :extent 1)
+              (role-slot m :length 0)))
+    (is = 12 (length (getf (kernel r "k_mat") :slots)) "9 for M + 3 for the cell C")))
 
 (define-test (compile-api multiple-sources)
   (let ((r (compile-quietly (list (cons +types-only+ "types.crisp")
@@ -222,8 +262,119 @@
 (define-test (compile-api differentiate-describes-both-kernels)
   (let ((r (compile-quietly (list (cons +vec-sq-lit+ "vsl.crisp")) :flags '("--differentiate"))))
     (is eq :ok (getf r :status))
-    (true (kernel r "vec_sq_lit"))
-    (true (kernel r "vec_sq_lit_grad"))))
+    (is equal '("vec_sq_lit" "vec_sq_lit_grad") (mapcar (lambda (k) (getf k :name)) (kernels r))
+        "each forward kernel, then its _grad")
+    (true (temp-root-empty-p))))
+
+;; The primal described by a --differentiate compile is the SAME as a plain compile's.
+(define-test (compile-api differentiate-primal-matches-plain)
+  (let* ((plain (kernel (compile-quietly (list (cons +vec-sq-lit+ "vsl.crisp"))) "vec_sq_lit"))
+         (diff  (kernel (compile-quietly (list (cons +vec-sq-lit+ "vsl.crisp")) :flags '("--differentiate"))
+                        "vec_sq_lit")))
+    (true plain)
+    (true diff)
+    (is equal (getf plain :slots) (getf diff :slots))
+    (is equal (getf plain :params) (getf diff :params))))
+
+;; Adjoint pairing (A3 item 6): explicit, not left to the caller's reading of names.
+(define-test (compile-api differentiate-adjoint-pairing)
+  (let* ((r (compile-quietly (list (cons +vec-sq-lit+ "vsl.crisp")) :flags '("--differentiate")))
+         (fwd (kernel r "vec_sq_lit"))
+         (bwd (kernel r "vec_sq_lit_grad")))
+    (false (getf fwd :grad-of))
+    (is equal "vec_sq_lit" (getf bwd :grad-of))
+    (is equal '("a" "c" "c_grad" "a_grad") (mapcar (lambda (p) (getf p :name)) (getf bwd :params)))
+    (false (getf (param bwd "a") :adjoint-of))
+    (false (getf (param bwd "c") :adjoint-of))
+    (is equal "c" (getf (param bwd "c_grad") :adjoint-of))
+    (is equal "a" (getf (param bwd "a_grad") :adjoint-of))
+    (is eq :in (getf (param bwd "c_grad") :direction) "the incoming gradient")
+    (is eq :out (getf (param bwd "a_grad") :direction) "the computed gradient")
+    (false (getf (param fwd "a") :adjoint-of))))
+
+;; A user's OWN parameter named <x>_grad is not an adjoint; its adjoint is <x>_grad_grad.
+(defparameter +user-named-grad+
+  "(def-type fvec (vector float :address-space :global :align :compact))
+(def-type out-c (cell float :address-space :global))
+(def-kernel k_ug (A w_grad &out C)
+  (declare #'(fvec float &out out-c))
+  (set! (~ C) (* (~ A 0) w_grad)))
+")
+
+(define-test (compile-api differentiate-user-named-grad-param)
+  (let* ((r (compile-quietly (list (cons +user-named-grad+ "ug.crisp")) :flags '("--differentiate")))
+         (bwd (kernel r "k_ug_grad")))
+    (is eq :ok (getf r :status))
+    (true bwd)
+    (false (getf (param bwd "w_grad") :adjoint-of) "the user's own w_grad is an input, not an adjoint")
+    (is equal "w_grad" (getf (param bwd "w_grad_grad") :adjoint-of))
+    ;; a SCALAR's gradient comes back through memory: an :out cell
+    (is eq :cell (getf (param bwd "w_grad_grad") :kind))
+    (is eq :out (getf (param bwd "w_grad_grad") :direction))))
+
+;; The fast-vs-preserve warning only when preserve was ASKED for (crisp-compile warns on every
+;; --math-precision=fast, because :preserve is merely its default).
+(define-test (compile-api fast-precision-warning-only-on-explicit-preserve)
+  (flet ((warnings (flags)
+           (remove :warning (getf (compile-quietly (list (cons +two-kernels+ "two.crisp")) :flags flags) :diagnostics)
+                   :key (lambda (d) (getf d :severity)) :test-not #'eq)))
+    (false (warnings '("--math-precision=fast")))
+    (true (warnings '("--math-precision=fast" "--denormal-handling=preserve")))
+    (false (warnings '("--math-precision=fast" "--denormal-handling=ftz")))))
+
+;;; ------------------------------------------------------------------------------------------------
+;;; The compile server's protocol (src/api.lisp, "The compile server"), round-tripped through files.
+;;; ------------------------------------------------------------------------------------------------
+
+(defparameter *190-proto-dir* (merge-pathnames "put_temp_files_here/190/proto/" (uiop:getcwd)))
+
+(defun serve-through-files (requests-writer)
+  "Writes a request stream with REQUESTS-WRITER (a function of an octet output stream), runs
+   serve-requests over it, and returns the response as a list of (TAG . PAYLOAD-OCTETS)."
+  (ensure-directories-exist *190-proto-dir*)
+  (let ((req (merge-pathnames "req.bin" *190-proto-dir*))
+        (resp (merge-pathnames "resp.bin" *190-proto-dir*)))
+    (with-open-file (o req :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+      (funcall requests-writer o))
+    (with-open-file (i req :element-type '(unsigned-byte 8))
+      (with-open-file (o resp :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+        (let ((crisp.main::*api-temp-root* *190-temp-root*))
+          (crisp.main::serve-requests i o))))
+    (with-open-file (i resp :element-type '(unsigned-byte 8))
+      (loop for (tag payload) = (multiple-value-list (crisp.main::%proto-read-record i))
+            while tag collect (cons tag payload)))))
+
+(defun write-request (o target flags sources)
+  (crisp.main::%proto-write-record o "target" target)
+  (dolist (f flags) (crisp.main::%proto-write-record o "flag" f))
+  (loop for (text . name) in sources
+        do (when name (crisp.main::%proto-write-record o "source-name" name))
+           (crisp.main::%proto-write-record o "source" text))
+  (crisp.main::%proto-write-record o "end" ""))
+
+(defun records-text (records tag)
+  (loop for (tg . p) in records when (string= tg tag) collect (sb-ext:octets-to-string p :external-format :utf-8)))
+
+(define-test (compile-api protocol-round-trip)
+  (let ((recs (serve-through-files
+               (lambda (o)
+                 (write-request o "spv" '() (list (cons +two-kernels+ "two.crisp")))
+                 ;; a SECOND request on the same stream: the server answers both, in order
+                 (write-request o "ptx" '("--no-such-flag") (list (cons +two-kernels+ "two.crisp")))))))
+    (is equal '("ok" "invalid-argument") (records-text recs "status"))
+    (is equal '("k_one" "k_two") (records-text recs "kernel.name"))
+    (is = 2 (count "end" recs :key #'car :test #'string=))
+    (let ((bin (cdr (find "module.binary" recs :key #'car :test #'string=))))
+      (is equalp #(3 2 35 7) (subseq bin 0 4) "the binary survives the framing byte-for-byte"))
+    (true (member "pointer 0 0" (records-text recs "role") :test #'string=))
+    (true (some (lambda (m) (search "--no-such-flag" m)) (records-text recs "diag.message")))
+    (true (temp-root-empty-p))))
+
+(define-test (compile-api protocol-malformed-request)
+  (let ((recs (serve-through-files
+               (lambda (o) (write-sequence (sb-ext:string-to-octets "garbage!!" :external-format :utf-8) o)))))
+    (is equal '("internal-error") (records-text recs "status"))
+    (is = 1 (count "end" recs :key #'car :test #'string=))))
 
 ;;; Gate: a quiet `is` failure does not abort the load, so the runner would call this file PASS.
 (let* ((report (test 'compile-api))

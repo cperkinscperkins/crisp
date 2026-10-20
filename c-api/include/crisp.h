@@ -106,8 +106,10 @@ CRISP_API void crisp_context_destroy(crisp_context* context);
 
 /* Sets the compile flags, exactly as crisp-compile takes them, e.g. "-DN=64",
    "--hardware-profile=bmg", "--differentiate", "--math-precision=fast".  REPLACES any earlier flags
-   (it is not additive).  Rejected with CRISP_ERROR_INVALID_ARGUMENT: flags that name output files
-   or hoisting (--hoist..., --metadata), and --ir-target (the target is fixed at context creation). */
+   (it is not additive).  The flags are checked by the COMPILER, so a bad one surfaces from
+   crisp_compile as CRISP_ERROR_INVALID_ARGUMENT with a diagnostic naming it: unknown flags, bad
+   values, flags that name output files or hoisting (--hoist..., --metadata), --log-level, and
+   --ir-target (the target is fixed at context creation).  This call itself fails only on NULLs. */
 CRISP_API crisp_status crisp_set_flags(crisp_context* context, const char* const* flags, size_t count);
 
 /* Adds Crisp source text (NUL-terminated, UTF-8).  VIRTUAL_NAME (e.g. "my_kernel.crisp") is what
@@ -174,8 +176,11 @@ CRISP_API crisp_status crisp_module_binary(const crisp_context* context, size_t 
 CRISP_API size_t      crisp_kernel_count(const crisp_context* context, size_t module);
 
 /* The entry-point name, as zeKernelCreate / cuModuleGetFunction want it.  With --differentiate a
-   module holds the primal kernel AND its "<name>_grad" kernel (see TODO(190) S2). */
+   module holds each primal kernel followed by its "<name>_grad" kernel. */
 CRISP_API const char* crisp_kernel_name (const crisp_context* context, size_t module, size_t kernel);
+
+/* For a gradient kernel, the NAME of the primal kernel it differentiates; NULL for any other. */
+CRISP_API const char* crisp_kernel_grad_of(const crisp_context* context, size_t module, size_t kernel);
 
 /* ---------------------------------------------------------------------------------------------- */
 /* Physical arguments -- what the launch API actually receives                                     */
@@ -240,14 +245,36 @@ CRISP_API crisp_direction  crisp_param_direction   (const crisp_context* context
 CRISP_API crisp_type       crisp_param_element_type(const crisp_context* context, size_t module, size_t kernel, size_t param);
 /* Number of dimensions of a tensor (1 = vector, 2 = matrix ...); 0 for anything else. */
 CRISP_API uint32_t         crisp_param_rank        (const crisp_context* context, size_t module, size_t kernel, size_t param);
+/* Which layout parts a tensor kernel actually READS -- what a caller holding a non-contiguous view
+   must know.  COMPACT: indexes by extents alone; offsets and strides are ignored, so the data must
+   be dense, row-major, starting at the pointer.  COMPACT_OFFSET: also adds the offsets.  STRIDED:
+   offsets and strides both honoured.  CRISP_LAYOUT_INVALID for anything but a tensor. */
+typedef enum crisp_layout {
+    CRISP_LAYOUT_INVALID        = 0,
+    CRISP_LAYOUT_COMPACT        = 1,
+    CRISP_LAYOUT_COMPACT_OFFSET = 2,
+    CRISP_LAYOUT_STRIDED        = 3
+} crisp_layout;
+
+CRISP_API crisp_layout     crisp_param_layout      (const crisp_context* context, size_t module, size_t kernel, size_t param);
+
 /* Its device address space (cell / tensor); CRISP_ADDRESS_SPACE_INVALID for scalars and records. */
 CRISP_API crisp_address_space crisp_param_address_space(const crisp_context* context, size_t module, size_t kernel, size_t param);
+
+/* In a gradient kernel: the NAME of the primal parameter this one is the adjoint of, else NULL.
+   An IN adjoint carries the incoming gradient (of an &out); an OUT adjoint receives the computed
+   gradient (of an input).  A scalar's gradient comes back through memory, as an OUT cell.
+   A user's own parameter that merely ends in "_grad" is never reported as an adjoint. */
+CRISP_API const char*      crisp_param_adjoint_of  (const crisp_context* context, size_t module, size_t kernel, size_t param);
 
 /* WHERE does each part of a parameter go?  Ask by role instead of knowing Crisp's slot layout:
        crisp_param_slot(ctx, m, k, p, CRISP_ROLE_STRIDE, 1)   -> the slot for axis 1's stride.
    AXIS is used by OFFSET / STRIDE / EXTENT on a tensor (0 .. rank-1) and by FIELD on a record;
    pass 0 otherwise.  Returns CRISP_NO_SLOT when the parameter has no such part.
-   TODO(190): state the UNITS (elements or bytes) of offset / stride / extent / length / byte size. */
+   Units: BYTE_SIZE is in bytes; OFFSET, STRIDE, EXTENT and LENGTH are in ELEMENTS.  A strided
+   access reads element  sum over k of (offset[k] + index[k] * stride[k])  -- the offsets are per
+   axis and SUMMED (src/analysis/structs.lisp %build-tensor-flat-index-form).  See crisp_param_layout
+   for which of them a given kernel reads at all. */
 typedef enum crisp_role {
     CRISP_ROLE_INVALID   = 0,
     CRISP_ROLE_VALUE     = 1,  /* a scalar's only slot                    */
@@ -269,7 +296,6 @@ CRISP_API size_t crisp_param_slot(const crisp_context* context, size_t module, s
 /*     log buffer, tensor-map descriptors                                                          */
 /*   - launch geometry: global / local size, number of groups -- likely a call that takes the     */
 /*     argument values and returns the grid, since sizes can be :derive-from arguments             */
-/*   - adjoint pairing for _grad kernels: which parameter is the gradient of which                 */
 /* ---------------------------------------------------------------------------------------------- */
 
 #ifdef __cplusplus

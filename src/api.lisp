@@ -77,7 +77,9 @@
                  (return-from %api-parse-flags
                    (values nil (format nil "flag ~a: unknown value '~a' (expected ~{~a~^|~})"
                                        flag value (mapcar #'car choices)))))
-               (setf (getf settings key) kw))))
+               (setf (getf settings key) kw)
+               ;; remembered so the fast-vs-preserve warning fires only on an EXPLICIT preserve
+               (when (eq key :denormal-handling) (setf (getf settings :denormal-explicit) t)))))
           (free
            (destructuring-bind (prefix key) free
              (let ((value (subseq flag (length prefix))))
@@ -96,12 +98,15 @@
         ((string-equal target "ptx") :ptx)))
 
 (defun %api-flag-warnings (settings)
-  "The warnings crisp-compile prints for SETTINGS (parse-cli-args), as diagnostics."
+  "The warnings crisp-compile prints for SETTINGS (parse-cli-args), as diagnostics.
+   One deliberate difference: the fast-vs-preserve warning needs an EXPLICIT --denormal-handling=preserve.
+   parse-cli-args warns whenever precision is fast, because :preserve is merely the default there."
   (let ((out nil))
     (when (getf settings :force-math-precision)
       (push (%api-diagnostic :warning "--force-math-precision overrides all in-source precision choices; use for testing/validation only.") out))
     (when (and (eq (or (getf settings :force-math-precision) (getf settings :math-precision)) :fast)
-               (eq (getf settings :denormal-handling) :preserve))
+               (eq (getf settings :denormal-handling) :preserve)
+               (getf settings :denormal-explicit))
       (push (%api-diagnostic :warning "`fast` precision flushes denormals; the `preserve` request is not honored under `fast` -- use `ieee` if you need denormal preservation.") out))
     (nreverse out)))
 
@@ -217,6 +222,10 @@
 (defun %api-roles (kind rank first last)
   "The (ROLE AXIS SLOT) entries of a parameter of KIND / RANK spanning physical slots FIRST..LAST.
    The layout is the one the hoisters fill (src/hoist-l0/main.lisp, cell ~L1210, tensor ~L1387)."
+  (let ((expected-last (case kind (:scalar first) (:cell (+ first 2)) (:tensor (+ first 2 (* 3 rank))) (t last))))
+    (unless (eql expected-last last)
+      (log:error "compile API: a ~(~a~) of rank ~d spans slots ~d..~d, but its layout implies ~d..~d -- roles may be wrong"
+                 kind rank first last first expected-last)))
   (ecase kind
     (:scalar (list (list :value 0 first)))
     (:cell (list (list :pointer 0 first) (list :byte-size 0 (+ first 1)) (list :offset 0 (+ first 2))))
@@ -247,6 +256,14 @@
           :direction (or (getf decl :direction) :in)
           :element-type element
           :rank (if (eq kind :tensor) rank 0)
+          ;; Which of offset / stride the KERNEL reads (analyze-aref-expression): :compact reads
+          ;; neither, :compact-offset reads offsets only, :strided (also the fallback) reads both.
+          ;; A caller with a non-contiguous view needs this.
+          :layout (when (eq kind :tensor)
+                    (case (getf decl :align)
+                      (:compact :compact)
+                      (:compact-offset :compact-offset)
+                      (t :strided)))
           :address-space (getf decl :address-space)
           :roles (%api-roles kind (or rank 0) (first range) (second range)))))
 
@@ -259,10 +276,94 @@
          (record-names (loop for d in (append (%api-section forms :records) (%api-section forms :structs))
                              when (consp d) collect (symbol-name (second d)))))
     (loop for k in (%api-section forms :kernels)
+          for params = (mapcar (lambda (d) (%api-param d aliases record-names)) (getf k :declared-signature))
           collect (list :name (getf k :name)
-                        :slots (mapcar #'%api-slot (getf k :physical-signature))
-                        :params (mapcar (lambda (d) (%api-param d aliases record-names))
-                                        (getf k :declared-signature))))))
+                        :slots (%api-mark-pointer-slots (mapcar #'%api-slot (getf k :physical-signature)) params)
+                        :params params))))
+
+(defun %api-mark-pointer-slots (slots params)
+  "SLOTS with every parameter's :pointer-role slot reported as a pointer in that parameter's address
+   space.  The .metacrisp records the TARGET's view of the slot: SPIR-V says (C-POINTER ADDRESS-SPACE
+   GLOBAL), but PTX says ULONG (PTX passes a pointer as a .param .b64).  The roles are the same on
+   every target, so they decide."
+  (let ((slots (mapcar #'copy-list slots)))
+    (dolist (p params slots)
+      (dolist (r (getf p :roles))
+        (when (and (eq (first r) :pointer) (< -1 (third r) (length slots)))
+          (let ((s (nth (third r) slots)))
+            (setf (getf s :type) :pointer
+                  (getf s :size) 8
+                  (getf s :address-space) (getf p :address-space))
+            (setf (nth (third r) slots) s)))))))
+
+;;; ------------------------------------------------------------------------------------------------
+;;; --differentiate: describe the primal too (S2), and pair each adjoint with its parameter
+;;; ------------------------------------------------------------------------------------------------
+
+(defun %api-write-kernel-metacrisp (kernel path source output-targets)
+  "Writes a .metacrisp for the one KERNEL (a symbol) at PATH -- the same sequence
+   generate-metadata-for-file writes per kernel, minus its --differentiate redirection to K_GRAD."
+  (multiple-value-bind (aliases structs) (crisp.compiler::collect-kernel-dependencies (list kernel))
+    (with-open-file (stream path :direction :output :if-exists :supersede)
+      (format stream ";; generated by crisp-compile (compile API: primal of a --differentiate compile)~%~%")
+      (crisp.compiler::serialize-aliases stream aliases)
+      (crisp.compiler::serialize-structs stream structs)
+      (crisp.compiler::%hp-serialize-active-profile stream)
+      (crisp.compiler::serialize-kernels stream (list kernel) :source source :output-targets output-targets)))
+  path)
+
+(defun %api-differentiate-kernels (filepath output captured-forms grad-meta-paths)
+  "The kernels of a --differentiate compile, in order: each forward kernel, then its _grad.
+   crisp-compile's .metacrisp describes ONLY the _grad kernel (F4), though the module holds both,
+   so the primal's is written here, into the compile's private temp directory -- the CLI's files
+   are untouched (tests/run-specs.lisp tells a backward metacrisp by its text, so a primal added
+   to that file would trip %152-assert-no-schedule-leak).
+   GRAD-META-PATHS are generate-metadata-for-file's, one per forward kernel in the same order as
+   the names below (it derives them the same way)."
+  (let ((forward (if captured-forms
+                     (crisp.compiler::extract-defined-kernels captured-forms)
+                     (crisp.compiler::%only-forward-kernels (reverse crisp.compiler::*compiled-kernels*)))))
+    (log:debug "compile API --differentiate: forward kernels ~s, grad metacrisps ~s" forward grad-meta-paths)
+    (if (/= (length forward) (length grad-meta-paths))
+        ;; e.g. no kernels at all: generate-metadata-for-file wrote one empty file
+        (loop for p in grad-meta-paths when (probe-file p) append (%api-kernels-of-metacrisp p))
+        (loop for k in forward
+              for grad-path in grad-meta-paths
+              for primal-path = (make-pathname :name (format nil "~a__primal_~(~a~)" (pathname-name filepath) (symbol-name k))
+                                               :type "metacrisp" :defaults filepath)
+              append (%api-kernels-of-metacrisp
+                      (%api-write-kernel-metacrisp k primal-path (namestring filepath) (list output)))
+              when (probe-file grad-path) append (%api-kernels-of-metacrisp grad-path)))))
+
+(defun %api-pair-adjoints (kernels)
+  "KERNELS with :grad-of on every kernel and :adjoint-of on every parameter (NIL when not a gradient).
+   A kernel <K>_grad is the gradient of kernel K when both are present.  In it, parameter P is the
+   adjoint of Q when P is <Q>_grad, Q is a parameter of K, and P is NOT -- so a user's own parameter
+   named x_grad is never mistaken for an adjoint.  The AD pass names adjoints this way; deriving the
+   pairing here keeps the compiler untouched (decision for review: it could instead be emitted by
+   the AD pass into the metacrisp)."
+  (flet ((kname (k) (getf k :name))
+         (pnames (k) (mapcar (lambda (p) (getf p :name)) (getf k :params))))
+    (loop for k in kernels
+          for name = (kname k)
+          for primal = (and (> (length name) 5)
+                            (string= "_grad" name :start2 (- (length name) 5))
+                            (find (subseq name 0 (- (length name) 5)) kernels :key #'kname :test #'string=))
+          collect (append (list :name name
+                                :grad-of (and primal (kname primal))
+                                :slots (getf k :slots)
+                                :params (loop with primal-names = (and primal (pnames primal))
+                                              for p in (getf k :params)
+                                              for pn = (getf p :name)
+                                              for q = (and primal
+                                                           (> (length pn) 5)
+                                                           (string= "_grad" pn :start2 (- (length pn) 5))
+                                                           (subseq pn 0 (- (length pn) 5)))
+                                              collect (append p (list :adjoint-of
+                                                                      (and q
+                                                                           (member q primal-names :test #'string=)
+                                                                           (not (member pn primal-names :test #'string=))
+                                                                           q)))))))))
 
 (defun %api-read-octets (path)
   "The bytes of the file at PATH."
@@ -343,8 +444,11 @@
                                                     :file primary-name))
                 :modules nil)))
       (let* ((meta-paths (%generate-file-metadata filepath (list output) captured-forms))
-             (kernels (loop for p in meta-paths
-                            when (probe-file p) append (%api-kernels-of-metacrisp p))))
+             (kernels (if (getf settings :differentiate)
+                          (%api-differentiate-kernels filepath output captured-forms meta-paths)
+                          (loop for p in meta-paths
+                                when (probe-file p) append (%api-kernels-of-metacrisp p)))))
+        (setf kernels (%api-pair-adjoints kernels))
         (log:debug "compile API: ~d byte module, kernels ~s" (with-open-file (s out-path) (file-length s))
                    (mapcar (lambda (k) (getf k :name)) kernels))
         (list :status :ok
@@ -389,8 +493,13 @@
              (handler-case
                  (let ((*standard-output* stdout)
                        (*error-output* stderr))
-                   (multiple-value-bind (files names) (%api-write-sources sources dir)
-                     (setf result (%api-compile-in-dir files names settings backend))))
+                   ;; Every compile after the first in an image re-runs the template macro
+                   ;; definitions (initialize-compiler does not clear CL macros), so SBCL warns
+                   ;; "redefining ... in DEFMACRO" -- noise a one-shot CLI never sees, but a
+                   ;; long-lived server would hand to every caller as a diagnostic.
+                   (handler-bind ((sb-kernel:redefinition-warning #'muffle-warning))
+                     (multiple-value-bind (files names) (%api-write-sources sources dir)
+                       (setf result (%api-compile-in-dir files names settings backend)))))
                (serious-condition (c)
                  (log:error "compile API: internal failure ~a" c)
                  (setf result (list :status :internal-error
@@ -407,3 +516,170 @@
                         (%api-stderr-diagnostics err-text))))
         (log:info "compile API: status ~a, ~d diagnostic(s)" (getf result :status) (length (getf result :diagnostics)))
         result))))
+
+;;; ================================================================================================
+;;; The compile server (A1: out of process).  `crisp-compile --serve` reads requests on stdin and
+;;; writes results on stdout, one at a time, until stdin closes.  c-api/src/crisp.c is the client.
+;;;
+;;; FRAMING (both directions): a record is   <tag> SP <length> LF <length bytes> LF
+;;; tag is [a-z.-]+, length is decimal, the payload is raw bytes (UTF-8 text, or the binary module).
+;;; Binary-safe, and trivial to parse from C or Python.
+;;;
+;;; On start the server writes   hello <n> LF "crisp-compile-server <protocol-version>" LF
+;;;
+;;; REQUEST:   target "spv"|"ptx"
+;;;            flag "<one flag>"                       (zero or more, in order)
+;;;            source-name "<virtual name>"           (optional, names the NEXT source)
+;;;            source "<text>"                         (one or more, in order)
+;;;            end ""
+;;; RESPONSE:  status "ok"|"compile-error"|"invalid-argument"|"internal-error"
+;;;            then, in order, any of these groups (a group's fields follow its opening record):
+;;;              diag ""    diag.severity diag.message [diag.file] diag.line diag.column
+;;;              module ""  module.binary
+;;;              kernel ""  kernel.name [kernel.grad-of]
+;;;              slot ""    slot.type slot.size [slot.address-space]        (belongs to the last kernel)
+;;;              param ""   param.name param.kind param.direction [param.element-type] param.rank
+;;;                         [param.layout] [param.address-space] [param.adjoint-of]
+;;;              role "<role> <axis> <slot>"                                (belongs to the last param)
+;;;            end ""
+;;; A field in [brackets] is omitted when it has no value.  Kernels belong to the last module.
+;;; ================================================================================================
+
+(defparameter +api-protocol-version+ 1
+  "Bumped on any incompatible change to the server framing or record set.")
+
+(defun %proto-octets (payload)
+  "PAYLOAD (a string, an integer, a keyword or an octet vector) as an octet vector."
+  (etypecase payload
+    ((vector (unsigned-byte 8)) payload)
+    (string (sb-ext:string-to-octets payload :external-format :utf-8))
+    (integer (%proto-octets (princ-to-string payload)))
+    (symbol (%proto-octets (string-downcase (symbol-name payload))))))
+
+(defun %proto-write-record (stream tag payload)
+  "Writes one record (see the framing above) to the octet STREAM.  A NIL payload writes nothing."
+  (when payload
+    (let ((bytes (%proto-octets payload)))
+      (write-sequence (%proto-octets (format nil "~a ~d" tag (length bytes))) stream)
+      (write-byte 10 stream)
+      (write-sequence bytes stream)
+      (write-byte 10 stream))))
+
+(defun %proto-read-record (stream)
+  "Reads one record from the octet STREAM: (values TAG PAYLOAD-OCTETS), or NIL at end of file.
+   Signals an error on a malformed record."
+  (let ((header (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
+    (loop for b = (read-byte stream nil nil)
+          do (cond ((null b) (if (zerop (length header))
+                                 (return-from %proto-read-record nil)
+                                 (error "compile server: end of file inside a record header")))
+                   ((= b 10) (return))
+                   (t (vector-push-extend b header))))
+    (let* ((text (sb-ext:octets-to-string (coerce header '(vector (unsigned-byte 8))) :external-format :utf-8))
+           (space (position #\Space text))
+           (tag (and space (subseq text 0 space)))
+           (len (and space (parse-integer text :start (1+ space) :junk-allowed t))))
+      (unless (and tag len (>= len 0))
+        (error "compile server: malformed record header ~s" text))
+      (let ((payload (make-array len :element-type '(unsigned-byte 8))))
+        (unless (= (read-sequence payload stream) len)
+          (error "compile server: end of file inside a ~a record" tag))
+        (unless (eql (read-byte stream nil nil) 10)
+          (error "compile server: a ~a record does not end in a newline" tag))
+        (values tag payload)))))
+
+(defun %proto-read-request (stream)
+  "Reads one request from STREAM.  Returns (values TARGET FLAGS SOURCES), or NIL at end of file.
+   SOURCES is a list of (TEXT . VIRTUAL-NAME), as compile-sources takes it."
+  (let ((target nil) (flags nil) (sources nil) (pending-name nil) (any nil))
+    (loop
+      (multiple-value-bind (tag payload) (%proto-read-record stream)
+        (cond
+          ((null tag)
+           (when any (error "compile server: end of file inside a request"))
+           (return-from %proto-read-request nil))
+          (t
+           (setf any t)
+           (let ((text (sb-ext:octets-to-string payload :external-format :utf-8)))
+             (cond ((string= tag "target") (setf target text))
+                   ((string= tag "flag") (push text flags))
+                   ((string= tag "source-name") (setf pending-name (if (zerop (length text)) nil text)))
+                   ((string= tag "source") (push (cons text pending-name) sources) (setf pending-name nil))
+                   ((string= tag "end") (return-from %proto-read-request
+                                          (values target (nreverse flags) (nreverse sources))))
+                   (t (error "compile server: unknown request record ~s" tag))))))))))
+
+(defun %proto-write-result (stream result)
+  "Writes RESULT (a compile-sources plist) to STREAM as a RESPONSE (see the framing above)."
+  (flet ((rec (tag payload) (%proto-write-record stream tag payload)))
+    (rec "status" (getf result :status))
+    (dolist (d (getf result :diagnostics))
+      (rec "diag" "")
+      (rec "diag.severity" (getf d :severity))
+      (rec "diag.message" (or (getf d :message) ""))
+      (rec "diag.file" (getf d :file))
+      (rec "diag.line" (or (getf d :line) 0))
+      (rec "diag.column" (or (getf d :column) 0)))
+    (dolist (m (getf result :modules))
+      (rec "module" "")
+      (rec "module.binary" (getf m :binary))
+      (dolist (k (getf m :kernels))
+        (rec "kernel" "")
+        (rec "kernel.name" (getf k :name))
+        (rec "kernel.grad-of" (getf k :grad-of))
+        (dolist (s (getf k :slots))
+          (rec "slot" "")
+          (rec "slot.type" (getf s :type))
+          (rec "slot.size" (getf s :size))
+          (rec "slot.address-space" (getf s :address-space)))
+        (dolist (p (getf k :params))
+          (rec "param" "")
+          (rec "param.name" (getf p :name))
+          (rec "param.kind" (getf p :kind))
+          (rec "param.direction" (getf p :direction))
+          (rec "param.element-type" (getf p :element-type))
+          (rec "param.rank" (or (getf p :rank) 0))
+          (rec "param.layout" (getf p :layout))
+          (rec "param.address-space" (getf p :address-space))
+          (rec "param.adjoint-of" (getf p :adjoint-of))
+          (dolist (r (getf p :roles))
+            (rec "role" (format nil "~(~a~) ~d ~d" (first r) (second r) (third r)))))))
+    (rec "end" "")
+    (finish-output stream)))
+
+(defun serve-requests (in out)
+  "The compile server loop: reads requests from the octet stream IN until end of file, answers each
+   on the octet stream OUT.  A malformed request is answered with internal-error and ends the loop
+   (the stream can no longer be trusted to be in sync); the client then starts a fresh server."
+  (loop
+    (multiple-value-bind (target flags sources)
+        (handler-case (%proto-read-request in)
+          (error (e)
+            (log:error "compile server: bad request: ~a" e)
+            (%proto-write-result out (list :status :internal-error
+                                           :diagnostics (list (%api-diagnostic :error (format nil "compile server: ~a" e)))))
+            (return)))
+      (when (and (null target) (null sources))
+        (log:info "compile server: end of input, exiting")
+        (return))
+      (log:info "compile server: request target ~a, ~d flag(s), ~d source(s)" target (length flags) (length sources))
+      (%proto-write-result out (compile-sources sources :target target :flags flags)))))
+
+(defun serve-main ()
+  "`crisp-compile --serve`: speaks the compile-server protocol on the process's stdin / stdout.
+   The protocol owns stdout, so every Lisp stream that might print is pointed at stderr first."
+  (let* ((in (sb-sys:make-fd-stream (sb-sys:fd-stream-fd sb-sys:*stdin*)
+                                    :input t :element-type '(unsigned-byte 8) :buffering :full))
+         (out (sb-sys:make-fd-stream (sb-sys:fd-stream-fd sb-sys:*stdout*)
+                                     :output t :element-type '(unsigned-byte 8) :buffering :full))
+         (*standard-output* *error-output*)
+         (*trace-output* *error-output*))
+    ;; log4cl's console appender writes to the REAL stdout whatever *standard-output* is bound to,
+    ;; and the protocol owns stdout, so logging is OFF in the server.  (compile-sources'
+    ;; initialize-compiler also sets :off; this covers the records logged before it runs.)
+    ;; TODO(190): an opt-in log to stderr or a file for debugging the server.
+    (log:config :off)
+    (%proto-write-record out "hello" (format nil "crisp-compile-server ~d" +api-protocol-version+))
+    (finish-output out)
+    (serve-requests in out)
+    (finish-output out)))
