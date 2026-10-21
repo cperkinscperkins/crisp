@@ -137,8 +137,9 @@ def make_gpumode_vectorsum(
     arch: str = "sm_80",
     hardware_profile: str | None = None,
     smem_bytes: int = 128,
-    elems_per_thread: int = 16,
-    grid_multiplier: int = 4,
+    elems_per_thread: int = 4,
+    grid_multiplier: int = 2,
+    f64_acc: bool = True,
 ) -> None:
     ptx_path = compile_crisp_with_profile(crisp_path, arch=arch, hardware_profile=hardware_profile)
     crisp_src = crisp_path.read_text(encoding="utf-8").strip()
@@ -161,6 +162,54 @@ def make_gpumode_vectorsum(
     block_size = int(m_bs.group(1)) if m_bs else 256
 
     commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
+
+    if f64_acc:
+        launch_body = f"""
+    auto d_out = torch::zeros({{1}}, input.options().dtype(torch::kFloat64));
+
+    constexpr int BLOCK_SIZE = {block_size};
+    static int max_grid = 0;
+    if (max_grid <= 0) {{
+        int num_sms = 0;
+        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
+        max_grid = (num_sms > 0) ? (num_sms * {grid_multiplier}) : 256;
+    }}
+
+    int64_t needed_blocks = (N + (BLOCK_SIZE * {elems_per_thread}) - 1) / (BLOCK_SIZE * {elems_per_thread});
+    if (needed_blocks < 1) needed_blocks = 1;
+    int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
+
+    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE, {smem_bytes}>>>(
+        reinterpret_cast<uint64_t>(input.data_ptr()),
+        reinterpret_cast<uint64_t>(d_out.data_ptr()),
+        static_cast<uint64_t>(N)
+    );
+    output.copy_(d_out.to(torch::kFloat32));
+    return output.dim() > 0 ? output.squeeze(0) : output;
+"""
+    else:
+        launch_body = f"""
+    output.zero_();
+
+    constexpr int BLOCK_SIZE = {block_size};
+    static int max_grid = 0;
+    if (max_grid <= 0) {{
+        int num_sms = 0;
+        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
+        max_grid = (num_sms > 0) ? (num_sms * {grid_multiplier}) : 256;
+    }}
+
+    int64_t needed_blocks = (N + (BLOCK_SIZE * {elems_per_thread}) - 1) / (BLOCK_SIZE * {elems_per_thread});
+    if (needed_blocks < 1) needed_blocks = 1;
+    int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
+
+    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE, {smem_bytes}>>>(
+        reinterpret_cast<uint64_t>(input.data_ptr()),
+        reinterpret_cast<uint64_t>(output.data_ptr()),
+        static_cast<uint64_t>(N)
+    );
+    return output.dim() > 0 ? output.squeeze(0) : output;
+"""
 
     cuda_source = f"""
 #include <cuda_runtime.h>
@@ -185,30 +234,10 @@ void crisp_vectorsum_kernel(
 torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output) {{
     int64_t N = input.numel();
     if (N <= 0) return output.dim() > 0 ? output.squeeze(0) : output;
-
-    output.zero_();
-
-    constexpr int BLOCK_SIZE = {block_size};
-    static int max_grid = 0;
-    if (max_grid <= 0) {{
-        int blocks_per_sm = 0;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &blocks_per_sm, crisp_vectorsum_kernel, BLOCK_SIZE, {smem_bytes});
-        int num_sms = 0;
-        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
-        max_grid = (blocks_per_sm > 0 && num_sms > 0) ? (blocks_per_sm * num_sms * {grid_multiplier}) : 1024;
+    if (!input.is_contiguous()) {{
+        input = input.contiguous();
     }}
-
-    int64_t needed_blocks = (N + (BLOCK_SIZE * {elems_per_thread}) - 1) / (BLOCK_SIZE * {elems_per_thread});
-    if (needed_blocks < 1) needed_blocks = 1;
-    int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
-
-    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE, {smem_bytes}>>>(
-        reinterpret_cast<uint64_t>(input.data_ptr()),
-        reinterpret_cast<uint64_t>(output.data_ptr()),
-        static_cast<uint64_t>(N)
-    );
-    return output.dim() > 0 ? output.squeeze(0) : output;
+{launch_body}
 }}
 """
     cpp_source = "torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output);"
@@ -330,22 +359,27 @@ def parse_and_record_run(
 if __name__ == "__main__":
     base = Path(__file__).resolve().parent
 
-    # 1. Universal float4 warp reduce kernel (H100, A100, L4)
+    # 1. Universal float4 FP64-accumulating warp reduce kernel (H100, A100, L4)
     make_gpumode_vectorsum(
-        base / "vectorsum_warp_reduce.crisp",
+        base / "vectorsum_f64_acc.crisp",
         base / "crisp_vectorsum_warp_reduce.py",
         kernel_name="vectorsum_kernel",
         arch="sm_80",
+        elems_per_thread=4,
+        grid_multiplier=2,
+        f64_acc=True,
     )
 
-    # 2. B200 2x float4 tuned kernel
+    # 2. B200 2x float4 FP64-accumulating tuned kernel
     make_gpumode_vectorsum(
-        base / "vectorsum_b200_2xfloat4.crisp",
+        base / "vectorsum_b200_f64_acc.crisp",
         base / "crisp_vectorsum_b200_2xfloat4.py",
         kernel_name="vectorsum_b200_kernel",
         arch="sm_80",
         hardware_profile="b200",
-        elems_per_thread=32,
+        elems_per_thread=8,
+        grid_multiplier=2,
+        f64_acc=True,
     )
 
     gpu = "B200" if "--b200" in sys.argv else ("A100" if "--a100" in sys.argv else ("L4" if "--l4" in sys.argv else "H100"))

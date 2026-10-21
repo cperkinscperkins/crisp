@@ -1,11 +1,11 @@
 # Generated from Crisp (https://github.com/cperkinscperkins/crisp)
 #
-# Crisp Source (vectorsum_b200_2xfloat4.crisp):
+# Crisp Source (vectorsum_b200_f64_acc.crisp):
 # -------------------------------------------------------------------------
-#   ;; GPU MODE Challenge: vectorsum_v2 (B200 Tuned: 2x float4 = 32B per thread)
+#   ;; GPU MODE Challenge: vectorsum_v2 (B200 Tuned: 2x float4 with FP64 accumulation)
 #   ;; Uses def-hardware-profile for B200, 2x float4 vector loads (32B/iteration)
-#   ;; with 8 independent FP32 accumulators to saturate B200 memory bandwidth,
-#   ;; followed by warp shuffle-xor reduction and direct warp atomic add.
+#   ;; with 8 independent FP64 accumulators to saturate B200 memory bandwidth,
+#   ;; followed by warp shuffle-xor reduction in double and atom.global.add.f64.
 #
 #   (def-hardware-profile b200
 #     :simd-width 32
@@ -20,7 +20,7 @@
 #     :mma-shapes '((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4)))
 #
 #   (def-type in-vec   (vector float :address-space :global :align :compact))
-#   (def-type out-cell (cell float :address-space :global))
+#   (def-type out-cell (cell double :address-space :global))
 #
 #   (def-kernel vectorsum_b200_kernel (input result)
 #     (declare #'(in-vec out-cell => nil)
@@ -32,38 +32,38 @@
 #           (n      (length~ input))
 #           (n4     (/ n 4ul))
 #           (in4    (make-vector input float4 :length n4))
-#           (a0     0.0) (a1 0.0) (a2 0.0) (a3 0.0)
-#           (b0     0.0) (b1 0.0) (b2 0.0) (b3 0.0)
+#           (a0     (to-double 0.0)) (a1 (to-double 0.0)) (a2 (to-double 0.0)) (a3 (to-double 0.0))
+#           (b0     (to-double 0.0)) (b1 (to-double 0.0)) (b2 (to-double 0.0)) (b3 (to-double 0.0))
 #           (stride (* 2ul gs)))
 #       ;; Main 2x float4 loop (stride = 2 * gs)
 #       (let ((iters (if (>= gid n4) 0ul (+ 1ul (/ (- (- n4 1ul) gid) stride))))
 #             (idx gid))
 #         (dotimes (k iters)
 #           (let ((v0 (~ in4 idx)))
-#             (set! a0 (+ a0 (x~ v0)))
-#             (set! a1 (+ a1 (y~ v0)))
-#             (set! a2 (+ a2 (z~ v0)))
-#             (set! a3 (+ a3 (w~ v0))))
+#             (set! a0 (+ a0 (to-double (x~ v0))))
+#             (set! a1 (+ a1 (to-double (y~ v0))))
+#             (set! a2 (+ a2 (to-double (z~ v0))))
+#             (set! a3 (+ a3 (to-double (w~ v0)))))
 #           (let ((idx1 (+ idx gs)))
 #             (when (< idx1 n4)
 #               (let ((v1 (~ in4 idx1)))
-#                 (set! b0 (+ b0 (x~ v1)))
-#                 (set! b1 (+ b1 (y~ v1)))
-#                 (set! b2 (+ b2 (z~ v1)))
-#                 (set! b3 (+ b3 (w~ v1))))))
+#                 (set! b0 (+ b0 (to-double (x~ v1))))
+#                 (set! b1 (+ b1 (to-double (y~ v1))))
+#                 (set! b2 (+ b2 (to-double (z~ v1))))
+#                 (set! b3 (+ b3 (to-double (w~ v1)))))))
 #           (set! idx (+ idx stride))))
 #       ;; Tail for elements beyond n4 * 4
 #       (let ((tail_start (* n4 4ul)))
 #         (let ((t (+ tail_start gid)))
 #           (when (< t n)
-#             (set! a0 (+ a0 (~ input t))))))
-#       ;; Sum the 8 accumulators
+#             (set! a0 (+ a0 (to-double (~ input t)))))))
+#       ;; Sum the 8 accumulators in double
 #       (let ((acc (+ (+ (+ a0 a1) (+ a2 a3))
 #                     (+ (+ b0 b1) (+ b2 b3)))))
-#         ;; Intra-warp reduction with shuffle-xor (32 -> 1)
+#         ;; Intra-warp reduction with shuffle-xor in double
 #         (dec-times-by-half+ (m (/ (to-ulong (warp-size)) 2ul))
 #           (set! acc (+ acc (shuffle-xor acc m))))
-#         ;; Warp leader atomic-adds directly to global output
+#         ;; Warp leader issues atomic-add.f64 to global double result cell
 #         (when (= lane 0ul)
 #           (atomic-add! (~ result) acc)))))
 # -------------------------------------------------------------------------
@@ -91,212 +91,187 @@ void crisp_vectorsum_kernel(
     uint64_t one = 1ULL;
     asm volatile(
         "{\n"
-        "	.reg .pred 	%%cr_p<12>;\n"
-        "	.reg .b32 	%%cr_r<163>;\n"
-        "	.reg .b64 	%%cr_rd<77>;\n"
+        "	.reg .pred 	%%cr_p<8>;\n"
+        "	.reg .b32 	%%cr_r<38>;\n"
+        "	.reg .b64 	%%cr_rd<146>;\n"
         "// %%cr_bb.0:                               // %%cr_entry\n"
-        "	mov.b64 	%%cr_rd39, %1;\n"
-        "	mov.b64 	%%cr_rd42, %0;\n"
-        "	cvta.to.global.u64 	%%cr_rd1, %%cr_rd42;\n"
-        "	mov.b64 	%%cr_rd43, %2;\n"
-        "	cvta.to.global.u64 	%%cr_rd2, %%cr_rd43;\n"
-        "	mov.u32 	%%cr_r69, %%ctaid.x;\n"
-        "	mov.u32 	%%cr_r70, %%ntid.x;\n"
-        "	mov.u32 	%%cr_r71, %%tid.x;\n"
-        "	cvt.u64.u32 	%%cr_rd73, %%cr_r71;\n"
-        "	mul.wide.u32 	%%cr_rd6, %%cr_r69, %%cr_r70;\n"
-        "	add.s64 	%%cr_rd7, %%cr_rd6, %%cr_rd73;\n"
-        "	mov.u32 	%%cr_r72, %%nctaid.x;\n"
-        "	mul.wide.u32 	%%cr_rd9, %%cr_r72, %%cr_r70;\n"
-        "	shr.u64 	%%cr_rd10, %%cr_rd39, 2;\n"
-        "	setp.ge.u64 	%%cr_p1, %%cr_rd7, %%cr_rd10;\n"
-        "	mov.b64 	%%cr_rd72, 0;\n"
+        "	mov.b64 	%%cr_rd59, %1;\n"
+        "	mov.b64 	%%cr_rd62, %0;\n"
+        "	cvta.to.global.u64 	%%cr_rd1, %%cr_rd62;\n"
+        "	mov.b64 	%%cr_rd63, %2;\n"
+        "	cvta.to.global.u64 	%%cr_rd2, %%cr_rd63;\n"
+        "	mov.u32 	%%cr_r4, %%ctaid.x;\n"
+        "	mov.u32 	%%cr_r5, %%ntid.x;\n"
+        "	mov.u32 	%%cr_r6, %%tid.x;\n"
+        "	cvt.u64.u32 	%%cr_rd5, %%cr_r6;\n"
+        "	mul.wide.u32 	%%cr_rd64, %%cr_r4, %%cr_r5;\n"
+        "	add.s64 	%%cr_rd6, %%cr_rd64, %%cr_rd5;\n"
+        "	mov.u32 	%%cr_r7, %%nctaid.x;\n"
+        "	mul.wide.u32 	%%cr_rd8, %%cr_r7, %%cr_r5;\n"
+        "	shr.u64 	%%cr_rd9, %%cr_rd59, 2;\n"
+        "	shl.b64 	%%cr_rd10, %%cr_rd8, 1;\n"
+        "	setp.ge.u64 	%%cr_p1, %%cr_rd6, %%cr_rd9;\n"
+        "	mov.b64 	%%cr_rd121, 0;\n"
         "	@%%cr_p1 bra 	$L__BB43_5;\n"
         "// %%cr_bb.1:                               // %%cr_else\n"
-        "	shl.b64 	%%cr_rd11, %%cr_rd9, 1;\n"
-        "	not.b64 	%%cr_rd44, %%cr_rd7;\n"
-        "	add.s64 	%%cr_rd12, %%cr_rd10, %%cr_rd44;\n"
-        "	or.b64 	%%cr_rd45, %%cr_rd12, %%cr_rd11;\n"
-        "	and.b64 	%%cr_rd46, %%cr_rd45, -4294967296;\n"
-        "	setp.ne.b64 	%%cr_p2, %%cr_rd46, 0;\n"
+        "	not.b64 	%%cr_rd65, %%cr_rd6;\n"
+        "	add.s64 	%%cr_rd11, %%cr_rd9, %%cr_rd65;\n"
+        "	or.b64 	%%cr_rd66, %%cr_rd11, %%cr_rd10;\n"
+        "	and.b64 	%%cr_rd67, %%cr_rd66, -4294967296;\n"
+        "	setp.ne.b64 	%%cr_p2, %%cr_rd67, 0;\n"
         "	@%%cr_p2 bra 	$L__BB43_3;\n"
         "	bra.uni 	$L__BB43_2;\n"
         "$L__BB43_3:\n"
-        "	div.u64 	%%cr_rd71, %%cr_rd12, %%cr_rd11;\n"
+        "	div.u64 	%%cr_rd120, %%cr_rd11, %%cr_rd10;\n"
         "	bra.uni 	$L__BB43_4;\n"
         "$L__BB43_2:\n"
-        "	cvt.u32.u64 	%%cr_r73, %%cr_rd11;\n"
-        "	cvt.u32.u64 	%%cr_r74, %%cr_rd12;\n"
-        "	div.u32 	%%cr_r75, %%cr_r74, %%cr_r73;\n"
-        "	cvt.u64.u32 	%%cr_rd71, %%cr_r75;\n"
+        "	cvt.u32.u64 	%%cr_r8, %%cr_rd10;\n"
+        "	cvt.u32.u64 	%%cr_r9, %%cr_rd11;\n"
+        "	div.u32 	%%cr_r10, %%cr_r9, %%cr_r8;\n"
+        "	cvt.u64.u32 	%%cr_rd120, %%cr_r10;\n"
         "$L__BB43_4:\n"
-        "	add.s64 	%%cr_rd72, %%cr_rd71, 1;\n"
+        "	add.s64 	%%cr_rd121, %%cr_rd120, 1;\n"
         "$L__BB43_5:                             // %%cr_ifcont\n"
-        "	setp.eq.b64 	%%cr_p3, %%cr_rd72, 0;\n"
-        "	mov.b32 	%%cr_r146, 0f00000000;\n"
-        "	mov.b32 	%%cr_r147, %%cr_r146;\n"
-        "	mov.b32 	%%cr_r148, %%cr_r146;\n"
-        "	mov.b32 	%%cr_r149, %%cr_r146;\n"
-        "	mov.b32 	%%cr_r125, %%cr_r146;\n"
-        "	mov.b32 	%%cr_r124, %%cr_r146;\n"
-        "	mov.b32 	%%cr_r123, %%cr_r146;\n"
-        "	mov.b32 	%%cr_r122, %%cr_r146;\n"
-        "	@%%cr_p3 bra 	$L__BB43_17;\n"
+        "	setp.eq.b64 	%%cr_p3, %%cr_rd121, 0;\n"
+        "	mov.b64 	%%cr_rd132, 0d0000000000000000;\n"
+        "	mov.b64 	%%cr_rd131, %%cr_rd132;\n"
+        "	mov.b64 	%%cr_rd130, %%cr_rd132;\n"
+        "	mov.b64 	%%cr_rd129, %%cr_rd132;\n"
+        "	mov.b64 	%%cr_rd128, %%cr_rd132;\n"
+        "	mov.b64 	%%cr_rd127, %%cr_rd132;\n"
+        "	mov.b64 	%%cr_rd126, %%cr_rd132;\n"
+        "	mov.b64 	%%cr_rd125, %%cr_rd132;\n"
+        "	@%%cr_p3 bra 	$L__BB43_10;\n"
         "// %%cr_bb.6:                               // %%cr_dt_body.preheader\n"
-        "	and.b64 	%%cr_rd18, %%cr_rd72, 1;\n"
-        "	setp.eq.b64 	%%cr_p4, %%cr_rd72, 1;\n"
-        "	mov.b32 	%%cr_r122, 0f00000000;\n"
-        "	mov.b64 	%%cr_rd76, %%cr_rd7;\n"
-        "	mov.b32 	%%cr_r123, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r124, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r125, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r149, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r148, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r147, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r146, %%cr_r122;\n"
-        "	@%%cr_p4 bra 	$L__BB43_14;\n"
-        "// %%cr_bb.7:                               // %%cr_dt_body.preheader.new\n"
-        "	cvt.u64.u32 	%%cr_rd3, %%cr_r69;\n"
-        "	cvt.u64.u32 	%%cr_rd4, %%cr_r70;\n"
-        "	cvt.u64.u32 	%%cr_rd8, %%cr_r72;\n"
-        "	and.b64 	%%cr_rd75, %%cr_rd72, -2;\n"
-        "	shl.b64 	%%cr_rd47, %%cr_rd7, 4;\n"
-        "	or.b64 	%%cr_rd20, %%cr_rd47, 12;\n"
-        "	shl.b64 	%%cr_rd21, %%cr_rd9, 6;\n"
-        "	add.s64 	%%cr_rd48, %%cr_rd3, %%cr_rd8;\n"
-        "	mul.lo.s64 	%%cr_rd22, %%cr_rd48, %%cr_rd4;\n"
-        "	shl.b64 	%%cr_rd23, %%cr_rd9, 2;\n"
-        "	shl.b64 	%%cr_rd49, %%cr_rd8, 1;\n"
-        "	add.s64 	%%cr_rd50, %%cr_rd49, %%cr_rd3;\n"
-        "	mul.lo.s64 	%%cr_rd51, %%cr_rd50, %%cr_rd4;\n"
-        "	shl.b64 	%%cr_rd52, %%cr_rd51, 4;\n"
-        "	shl.b64 	%%cr_rd53, %%cr_rd73, 4;\n"
-        "	add.s64 	%%cr_rd24, %%cr_rd52, %%cr_rd53;\n"
-        "	add.s64 	%%cr_rd54, %%cr_rd22, %%cr_rd73;\n"
-        "	shl.b64 	%%cr_rd55, %%cr_rd54, 4;\n"
-        "	or.b64 	%%cr_rd25, %%cr_rd55, 12;\n"
-        "	mad.lo.s64 	%%cr_rd56, %%cr_rd8, 3, %%cr_rd3;\n"
-        "	mul.lo.s64 	%%cr_rd26, %%cr_rd56, %%cr_rd4;\n"
-        "	shl.b64 	%%cr_rd57, %%cr_rd26, 4;\n"
-        "	add.s64 	%%cr_rd27, %%cr_rd57, %%cr_rd53;\n"
-        "	mov.b32 	%%cr_r122, 0f00000000;\n"
-        "	mov.b64 	%%cr_rd74, %%cr_rd1;\n"
-        "	mov.b32 	%%cr_r123, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r124, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r125, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r149, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r148, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r147, %%cr_r122;\n"
-        "	mov.b32 	%%cr_r146, %%cr_r122;\n"
-        "	bra.uni 	$L__BB43_8;\n"
-        "$L__BB43_12:                            // %%cr_ifcont71.1\n"
-        "                                        //   in Loop: Header=BB43_8 Depth=1\n"
-        "	add.rn.f32 	%%cr_r146, %%cr_r10, %%cr_r88;\n"
-        "	add.rn.f32 	%%cr_r147, %%cr_r11, %%cr_r89;\n"
-        "	add.rn.f32 	%%cr_r148, %%cr_r12, %%cr_r90;\n"
-        "	add.rn.f32 	%%cr_r149, %%cr_r13, %%cr_r91;\n"
-        "	add.s64 	%%cr_rd75, %%cr_rd75, -2;\n"
-        "	add.s64 	%%cr_rd74, %%cr_rd74, %%cr_rd21;\n"
-        "	add.s64 	%%cr_rd73, %%cr_rd73, %%cr_rd23;\n"
-        "	setp.eq.b64 	%%cr_p7, %%cr_rd75, 0;\n"
-        "	@%%cr_p7 bra 	$L__BB43_13;\n"
-        "$L__BB43_8:                             // %%cr_dt_body\n"
-        "                                        // =>This Inner Loop Header: Depth=1\n"
-        "	add.s64 	%%cr_rd58, %%cr_rd74, %%cr_rd20;\n"
-        "	ld.global.v4.b32 	{%%cr_r80, %%cr_r81, %%cr_r82, %%cr_r83}, [%%cr_rd58+-12];\n"
-        "	add.s64 	%%cr_rd59, %%cr_rd22, %%cr_rd73;\n"
-        "	setp.lt.u64 	%%cr_p5, %%cr_rd59, %%cr_rd10;\n"
-        "	@%%cr_p5 bra 	$L__BB43_9;\n"
+        "	cvt.u64.u32 	%%cr_rd3, %%cr_r4;\n"
+        "	cvt.u64.u32 	%%cr_rd4, %%cr_r5;\n"
+        "	cvt.u64.u32 	%%cr_rd7, %%cr_r7;\n"
+        "	shl.b64 	%%cr_rd71, %%cr_rd6, 4;\n"
+        "	or.b64 	%%cr_rd17, %%cr_rd71, 12;\n"
+        "	shl.b64 	%%cr_rd18, %%cr_rd8, 5;\n"
+        "	add.s64 	%%cr_rd72, %%cr_rd3, %%cr_rd7;\n"
+        "	mad.lo.s64 	%%cr_rd122, %%cr_rd72, %%cr_rd4, %%cr_rd5;\n"
+        "	shl.b64 	%%cr_rd20, %%cr_rd122, 4;\n"
+        "	mov.b64 	%%cr_rd125, 0d0000000000000000;\n"
+        "	mov.b64 	%%cr_rd124, 0;\n"
+        "	mov.b64 	%%cr_rd123, %%cr_rd1;\n"
+        "	mov.b64 	%%cr_rd126, %%cr_rd125;\n"
+        "	mov.b64 	%%cr_rd127, %%cr_rd125;\n"
+        "	mov.b64 	%%cr_rd128, %%cr_rd125;\n"
+        "	mov.b64 	%%cr_rd129, %%cr_rd125;\n"
+        "	mov.b64 	%%cr_rd130, %%cr_rd125;\n"
+        "	mov.b64 	%%cr_rd131, %%cr_rd125;\n"
+        "	mov.b64 	%%cr_rd132, %%cr_rd125;\n"
+        "	bra.uni 	$L__BB43_7;\n"
+        "$L__BB43_9:                             // %%cr_ifcont74\n"
+        "                                        //   in Loop: Header=BB43_7 Depth=1\n"
+        "	cvt.f64.f32 	%%cr_rd74, %%cr_r11;\n"
+        "	add.rn.f64 	%%cr_rd132, %%cr_rd132, %%cr_rd74;\n"
+        "	cvt.f64.f32 	%%cr_rd75, %%cr_r12;\n"
+        "	add.rn.f64 	%%cr_rd131, %%cr_rd131, %%cr_rd75;\n"
+        "	cvt.f64.f32 	%%cr_rd76, %%cr_r13;\n"
+        "	add.rn.f64 	%%cr_rd130, %%cr_rd130, %%cr_rd76;\n"
+        "	cvt.f64.f32 	%%cr_rd77, %%cr_r14;\n"
+        "	add.rn.f64 	%%cr_rd129, %%cr_rd129, %%cr_rd77;\n"
+        "	add.s64 	%%cr_rd124, %%cr_rd124, 1;\n"
+        "	add.s64 	%%cr_rd123, %%cr_rd123, %%cr_rd18;\n"
+        "	add.s64 	%%cr_rd122, %%cr_rd122, %%cr_rd10;\n"
+        "	setp.lt.u64 	%%cr_p5, %%cr_rd124, %%cr_rd121;\n"
+        "	@%%cr_p5 bra 	$L__BB43_7;\n"
         "	bra.uni 	$L__BB43_10;\n"
-        "$L__BB43_9:                             // %%cr_then69\n"
-        "                                        //   in Loop: Header=BB43_8 Depth=1\n"
-        "	add.s64 	%%cr_rd60, %%cr_rd74, %%cr_rd25;\n"
-        "	ld.global.v4.b32 	{%%cr_r84, %%cr_r85, %%cr_r86, %%cr_r87}, [%%cr_rd60+-12];\n"
-        "	add.rn.f32 	%%cr_r125, %%cr_r125, %%cr_r84;\n"
-        "	add.rn.f32 	%%cr_r124, %%cr_r124, %%cr_r85;\n"
-        "	add.rn.f32 	%%cr_r123, %%cr_r123, %%cr_r86;\n"
-        "	add.rn.f32 	%%cr_r122, %%cr_r122, %%cr_r87;\n"
-        "$L__BB43_10:                            // %%cr_ifcont71\n"
-        "                                        //   in Loop: Header=BB43_8 Depth=1\n"
-        "	add.rn.f32 	%%cr_r10, %%cr_r146, %%cr_r80;\n"
-        "	add.rn.f32 	%%cr_r11, %%cr_r147, %%cr_r81;\n"
-        "	add.rn.f32 	%%cr_r12, %%cr_r148, %%cr_r82;\n"
-        "	add.rn.f32 	%%cr_r13, %%cr_r149, %%cr_r83;\n"
-        "	add.s64 	%%cr_rd61, %%cr_rd74, %%cr_rd24;\n"
-        "	ld.global.v4.b32 	{%%cr_r88, %%cr_r89, %%cr_r90, %%cr_r91}, [%%cr_rd61];\n"
-        "	add.s64 	%%cr_rd62, %%cr_rd26, %%cr_rd73;\n"
-        "	setp.ge.u64 	%%cr_p6, %%cr_rd62, %%cr_rd10;\n"
-        "	@%%cr_p6 bra 	$L__BB43_12;\n"
-        "// %%cr_bb.11:                              // %%cr_then69.1\n"
-        "                                        //   in Loop: Header=BB43_8 Depth=1\n"
-        "	add.s64 	%%cr_rd63, %%cr_rd74, %%cr_rd27;\n"
-        "	ld.global.v4.b32 	{%%cr_r92, %%cr_r93, %%cr_r94, %%cr_r95}, [%%cr_rd63];\n"
-        "	add.rn.f32 	%%cr_r125, %%cr_r125, %%cr_r92;\n"
-        "	add.rn.f32 	%%cr_r124, %%cr_r124, %%cr_r93;\n"
-        "	add.rn.f32 	%%cr_r123, %%cr_r123, %%cr_r94;\n"
-        "	add.rn.f32 	%%cr_r122, %%cr_r122, %%cr_r95;\n"
-        "	bra.uni 	$L__BB43_12;\n"
-        "$L__BB43_13:                            // %%cr_dt_exit.loopexit.unr-lcssa.loopexit\n"
-        "	add.s64 	%%cr_rd76, %%cr_rd6, %%cr_rd73;\n"
-        "$L__BB43_14:                            // %%cr_dt_exit.loopexit.unr-lcssa\n"
-        "	setp.eq.b64 	%%cr_p8, %%cr_rd18, 0;\n"
-        "	@%%cr_p8 bra 	$L__BB43_17;\n"
-        "// %%cr_bb.15:                              // %%cr_dt_body.epil\n"
-        "	shl.b64 	%%cr_rd64, %%cr_rd76, 4;\n"
-        "	add.s64 	%%cr_rd65, %%cr_rd1, %%cr_rd64;\n"
-        "	ld.global.v4.b32 	{%%cr_r96, %%cr_r97, %%cr_r98, %%cr_r99}, [%%cr_rd65];\n"
-        "	add.rn.f32 	%%cr_r146, %%cr_r146, %%cr_r96;\n"
-        "	add.rn.f32 	%%cr_r147, %%cr_r147, %%cr_r97;\n"
-        "	add.rn.f32 	%%cr_r148, %%cr_r148, %%cr_r98;\n"
-        "	add.rn.f32 	%%cr_r149, %%cr_r149, %%cr_r99;\n"
-        "	add.s64 	%%cr_rd33, %%cr_rd76, %%cr_rd9;\n"
-        "	setp.ge.u64 	%%cr_p9, %%cr_rd33, %%cr_rd10;\n"
-        "	@%%cr_p9 bra 	$L__BB43_17;\n"
-        "// %%cr_bb.16:                              // %%cr_then69.epil\n"
-        "	shl.b64 	%%cr_rd66, %%cr_rd33, 4;\n"
-        "	add.s64 	%%cr_rd67, %%cr_rd1, %%cr_rd66;\n"
-        "	ld.global.v4.b32 	{%%cr_r100, %%cr_r101, %%cr_r102, %%cr_r103}, [%%cr_rd67];\n"
-        "	add.rn.f32 	%%cr_r125, %%cr_r125, %%cr_r100;\n"
-        "	add.rn.f32 	%%cr_r124, %%cr_r124, %%cr_r101;\n"
-        "	add.rn.f32 	%%cr_r123, %%cr_r123, %%cr_r102;\n"
-        "	add.rn.f32 	%%cr_r122, %%cr_r122, %%cr_r103;\n"
-        "$L__BB43_17:                            // %%cr_dt_exit\n"
+        "$L__BB43_7:                             // %%cr_dt_body\n"
+        "                                        // =>This Inner Loop Header: Depth=1\n"
+        "	add.s64 	%%cr_rd73, %%cr_rd123, %%cr_rd17;\n"
+        "	ld.global.v4.b32 	{%%cr_r11, %%cr_r12, %%cr_r13, %%cr_r14}, [%%cr_rd73+-12];\n"
+        "	setp.lt.u64 	%%cr_p4, %%cr_rd122, %%cr_rd9;\n"
+        "	@%%cr_p4 bra 	$L__BB43_8;\n"
+        "	bra.uni 	$L__BB43_9;\n"
+        "$L__BB43_8:                             // %%cr_then72\n"
+        "                                        //   in Loop: Header=BB43_7 Depth=1\n"
+        "	add.s64 	%%cr_rd78, %%cr_rd123, %%cr_rd20;\n"
+        "	ld.global.v4.b32 	{%%cr_r15, %%cr_r16, %%cr_r17, %%cr_r18}, [%%cr_rd78];\n"
+        "	cvt.f64.f32 	%%cr_rd79, %%cr_r15;\n"
+        "	add.rn.f64 	%%cr_rd128, %%cr_rd128, %%cr_rd79;\n"
+        "	cvt.f64.f32 	%%cr_rd80, %%cr_r16;\n"
+        "	add.rn.f64 	%%cr_rd127, %%cr_rd127, %%cr_rd80;\n"
+        "	cvt.f64.f32 	%%cr_rd81, %%cr_r17;\n"
+        "	add.rn.f64 	%%cr_rd126, %%cr_rd126, %%cr_rd81;\n"
+        "	cvt.f64.f32 	%%cr_rd82, %%cr_r18;\n"
+        "	add.rn.f64 	%%cr_rd125, %%cr_rd125, %%cr_rd82;\n"
+        "	bra.uni 	$L__BB43_9;\n"
+        "$L__BB43_10:                            // %%cr_dt_exit\n"
         "	mov.u32 	%%cr_r1, %%laneid;\n"
-        "	and.b64 	%%cr_rd68, %%cr_rd39, -4;\n"
-        "	add.s64 	%%cr_rd69, %%cr_rd68, %%cr_rd7;\n"
-        "	setp.lt.u64 	%%cr_p10, %%cr_rd69, %%cr_rd39;\n"
-        "	@%%cr_p10 bra 	$L__BB43_18;\n"
-        "	bra.uni 	$L__BB43_19;\n"
-        "$L__BB43_18:                            // %%cr_then108\n"
-        "	shl.b64 	%%cr_rd70, %%cr_rd69, 2;\n"
-        "	add.s64 	%%cr_rd34, %%cr_rd1, %%cr_rd70;\n"
-        "	ld.global.b32 	%%cr_r104, [%%cr_rd34];\n"
-        "	add.rn.f32 	%%cr_r146, %%cr_r146, %%cr_r104;\n"
-        "$L__BB43_19:                            // %%cr_ifcont110\n"
-        "	add.rn.f32 	%%cr_r105, %%cr_r147, %%cr_r146;\n"
-        "	add.rn.f32 	%%cr_r106, %%cr_r148, %%cr_r149;\n"
-        "	add.rn.f32 	%%cr_r107, %%cr_r106, %%cr_r105;\n"
-        "	add.rn.f32 	%%cr_r108, %%cr_r125, %%cr_r124;\n"
-        "	add.rn.f32 	%%cr_r109, %%cr_r123, %%cr_r122;\n"
-        "	add.rn.f32 	%%cr_r110, %%cr_r108, %%cr_r109;\n"
-        "	add.rn.f32 	%%cr_r111, %%cr_r110, %%cr_r107;\n"
-        "	shfl.sync.bfly.b32 	%%cr_r112, %%cr_r111, 16, 31, -1;\n"
-        "	add.rn.f32 	%%cr_r113, %%cr_r111, %%cr_r112;\n"
-        "	shfl.sync.bfly.b32 	%%cr_r114, %%cr_r113, 8, 31, -1;\n"
-        "	add.rn.f32 	%%cr_r115, %%cr_r113, %%cr_r114;\n"
-        "	shfl.sync.bfly.b32 	%%cr_r116, %%cr_r115, 4, 31, -1;\n"
-        "	add.rn.f32 	%%cr_r117, %%cr_r115, %%cr_r116;\n"
-        "	shfl.sync.bfly.b32 	%%cr_r118, %%cr_r117, 2, 31, -1;\n"
-        "	add.rn.f32 	%%cr_r119, %%cr_r117, %%cr_r118;\n"
-        "	shfl.sync.bfly.b32 	%%cr_r120, %%cr_r119, 1, 31, -1;\n"
-        "	setp.ne.b32 	%%cr_p11, %%cr_r1, 0;\n"
-        "	@%%cr_p11 bra 	$L__BB43_21;\n"
-        "// %%cr_bb.20:                              // %%cr_then145\n"
-        "	mov.b64 	%%cr_rd40, %3;\n"
-        "	add.rn.f32 	%%cr_r68, %%cr_r119, %%cr_r120;\n"
-        "	add.s64 	%%cr_rd38, %%cr_rd2, %%cr_rd40;\n"
-        "	atom.global.add.f32 	%%cr_r121, [%%cr_rd38], %%cr_r68;\n"
-        "$L__BB43_21:                            // %%cr_ifcont147\n"
+        "	and.b64 	%%cr_rd83, %%cr_rd59, -4;\n"
+        "	add.s64 	%%cr_rd84, %%cr_rd83, %%cr_rd6;\n"
+        "	setp.lt.u64 	%%cr_p6, %%cr_rd84, %%cr_rd59;\n"
+        "	@%%cr_p6 bra 	$L__BB43_11;\n"
+        "	bra.uni 	$L__BB43_12;\n"
+        "$L__BB43_11:                            // %%cr_then115\n"
+        "	shl.b64 	%%cr_rd85, %%cr_rd84, 2;\n"
+        "	add.s64 	%%cr_rd44, %%cr_rd1, %%cr_rd85;\n"
+        "	ld.global.b32 	%%cr_r19, [%%cr_rd44];\n"
+        "	cvt.f64.f32 	%%cr_rd86, %%cr_r19;\n"
+        "	add.rn.f64 	%%cr_rd132, %%cr_rd132, %%cr_rd86;\n"
+        "$L__BB43_12:                            // %%cr_ifcont117\n"
+        "	add.rn.f64 	%%cr_rd87, %%cr_rd131, %%cr_rd132;\n"
+        "	add.rn.f64 	%%cr_rd88, %%cr_rd130, %%cr_rd129;\n"
+        "	add.rn.f64 	%%cr_rd89, %%cr_rd88, %%cr_rd87;\n"
+        "	add.rn.f64 	%%cr_rd90, %%cr_rd128, %%cr_rd127;\n"
+        "	add.rn.f64 	%%cr_rd91, %%cr_rd126, %%cr_rd125;\n"
+        "	add.rn.f64 	%%cr_rd92, %%cr_rd90, %%cr_rd91;\n"
+        "	add.rn.f64 	%%cr_rd93, %%cr_rd92, %%cr_rd89;\n"
+        "	cvt.u32.u64 	%%cr_r20, %%cr_rd93;\n"
+        "	{ .reg .b32 tmp; mov.b64 {tmp, %%cr_r21}, %%cr_rd93; }\n"
+        "	shfl.sync.bfly.b32 	%%cr_r22, %%cr_r20, 16, 31, -1;\n"
+        "	shfl.sync.bfly.b32 	%%cr_r23, %%cr_r21, 16, 31, -1;\n"
+        "	cvt.u64.u32 	%%cr_rd94, %%cr_r22;\n"
+        "	cvt.u64.u32 	%%cr_rd95, %%cr_r23;\n"
+        "	shl.b64 	%%cr_rd96, %%cr_rd95, 32;\n"
+        "	or.b64 	%%cr_rd97, %%cr_rd96, %%cr_rd94;\n"
+        "	add.rn.f64 	%%cr_rd98, %%cr_rd93, %%cr_rd97;\n"
+        "	cvt.u32.u64 	%%cr_r24, %%cr_rd98;\n"
+        "	{ .reg .b32 tmp; mov.b64 {tmp, %%cr_r25}, %%cr_rd98; }\n"
+        "	shfl.sync.bfly.b32 	%%cr_r26, %%cr_r24, 8, 31, -1;\n"
+        "	shfl.sync.bfly.b32 	%%cr_r27, %%cr_r25, 8, 31, -1;\n"
+        "	cvt.u64.u32 	%%cr_rd99, %%cr_r26;\n"
+        "	cvt.u64.u32 	%%cr_rd100, %%cr_r27;\n"
+        "	shl.b64 	%%cr_rd101, %%cr_rd100, 32;\n"
+        "	or.b64 	%%cr_rd102, %%cr_rd101, %%cr_rd99;\n"
+        "	add.rn.f64 	%%cr_rd103, %%cr_rd98, %%cr_rd102;\n"
+        "	cvt.u32.u64 	%%cr_r28, %%cr_rd103;\n"
+        "	{ .reg .b32 tmp; mov.b64 {tmp, %%cr_r29}, %%cr_rd103; }\n"
+        "	shfl.sync.bfly.b32 	%%cr_r30, %%cr_r28, 4, 31, -1;\n"
+        "	shfl.sync.bfly.b32 	%%cr_r31, %%cr_r29, 4, 31, -1;\n"
+        "	cvt.u64.u32 	%%cr_rd104, %%cr_r30;\n"
+        "	cvt.u64.u32 	%%cr_rd105, %%cr_r31;\n"
+        "	shl.b64 	%%cr_rd106, %%cr_rd105, 32;\n"
+        "	or.b64 	%%cr_rd107, %%cr_rd106, %%cr_rd104;\n"
+        "	add.rn.f64 	%%cr_rd108, %%cr_rd103, %%cr_rd107;\n"
+        "	cvt.u32.u64 	%%cr_r32, %%cr_rd108;\n"
+        "	{ .reg .b32 tmp; mov.b64 {tmp, %%cr_r33}, %%cr_rd108; }\n"
+        "	shfl.sync.bfly.b32 	%%cr_r34, %%cr_r32, 2, 31, -1;\n"
+        "	shfl.sync.bfly.b32 	%%cr_r35, %%cr_r33, 2, 31, -1;\n"
+        "	cvt.u64.u32 	%%cr_rd109, %%cr_r34;\n"
+        "	cvt.u64.u32 	%%cr_rd110, %%cr_r35;\n"
+        "	shl.b64 	%%cr_rd111, %%cr_rd110, 32;\n"
+        "	or.b64 	%%cr_rd112, %%cr_rd111, %%cr_rd109;\n"
+        "	add.rn.f64 	%%cr_rd58, %%cr_rd108, %%cr_rd112;\n"
+        "	cvt.u32.u64 	%%cr_r36, %%cr_rd58;\n"
+        "	{ .reg .b32 tmp; mov.b64 {tmp, %%cr_r37}, %%cr_rd58; }\n"
+        "	shfl.sync.bfly.b32 	%%cr_r2, %%cr_r36, 1, 31, -1;\n"
+        "	shfl.sync.bfly.b32 	%%cr_r3, %%cr_r37, 1, 31, -1;\n"
+        "	setp.ne.b32 	%%cr_p7, %%cr_r1, 0;\n"
+        "	@%%cr_p7 bra 	$L__BB43_14;\n"
+        "// %%cr_bb.13:                              // %%cr_then153\n"
+        "	mov.b64 	%%cr_rd60, %3;\n"
+        "	cvt.u64.u32 	%%cr_rd113, %%cr_r3;\n"
+        "	shl.b64 	%%cr_rd114, %%cr_rd113, 32;\n"
+        "	cvt.u64.u32 	%%cr_rd115, %%cr_r2;\n"
+        "	or.b64 	%%cr_rd116, %%cr_rd114, %%cr_rd115;\n"
+        "	add.rn.f64 	%%cr_rd117, %%cr_rd58, %%cr_rd116;\n"
+        "	add.s64 	%%cr_rd118, %%cr_rd2, %%cr_rd60;\n"
+        "	atom.global.add.f64 	%%cr_rd119, [%%cr_rd118], %%cr_rd117;\n"
+        "$L__BB43_14:                            // %%cr_ifcont155\n"
         "	bra.uni $L__crisp_inline_exit;\n"
         "                                        // -- End function\n"
         "$L__crisp_inline_exit:\n"
@@ -309,30 +284,32 @@ void crisp_vectorsum_kernel(
 torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output) {
     int64_t N = input.numel();
     if (N <= 0) return output.dim() > 0 ? output.squeeze(0) : output;
+    if (!input.is_contiguous()) {
+        input = input.contiguous();
+    }
 
-    output.zero_();
+    auto d_out = torch::zeros({1}, input.options().dtype(torch::kFloat64));
 
     constexpr int BLOCK_SIZE = 256;
     static int max_grid = 0;
     if (max_grid <= 0) {
-        int blocks_per_sm = 0;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &blocks_per_sm, crisp_vectorsum_kernel, BLOCK_SIZE, 128);
         int num_sms = 0;
         cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
-        max_grid = (blocks_per_sm > 0 && num_sms > 0) ? (blocks_per_sm * num_sms * 4) : 1024;
+        max_grid = (num_sms > 0) ? (num_sms * 2) : 256;
     }
 
-    int64_t needed_blocks = (N + (BLOCK_SIZE * 32) - 1) / (BLOCK_SIZE * 32);
+    int64_t needed_blocks = (N + (BLOCK_SIZE * 8) - 1) / (BLOCK_SIZE * 8);
     if (needed_blocks < 1) needed_blocks = 1;
     int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
 
     crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE, 128>>>(
         reinterpret_cast<uint64_t>(input.data_ptr()),
-        reinterpret_cast<uint64_t>(output.data_ptr()),
+        reinterpret_cast<uint64_t>(d_out.data_ptr()),
         static_cast<uint64_t>(N)
     );
+    output.copy_(d_out.to(torch::kFloat32));
     return output.dim() > 0 ? output.squeeze(0) : output;
+
 }
 """
 CPP_SOURCE = r"""torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output);"""

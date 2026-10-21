@@ -74,3 +74,41 @@ Because the inner registers are named `%cr_rd...`, `nvcc`'s outer `%rd1` is neve
 - **Option A (Direct Emitter Namespace):** Add a flag `--ptx-reg-prefix=<str>` to `bin/crisp-compile` so LLVM's NVPTX emitter or Crisp's PTX post-pass can output prefixed registers directly.
 - **Option B (CUBIN / Driver API):** Package contest entries using compiled `.cubin` / PTX loaded directly via `cuModuleLoadData` / `cuLaunchKernel` or PyTorch's `cuda.CUDAModule`, bypassing `nvcc`'s C++ inline assembly parser entirely.
 
+---
+
+## [BUG-002] FP32 Single-Precision Accumulation Drift vs. Double-Precision Reference Trap
+
+- **Date Discovered:** 2026-10-21
+- **Component:** Reduction Kernels (`vectorsum_v2` and future reduction tasks like `softmax`, `norm`, `gemm`)
+- **Severity:** High (intermittent `ranked validation failed` in `leaderboard` mode while passing `--mode test` or benchmark sizes)
+- **Status:** Resolved via native FP64 accumulation in Crisp registers (`to-double`, `shuffle-xor`, `atom.global.add.f64`).
+
+### Symptoms
+A reduction kernel compiles cleanly, runs at high bandwidth, and passes standard test cases (e.g. $N \le 4,096$). However, under official `--mode leaderboard` evaluation, the submission fails with:
+```
+Application error: Submission <ID> failed: ranked validation failed on <GPU>; submission will not appear on the leaderboard
+```
+
+### Root Cause Analysis
+1. In competition harnesses like GPU MODE, reference kernels are implemented with high precision to prevent numerical ambiguity:
+   ```python
+   # reference.py
+   def ref_kernel(data):
+       data, output = data
+       return data.to(torch.float64).sum().to(torch.float32)
+   ```
+2. Validation checks use strict tolerances:
+   ```python
+   torch.allclose(received, expected, rtol=1e-05, atol=1e-08)
+   ```
+3. When reducing $52,428,800$ floats in single precision (`float32`), the 24-bit mantissa loses precision when large numbers are accumulated. Furthermore, if intermediate sums cancel out (e.g., standard normal inputs scaled and offset close to 0), catastrophic cancellation causes relative error to exceed $10^{-5}$ (`atol=1e-08` dominates when the expected sum is small).
+4. If tens of thousands of warps perform `atom.global.add.f32` concurrently, non-deterministic addition order introduces random LSB truncation.
+
+### Resolution & Architectural Solution in Crisp
+1. **Load 128-bit Vectors:** Keep global memory loads as `float4` (128-bit) to saturate memory bandwidth.
+2. **Promote Accumulators to Double in Registers:** Upcast each vector component with `(to-double ...)` and accumulate in 64-bit double registers (`a0..a3` typed as `double`).
+3. **Double-Precision Warp Reduction:** Warp shuffles reduce the 64-bit double values across lanes using Crisp's native 64-bit shuffle decomposition.
+4. **Native FP64 Global Atomic:** The warp leader issues `atom.global.add.f64` directly into an 8-byte double accumulator.
+5. **Final FP32 Cast:** The final scalar sum is cast back to `float32` once at the very end, matching the reference kernel's mathematical definition bit-for-bit.
+
+
