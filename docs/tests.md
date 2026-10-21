@@ -90,10 +90,12 @@ A single spec opts in with the directive `HOIST-KERNEL: source` (the `190-compil
 do: `--filter=190-compile-api` runs just those), or out of the pass with `HOIST-KERNEL: file`.  The
 pass leaves alone specs whose L0 validator only inspects the generated `.cpp` text
 (`validate-l0-strategy-content` and friends -- source mode rewrites argument indices to
-`crisp_slot[N]`) and FFI specs (a launcher cannot embed a `.bc`).  A source-mode launcher prints
-`Kernel compiled at run time through the Crisp compile API` and
-`Argument slots from the compile API: M of N`; the N - M are implicit parameters (scratch ...) the
-API does not describe yet.
+`crisp_slot[N]`) and FFI specs (a launcher cannot embed a `.bc`).  A source-mode launcher prints `Kernel compiled at run time through the Crisp compile API`,
+`Argument slots from the compile API: N of N` (every slot, scratch included, from the API), and
+`Launch geometry from the compile API: groups X, local Y, scratch sizes checked: S` -- just before
+the launch it feeds a launch object the values it actually passed and CHECKS the API's local size,
+group counts and scratch byte sizes against its own; any `MISMATCH` fails the run.  (MMA specs
+too: `validate-l0-mma-run`'s `--mma-test` re-hoist keeps source mode.)
 
 On Windows a running launcher (or Python process) that has loaded `bin/crisp.dll` locks it, so a
 rebuild during one of these runs can fail; rebuild after it ends.

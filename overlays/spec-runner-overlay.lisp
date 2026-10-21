@@ -221,3 +221,64 @@
         t)))
 
 
+
+;; tests/run-specs.lisp -- NEW (endeavour 190)
+(defun %hoist-kernel-source-hoister-args (file)
+  "The crisp-hoist-l0 arguments that keep a RE-hoist of FILE (validate-l0-mma-run's --mma-test pass)
+   in source mode, or NIL when FILE's hoist is in file mode.  The flags are the ones the hoist compile
+   used (run-spec-with-hoist binds the same specials around the validator), minus the ones the
+   compile API refuses -- what crisp-compile's %hoist-kernel-source-args would have forwarded."
+  (when (%hoist-kernel-source-p file)
+    (append (list "--hoist-kernel=source"
+                  (format nil "--kernel-source=~a" (uiop:native-namestring (truename file))))
+            (mapcar (lambda (f) (format nil "--kernel-flag=~a" f))
+                    (append (when *compile-denormal-handling*
+                              (list (format nil "--denormal-handling=~(~a~)" (symbol-name *compile-denormal-handling*))))
+                            (when *compile-math-precision*
+                              (list (format nil "--math-precision=~(~a~)" (symbol-name *compile-math-precision*))))
+                            (when *compile-hardware-profile*
+                              (list (format nil "--hardware-profile=~a" *compile-hardware-profile*)))
+                            (let ((arch (parse-hoist-arch (extract-test-directives file))))
+                              (when arch (list (format nil "--ir-target-arch=~a" arch)))))))))
+
+;; tests/run-specs.lisp -- REPLACES validate-l0-mma-run (endeavour 190: the --mma-test re-hoist keeps --hoist-kernel=source)
+(defun validate-l0-mma-run (file cpp-files)
+  "Endeavor 134: re-hoist each kernel in --mma-test=M,N,K mode (host-reference C=A·B check),
+   then compile+run via validate-l0-host-run (which checks HOIST-EXPECT: MMA_CORRECT)."
+  (let* ((directives (extract-test-directives file))
+         (dims (parse-mma-dims directives))
+         (scale (parse-mma-scale directives)))
+    (unless (and dims (= (length dims) 3) (every #'integerp dims))
+      (format t "FAIL: validate-l0-mma-run requires an `MMA-DIMS: M N K` directive~%")
+      (return-from validate-l0-mma-run nil))
+    (let ((hoist (%crisp-hoist-l0-binary)))
+      (unless (probe-file hoist)
+        (format t "FAIL: crisp-hoist-l0 binary not found at ~a~%" hoist)
+        (return-from validate-l0-mma-run nil))
+      (dolist (cpp cpp-files)
+        (let* ((base (pathname-name cpp))                       ; <spec>_<kernel>_L0
+               (mc-name (if (and (>= (length base) 3)
+                                 (string-equal (subseq base (- (length base) 3)) "_L0"))
+                            (subseq base 0 (- (length base) 3))
+                            base))
+               (metacrisp (make-pathname :name mc-name :type "metacrisp" :defaults cpp)))
+          (unless (probe-file metacrisp)
+            (format t "FAIL: metacrisp not found for ~a (expected ~a)~%"
+                    (file-namestring cpp) (file-namestring metacrisp))
+            (return-from validate-l0-mma-run nil))
+          (multiple-value-bind (out err code)
+              (uiop:run-program (append (list (uiop:native-namestring hoist)
+                                              (format nil "--mma-test=~{~d~^,~}" dims))
+                                        (when (and scale (/= scale 1))
+                                          (list (format nil "--mma-scale=~d" scale)))
+                                        ;; Endeavour 190: a source-mode spec stays source-mode here
+                                        (%hoist-kernel-source-hoister-args file)
+                                        (list (uiop:native-namestring metacrisp)))
+                :output :string :error-output :string :ignore-error-status t)
+            (declare (ignore out))
+            (unless (zerop code)
+              (format t "FAIL: crisp-hoist-l0 --mma-test failed (code ~a):~%~a~%" code err)
+              (return-from validate-l0-mma-run nil))))))
+    ;; The .cpp files are now the MMA test harnesses; compile + run + check MMA_CORRECT.
+    (validate-l0-host-run file cpp-files)))
+

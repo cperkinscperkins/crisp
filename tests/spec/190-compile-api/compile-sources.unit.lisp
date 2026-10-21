@@ -397,6 +397,67 @@
         (mapcar (lambda (s) (getf (nth s (getf k :slots)) :type)) '(0 3 6 12 18)))))
 
 ;;; ------------------------------------------------------------------------------------------------
+;;; Item 2, step 2: each kernel's GEOMETRY declarations, normalised for the C launch object (A10).
+;;; Read from the .metacrisp (so a compiler-INFERRED :tile-shape is seen too).  Names in
+;;; :derive-from / :set-to become indices into the kernel's parameter list.
+;;; ------------------------------------------------------------------------------------------------
+
+(defun strategy-kernel (spec &key flags (kernel-index 0))
+  "The KERNEL-INDEX'th kernel of tests/spec/089-strategy/SPEC.crisp, compiled through the API."
+  (let ((r (compile-quietly (list (cons (uiop:read-file-string (format nil "tests/spec/089-strategy/~a.crisp" spec))
+                                        (format nil "~a.crisp" spec)))
+                            :flags flags)))
+    (unless (eq (getf r :status) :ok)
+      (format *error-output* "~&strategy-kernel ~a: ~s~%" spec (getf r :diagnostics)))
+    (nth kernel-index (kernels r))))
+
+(defun param-index (k name)
+  (position name (getf k :params) :key (lambda (p) (getf p :name)) :test #'string-equal))
+
+(define-test (compile-api geometry-set-to-and-local)
+  (let ((g (getf (strategy-kernel "13-hoist-local-global-exact") :geometry)))
+    (is eq :global-size (getf g :dispatch))
+    (is equal '(1024) (getf g :set-to))
+    (is equal '(64 1) (getf g :local)))
+  (let* ((k (strategy-kernel "11-hoist-set-to-dims"))
+         (g (getf k :geometry)))
+    ;; :set-to may name scalar params: (:param INDEX)
+    (is equal (list (list :param (param-index k "width")) (list :param (param-index k "height")))
+        (getf g :set-to))
+    (is equal '(1 1) (getf g :local) "no local-size: 1")))
+
+(define-test (compile-api geometry-derive-from)
+  (let* ((k (strategy-kernel "12-hoist-one-thread-per"))
+         (g (getf k :geometry)))
+    (is eq :one-thread-per (getf g :strategy))
+    (is equal (list :scalars (param-index k "width") (param-index k "height")) (getf g :derive)))
+  (let* ((k (strategy-kernel "22-derive-from-vector-one-thread-per"))
+         (g (getf k :geometry)))
+    (is equal (list :tensor (param-index k "input")) (getf g :derive) "a bare symbol: a tensor")
+    (is equal '(256 1) (getf g :local))))
+
+(define-test (compile-api geometry-strided-tile-occupancy)
+  (let ((g (getf (strategy-kernel "23-strided-with-occupancy") :geometry)))
+    (is eq :strided (getf g :strategy))
+    (is = 0.5 (getf g :occupancy)))
+  (let ((g (getf (strategy-kernel "15-hoist-exact-tiled") :geometry)))
+    (is eq :exact (getf g :strategy))
+    (is equal '(16 16) (getf g :tile-shape))
+    (is equal '(16 16) (getf g :local)))
+  (let ((g (getf (strategy-kernel "24-tile-shape-inferred") :geometry)))
+    (true (getf g :tile-shape) "the compiler INFERRED it; the .metacrisp carries it"))
+  (let ((g (getf (strategy-kernel "14-hoist-strided") :geometry)))
+    (is eq :num-groups (getf g :dispatch) "num-groups stands in when there is no global-size")))
+
+(define-test (compile-api geometry-undeclared-and-warp)
+  (let ((k (kernel (compile-quietly (list (cons +two-kernels+ "two.crisp"))) "k_one")))
+    (false (getf (getf k :geometry) :dispatch) "no global-size / num-groups")
+    (is equal '(1 1) (getf (getf k :geometry) :local))
+    (false (getf k :warp-size) "no hardware profile: the launch object falls back to 32"))
+  (let ((k (grid-reduce-kernel)))
+    (true (integerp (getf k :warp-size)) "--hardware-profile=bmg carries the SIMD width")))
+
+;;; ------------------------------------------------------------------------------------------------
 ;;; The compile server's protocol (src/api.lisp, "The compile server"), round-tripped through files.
 ;;; ------------------------------------------------------------------------------------------------
 

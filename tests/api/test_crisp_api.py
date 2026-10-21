@@ -103,7 +103,7 @@ class Basics(unittest.TestCase):
     def test_version(self):
         v = LIB.crisp_api_version()
         self.assertEqual(v >> 16, 0, "major must match CRISP_API_VERSION_MAJOR")
-        self.assertEqual(v & 0xFFFF, 2, "minor 2: implicit params (purpose, zero-before-launch)")
+        self.assertEqual(v & 0xFFFF, 3, "minor 3: the launch object")
 
     def test_status_strings(self):
         for st in range(8):
@@ -348,6 +348,177 @@ class ImplicitParams(unittest.TestCase):
             self.assertEqual(LIB.crisp_param_address_space(ctx, 0, 0, sv), C.ADDRESS_SPACE["local"])
             self.assertEqual(LIB.crisp_param_direction(ctx, 0, 0, sv), C.DIRECTION["invalid"])
             self.assertEqual(LIB.crisp_slot_address_space(ctx, 0, 0, 12), C.ADDRESS_SPACE["local"])
+
+
+def spec_source(rel):
+    return open(os.path.join(C.REPO, "tests", "spec", rel), encoding="utf-8").read()
+
+
+class Launch:
+    """A launch object for kernel K of the context, destroyed on exit."""
+
+    def __init__(self, ctx, k=0):
+        self.p = ctypes.c_void_p()
+        st = LIB.crisp_launch_create(ctx, 0, k, ctypes.byref(self.p))
+        assert st == C.OK, st
+
+    def __enter__(self):
+        return self.p
+
+    def __exit__(self, *exc):
+        LIB.crisp_launch_destroy(self.p)
+
+
+def groups(L):
+    return tuple(LIB.crisp_launch_group_count(L, a) for a in range(3))
+
+
+def local(L):
+    return tuple(LIB.crisp_launch_local_size(L, a) for a in range(3))
+
+
+class LaunchGeometry(unittest.TestCase):
+    """Item 2, step 2: the launch object does the geometry arithmetic (A10) -- the L0 hoister's
+    rules, checked here case by case on the 089-strategy kernels."""
+
+    def compiled(self, ctx, spec, flags=()):
+        st = compile_text(ctx, spec_source("089-strategy/" + spec + ".crisp"), spec + ".crisp", flags=list(flags))
+        self.assertEqual(st, C.OK, s(LIB.crisp_diagnostics_text(ctx)))
+
+    def test_set_to_with_local(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "13-hoist-local-global-exact")          # global 1024, local 64
+            with Launch(ctx) as L:
+                self.assertEqual(local(L), (64, 1, 1), "known before compute")
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK)
+                self.assertTrue(LIB.crisp_launch_declared(L))
+                self.assertEqual(groups(L), (16, 1, 1))
+
+    def test_set_to_scalar_names(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "11-hoist-set-to-dims")                  # :set-to (width height)
+            w, h = param_index(ctx, 0, "width"), param_index(ctx, 0, "height")
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_compute(L), C.ERROR_INVALID_ARGUMENT)
+                self.assertIn("width", s(LIB.crisp_launch_message(L)), "names the missing input")
+                LIB.crisp_launch_set_scalar(L, w, 100)
+                LIB.crisp_launch_set_scalar(L, h, 50)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (100, 50, 1), "local 1x1: one group per item")
+                self.assertEqual(LIB.crisp_launch_message(L), b"")
+
+    def test_one_thread_per_tensor(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "22-derive-from-vector-one-thread-per")  # local 256
+            with Launch(ctx) as L:
+                LIB.crisp_launch_set_extent(L, param_index(ctx, 0, "input"), 0, 1000)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (4, 1, 1), "ceil(1000 / 256)")
+
+    def test_one_thread_per_scalars(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "12-hoist-one-thread-per")
+            with Launch(ctx) as L:
+                LIB.crisp_launch_set_scalar(L, param_index(ctx, 0, "width"), 640)
+                LIB.crisp_launch_set_scalar(L, param_index(ctx, 0, "height"), 480)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (640, 480, 1))
+
+    def test_strided_occupancy(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "23-strided-with-occupancy")             # :occupancy 0.5
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_compute(L), C.ERROR_INVALID_ARGUMENT)
+                self.assertIn("resident", s(LIB.crisp_launch_message(L)))
+                LIB.crisp_launch_set_resident_groups(L, 640)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK)
+                self.assertEqual(groups(L), (320, 1, 1), "half of 640")
+
+    def test_exact_tile_grid_scalars(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "15-hoist-exact-tiled")                  # tile 16x16, local 16x16
+            with Launch(ctx) as L:
+                self.assertEqual(local(L), (16, 16, 1))
+                LIB.crisp_launch_set_scalar(L, param_index(ctx, 0, "width"), 100)
+                LIB.crisp_launch_set_scalar(L, param_index(ctx, 0, "height"), 33)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (7, 3, 1))
+
+    def test_tile_grid_uses_extents_and_limits(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "26-tile-grid-uses-extents-not-length")  # :exact, tile 32x32, from C
+            c = param_index(ctx, 0, "c")
+            with Launch(ctx) as L:
+                LIB.crisp_launch_set_extent(L, c, 0, 100)
+                LIB.crisp_launch_set_extent(L, c, 1, 70)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (4, 3, 1), "per-axis extents, not the flat length")
+                LIB.crisp_launch_set_max_group_count(L, 2, 2, 2)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.ERROR_INVALID_ARGUMENT, ":exact must not clamp")
+                self.assertIn("exact", s(LIB.crisp_launch_message(L)))
+        with Ctx() as ctx:
+            self.compiled(ctx, "25-tile-shape-explicit-wins")           # :strided, tile 64x64, from C
+            c = param_index(ctx, 0, "c")
+            with Launch(ctx) as L:
+                LIB.crisp_launch_set_extent(L, c, 0, 200)
+                LIB.crisp_launch_set_extent(L, c, 1, 130)
+                LIB.crisp_launch_set_max_group_count(L, 2, 2, 2)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, "a tile grid needs no occupancy")
+                self.assertEqual(groups(L), (2, 2, 1), ":strided clamps (4, 3) -- its stride loop covers the rest")
+
+    def test_interleaved_and_undeclared(self):
+        with Ctx() as ctx:
+            self.compiled(ctx, "18-hoist-interleaved-comment")
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK)
+                self.assertEqual(groups(L), (1, 1, 1))
+        with Ctx() as ctx:
+            self.assertEqual(compile_text(ctx, TWO_KERNELS), C.OK)
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK)
+                self.assertFalse(LIB.crisp_launch_declared(L))
+                self.assertEqual(groups(L), (1, 1, 1))
+                self.assertEqual(local(L), (1, 1, 1))
+
+    def test_scratch_bytes(self):
+        with Ctx() as ctx:
+            self.assertEqual(compile_text(ctx, spec_source("175-reductions/25-grid-reduce-last-man-metal.crisp"),
+                                          "grid.crisp", flags=["--hardware-profile=bmg"]), C.OK)
+            names = [s(LIB.crisp_param_name(ctx, 0, 0, p)) for p in range(LIB.crisp_param_count(ctx, 0, 0))]
+            ix = {nm.split("_")[0]: i for i, nm in enumerate(names)}
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (4, 1, 1), "global 256 / local 64")
+                b = {k: LIB.crisp_launch_param_bytes(L, i) for k, i in ix.items()}
+                self.assertEqual(b, {"flag": 4, "ctr": 4, "gv": 16, "sv": 16, "out": 0},
+                                 "sv: ceil(64 / 16 BMG lanes) = 4 floats")
+                LIB.crisp_launch_set_warp_size(L, 32)
+                LIB.crisp_launch_compute(L)
+                self.assertEqual(LIB.crisp_launch_param_bytes(L, ix["sv"]), 8, "ceil(64 / 32) = 2 floats")
+                self.assertEqual(LIB.crisp_launch_shared_bytes(L), 0, "SPIR-V: no shared block")
+
+    def test_scratch_per_workgroup(self):
+        with Ctx() as ctx:
+            self.assertEqual(compile_text(ctx, spec_source("181-last-man-sweep/02-last-man-match-num-workgroups-metal.crisp"),
+                                          "lm.crisp", flags=["--hardware-profile=bmg"]), C.OK)
+            names = [s(LIB.crisp_param_name(ctx, 0, 0, p)) for p in range(LIB.crisp_param_count(ctx, 0, 0))]
+            gv = next(i for i, nm in enumerate(names) if nm.startswith("gv_"))
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (128, 1, 1), "4096 / 32")
+                self.assertEqual(LIB.crisp_launch_param_bytes(L, gv), 128 * 4, "one float per workgroup")
+
+    def test_launch_bad_arguments(self):
+        with Ctx() as ctx:
+            p = ctypes.c_void_p()
+            self.assertEqual(LIB.crisp_launch_create(ctx, 0, 0, ctypes.byref(p)), C.ERROR_NO_RESULT)
+            self.assertEqual(compile_text(ctx, TWO_KERNELS), C.OK)
+            self.assertEqual(LIB.crisp_launch_create(ctx, 0, 9, ctypes.byref(p)), C.ERROR_INVALID_ARGUMENT)
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_group_count(L, 0), 0, "nothing before compute")
+                self.assertEqual(LIB.crisp_launch_set_extent(L, 99, 0, 1), C.ERROR_INVALID_ARGUMENT)
+                self.assertEqual(LIB.crisp_launch_set_warp_size(L, 0), C.ERROR_INVALID_ARGUMENT)
+            LIB.crisp_launch_destroy(None)
 
 
 class Processes(unittest.TestCase):

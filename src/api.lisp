@@ -321,7 +321,8 @@
                           collect (cons (symbol-name (second d)) (third d))))
          (record-names (loop for d in (append (%api-section forms :records) (%api-section forms :structs))
                              when (consp d) collect (symbol-name (second d)))))
-    (loop for k in (%api-section forms :kernels)
+    (loop with profile = (first (%api-section forms :hardware-profile))
+          for k in (%api-section forms :kernels)
           ;; declared + implicit, in SLOT order (A9: one list)
           for params = (sort (append (mapcar (lambda (d) (%api-param d aliases record-names))
                                              (getf k :declared-signature))
@@ -330,7 +331,59 @@
                              #'< :key (lambda (p) (or (third (first (getf p :roles))) most-positive-fixnum)))
           collect (list :name (getf k :name)
                         :slots (%api-mark-pointer-slots (mapcar #'%api-slot (getf k :physical-signature)) params)
-                        :params params))))
+                        :params params
+                        :geometry (%api-geometry k params)
+                        ;; lanes per warp for :match-num-warps-per-workgroup scratch; NIL = no
+                        ;; profile, and the launch object falls back to 32 (as the hoister does)
+                        :warp-size (and (consp profile) (evenp (length profile))
+                                        (let ((w (getf profile :simd-width))) (and (integerp w) w)))))))
+
+;;; ------------------------------------------------------------------------------------------------
+;;; Launch geometry (item 2, step 2): the kernel's declarations, normalised for the C launch object
+;;; ------------------------------------------------------------------------------------------------
+
+(defun %api-decl-plist (form)
+  "The keyword arguments of a declaration FORM such as (global-size :set-to 256), or NIL."
+  (and (consp form) (evenp (length (rest form))) (rest form)))
+
+(defun %api-param-ref (sym params)
+  "SYM (a name in a declaration) as (:param INDEX) into PARAMS, or (:unknown NAME)."
+  (let ((i (position (symbol-name sym) params :key (lambda (p) (getf p :name)) :test #'string-equal)))
+    (if i (list :param i) (list :unknown (string-downcase (symbol-name sym))))))
+
+(defun %api-geometry (k params)
+  "Kernel K's launch geometry declarations, normalised -- the same reading the L0 hoister gives them
+   (src/hoist-l0/main.lisp %l0-emit-dispatch):
+     :local     (X Y)  from local-size :set-to (int or list); (1 1) otherwise.  local-size :derive-from
+                       is NOT honoured, as in the hoister.
+     :dispatch  :global-size, else :num-groups (which the hoister reads exactly like global-size), else NIL
+     :strategy  :one-thread-per | :exact | :strided | :interleaved | NIL
+     :set-to    list of integers and (:param I) references
+     :derive    (:tensor I) for a bare symbol, (:scalars I ...) for a list
+     :tile-shape list of integers;  :occupancy a number"
+  (let* ((local (%api-decl-plist (getf k :local-size)))
+         (ls (getf local :set-to))
+         (global (getf k :global-size))
+         (groups (getf k :num-groups))
+         (dispatch-form (or global groups))
+         (d (%api-decl-plist dispatch-form))
+         (set-to (getf d :set-to))
+         (derive (getf d :derive-from))
+         (ref (lambda (x) (if (integerp x) x (%api-param-ref x params)))))
+    (list :local (cond ((integerp ls) (list ls 1))
+                       ((and (consp ls) (integerp (first ls)))
+                        (list (first ls) (if (integerp (second ls)) (second ls) 1)))
+                       (t (list 1 1)))
+          :dispatch (cond (global :global-size) (groups :num-groups))
+          :strategy (let ((s (getf d :strategy))) (and (keywordp s) s))
+          :set-to (cond ((null set-to) nil)
+                        ((atom set-to) (list (funcall ref set-to)))
+                        (t (mapcar ref set-to)))
+          :derive (cond ((null derive) nil)
+                        ((symbolp derive) (cons :tensor (rest (%api-param-ref derive params))))
+                        ((consp derive) (cons :scalars (mapcar (lambda (s) (second (%api-param-ref s params))) derive))))
+          :tile-shape (let ((ts (getf d :tile-shape))) (and (consp ts) (every #'integerp ts) ts))
+          :occupancy (let ((o (getf d :occupancy))) (and (realp o) o)))))
 
 (defun %api-mark-pointer-slots (slots params)
   "SLOTS with every parameter's :pointer-role slot reported as a pointer in that parameter's address
@@ -402,6 +455,8 @@
                             (find (subseq name 0 (- (length name) 5)) kernels :key #'kname :test #'string=))
           collect (append (list :name name
                                 :grad-of (and primal (kname primal))
+                                :geometry (getf k :geometry)
+                                :warp-size (getf k :warp-size)
                                 :slots (getf k :slots)
                                 :params (loop with primal-names = (and primal (pnames primal))
                                               for p in (getf k :params)
@@ -588,6 +643,9 @@
 ;;;              diag ""    diag.severity diag.message [diag.file] diag.line diag.column
 ;;;              module ""  module.binary
 ;;;              kernel ""  kernel.name [kernel.grad-of]
+;;;                         kernel.local "X Y" [kernel.dispatch] [kernel.strategy] [kernel.set-to "N|pI ..."]
+;;;                         [kernel.derive "tensor pI" | "scalars pI ..."] [kernel.tile-shape "N ..."]
+;;;                         [kernel.occupancy "R"] [kernel.warp-size "N"]       (launch geometry)
 ;;;              slot ""    slot.type slot.size [slot.address-space]        (belongs to the last kernel)
 ;;;              param ""   param.name param.kind [param.direction] [param.element-type] param.rank
 ;;;                         [param.layout] [param.address-space] [param.adjoint-of]
@@ -680,6 +738,24 @@
         (rec "kernel" "")
         (rec "kernel.name" (getf k :name))
         (rec "kernel.grad-of" (getf k :grad-of))
+        ;; launch geometry (item 2): see %api-geometry.  A parameter reference travels as p<index>,
+        ;; an unresolvable name as ?<name>.
+        (let ((g (getf k :geometry)))
+          (flet ((tok (x) (cond ((integerp x) (princ-to-string x))
+                                ((and (consp x) (eq (first x) :param)) (format nil "p~d" (second x)))
+                                ((consp x) (format nil "?~a" (second x)))
+                                (t (format nil "?~a" x)))))
+            (rec "kernel.local" (format nil "~{~d~^ ~}" (getf g :local)))
+            (rec "kernel.dispatch" (getf g :dispatch))
+            (rec "kernel.strategy" (getf g :strategy))
+            (rec "kernel.set-to" (and (getf g :set-to) (format nil "~{~a~^ ~}" (mapcar #'tok (getf g :set-to)))))
+            (rec "kernel.derive" (let ((dv (getf g :derive)))
+                                   (and dv (format nil "~(~a~)~{ ~a~}" (first dv)
+                                                   (mapcar (lambda (i) (if (integerp i) (format nil "p~d" i) (format nil "?~a" i)))
+                                                           (rest dv))))))
+            (rec "kernel.tile-shape" (and (getf g :tile-shape) (format nil "~{~d~^ ~}" (getf g :tile-shape))))
+            (rec "kernel.occupancy" (and (getf g :occupancy) (format nil "~f" (getf g :occupancy))))))
+        (rec "kernel.warp-size" (getf k :warp-size))
         (dolist (s (getf k :slots))
           (rec "slot" "")
           (rec "slot.type" (getf s :type))

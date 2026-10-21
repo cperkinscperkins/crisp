@@ -46,6 +46,9 @@
 (defvar *hoist-current-signature* nil
   "Endeavour 190: (DECLARED-SIG FULL-SIG ALIASES RECORDS) of the kernel being emitted.")
 
+(defvar *hoist-current-dispatch-info* nil
+  "Endeavour 190: the dispatch-info plist of the kernel being emitted (for the launch-object check).")
+
 (defun %hk-extract-args (args)
   "Splits the endeavour-190 arguments out of ARGS, setting the *hoist-kernel-...* specials.
    Returns the remaining arguments (for %mma-parse-args)."
@@ -83,6 +86,25 @@
   (format stream "// Endeavour 190 (--hoist-kernel=source): the kernel is compiled at RUN time from this source,~%")
   (format stream "// through the Crisp compile API.  Link with crisp.dll / libcrisp.so; it finds crisp-compile beside itself.~%")
   (format stream "#include \"crisp.h\"~%~%")
+  ;; Every argument and the group size go through these, so the launch-object check below main()
+  ;; can compare what this launcher actually passed with what the API computes.
+  (format stream "// Every argument this launcher sets is recorded (by slot), so the compile API's launch~%")
+  (format stream "// facts can be checked against what was actually passed.~%")
+  (format stream "static size_t   crisp_arg_size[1024];~%")
+  (format stream "static uint64_t crisp_arg_value[1024];   // the first <= 8 bytes, little-endian~%")
+  (format stream "static uint32_t crisp_group_size[3] = { 0, 0, 0 };~%")
+  (format stream "static ze_result_t crisp_set_arg(ze_kernel_handle_t k, uint32_t i, size_t sz, const void* v) {~%")
+  (format stream "    if (i < 1024) {~%")
+  (format stream "        crisp_arg_size[i] = sz;~%")
+  (format stream "        crisp_arg_value[i] = 0;~%")
+  (format stream "        if (v) memcpy(&crisp_arg_value[i], v, sz < 8 ? sz : 8);~%")
+  (format stream "    }~%")
+  (format stream "    return zeKernelSetArgumentValue(k, i, sz, v);~%")
+  (format stream "}~%")
+  (format stream "static ze_result_t crisp_set_group_size(ze_kernel_handle_t k, uint32_t x, uint32_t y, uint32_t z) {~%")
+  (format stream "    crisp_group_size[0] = x; crisp_group_size[1] = y; crisp_group_size[2] = z;~%")
+  (format stream "    return zeKernelSetGroupSize(k, x, y, z);~%")
+  (format stream "}~%~%")
   (format stream "static const char* const crisp_kernel_sources[] = {~%")
   (dolist (path *hoist-kernel-sources*)
     (format stream "    ~a,~%" (%hk-source-literal (uiop:read-file-string path))))
@@ -194,24 +216,126 @@
         (format stream "    }~%")
         (format stream "    std::cout << \"Argument slots from the compile API: ~d of ~d\" << std::endl;~%~%" mapped total)))))
 
+(defun %hk-strided-occupancy-p ()
+  "T when the current kernel's group count comes from the occupancy path (:strategy :strided with
+   no tile grid) -- the same test %l0-emit-dispatch makes -- so the launcher has _hw_threads_full and
+   _threads_per_group to hand the API as the resident-group capacity."
+  (let* ((di *hoist-current-dispatch-info*)
+         (decl (or (getf di :global-size) (getf di :num-groups)))
+         (rest (when decl (cdr decl)))
+         (strategy (when rest (getf rest :strategy)))
+         (name (and strategy (symbol-name strategy))))
+    (and name (string-equal name "STRIDED")
+         (not (and (getf rest :tile-shape) (getf rest :derive-from))))))
+
+(defun %hk-launch-check-block ()
+  "main()-scope C++ inserted just before the launch: a compile-API launch object fed with the values
+   this launcher actually passed (read back from the recorded arguments, exactly what an API caller
+   would supply), then its local size, group counts and scratch byte sizes CHECKED against this
+   launcher's own -- any mismatch fails the run -- and the launch then uses the API's group counts."
+  (with-output-to-string (s)
+    (format s "    // ---- Endeavour 190: launch geometry + scratch sizes from the compile API -----------~%")
+    (format s "    {~%")
+    (format s "        crisp_launch* crisp_L = nullptr;~%")
+    (format s "        if (crisp_launch_create(crisp_ctx, 0, crisp_k, &crisp_L) != CRISP_OK) {~%")
+    (format s "            std::cerr << \"ERROR: crisp_launch_create failed\" << std::endl;~%")
+    (format s "            return 1;~%")
+    (format s "        }~%")
+    (format s "        const size_t crisp_np = crisp_param_count(crisp_ctx, 0, crisp_k);~%")
+    (format s "        for (size_t p = 0; p < crisp_np; p++) {   // inputs: what this launcher passed~%")
+    (format s "            if (crisp_param_purpose(crisp_ctx, 0, crisp_k, p) != CRISP_PURPOSE_DECLARED) continue;~%")
+    (format s "            crisp_param_kind kind = crisp_param_kind_of(crisp_ctx, 0, crisp_k, p);~%")
+    (format s "            if (kind == CRISP_PARAM_TENSOR) {~%")
+    (format s "                for (uint32_t a = 0; a < crisp_param_rank(crisp_ctx, 0, crisp_k, p); a++) {~%")
+    (format s "                    size_t sl = crisp_param_slot(crisp_ctx, 0, crisp_k, p, CRISP_ROLE_EXTENT, a);~%")
+    (format s "                    if (sl < 1024) crisp_launch_set_extent(crisp_L, p, a, crisp_arg_value[sl]);~%")
+    (format s "                }~%")
+    (format s "            } else if (kind == CRISP_PARAM_SCALAR) {~%")
+    (format s "                size_t sl = crisp_param_slot(crisp_ctx, 0, crisp_k, p, CRISP_ROLE_VALUE, 0);~%")
+    (format s "                if (sl < 1024) crisp_launch_set_scalar(crisp_L, p, crisp_arg_value[sl]);~%")
+    (format s "            }~%")
+    (format s "        }~%")
+    (when (%hk-strided-occupancy-p)
+      (format s "        // :strided -- the resident capacity this launcher measured, before any :occupancy derate~%")
+      (format s "        crisp_launch_set_resident_groups(crisp_L, (uint64_t)(_hw_threads_full / _threads_per_group));~%"))
+    (format s "        if (crisp_launch_compute(crisp_L) != CRISP_OK) {~%")
+    (format s "            std::cerr << \"ERROR: crisp_launch_compute: \" << crisp_launch_message(crisp_L) << std::endl;~%")
+    (format s "            return 1;~%")
+    (format s "        }~%")
+    (format s "        int crisp_bad = 0;~%")
+    (format s "        for (uint32_t a = 0; a < 2; a++)~%")
+    (format s "            if (crisp_launch_local_size(crisp_L, a) != crisp_group_size[a]) {~%")
+    (format s "                std::cerr << \"MISMATCH: local size axis \" << a << \": API \" << crisp_launch_local_size(crisp_L, a)~%")
+    (format s "                          << \", launcher \" << crisp_group_size[a] << std::endl;~%")
+    (format s "                crisp_bad = 1;~%")
+    (format s "            }~%")
+    (format s "        const uint32_t crisp_g[3] = { groupCount.groupCountX, groupCount.groupCountY, groupCount.groupCountZ };~%")
+    (format s "        for (uint32_t a = 0; a < 3; a++)~%")
+    (format s "            if (crisp_launch_group_count(crisp_L, a) != crisp_g[a]) {~%")
+    (format s "                std::cerr << \"MISMATCH: group count axis \" << a << \": API \" << crisp_launch_group_count(crisp_L, a)~%")
+    (format s "                          << \", launcher \" << crisp_g[a] << std::endl;~%")
+    (format s "                crisp_bad = 1;~%")
+    (format s "            }~%")
+    (format s "        size_t crisp_scratch = 0;~%")
+    (format s "        for (size_t p = 0; p < crisp_np; p++) {~%")
+    (format s "            if (crisp_param_purpose(crisp_ctx, 0, crisp_k, p) != CRISP_PURPOSE_SCRATCH) continue;~%")
+    (format s "            size_t sl = crisp_param_slot(crisp_ctx, 0, crisp_k, p, CRISP_ROLE_BYTE_SIZE, 0);~%")
+    (format s "            uint64_t api_bytes = crisp_launch_param_bytes(crisp_L, p);~%")
+    (format s "            crisp_scratch++;~%")
+    (format s "            if (sl >= 1024 || crisp_arg_value[sl] != api_bytes) {~%")
+    (format s "                std::cerr << \"MISMATCH: scratch \" << crisp_param_name(crisp_ctx, 0, crisp_k, p) << \" bytes: API \"~%")
+    (format s "                          << api_bytes << \", launcher \" << (sl < 1024 ? crisp_arg_value[sl] : 0) << std::endl;~%")
+    (format s "                crisp_bad = 1;~%")
+    (format s "            }~%")
+    (format s "        }~%")
+    (format s "        if (crisp_bad) return 1;~%")
+    (format s "        groupCount.groupCountX = crisp_launch_group_count(crisp_L, 0);   // launch with the API's numbers~%")
+    (format s "        groupCount.groupCountY = crisp_launch_group_count(crisp_L, 1);~%")
+    (format s "        groupCount.groupCountZ = crisp_launch_group_count(crisp_L, 2);~%")
+    (format s "        std::cout << \"Launch geometry from the compile API: groups \" << groupCount.groupCountX << \"x\"~%")
+    (format s "                  << groupCount.groupCountY << \"x\" << groupCount.groupCountZ << \", local \"~%")
+    (format s "                  << crisp_launch_local_size(crisp_L, 0) << \"x\" << crisp_launch_local_size(crisp_L, 1)~%")
+    (format s "                  << \", scratch sizes checked: \" << crisp_scratch << std::endl;~%")
+    (format s "        crisp_launch_destroy(crisp_L);~%")
+    (format s "    }~%")))
+
+(defun %hk-replace-all (text old new)
+  "TEXT with every OLD replaced by NEW."
+  (with-output-to-string (out)
+    (loop with start = 0
+          for hit = (search old text :start2 start)
+          do (write-string text out :start start :end (or hit (length text)))
+             (if hit
+                 (progn (write-string new out) (setf start (+ hit (length old))))
+                 (return)))))
+
 (defun %hk-rewrite-arg-indices (text)
-  "TEXT with every `zeKernelSetArgumentValue(kernel, <digits>,` rewritten to
-   `zeKernelSetArgumentValue(kernel, crisp_slot[<digits>],`."
-  (let ((needle "zeKernelSetArgumentValue(kernel, ")
-        (start 0))
-    (with-output-to-string (out)
-      (loop
-        (let ((hit (search needle text :start2 start)))
-          (unless hit
-            (write-string text out :start start)
-            (return))
-          (let* ((num-start (+ hit (length needle)))
-                 (num-end (or (position-if-not #'digit-char-p text :start num-start) (length text))))
-            (write-string text out :start start :end num-start)
-            (if (and (> num-end num-start) (< num-end (length text)) (char= (char text num-end) #\,))
-                (format out "crisp_slot[~a]" (subseq text num-start num-end))
-                (write-string text out :start num-start :end num-end))
-            (setf start num-end)))))))
+  "The source-mode rewrite of a generated launcher's TEXT:
+     `zeKernelSetArgumentValue(kernel, <digits>,` -> `crisp_set_arg(kernel, (uint32_t)crisp_slot[<digits>],`
+       (every slot from the API's answers, and recorded for the launch check);
+     `zeKernelSetGroupSize(kernel,` -> `crisp_set_group_size(kernel,` (recorded);
+     and %hk-launch-check-block inserted just before the launch call."
+  (let* ((needle "zeKernelSetArgumentValue(kernel, ")
+         (start 0)
+         (args (with-output-to-string (out)
+                 (loop
+                   (let ((hit (search needle text :start2 start)))
+                     (unless hit
+                       (write-string text out :start start)
+                       (return))
+                     (let* ((num-start (+ hit (length needle)))
+                            (num-end (or (position-if-not #'digit-char-p text :start num-start) (length text))))
+                       (write-string text out :start start :end hit)
+                       (if (and (> num-end num-start) (< num-end (length text)) (char= (char text num-end) #\,))
+                           (format out "crisp_set_arg(kernel, (uint32_t)crisp_slot[~a]" (subseq text num-start num-end))
+                           (write-string text out :start hit :end num-end))
+                       (setf start num-end))))))
+         (sized (%hk-replace-all args "zeKernelSetGroupSize(kernel," "crisp_set_group_size(kernel,"))
+         (launch "    result = zeCommandListAppendLaunchKernel(cmdList, kernel, &groupCount")
+         (at (search launch sized)))
+    (if at
+        (concatenate 'string (subseq sized 0 at) (%hk-launch-check-block) (subseq sized at))
+        sized)))
 
 (defun %l0-latch-hardware-profile (data)
   "Endeavor 144: cache the active hardware profile's L0-relevant decisions in the specials
@@ -368,6 +492,7 @@
                  (let* ((dvec-types (%collect-dvec-types declared-sig aliases))
                         (*hoist-current-kernel-name* kernel-name)
                         (*hoist-current-signature* (list declared-sig full-sig aliases (metacrisp-records data)))
+                        (*hoist-current-dispatch-info* dispatch-info)
                         (text (with-output-to-string (stream)
                                 (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
                                 (generate-cpp-includes stream)
@@ -856,6 +981,10 @@
           (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
           (format stream "    // Derate occupancy by 2x if kernel spilled to private memory~%")
           (format stream "    if (_kernelProps.spillMemSize > 0) { _hw_threads /= 2; }~%")
+          ;; Endeavour 190: the compile API applies :occupancy itself, so the source-mode launcher
+          ;; hands it the resident capacity BEFORE the derate below.
+          (when *hoist-kernel-source-mode*
+            (format stream "    uint32_t _hw_threads_full = _hw_threads;   // before any :occupancy derate~%"))
           (unless (= ratio 1.0)
             (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
             (format stream "    _hw_threads = (uint32_t)(_hw_threads * ~f);~%" ratio)

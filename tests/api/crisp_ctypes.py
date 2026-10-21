@@ -86,6 +86,21 @@ def load(path=None):
     fn("crisp_param_address_space", I, ctx_p, S, S, S)
     fn("crisp_param_adjoint_of", CS, ctx_p, S, S, S)
     fn("crisp_param_slot", S, ctx_p, S, S, S, I, U32)
+    U64 = ctypes.c_uint64
+    fn("crisp_launch_create", I, ctx_p, S, S, ctypes.POINTER(ctypes.c_void_p))
+    fn("crisp_launch_destroy", None, P)
+    fn("crisp_launch_set_extent", I, P, S, U32, U64)
+    fn("crisp_launch_set_scalar", I, P, S, U64)
+    fn("crisp_launch_set_resident_groups", I, P, U64)
+    fn("crisp_launch_set_warp_size", I, P, U32)
+    fn("crisp_launch_set_max_group_count", I, P, U32, U32, U32)
+    fn("crisp_launch_compute", I, P)
+    fn("crisp_launch_message", CS, P)
+    fn("crisp_launch_declared", I, P)
+    fn("crisp_launch_local_size", U32, P, U32)
+    fn("crisp_launch_group_count", U32, P, U32)
+    fn("crisp_launch_param_bytes", U64, P, S)
+    fn("crisp_launch_shared_bytes", U64, P)
     return lib
 
 

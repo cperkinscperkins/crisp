@@ -67,7 +67,7 @@ extern "C" {
 /* ---------------------------------------------------------------------------------------------- */
 
 #define CRISP_API_VERSION_MAJOR 0      /* bumped on an incompatible change */
-#define CRISP_API_VERSION_MINOR 2      /* bumped when functions are added  */
+#define CRISP_API_VERSION_MINOR 3      /* bumped when functions are added  */
 
 /* The library's version as (major << 16) | minor.  A caller built against this header should
    check that the major matches CRISP_API_VERSION_MAJOR. */
@@ -312,11 +312,77 @@ CRISP_API size_t crisp_param_slot(const crisp_context* context, size_t module, s
                                   crisp_role role, uint32_t axis);
 
 /* ---------------------------------------------------------------------------------------------- */
+/* Launching: geometry and scratch sizes                                                           */
+/*                                                                                                 */
+/* A kernel may DECLARE its geometry (global-size / local-size / num-groups), often as a RULE over */
+/* launch-time values -- e.g. one thread per element of tensor x, in groups of 64.  A launch        */
+/* object turns the rule plus your values into the numbers the runtime wants:                     */
+/*                                                                                                 */
+/*     crisp_launch* L;                                                                            */
+/*     crisp_launch_create(ctx, 0, k, &L);                                                         */
+/*     crisp_launch_set_extent(L, x_param, 0, 1000);      // x holds 1000 elements                  */
+/*     if (crisp_launch_compute(L) != CRISP_OK) puts(crisp_launch_message(L));                     */
+/*     zeKernelSetGroupSize(kernel, crisp_launch_local_size(L, 0), crisp_launch_local_size(L, 1), 1);*/
+/*     ze_group_count_t g = { crisp_launch_group_count(L, 0), crisp_launch_group_count(L, 1),     */
+/*                            crisp_launch_group_count(L, 2) };                                    */
+/*     ... allocate each SCRATCH param crisp_launch_param_bytes(L, p) bytes ...                    */
+/*     crisp_launch_destroy(L);                                                                    */
+/*                                                                                                 */
+/* All arithmetic is done here, in this library -- no compiler round trip.  A launch object reads  */
+/* the context's results: destroy it before the context's next compile.                            */
+/* ---------------------------------------------------------------------------------------------- */
+
+typedef struct crisp_launch crisp_launch;   /* opaque */
+
+CRISP_API crisp_status crisp_launch_create(const crisp_context* context, size_t module, size_t kernel,
+                                           crisp_launch** out_launch);
+CRISP_API void         crisp_launch_destroy(crisp_launch* launch);   /* NULL is allowed */
+
+/* ---- inputs: only the ones the kernel's declarations use are required ------------------------ */
+
+/* One axis of a TENSOR parameter's shape, in elements (its length is the product). */
+CRISP_API crisp_status crisp_launch_set_extent(crisp_launch* launch, size_t param, uint32_t axis, uint64_t extent);
+/* The value of a SCALAR parameter that a declaration names (e.g. :derive-from (width height)). */
+CRISP_API crisp_status crisp_launch_set_scalar(crisp_launch* launch, size_t param, uint64_t value);
+/* For :strategy :strided -- how many workgroups of this kernel can be resident at once, at full
+   occupancy (the kernel's :occupancy fraction, if declared, is applied here).  The caller asks its
+   runtime: CUDA, cuOccupancyMaxActiveBlocksPerMultiprocessor (with crisp_launch_shared_bytes) x
+   the SM count; Level Zero, hardware threads / ceil(workgroup size / SIMD width), as the hoisted
+   launchers do.  Required only by :strided kernels without a :tile-shape. */
+CRISP_API crisp_status crisp_launch_set_resident_groups(crisp_launch* launch, uint64_t groups);
+/* Lanes per warp / subgroup, for scratch sized :match-num-warps-per-workgroup.  Default: the
+   compile's --hardware-profile SIMD width, else 32. */
+CRISP_API crisp_status crisp_launch_set_warp_size(crisp_launch* launch, uint32_t lanes);
+/* The device's per-axis group-count limits (optional; default: unlimited).  A tile grid beyond
+   them is CLAMPED under :strided (its stride loop covers the rest) and an ERROR under :exact. */
+CRISP_API crisp_status crisp_launch_set_max_group_count(crisp_launch* launch, uint32_t x, uint32_t y, uint32_t z);
+
+/* ---- compute, then read the numbers ------------------------------------------------------------ */
+
+/* Resolves everything.  CRISP_ERROR_INVALID_ARGUMENT when an input the kernel needs is missing
+   (or a limit is exceeded under :exact); crisp_launch_message says which. */
+CRISP_API crisp_status crisp_launch_compute(crisp_launch* launch);
+CRISP_API const char*  crisp_launch_message(const crisp_launch* launch);   /* "" when all is well */
+
+/* Nonzero when the kernel declares global-size or num-groups.  When it does not, the group count
+   is 1 x 1 x 1 and choosing a grid is the caller's business. */
+CRISP_API int          crisp_launch_declared(const crisp_launch* launch);
+/* Workgroup size per axis (0, 1, 2) -- known right after create (from local-size :set-to, else 1). */
+CRISP_API uint32_t     crisp_launch_local_size(const crisp_launch* launch, uint32_t axis);
+/* Number of workgroups per axis (0, 1, 2), after crisp_launch_compute. */
+CRISP_API uint32_t     crisp_launch_group_count(const crisp_launch* launch, uint32_t axis);
+/* Bytes to allocate for a SCRATCH parameter (symbolic sizes resolved against this launch); 0 for
+   any other parameter.  Bind workgroup-LOCAL scratch per runtime: Level Zero, its POINTER slot gets
+   (size = these bytes, value = NULL). */
+CRISP_API uint64_t     crisp_launch_param_bytes(const crisp_launch* launch, size_t param);
+/* PTX: bytes of dynamic shared memory for cuLaunchKernel's sharedMemBytes.  SPIR-V: 0.
+   TODO(190): PTX local scratch binding (offsets into this block) is not yet implemented. */
+CRISP_API uint64_t     crisp_launch_shared_bytes(const crisp_launch* launch);
+
+/* ---------------------------------------------------------------------------------------------- */
 /* PLANNED -- added as the source-mode dogfood hoist needs them (A3), documented as they land:     */
-/*   - scratch allocation sizes (some depend on launch geometry) -- via the launch object          */
 /*   - the debug log buffer, tensor-map descriptors                                                */
-/*   - launch geometry: global / local size, number of groups -- likely a call that takes the     */
-/*     argument values and returns the grid, since sizes can be :derive-from arguments             */
+/*   - PTX: local scratch offsets in the dynamic shared block                                      */
 /* ---------------------------------------------------------------------------------------------- */
 
 #ifdef __cplusplus

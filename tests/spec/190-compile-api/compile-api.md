@@ -446,6 +446,34 @@ it, (3) the whole-suite pass on the BMG.
             Unit spec 149/149, Python 26/26, Linux build clean.  On the BMG in source mode the
             scratch launchers are now FULLY mapped (grid-reduce 24 of 24, last-man 21 of 21,
             reduce-workgroup 12 of 12; were "6 of 24" etc.) and pass.
+2026-10-21  Step 2: the LAUNCH OBJECT (A10/A12).  crisp_launch_* in crisp.h (API minor -> 3); a C
+            port of the L0 hoister's dispatch rules in c-api/src/crisp.c (tile grid incl. device
+            limits -- clamp under :strided, error under :exact; :strided via caller-supplied resident
+            groups x :occupancy; :interleaved / undeclared -> 1x1x1; :exact / :one-thread-per /
+            :set-to / scalar :derive-from; scratch bytes incl. per-warp and per-workgroup rules).
+            Geometry travels from the .metacrisp (so a compiler-INFERRED :tile-shape is seen).
+            Lisp: %api-geometry; unit spec 169/169.  Python: 11 launch tests on the 089-strategy
+            kernels + reductions, 37/37.
+            Dogfood: source-mode launchers now route every argument through crisp_set_arg (recorded)
+            and the group size through crisp_set_group_size, then -- just before the launch -- feed
+            a launch object the values they ACTUALLY passed (extents, scalars, resident groups),
+            CHECK local size, group counts and every scratch BYTE_SIZE against their own (any
+            MISMATCH fails the run), and launch with the API's group counts.  File mode still
+            byte-identical.
+            Found: validate-l0-mma-run RE-hoists with --mma-test and dropped source mode, so the 27
+            MMA metal specs never went through the API in the earlier A6(A) runs (the 183 count was
+            honest -- counted from "compiled at run time" lines -- but excluded them).  Fixed in the
+            runner overlay (%hoist-kernel-source-hoister-args); 14-pipeline-bench now runs via the
+            API: tile grid 32x32 from the API, MMA_CORRECT.
+            A6(A) with launch checks: Spec Summary 1500/1500.  209 launchers through the API (MMA now
+            included), all slots mapped, every one ran the launch check: 0 MISMATCH (the log's 214
+            "MISMATCH" hits are kernel names like STORE_MISMATCH in expected-fail backtraces; the
+            baseline has 214 too), 194 scratch sizes checked, 0 compute errors.  run-ci passes,
+            negative 354/354.
+            HONEST COVERAGE NOTE: on metal the geometry is mostly simple -- 164 of 209 launches are
+            1x1x1; the rest 4/2/128/640 groups on one axis and ONE 32x32 tile grid.  The richer
+            strategy cases (2-D :exact, scalar :one-thread-per, device limits, :occupancy) are
+            covered by the Python tests against the hoister's formulas, not on hardware.
 
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 

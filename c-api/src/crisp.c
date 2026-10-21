@@ -103,11 +103,34 @@ typedef struct {
 
 typedef struct { crisp_type type; size_t size; crisp_address_space address_space; } crisp_slot_rec;
 
+/* A number in a geometry declaration: a literal, a parameter's value, or a name that is no
+   parameter (kept for the error message). */
+typedef struct {
+    int kind;                /* 0 literal, 1 parameter, 2 unknown name */
+    uint64_t value;
+    size_t param;
+    char name[64];
+} crisp_geo_ref;
+
+typedef struct {
+    uint32_t local[2];                       /* local-size :set-to, else 1 1 */
+    int has_dispatch;                        /* global-size or num-groups declared */
+    char strategy[24];                       /* "" when none */
+    crisp_geo_ref set_to[3];  size_t n_set_to;
+    int derive_kind;                         /* 0 none, 1 tensor, 2 scalars */
+    crisp_geo_ref derive[3];  size_t n_derive;
+    uint64_t tile[3];         size_t n_tile;
+    int has_occupancy;
+    double occupancy;
+    uint32_t warp_size;                      /* from the hardware profile; 0 = none */
+} crisp_geometry;
+
 typedef struct {
     char* name;
     char* grad_of;
     crisp_slot_rec* slots;   size_t n_slots, cap_slots;
     crisp_param_rec* params; size_t n_params, cap_params;
+    crisp_geometry geo;
 } crisp_kernel_rec;
 
 typedef struct {
@@ -569,6 +592,36 @@ static const crisp_name_value crisp_statuses[] = {
 /* One request / response                                                                          */
 /* ============================================================================================== */
 
+/* "p3" -> parameter 3, "?width" -> unknown name, "256" -> literal. */
+static void crisp_parse_geo_ref(const char* tok, size_t len, crisp_geo_ref* out)
+{
+    char buf[80];
+    if (len >= sizeof buf) len = sizeof buf - 1;
+    memcpy(buf, tok, len);
+    buf[len] = '\0';
+    memset(out, 0, sizeof *out);
+    if (buf[0] == 'p') { out->kind = 1; out->param = (size_t)strtoull(buf + 1, NULL, 10); }
+    else if (buf[0] == '?') { out->kind = 2; snprintf(out->name, sizeof out->name, "%s", buf + 1); }
+    else { out->kind = 0; out->value = (uint64_t)strtoull(buf, NULL, 10); }
+}
+
+/* Splits T on spaces into up to MAX refs; returns the count.  SKIP_FIRST drops a leading word. */
+static size_t crisp_parse_geo_refs(const char* t, crisp_geo_ref* out, size_t max, int skip_first)
+{
+    size_t n = 0;
+    while (*t) {
+        const char* end;
+        while (*t == ' ') t++;
+        if (!*t) break;
+        end = t;
+        while (*end && *end != ' ') end++;
+        if (skip_first) skip_first = 0;
+        else if (n < max) crisp_parse_geo_ref(t, (size_t)(end - t), &out[n++]);
+        t = end;
+    }
+    return n;
+}
+
 /* Reads one response into C.  Returns 1 and sets *STATUS, or 0 if the stream broke. */
 static int crisp_read_response(crisp_server* s, crisp_context* c, crisp_status* status)
 {
@@ -600,9 +653,32 @@ static int crisp_read_response(crisp_server* s, crisp_context* c, crisp_status* 
         else if (dia && strcmp(tag, "diag.column") == 0)   dia->column = (uint32_t)strtoul(t, NULL, 10);
         else if (strcmp(tag, "module") == 0)        { mod = (crisp_module_rec*)CRISP_PUSH(c->modules, c->n_modules, c->cap_modules); ker = NULL; }
         else if (mod && strcmp(tag, "module.binary") == 0) { free(mod->data); mod->data = p; mod->size = n; p = NULL; }
-        else if (mod && strcmp(tag, "kernel") == 0) { ker = (crisp_kernel_rec*)CRISP_PUSH(mod->kernels, mod->n_kernels, mod->cap_kernels); slot = NULL; par = NULL; }
+        else if (mod && strcmp(tag, "kernel") == 0) {
+            ker = (crisp_kernel_rec*)CRISP_PUSH(mod->kernels, mod->n_kernels, mod->cap_kernels);
+            slot = NULL; par = NULL;
+            if (ker) { ker->geo.local[0] = 1; ker->geo.local[1] = 1; }
+        }
         else if (ker && strcmp(tag, "kernel.name") == 0)    { free(ker->name); ker->name = (char*)p; p = NULL; }
         else if (ker && strcmp(tag, "kernel.grad-of") == 0) { free(ker->grad_of); ker->grad_of = (char*)p; p = NULL; }
+        else if (ker && strcmp(tag, "kernel.local") == 0) {
+            unsigned long x = 1, y = 1;
+            if (sscanf(t, "%lu %lu", &x, &y) >= 1) { ker->geo.local[0] = (uint32_t)x; ker->geo.local[1] = (uint32_t)y; }
+        }
+        else if (ker && strcmp(tag, "kernel.dispatch") == 0)  ker->geo.has_dispatch = 1;
+        else if (ker && strcmp(tag, "kernel.strategy") == 0)  snprintf(ker->geo.strategy, sizeof ker->geo.strategy, "%s", t);
+        else if (ker && strcmp(tag, "kernel.set-to") == 0)    ker->geo.n_set_to = crisp_parse_geo_refs(t, ker->geo.set_to, 3, 0);
+        else if (ker && strcmp(tag, "kernel.derive") == 0) {
+            ker->geo.derive_kind = strncmp(t, "tensor", 6) == 0 ? 1 : 2;
+            ker->geo.n_derive = crisp_parse_geo_refs(t, ker->geo.derive, 3, 1);
+        }
+        else if (ker && strcmp(tag, "kernel.tile-shape") == 0) {
+            crisp_geo_ref r[3];
+            size_t i, n = crisp_parse_geo_refs(t, r, 3, 0);
+            for (i = 0; i < n; i++) ker->geo.tile[i] = r[i].value;
+            ker->geo.n_tile = n;
+        }
+        else if (ker && strcmp(tag, "kernel.occupancy") == 0) { ker->geo.has_occupancy = 1; ker->geo.occupancy = strtod(t, NULL); }
+        else if (ker && strcmp(tag, "kernel.warp-size") == 0)  ker->geo.warp_size = (uint32_t)strtoul(t, NULL, 10);
         else if (ker && strcmp(tag, "slot") == 0)   { slot = (crisp_slot_rec*)CRISP_PUSH(ker->slots, ker->n_slots, ker->cap_slots); }
         else if (slot && strcmp(tag, "slot.type") == 0)          slot->type = (crisp_type)crisp_lookup(crisp_types, t);
         else if (slot && strcmp(tag, "slot.size") == 0)          slot->size = (size_t)strtoul(t, NULL, 10);
@@ -970,4 +1046,357 @@ CRISP_API size_t crisp_param_slot(const crisp_context* context, size_t module, s
     for (i = 0; i < p->n_roles; i++)
         if (p->roles[i].role == role && p->roles[i].axis == axis) return p->roles[i].slot;
     return CRISP_NO_SLOT;
+}
+
+/* ============================================================================================== */
+/* Launching (item 2, step 2): geometry + scratch sizes                                             */
+/*                                                                                                 */
+/* A C port of the L0 hoister's dispatch rules (src/hoist-l0/main.lisp %l0-emit-dispatch,          */
+/* %l0-emit-group-count, %l0-emit-tile-grid-group-count; scratch: %l0-scratch-symbolic-expr and    */
+/* the deferred :match-num-workgroups block).  The dogfood launcher (--hoist-kernel=source) checks */
+/* this against the hoister's own numbers on every L0 metal spec, so keep the two in step.         */
+/* ============================================================================================== */
+
+#define CRISP_MAX_AXES 8
+
+struct crisp_launch {
+    const crisp_kernel_rec* ker;
+    int is_ptx;
+    /* inputs, per parameter */
+    uint64_t (*extents)[CRISP_MAX_AXES];
+    unsigned char (*extent_set)[CRISP_MAX_AXES];
+    uint64_t* scalars;
+    unsigned char* scalar_set;
+    uint64_t resident_groups; int has_resident;
+    uint32_t warp_size;                      /* 0: the profile's, else 32 */
+    uint32_t max_groups[3]; int has_max;
+    /* results */
+    uint32_t groups[3];
+    uint64_t* param_bytes;
+    uint64_t shared_bytes;
+    int computed;
+    char message[512];
+};
+
+CRISP_API void crisp_launch_destroy(crisp_launch* launch)
+{
+    if (!launch) return;
+    free(launch->extents);
+    free(launch->extent_set);
+    free(launch->scalars);
+    free(launch->scalar_set);
+    free(launch->param_bytes);
+    free(launch);
+}
+
+CRISP_API crisp_status crisp_launch_create(const crisp_context* context, size_t module, size_t kernel,
+                                           crisp_launch** out_launch)
+{
+    const crisp_kernel_rec* k;
+    crisp_launch* L;
+    size_t n;
+    if (!out_launch) return CRISP_ERROR_INVALID_ARGUMENT;
+    *out_launch = NULL;
+    if (!context) return CRISP_ERROR_INVALID_ARGUMENT;
+    if (context->n_modules == 0) return CRISP_ERROR_NO_RESULT;
+    k = crisp_kernel_at(context, module, kernel);
+    if (!k) return CRISP_ERROR_INVALID_ARGUMENT;
+    L = (crisp_launch*)calloc(1, sizeof *L);
+    if (!L) return CRISP_ERROR_OUT_OF_MEMORY;
+    n = k->n_params ? k->n_params : 1;
+    L->ker = k;
+    L->is_ptx = strcmp(context->target, "ptx") == 0;
+    L->extents = calloc(n, sizeof *L->extents);
+    L->extent_set = calloc(n, sizeof *L->extent_set);
+    L->scalars = (uint64_t*)calloc(n, sizeof *L->scalars);
+    L->scalar_set = (unsigned char*)calloc(n, 1);
+    L->param_bytes = (uint64_t*)calloc(n, sizeof *L->param_bytes);
+    if (!L->extents || !L->extent_set || !L->scalars || !L->scalar_set || !L->param_bytes) {
+        crisp_launch_destroy(L);
+        return CRISP_ERROR_OUT_OF_MEMORY;
+    }
+    L->groups[0] = L->groups[1] = L->groups[2] = 1;
+    *out_launch = L;
+    return CRISP_OK;
+}
+
+CRISP_API crisp_status crisp_launch_set_extent(crisp_launch* launch, size_t param, uint32_t axis, uint64_t extent)
+{
+    if (!launch || param >= launch->ker->n_params || axis >= CRISP_MAX_AXES) return CRISP_ERROR_INVALID_ARGUMENT;
+    launch->extents[param][axis] = extent;
+    launch->extent_set[param][axis] = 1;
+    launch->computed = 0;
+    return CRISP_OK;
+}
+
+CRISP_API crisp_status crisp_launch_set_scalar(crisp_launch* launch, size_t param, uint64_t value)
+{
+    if (!launch || param >= launch->ker->n_params) return CRISP_ERROR_INVALID_ARGUMENT;
+    launch->scalars[param] = value;
+    launch->scalar_set[param] = 1;
+    launch->computed = 0;
+    return CRISP_OK;
+}
+
+CRISP_API crisp_status crisp_launch_set_resident_groups(crisp_launch* launch, uint64_t groups)
+{
+    if (!launch) return CRISP_ERROR_INVALID_ARGUMENT;
+    launch->resident_groups = groups;
+    launch->has_resident = 1;
+    launch->computed = 0;
+    return CRISP_OK;
+}
+
+CRISP_API crisp_status crisp_launch_set_warp_size(crisp_launch* launch, uint32_t lanes)
+{
+    if (!launch || lanes == 0) return CRISP_ERROR_INVALID_ARGUMENT;
+    launch->warp_size = lanes;
+    launch->computed = 0;
+    return CRISP_OK;
+}
+
+CRISP_API crisp_status crisp_launch_set_max_group_count(crisp_launch* launch, uint32_t x, uint32_t y, uint32_t z)
+{
+    if (!launch) return CRISP_ERROR_INVALID_ARGUMENT;
+    launch->max_groups[0] = x; launch->max_groups[1] = y; launch->max_groups[2] = z;
+    launch->has_max = 1;
+    launch->computed = 0;
+    return CRISP_OK;
+}
+
+static uint64_t crisp_ceil_div(uint64_t a, uint64_t b) { return b > 1 ? (a + b - 1) / b : a; }
+
+static const char* crisp_param_label(const crisp_launch* L, size_t p)
+{
+    return (p < L->ker->n_params && L->ker->params[p].name) ? L->ker->params[p].name : "?";
+}
+
+/* The value a geometry reference stands for.  0 (and a message) when it cannot be had. */
+static int crisp_geo_value(crisp_launch* L, const crisp_geo_ref* r, uint64_t* out)
+{
+    if (r->kind == 0) { *out = r->value; return 1; }
+    if (r->kind == 2) {
+        snprintf(L->message, sizeof L->message,
+                 "the kernel geometry names '%s', which is not one of its parameters", r->name);
+        return 0;
+    }
+    if (r->param >= L->ker->n_params || !L->scalar_set[r->param]) {
+        snprintf(L->message, sizeof L->message,
+                 "the kernel geometry needs the value of scalar parameter '%s' (crisp_launch_set_scalar)",
+                 crisp_param_label(L, r->param));
+        return 0;
+    }
+    *out = L->scalars[r->param];
+    return 1;
+}
+
+/* A tensor parameter's extent on AXIS. */
+static int crisp_geo_extent(crisp_launch* L, size_t p, uint32_t axis, uint64_t* out)
+{
+    if (p >= L->ker->n_params || axis >= CRISP_MAX_AXES || !L->extent_set[p][axis]) {
+        snprintf(L->message, sizeof L->message,
+                 "the kernel geometry needs extent %u of tensor parameter '%s' (crisp_launch_set_extent)",
+                 (unsigned)axis, crisp_param_label(L, p));
+        return 0;
+    }
+    *out = L->extents[p][axis];
+    return 1;
+}
+
+/* A tensor parameter's length: the product of its extents over its rank. */
+static int crisp_geo_length(crisp_launch* L, size_t p, uint64_t* out)
+{
+    uint32_t rank, a;
+    uint64_t len = 1, e;
+    if (p >= L->ker->n_params) return crisp_geo_extent(L, p, 0, out);
+    rank = L->ker->params[p].rank ? L->ker->params[p].rank : 1;
+    for (a = 0; a < rank; a++) {
+        if (!crisp_geo_extent(L, p, a, &e)) return 0;
+        len *= e;
+    }
+    *out = len;
+    return 1;
+}
+
+static uint32_t crisp_u32(uint64_t v) { return v > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)v; }
+
+static size_t crisp_type_bytes(crisp_type t)
+{
+    switch (t) {
+    case CRISP_TYPE_CHAR: case CRISP_TYPE_UCHAR: return 1;
+    case CRISP_TYPE_SHORT: case CRISP_TYPE_USHORT: case CRISP_TYPE_HALF: case CRISP_TYPE_BFLOAT16: return 2;
+    case CRISP_TYPE_INT: case CRISP_TYPE_UINT: case CRISP_TYPE_FLOAT: return 4;
+    case CRISP_TYPE_LONG: case CRISP_TYPE_ULONG: case CRISP_TYPE_DOUBLE: case CRISP_TYPE_POINTER: return 8;
+    default: return 0;
+    }
+}
+
+/* The group counts -- %l0-emit-group-count, branch for branch. */
+static int crisp_compute_groups(crisp_launch* L)
+{
+    const crisp_geometry* g = &L->ker->geo;
+    const char* s = g->strategy;
+    int strided = strcmp(s, "strided") == 0, exact = strcmp(s, "exact") == 0;
+    int interleaved = strcmp(s, "interleaved") == 0, one_thread_per = strcmp(s, "one-thread-per") == 0;
+    uint64_t lx = g->local[0], ly = g->local[1], v;
+    uint32_t* G = L->groups;
+    G[0] = G[1] = G[2] = 1;
+
+    if (g->n_tile && g->derive_kind && (strided || exact)) {
+        /* the rank-N tile grid: axis k <- dimension k of the derive source (Endeavor 143) */
+        size_t rank = g->n_tile < 3 ? g->n_tile : 3, k;
+        for (k = 0; k < rank; k++) {
+            uint64_t tk = g->tile[k] ? g->tile[k] : 1, src = 0;
+            int have = 0;
+            if (g->derive_kind == 1) {
+                if (g->n_derive < 1 || g->derive[0].kind != 1) {   /* names no tensor parameter */
+                    if (g->n_derive > 0 && g->derive[0].kind == 2) (void)crisp_geo_value(L, &g->derive[0], &src);
+                    else snprintf(L->message, sizeof L->message, "the kernel geometry derives from no tensor parameter");
+                    return 0;
+                }
+                if (!crisp_geo_extent(L, g->derive[0].param, (uint32_t)k, &src)) return 0;
+                have = 1;
+            } else if (k < g->n_derive) {
+                if (!crisp_geo_value(L, &g->derive[k], &src)) return 0;
+                have = 1;
+            }
+            if (have) {
+                uint64_t n = (src + tk - 1) / tk;
+                G[k] = crisp_u32(n < 1 ? 1 : n);
+                if (L->has_max && L->max_groups[k] && G[k] > L->max_groups[k]) {
+                    if (!strided) {
+                        snprintf(L->message, sizeof L->message,
+                                 "axis %u needs %u groups, over the device limit %u; :strategy :exact has no "
+                                 "stride loop, so clamping would skip tiles (use :strided for a problem this large)",
+                                 (unsigned)k, G[k], L->max_groups[k]);
+                        return 0;
+                    }
+                    G[k] = L->max_groups[k];   /* safe: the tile-stride loop covers the rest */
+                }
+            }
+        }
+        return 1;
+    }
+    if (strided) {
+        double ratio = g->has_occupancy ? g->occupancy : 1.0;
+        uint64_t n;
+        if (!L->has_resident) {
+            snprintf(L->message, sizeof L->message,
+                     ":strategy :strided sizes the grid by occupancy: set how many groups can be resident "
+                     "(crisp_launch_set_resident_groups)");
+            return 0;
+        }
+        n = (uint64_t)((double)L->resident_groups * ratio);
+        G[0] = crisp_u32(n < 1 ? 1 : n);
+        return 1;
+    }
+    if (interleaved || !g->has_dispatch) return 1;
+    if (exact && g->derive_kind == 1) {
+        uint64_t tx = g->n_tile ? (g->tile[0] ? g->tile[0] : 1) : lx;
+        if (!crisp_geo_length(L, g->derive[0].param, &v)) return 0;
+        G[0] = crisp_u32(crisp_ceil_div(v, tx));
+        return 1;
+    }
+    if (exact) {
+        uint64_t tx = g->n_tile ? (g->tile[0] ? g->tile[0] : 1) : lx;
+        uint64_t ty = g->n_tile ? (g->n_tile > 1 && g->tile[1] ? g->tile[1] : 1) : (ly > 1 ? ly : 1);
+        if (g->derive_kind == 2 && g->n_derive > 0) { if (!crisp_geo_value(L, &g->derive[0], &v)) return 0; G[0] = crisp_u32(crisp_ceil_div(v, tx)); }
+        if (g->derive_kind == 2 && g->n_derive > 1) { if (!crisp_geo_value(L, &g->derive[1], &v)) return 0; G[1] = crisp_u32(crisp_ceil_div(v, ty)); }
+        if (g->derive_kind == 2 && g->n_derive > 2) { if (!crisp_geo_value(L, &g->derive[2], &v)) return 0; G[2] = crisp_u32(v); }
+        return 1;
+    }
+    if (one_thread_per && g->derive_kind == 1) {
+        if (!crisp_geo_length(L, g->derive[0].param, &v)) return 0;
+        G[0] = crisp_u32(crisp_ceil_div(v, lx));
+        return 1;
+    }
+    {
+        /* a fixed :set-to (one number or a list), or :derive-from scalars: one value per axis */
+        const crisp_geo_ref* dims = g->n_set_to ? g->set_to : g->derive;
+        size_t nd = g->n_set_to ? g->n_set_to : (g->derive_kind == 2 ? g->n_derive : 0);
+        uint64_t div[3];
+        size_t k;
+        div[0] = lx; div[1] = ly > 1 ? ly : 1; div[2] = 1;
+        if (!g->n_set_to && g->derive_kind == 1) {          /* a tensor with no strategy: its length */
+            if (!crisp_geo_length(L, g->derive[0].param, &v)) return 0;
+            G[0] = crisp_u32(crisp_ceil_div(v, lx));
+            return 1;
+        }
+        for (k = 0; k < nd && k < 3; k++) {
+            if (!crisp_geo_value(L, &dims[k], &v)) return 0;
+            G[k] = crisp_u32(crisp_ceil_div(v, div[k]));
+        }
+        return 1;
+    }
+}
+
+/* Scratch bytes per parameter -- %l0-scratch-symbolic-expr / %l0-scratch-dims, and the deferred
+   :match-num-workgroups block (one element per group in the grid). */
+static int crisp_compute_scratch(crisp_launch* L)
+{
+    const crisp_kernel_rec* k = L->ker;
+    uint64_t wg = (uint64_t)k->geo.local[0] * (uint64_t)k->geo.local[1];
+    uint64_t warp = L->warp_size ? L->warp_size : (k->geo.warp_size ? k->geo.warp_size : 32);
+    size_t p;
+    L->shared_bytes = 0;
+    for (p = 0; p < k->n_params; p++) {
+        const crisp_param_rec* par = &k->params[p];
+        uint64_t count = 1;
+        size_t i;
+        L->param_bytes[p] = 0;
+        if (par->purpose != CRISP_PURPOSE_SCRATCH) continue;
+        if (par->size_rule) {
+            if (strcmp(par->size_rule, "match-workgroup-size") == 0) count = wg;
+            else if (strcmp(par->size_rule, "match-num-warps-per-workgroup") == 0) count = (wg + warp - 1) / warp;
+            else if (strcmp(par->size_rule, "match-num-workgroups") == 0)
+                count = (uint64_t)L->groups[0] * L->groups[1] * L->groups[2];
+            else {
+                snprintf(L->message, sizeof L->message,
+                         "scratch parameter '%s' has a size rule this library cannot resolve: %s",
+                         crisp_param_label(L, p), par->size_rule);
+                return 0;
+            }
+        } else {
+            for (i = 0; i < par->n_size_elements; i++) count *= par->size_elements[i];
+        }
+        L->param_bytes[p] = count * crisp_type_bytes(par->element_type);
+        if (L->is_ptx && par->address_space == CRISP_ADDRESS_SPACE_LOCAL) L->shared_bytes += L->param_bytes[p];
+    }
+    return 1;
+}
+
+CRISP_API crisp_status crisp_launch_compute(crisp_launch* launch)
+{
+    if (!launch) return CRISP_ERROR_INVALID_ARGUMENT;
+    launch->message[0] = '\0';
+    launch->computed = 0;
+    if (!crisp_compute_groups(launch) || !crisp_compute_scratch(launch)) return CRISP_ERROR_INVALID_ARGUMENT;
+    launch->computed = 1;
+    return CRISP_OK;
+}
+
+CRISP_API const char* crisp_launch_message(const crisp_launch* launch) { return launch ? launch->message : ""; }
+CRISP_API int crisp_launch_declared(const crisp_launch* launch) { return launch ? launch->ker->geo.has_dispatch : 0; }
+
+CRISP_API uint32_t crisp_launch_local_size(const crisp_launch* launch, uint32_t axis)
+{
+    if (!launch || axis > 2) return 0;
+    return axis < 2 ? launch->ker->geo.local[axis] : 1;
+}
+
+CRISP_API uint32_t crisp_launch_group_count(const crisp_launch* launch, uint32_t axis)
+{
+    if (!launch || axis > 2 || !launch->computed) return 0;
+    return launch->groups[axis];
+}
+
+CRISP_API uint64_t crisp_launch_param_bytes(const crisp_launch* launch, size_t param)
+{
+    if (!launch || !launch->computed || param >= launch->ker->n_params) return 0;
+    return launch->param_bytes[param];
+}
+
+CRISP_API uint64_t crisp_launch_shared_bytes(const crisp_launch* launch)
+{
+    return (launch && launch->computed) ? launch->shared_bytes : 0;
 }
