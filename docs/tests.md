@@ -30,6 +30,7 @@ sbcl --script tests/run-specs.lisp --adversarial
 - `--only-unit-tests`
 - `--use-binary`
 - `--differentiate`
+- `--hoist-kernel=source` -- put every L0 hoist spec that RUNS its launcher through the compile API (see Compile API Tests)
 
 The file `tests/ci-stop.txt` controls "how far" the spec runner goes. It lists the last directory (inclusive) to test.  Everything "after" is assumed to be future TDD planning.
 
@@ -63,6 +64,39 @@ additional validation like
 Now that we have hoisting support, some of the spect tests generate a lot of intermediate files. .metacrisp, .cpp, .spv, .ll, .ptx and even .exe files.  The spec runner will clean these up after any successful test.  Failed tests leave their intermediate files behind.
 
 If you WANT the intermediate files, use the `--keep-work` flag.
+
+### Compile API Tests (Endeavour 190)
+
+The compile API (`c-api/include/crisp.h`) is tested three ways.  All need the compiler built first;
+`build/build.lisp` also builds the C library (`bin/crisp.dll` / `bin/libcrisp.so`) whenever a C
+compiler (`$CC`, `gcc` or `clang`) is on PATH.
+
+```bash
+# 1. The Lisp core behind the API (compile-sources, the server protocol): the co-located unit spec
+#    tests/spec/190-compile-api/compile-sources.unit.lisp, which runs with the spine's unit tests.
+sbcl --script tests/run-specs.lisp --only-unit-tests
+
+# 2. The C boundary, driven through ctypes (stdlib only, no GPU, ~6 s).  Also in run-all-tests.bat
+#    and CI step 13.5.
+python tests/api/test_crisp_api.py
+
+# 3. On metal: every L0 hoist spec whose validator RUNS the launcher, with the launcher compiling
+#    its kernel at run time through the API instead of loading the .spv -- same expectations.
+#    Long (a full spine run); needs an Intel L0 GPU for the hoists to run at all.
+sbcl --script tests/run-specs.lisp --skip-unit-tests --hoist-kernel=source
+```
+
+A single spec opts in with the directive `HOIST-KERNEL: source` (the `190-compile-api` metal specs
+do: `--filter=190-compile-api` runs just those), or out of the pass with `HOIST-KERNEL: file`.  The
+pass leaves alone specs whose L0 validator only inspects the generated `.cpp` text
+(`validate-l0-strategy-content` and friends -- source mode rewrites argument indices to
+`crisp_slot[N]`) and FFI specs (a launcher cannot embed a `.bc`).  A source-mode launcher prints
+`Kernel compiled at run time through the Crisp compile API` and
+`Argument slots from the compile API: M of N`; the N - M are implicit parameters (scratch ...) the
+API does not describe yet.
+
+On Windows a running launcher (or Python process) that has loaded `bin/crisp.dll` locks it, so a
+rebuild during one of these runs can fail; rebuild after it ends.
 
 ### Code Coverage
 
@@ -283,6 +317,7 @@ Header comment directives for test expectations:
 ;; TEST-HOIST[L0]: validate-l0-compile-only
 ;; HOIST-DENORMAL: ftz                   <-- denormal mode for a TEST-HOIST run; see below
 ;; HOIST-PRECISION: fast                 <-- precision mode for a TEST-HOIST run; see below
+;; HOIST-KERNEL: source                <-- the L0 launcher compiles the kernel at run time via the compile API
 ;; FFI-LINK: add.c                       <-- link a C/.bc library into the spec; see below
 ;; VERIFY-AUTODIFF: x=3.0 atol=1e-3      <-- on-metal AD check; see below
 ;; CHECK-FAIL: "message"   <-- for the negative tests in errors
