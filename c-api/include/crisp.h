@@ -67,7 +67,7 @@ extern "C" {
 /* ---------------------------------------------------------------------------------------------- */
 
 #define CRISP_API_VERSION_MAJOR 0      /* bumped on an incompatible change */
-#define CRISP_API_VERSION_MINOR 1      /* bumped when functions are added  */
+#define CRISP_API_VERSION_MINOR 2      /* bumped when functions are added  */
 
 /* The library's version as (major << 16) | minor.  A caller built against this header should
    check that the major matches CRISP_API_VERSION_MAJOR. */
@@ -237,7 +237,22 @@ typedef enum crisp_direction {
     CRISP_DIRECTION_OUT     = 2    /* an &out parameter */
 } crisp_direction;
 
+/* Parameters are in SLOT order and include the IMPLICIT ones -- scratch buffers the compiler added
+   (from make-scratch-vector, make-scratch-cell ...) that the caller must still allocate and bind.
+   crisp_param_purpose tells them apart. */
+typedef enum crisp_purpose {
+    CRISP_PURPOSE_INVALID    = 0,
+    CRISP_PURPOSE_DECLARED   = 1,   /* written in the kernel's signature                         */
+    CRISP_PURPOSE_SCRATCH    = 2,   /* implicit scratch: allocate it, bind it, never read it back */
+    CRISP_PURPOSE_DEBUG_LOG  = 3,   /* implicit debug log: reported, not yet supported by the API */
+    CRISP_PURPOSE_TENSOR_MAP = 4    /* implicit TMA descriptor (CUDA): reported, not yet supported */
+} crisp_purpose;
+
 CRISP_API size_t           crisp_param_count       (const crisp_context* context, size_t module, size_t kernel);
+CRISP_API crisp_purpose    crisp_param_purpose     (const crisp_context* context, size_t module, size_t kernel, size_t param);
+/* Nonzero when the buffer must be ZEROED before EVERY launch: global scratch (reductions keep
+   counters in it, which the kernel leaves non-zero).  Workgroup-local scratch never needs it. */
+CRISP_API int              crisp_param_zero_before_launch(const crisp_context* context, size_t module, size_t kernel, size_t param);
 CRISP_API const char*      crisp_param_name        (const crisp_context* context, size_t module, size_t kernel, size_t param);
 CRISP_API crisp_param_kind crisp_param_kind_of     (const crisp_context* context, size_t module, size_t kernel, size_t param);
 CRISP_API crisp_direction  crisp_param_direction   (const crisp_context* context, size_t module, size_t kernel, size_t param);
@@ -298,8 +313,8 @@ CRISP_API size_t crisp_param_slot(const crisp_context* context, size_t module, s
 
 /* ---------------------------------------------------------------------------------------------- */
 /* PLANNED -- added as the source-mode dogfood hoist needs them (A3), documented as they land:     */
-/*   - implicit parameters the caller must supply: scratch buffers and their sizes, the debug     */
-/*     log buffer, tensor-map descriptors                                                          */
+/*   - scratch allocation sizes (some depend on launch geometry) -- via the launch object          */
+/*   - the debug log buffer, tensor-map descriptors                                                */
 /*   - launch geometry: global / local size, number of groups -- likely a call that takes the     */
 /*     argument values and returns the grid, since sizes can be :derive-from arguments             */
 /* ---------------------------------------------------------------------------------------------- */

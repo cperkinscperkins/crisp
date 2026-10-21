@@ -106,7 +106,13 @@
          (range (getf param :range))
          (first-slot (first range))
          (last-slot (second range))
-         (rank (getf param :rank)))
+         ;; implicit (scratch) params carry no :rank -- only their type form says it
+         (rank (or (getf param :rank)
+                   (and (tensor-type-p type)
+                        (let ((head (symbol-name (first type))))
+                          (cond ((string-equal head "VECTOR") 1)
+                                ((string-equal head "MATRIX") 2)
+                                ((integerp (third type)) (third type))))))))
     (cond
       (rank
        (append (list (list first-slot "CRISP_ROLE_POINTER" 0) (list (+ first-slot 1) "CRISP_ROLE_BYTE_SIZE" 0))
@@ -124,9 +130,9 @@
 (defun %hk-emit-compile-and-slot-map (stream)
   "main()-scope C++: compile the embedded source through the API into spirv_data, find this
    launcher's kernel in the result, and build crisp_slot[] -- baked argument index -> the slot the
-   API says.  Implicit parameters (scratch ...) are not yet described by the API (crisp.h PLANNED),
-   so their entries stay identity."
+   API says -- for EVERY parameter, declared and implicit (item 2: the API lists scratch too)."
   (destructuring-bind (declared full aliases records) *hoist-current-signature*
+    (declare (ignore declared))
     (let* ((total (loop for p in full for r = (getf p :range) when (consp r) maximize (1+ (second r))))
            (total (or total 0)))
       (format stream "    // Endeavour 190: compile the embedded Crisp source NOW, through the compile API~%")
@@ -169,9 +175,9 @@
       (format stream "        return 1;~%")
       (format stream "    }~%")
       (format stream "    size_t crisp_slot[~d];~%" (max total 1))
-      (format stream "    for (size_t i = 0; i < ~d; i++) crisp_slot[i] = i;   // implicit params: not yet in the API~%" total)
+      (format stream "    for (size_t i = 0; i < ~d; i++) crisp_slot[i] = i;   // any slot no parameter claims~%" total)
       (let ((mapped 0))
-        (dolist (p declared)
+        (dolist (p full)
           (when (consp (getf p :range))
             (dolist (e (%hk-param-roles p aliases records))
               (destructuring-bind (baked role axis) e

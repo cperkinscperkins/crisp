@@ -92,6 +92,12 @@ typedef struct {
     crisp_layout layout;
     crisp_address_space address_space;
     char* adjoint_of;
+    crisp_purpose purpose;
+    int zero_before_launch;
+    /* scratch size rule (item 2): elements per axis, or a launch-relative rule resolved by the
+       launch object */
+    uint64_t size_elements[8]; size_t n_size_elements;
+    char* size_rule;
     crisp_role_entry* roles; size_t n_roles, cap_roles;
 } crisp_param_rec;
 
@@ -136,6 +142,7 @@ static void crisp_free_results(crisp_context* c)
             for (p = 0; p < ker->n_params; p++) {
                 free(ker->params[p].name);
                 free(ker->params[p].adjoint_of);
+                free(ker->params[p].size_rule);
                 free(ker->params[p].roles);
             }
             free(ker->params);
@@ -547,6 +554,9 @@ static const crisp_name_value crisp_roles[] = {
     { "value", CRISP_ROLE_VALUE }, { "pointer", CRISP_ROLE_POINTER }, { "byte-size", CRISP_ROLE_BYTE_SIZE },
     { "offset", CRISP_ROLE_OFFSET }, { "stride", CRISP_ROLE_STRIDE }, { "extent", CRISP_ROLE_EXTENT },
     { "length", CRISP_ROLE_LENGTH }, { "field", CRISP_ROLE_FIELD }, { NULL, 0 } };
+static const crisp_name_value crisp_purposes[] = {
+    { "declared", CRISP_PURPOSE_DECLARED }, { "scratch", CRISP_PURPOSE_SCRATCH },
+    { "debug-log", CRISP_PURPOSE_DEBUG_LOG }, { "tensor-map", CRISP_PURPOSE_TENSOR_MAP }, { NULL, 0 } };
 static const crisp_name_value crisp_severities[] = {
     { "error", CRISP_SEVERITY_ERROR }, { "warning", CRISP_SEVERITY_WARNING }, { "note", CRISP_SEVERITY_NOTE },
     { NULL, 0 } };
@@ -606,6 +616,24 @@ static int crisp_read_response(crisp_server* s, crisp_context* c, crisp_status* 
         else if (par && strcmp(tag, "param.layout") == 0)        par->layout = (crisp_layout)crisp_lookup(crisp_layouts, t);
         else if (par && strcmp(tag, "param.address-space") == 0) par->address_space = (crisp_address_space)crisp_lookup(crisp_spaces, t);
         else if (par && strcmp(tag, "param.adjoint-of") == 0)    { free(par->adjoint_of); par->adjoint_of = (char*)p; p = NULL; }
+        else if (par && strcmp(tag, "param.purpose") == 0)       par->purpose = (crisp_purpose)crisp_lookup(crisp_purposes, t);
+        else if (par && strcmp(tag, "param.zero-before-launch") == 0) par->zero_before_launch = (t[0] == '1');
+        else if (par && strcmp(tag, "param.size") == 0) {
+            if (strncmp(t, "elements", 8) == 0) {
+                const char* q = t + 8;
+                char* end;
+                par->n_size_elements = 0;
+                while (par->n_size_elements < 8) {
+                    unsigned long long v = strtoull(q, &end, 10);
+                    if (end == q) break;
+                    par->size_elements[par->n_size_elements++] = (uint64_t)v;
+                    q = end;
+                }
+            } else if (strncmp(t, "rule ", 5) == 0) {
+                free(par->size_rule);
+                par->size_rule = crisp_strdup(t + 5);
+            }
+        }
         else if (par && strcmp(tag, "role") == 0) {
             char role_name[32];
             unsigned long axis = 0, slot_ix = 0;
@@ -912,6 +940,10 @@ CRISP_API crisp_address_space crisp_slot_address_space(const crisp_context* cont
 
 CRISP_API size_t crisp_param_count(const crisp_context* context, size_t module, size_t kernel)
 { const crisp_kernel_rec* k = crisp_kernel_at(context, module, kernel); return k ? k->n_params : 0; }
+CRISP_API crisp_purpose crisp_param_purpose(const crisp_context* context, size_t module, size_t kernel, size_t param)
+{ const crisp_param_rec* p = crisp_param_at(context, module, kernel, param); return p ? p->purpose : CRISP_PURPOSE_INVALID; }
+CRISP_API int crisp_param_zero_before_launch(const crisp_context* context, size_t module, size_t kernel, size_t param)
+{ const crisp_param_rec* p = crisp_param_at(context, module, kernel, param); return p ? p->zero_before_launch : 0; }
 CRISP_API const char* crisp_param_name(const crisp_context* context, size_t module, size_t kernel, size_t param)
 { const crisp_param_rec* p = crisp_param_at(context, module, kernel, param); return p ? p->name : NULL; }
 CRISP_API crisp_param_kind crisp_param_kind_of(const crisp_context* context, size_t module, size_t kernel, size_t param)

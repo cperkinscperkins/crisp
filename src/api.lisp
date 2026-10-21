@@ -180,8 +180,13 @@
 ;;; ------------------------------------------------------------------------------------------------
 
 (defun %api-metadata-package ()
-  "A private package to read .metacrisp text into, so its symbols never land in a compiler package."
-  (or (find-package :crisp.api-metadata) (make-package :crisp.api-metadata :use nil)))
+  "A private package to read .metacrisp text into, so its symbols never land in a compiler package.
+   It imports CL:NIL and CL:T: a package that uses nothing would otherwise read `nil` (e.g.
+   `:size-expr nil`) as a symbol of its own -- true, not false."
+  (or (find-package :crisp.api-metadata)
+      (let ((pkg (make-package :crisp.api-metadata :use nil)))
+        (import (list nil t) pkg)
+        pkg)))
 
 (defun %api-read-metacrisp (path)
   "Every top-level form of the .metacrisp at PATH, read safely (*read-eval* off, private package)."
@@ -237,23 +242,51 @@
              (list (list :length 0 (+ first 2 (* 3 rank))))))
     (:record (loop for slot from first to last for i from 0 collect (list :field i slot)))))
 
-(defun %api-param (decl aliases record-names)
-  "One :declared-signature DECL as a parameter plist."
+(defun %api-tensor-type-rank (type)
+  "The rank a tensor TYPE form spells out -- (tensor ELEM N ...), (vector ...) = 1, (matrix ...) = 2 --
+   or NIL when TYPE is not a tensor form.  Implicit (scratch) params carry no :rank key, only this."
+  (let ((head (and (consp type) (symbolp (first type)) (symbol-name (first type)))))
+    (cond ((null head) nil)
+          ((string-equal head "TENSOR") (and (integerp (third type)) (third type)))
+          ((string-equal head "VECTOR") 1)
+          ((string-equal head "MATRIX") 2))))
+
+(defun %api-type-align (type)
+  "The :align a tensor TYPE form spells out: positional in (tensor ELEM N SPACE ALIGN ORDER), a
+   keyword argument in (vector ELEM :align A ...) / (matrix ...).  NIL if absent."
+  (let ((head (and (consp type) (symbolp (first type)) (symbol-name (first type)))))
+    (cond ((null head) nil)
+          ((string-equal head "TENSOR") (and (keywordp (fifth type)) (fifth type)))
+          ((member head '("VECTOR" "MATRIX") :test #'string-equal)
+           (let ((tail (cddr type))) (and (evenp (length tail)) (getf tail :align)))))))
+
+(defun %api-param (decl aliases record-names &key implicit)
+  "One :declared-signature DECL (or, with IMPLICIT, one :implicit-params entry) as a parameter plist.
+   Item 2 (A9): implicit params share the list, told apart by :purpose."
   (let* ((type (%api-resolve-type (getf decl :type) aliases))
          (head (and (consp type) (symbolp (first type)) (symbol-name (first type))))
-         (rank (getf decl :rank))
+         (rank (or (getf decl :rank) (%api-tensor-type-rank type)))
          (range (getf decl :range))
-         (kind (cond (rank :tensor)
+         (purpose (cond ((eq (getf decl :kind) :tensor-map) :tensor-map)
+                        ((getf decl :debug-logging) :debug-log)
+                        (implicit :scratch)
+                        (t :declared)))
+         (kind (cond ((eq purpose :tensor-map) :scalar)   ; one slot: a descriptor pointer (CUDA TMA)
+                     (rank :tensor)
                      ((and head (string-equal head "CELL")) :cell)
                      ((and (symbolp type) (member (symbol-name type) record-names :test #'string-equal)) :record)
                      (t :scalar)))
          (element (case kind
                     ((:tensor :cell) (and (consp type) (%api-kw (second type))))
-                    (:scalar (%api-kw type))
-                    (t nil))))
+                    (:scalar (and (symbolp type) (%api-kw type)))
+                    (t nil)))
+         (address-space (getf decl :address-space))
+         (size-expr (getf decl :size-expr)))
     (list :name (getf decl :name)
+          :purpose purpose
           :kind kind
-          :direction (or (getf decl :direction) :in)
+          ;; direction means nothing for scratch
+          :direction (if implicit nil (or (getf decl :direction) :in))
           :element-type element
           :rank (if (eq kind :tensor) rank 0)
           ;; The :align the kernel's author declared, reported so the caller passes matching data
@@ -261,11 +294,23 @@
           ;; reads -- give it contiguous data), :compact-offset adds offsets, :strided (also the
           ;; fallback) honours both, so a PyTorch view passes through uncopied.
           :layout (when (eq kind :tensor)
-                    (case (getf decl :align)
+                    (case (or (getf decl :align) (%api-type-align type))
                       (:compact :compact)
                       (:compact-offset :compact-offset)
                       (t :strided)))
-          :address-space (getf decl :address-space)
+          :address-space address-space
+          ;; A11: GLOBAL scratch is zeroed before EVERY launch (stateful counters, BUG 084).
+          ;; Workgroup-local scratch cannot be zeroed from the host.
+          :zero-before-launch (and (eq purpose :scratch) (eq address-space :global))
+          ;; The allocation rule, resolved against launch values by the launch object (step 2):
+          ;; (:elements N ...) per axis, or (:rule KEYWORD) for a launch-relative size.
+          :size (when (eq purpose :scratch)
+                  (cond ((null size-expr) (list :elements 1))
+                        ((integerp size-expr)
+                         (cons :elements (make-list (max 1 (if (eq kind :tensor) rank 1)) :initial-element size-expr)))
+                        ((and (consp size-expr) (every #'integerp size-expr)) (cons :elements size-expr))
+                        ((keywordp size-expr) (list :rule size-expr))
+                        (t (list :rule size-expr))))
           :roles (%api-roles kind (or rank 0) (first range) (second range)))))
 
 (defun %api-kernels-of-metacrisp (path)
@@ -277,7 +322,12 @@
          (record-names (loop for d in (append (%api-section forms :records) (%api-section forms :structs))
                              when (consp d) collect (symbol-name (second d)))))
     (loop for k in (%api-section forms :kernels)
-          for params = (mapcar (lambda (d) (%api-param d aliases record-names)) (getf k :declared-signature))
+          ;; declared + implicit, in SLOT order (A9: one list)
+          for params = (sort (append (mapcar (lambda (d) (%api-param d aliases record-names))
+                                             (getf k :declared-signature))
+                                     (mapcar (lambda (d) (%api-param d aliases record-names :implicit t))
+                                             (getf k :implicit-params)))
+                             #'< :key (lambda (p) (or (third (first (getf p :roles))) most-positive-fixnum)))
           collect (list :name (getf k :name)
                         :slots (%api-mark-pointer-slots (mapcar #'%api-slot (getf k :physical-signature)) params)
                         :params params))))
@@ -539,8 +589,10 @@
 ;;;              module ""  module.binary
 ;;;              kernel ""  kernel.name [kernel.grad-of]
 ;;;              slot ""    slot.type slot.size [slot.address-space]        (belongs to the last kernel)
-;;;              param ""   param.name param.kind param.direction [param.element-type] param.rank
+;;;              param ""   param.name param.kind [param.direction] [param.element-type] param.rank
 ;;;                         [param.layout] [param.address-space] [param.adjoint-of]
+;;;                         param.purpose [param.zero-before-launch "1"]
+;;;                         [param.size "elements N ..." | "rule <keyword>"]     (scratch only)
 ;;;              role "<role> <axis> <slot>"                                (belongs to the last param)
 ;;;            end ""
 ;;; A field in [brackets] is omitted when it has no value.  Kernels belong to the last module.
@@ -643,6 +695,12 @@
           (rec "param.layout" (getf p :layout))
           (rec "param.address-space" (getf p :address-space))
           (rec "param.adjoint-of" (getf p :adjoint-of))
+          (rec "param.purpose" (getf p :purpose))
+          (rec "param.zero-before-launch" (when (getf p :zero-before-launch) "1"))
+          ;; "elements N ..." or "rule <keyword>" -- resolved by the C launch object (item 2, step 2)
+          (rec "param.size" (let ((sz (getf p :size)))
+                              (when sz
+                                (format nil "~(~a~)~{ ~(~a~)~}" (first sz) (rest sz)))))
           (dolist (r (getf p :roles))
             (rec "role" (format nil "~(~a~) ~d ~d" (first r) (second r) (third r)))))))
     (rec "end" "")

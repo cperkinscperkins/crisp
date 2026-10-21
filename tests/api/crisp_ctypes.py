@@ -24,6 +24,7 @@ ADDRESS_SPACE = {"invalid": 0, "global": 1, "constant": 2, "local": 3}
 PARAM_KIND = {"invalid": 0, "scalar": 1, "cell": 2, "tensor": 3, "record": 4}
 DIRECTION = {"invalid": 0, "in": 1, "out": 2}
 LAYOUT = {"invalid": 0, "compact": 1, "compact-offset": 2, "strided": 3}
+PURPOSE = {"invalid": 0, "declared": 1, "scratch": 2, "debug-log": 3, "tensor-map": 4}
 ROLE = {"invalid": 0, "value": 1, "pointer": 2, "byte-size": 3, "offset": 4, "stride": 5,
         "extent": 6, "length": 7, "field": 8}
 NO_SLOT = ctypes.c_size_t(-1).value
@@ -74,6 +75,8 @@ def load(path=None):
     fn("crisp_slot_size", S, ctx_p, S, S, S)
     fn("crisp_slot_address_space", I, ctx_p, S, S, S)
     fn("crisp_param_count", S, ctx_p, S, S)
+    fn("crisp_param_purpose", I, ctx_p, S, S, S)
+    fn("crisp_param_zero_before_launch", I, ctx_p, S, S, S)
     fn("crisp_param_name", CS, ctx_p, S, S, S)
     fn("crisp_param_kind_of", I, ctx_p, S, S, S)
     fn("crisp_param_direction", I, ctx_p, S, S, S)

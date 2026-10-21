@@ -103,7 +103,7 @@ class Basics(unittest.TestCase):
     def test_version(self):
         v = LIB.crisp_api_version()
         self.assertEqual(v >> 16, 0, "major must match CRISP_API_VERSION_MAJOR")
-        self.assertEqual(v & 0xFFFF, 1)
+        self.assertEqual(v & 0xFFFF, 2, "minor 2: implicit params (purpose, zero-before-launch)")
 
     def test_status_strings(self):
         for st in range(8):
@@ -322,6 +322,32 @@ class Differentiate(unittest.TestCase):
             self.assertEqual(adj, {"a": None, "c": None, "c_grad": "c", "a_grad": "a"})
             st, data = C.module_bytes(LIB, ctx)
             self.assertIn(b"vec_sq_lit_grad", data, "both entry points are in the one module")
+
+
+class ImplicitParams(unittest.TestCase):
+    """Item 2, step 1: scratch the compiler added is in the parameter list, with its purpose."""
+
+    def test_grid_reduce_scratch(self):
+        src = open(os.path.join(C.REPO, "tests", "spec", "175-reductions", "25-grid-reduce-last-man-metal.crisp"),
+                   encoding="utf-8").read()
+        with Ctx() as ctx:
+            self.assertEqual(compile_text(ctx, src, "grid.crisp", flags=["--hardware-profile=bmg"]), C.OK,
+                             s(LIB.crisp_diagnostics_text(ctx)))
+            n = LIB.crisp_param_count(ctx, 0, 0)
+            self.assertEqual(n, 5)
+            names = [s(LIB.crisp_param_name(ctx, 0, 0, p)) for p in range(n)]
+            purposes = [LIB.crisp_param_purpose(ctx, 0, 0, p) for p in range(n)]
+            self.assertEqual(purposes, [C.PURPOSE["scratch"]] * 4 + [C.PURPOSE["declared"]])
+            self.assertEqual(names[4], "out")
+            zero = {nm.split("_")[0]: LIB.crisp_param_zero_before_launch(ctx, 0, 0, p) for p, nm in enumerate(names)}
+            self.assertEqual(zero, {"flag": 0, "ctr": 1, "gv": 1, "sv": 0, "out": 0},
+                             "global scratch is zeroed before every launch")
+            pointers = [LIB.crisp_param_slot(ctx, 0, 0, p, C.ROLE["pointer"], 0) for p in range(n)]
+            self.assertEqual(pointers, [0, 3, 6, 12, 18], "slot order")
+            sv = names.index(next(nm for nm in names if nm.startswith("sv_")))
+            self.assertEqual(LIB.crisp_param_address_space(ctx, 0, 0, sv), C.ADDRESS_SPACE["local"])
+            self.assertEqual(LIB.crisp_param_direction(ctx, 0, 0, sv), C.DIRECTION["invalid"])
+            self.assertEqual(LIB.crisp_slot_address_space(ctx, 0, 0, 12), C.ADDRESS_SPACE["local"])
 
 
 class Processes(unittest.TestCase):

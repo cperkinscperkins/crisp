@@ -323,6 +323,80 @@
     (false (warnings '("--math-precision=fast" "--denormal-handling=ftz")))))
 
 ;;; ------------------------------------------------------------------------------------------------
+;;; Item 2, step 1 (A9, A11): IMPLICIT parameters join the parameter list, with a purpose.
+;;; The kernel is a real spec's source, read from disk: four scratch params (a local flag cell, a
+;;; global counter cell, a global vector of 4, a local vector sized one-per-warp) + one declared.
+;;; ------------------------------------------------------------------------------------------------
+
+(defun grid-reduce-kernel ()
+  (kernel (compile-quietly
+           (list (cons (uiop:read-file-string "tests/spec/175-reductions/25-grid-reduce-last-man-metal.crisp")
+                       "grid.crisp"))
+           :flags '("--hardware-profile=bmg"))
+          "grid_reduce_last_man"))
+
+(defun param-starting-with (k prefix)
+  (find-if (lambda (p) (alexandria:starts-with-subseq prefix (getf p :name))) (getf k :params)))
+
+(define-test (compile-api implicit-params-join-the-list)
+  (let* ((k (grid-reduce-kernel))
+         (params (getf k :params)))
+    (true k)
+    (is = 5 (length params) "4 scratch + 1 declared")
+    (is equal '(0 3 6 12 18) (mapcar (lambda (p) (role-slot p :pointer 0)) params) "in slot order")
+    (is equal '(:scratch :scratch :scratch :scratch :declared) (mapcar (lambda (p) (getf p :purpose)) params))
+    (is equal "out" (getf (fifth params) :name))
+    ;; every physical slot belongs to exactly one parameter now
+    (let ((owned (sort (loop for p in params append (mapcar #'third (getf p :roles))) #'<)))
+      (is equal (loop for i below (length (getf k :slots)) collect i) owned))))
+
+(define-test (compile-api implicit-param-facts)
+  (let* ((k (grid-reduce-kernel))
+         (flag (param-starting-with k "flag_"))
+         (ctr (param-starting-with k "ctr_"))
+         (gv (param-starting-with k "gv_"))
+         (sv (param-starting-with k "sv_"))
+         (out (param k "out")))
+    ;; kinds, element types, address spaces -- from the type form, since scratch has no :rank
+    (is eq :cell (getf flag :kind))
+    (is eq :uint (getf flag :element-type))
+    (is eq :local (getf flag :address-space))
+    (is eq :global (getf ctr :address-space))
+    (is eq :tensor (getf gv :kind))
+    (is = 1 (getf gv :rank))
+    (is eq :float (getf gv :element-type))
+    (is eq :compact (getf gv :layout))
+    (is eq :local (getf sv :address-space))
+    (is = 17 (role-slot sv :length 0) "rank-1 tensor at 12: PTR BYTE OFF STR EXT LEN")
+    ;; direction means nothing for scratch
+    (false (getf sv :direction))
+    (is eq :out (getf out :direction))
+    ;; A11: GLOBAL scratch is zeroed before EVERY launch; local scratch cannot be; declared never
+    (true (getf ctr :zero-before-launch))
+    (true (getf gv :zero-before-launch))
+    (false (getf flag :zero-before-launch))
+    (false (getf sv :zero-before-launch))
+    (false (getf out :zero-before-launch))
+    ;; the size rule rides along for the launch object (step 2)
+    (is equal '(:elements 1) (getf ctr :size))
+    (is equal '(:elements 4) (getf gv :size))
+    (is equal '(:rule :match-num-warps-per-workgroup) (getf sv :size))
+    (false (getf out :size))
+    ;; PTX would record the scratch pointer slots as ULONG; the roles still make them pointers
+    (is eq :pointer (getf (nth 12 (getf k :slots)) :type))
+    (is eq :local (getf (nth 12 (getf k :slots)) :address-space))))
+
+(define-test (compile-api implicit-params-ptx-pointer-slots)
+  (let ((k (kernel (compile-quietly
+                    (list (cons (uiop:read-file-string "tests/spec/175-reductions/25-grid-reduce-last-man-metal.crisp")
+                                "grid.crisp"))
+                    :target "ptx")
+                   "grid_reduce_last_man")))
+    (true k)
+    (is equal '(:pointer :pointer :pointer :pointer :pointer)
+        (mapcar (lambda (s) (getf (nth s (getf k :slots)) :type)) '(0 3 6 12 18)))))
+
+;;; ------------------------------------------------------------------------------------------------
 ;;; The compile server's protocol (src/api.lisp, "The compile server"), round-tripped through files.
 ;;; ------------------------------------------------------------------------------------------------
 

@@ -369,6 +369,84 @@ R24 The A6(A) pass (runner --hoist-kernel=source) applies source mode only where
 NOTE The --differentiate pass SKIPS hoists, so A6(A)'s "forward + grad at run time" cannot come
     through TEST-HOIST; it needs VERIFY-AUTODIFF to use the API.  Open.
 
+Item 2: implicit parameters + launch geometry (PROPOSAL, 2026-10-20 -- for discussion)
+=====================================================================================
+Survey (the L0 hoister is the inventory; it handles every case today):
+- Implicit params arrive in the metacrisp's :implicit-params, interleaved by :range with the
+  declared ones.  Scratch cells / tensors, :local or :global, sized by :size-expr = an integer, a
+  list of per-axis integers, or a SYMBOL: :match-workgroup-size (one element per thread),
+  :match-num-warps-per-workgroup (ceil(wg / warp)), :match-num-workgroups (GLOBAL only, one per
+  group -- needs the group count first: hoister ~L1719 "deferred").  Also a debug log, and (CUDA)
+  :kind :tensor-map descriptors.
+- Workgroup-LOCAL memory binds differently per runtime: L0 passes each local param as its pointer
+  slot with (size = bytes, value = nullptr); CUDA carves ALL local scratch out of one dynamic
+  shared block (sharedMemBytes) at byte offsets (hoist-cuda ~L440-L860).
+- Global scratch is zero-filled ahead of the launch.  CONTRADICTION to settle: ideal_001.md L6597
+  says an implicit :atomic-counter needs zeroing before the FIRST launch only; BUG 084 (memory
+  vad-global-scratch-and-stale-scratch) found grid-reduce-last-man's counter stateful across
+  launches -- VAD only worked once it re-zeroed per launch.
+- Geometry = (global-size | local-size | num-groups) declarations: :set-to N, or :derive-from a
+  tensor (its length/extents) or scalar params, with :strategy :one-thread-per | :exact | :strided
+  | :interleaved, optionally :tile-shape (rank-N tile grid) and :occupancy.  :strided needs device
+  facts (L0: numSlices x subslices x EUs x threads; CUDA: the occupancy API).  Today the hoisters
+  turn these into C++ at hoist time.
+
+Proposal:
+P1  Implicit params JOIN the parameter list (crisp_param_count counts them; crisp_param_slot works
+    on them unchanged), told apart by crisp_param_purpose: DECLARED | SCRATCH | DEBUG_LOG |
+    TENSOR_MAP.  The last two: reported, not yet supported (a caller can refuse cleanly).
+P2  A LAUNCH object, evaluated inside libcrisp (C) -- no server round trip at launch time:
+      crisp_launch_create(ctx, m, k, &L)
+      crisp_launch_set_extent(L, param, axis, n)      crisp_launch_set_scalar(L, param, value)
+      crisp_launch_set_device(L, compute_units, threads_per_unit, simd_width)  (defaults: the
+                                                       compile's --hardware-profile, if any)
+      crisp_launch_compute(L) -> status + diagnostic naming any missing input
+      crisp_launch_local_size(L, axis)   crisp_launch_group_count(L, axis)
+      crisp_launch_param_bytes(L, p)     -- a scratch param's allocation, symbolic sizes resolved
+      crisp_launch_shared_bytes(L)       -- PTX: the dynamic shared block; SPV: 0
+      crisp_launch_param_zero(L, p)      -- NEVER | BEFORE_FIRST_LAUNCH | BEFORE_EVERY_LAUNCH
+    The server sends the declarations normalised; libcrisp holds a C port of the strategies.
+P3  Per-runtime binding stated by the API, not guessed: SPV local scratch = (bytes, NULL) in its
+    pointer slot; PTX local scratch = its offset into the shared block (to confirm against
+    hoist-cuda).
+P4  Verification: the dogfood launcher takes geometry + scratch sizes from the launch object, so
+    the whole-suite --hoist-kernel=source pass checks libcrisp's port of the strategies on metal
+    against unchanged expectations -- the 69 partially-mapped launchers become fully mapped.
+P5  Scope: SPV/L0 first (verifiable on the BMG); PTX semantics next (needs a pod to verify on
+    metal); tensor maps + debug log deferred.
+
+Questions for Chris:
+Q9   One parameter list with a purpose, or a separate implicit list?
+A9:  One list, with a purpose (2026-10-20).
+Q10  Geometry evaluated in libcrisp (a THIRD home for the strategy semantics, after the two
+     hoisters), or expose the raw declarations and let callers evaluate?  (Recommend libcrisp; the
+     dogfood pass guards it, and the hoisters could later lean on it.)
+A10: (a) -- the API does the arithmetic (2026-10-20): the caller supplies launch-time values
+     (tensor extents, scalars), the launch object returns the numbers.  A kernel with no geometry
+     declarations is reported as such; the caller chooses.
+Q11  The zeroing contract: first launch only, or every launch?  (Safe default: every launch.)
+A11: Every launch (2026-10-20).  ideal_001.md L6597's "first launch only" is likely a leftover of
+     the tree-shaking era; fix the doc when this lands.
+Q12  :strided on CUDA uses cuOccupancyMaxActiveBlocksPerMultiprocessor -- needs the CUDA runtime.
+     Have the caller pass the occupancy in, or let PTX callers compute group counts themselves?
+A12: The caller passes it in, the same on both runtimes (2026-10-20):
+     crisp_launch_set_resident_groups(L, n).  CUDA: n = cuOccupancyMaxActiveBlocksPerMultiprocessor
+     (using crisp_launch_shared_bytes) x SM count.  L0: from device properties, as the hoister does.
+     Unset: the compile's hardware profile if any, else :strided reports the missing input.
+Order: (1) implicit params in the list, (2) the launch object for SPV/L0 + the dogfood launcher on
+it, (3) the whole-suite pass on the BMG.
+
+2026-10-20  Step 1 DONE.  Implicit params join the list in slot order with :purpose (declared /
+            scratch / debug-log / tensor-map), :zero-before-launch (global scratch, A11) and a
+            :size rule ((:elements N ...) or (:rule :match-...)) kept for the launch object.  Rank,
+            element type and :align come from the TYPE FORM for scratch (no :rank key).  Header:
+            crisp_purpose, crisp_param_purpose, crisp_param_zero_before_launch; API minor -> 2.
+            Bug found + fixed: the private metacrisp-reading package read `nil` as ITS OWN symbol
+            (true!) -- it now imports CL:NIL / CL:T.  Only the new :size-expr nil exposed it.
+            Unit spec 149/149, Python 26/26, Linux build clean.  On the BMG in source mode the
+            scratch launchers are now FULLY mapped (grid-reduce 24 of 24, last-man 21 of 21,
+            reduce-workgroup 12 of 12; were "6 of 24" etc.) and pass.
+
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 
 Don't forget (definition of done)
