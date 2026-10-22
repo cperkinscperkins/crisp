@@ -462,6 +462,19 @@
       (is equal '(2 2) (subseq (getf g :cluster) 0 2))
       (true (getf g :cluster-reach) "it multicasts / uses a cluster barrier: padding is unsafe"))))
 
+;; BUG 066 on PTX (fixed in endeavour 190): a _grad kernel inherits its forward kernel's launch
+;; geometry on EVERY backend -- it used to happen only inside the SPIR-V subgroup emitter.
+(define-test (compile-api grad-kernel-inherits-geometry-on-every-backend)
+  (dolist (target '("ptx" "spv"))
+    (let* ((r (compile-quietly (list (cons (uiop:read-file-string "c-api/examples/square_scale.crisp") "ss.crisp"))
+                               :target target :flags '("--differentiate")))
+           (fwd (getf (kernel r "square_scale") :geometry))
+           (bwd (getf (kernel r "square_scale_grad") :geometry)))
+      (is eq :ok (getf r :status))
+      (is eq :global-size (getf bwd :dispatch) "~a: the _grad kernel declares a launch" target)
+      (is equal (getf fwd :local) (getf bwd :local) "~a: same workgroup size as the forward kernel" target)
+      (is eq (getf fwd :strategy) (getf bwd :strategy) "~a: same strategy" target))))
+
 (define-test (compile-api geometry-undeclared-and-warp)
   (let ((k (kernel (compile-quietly (list (cons +two-kernels+ "two.crisp"))) "k_one")))
     (false (getf (getf k :geometry) :dispatch) "no global-size / num-groups")

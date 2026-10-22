@@ -20,7 +20,7 @@ import tempfile
 import threading
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "c-api", "python"))
 import crisp_ctypes as C  # noqa: E402
 
 LIB = C.load()
@@ -328,8 +328,7 @@ class ImplicitParams(unittest.TestCase):
     """Item 2, step 1: scratch the compiler added is in the parameter list, with its purpose."""
 
     def test_grid_reduce_scratch(self):
-        src = open(os.path.join(C.REPO, "tests", "spec", "175-reductions", "25-grid-reduce-last-man-metal.crisp"),
-                   encoding="utf-8").read()
+        src = spec_source("175-reductions/25-grid-reduce-last-man-metal.crisp")
         with Ctx() as ctx:
             self.assertEqual(compile_text(ctx, src, "grid.crisp", flags=["--hardware-profile=bmg"]), C.OK,
                              s(LIB.crisp_diagnostics_text(ctx)))
@@ -351,7 +350,8 @@ class ImplicitParams(unittest.TestCase):
 
 
 def spec_source(rel):
-    return open(os.path.join(C.REPO, "tests", "spec", rel), encoding="utf-8").read()
+    with open(os.path.join(C.REPO, "tests", "spec", rel), encoding="utf-8") as f:
+        return f.read()
 
 
 class Launch:

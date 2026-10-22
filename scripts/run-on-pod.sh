@@ -18,6 +18,9 @@
 #   # targeted (fast): only specs whose path matches <filter>; skips the
 #   # --differentiate + negative phases:
 #   ./scripts/run-on-pod.sh 149.36.1.192 29800 precision ~/.ssh/id_ed25519 09-denorm-ftz
+#   # endeavour 190: also run every CUDA hoist through the compile API, the C API suite on
+#   # Linux, and the PyTorch toy (needs a PyTorch image):
+#   COMPILE_API=1 ./scripts/run-on-pod.sh 149.36.1.192 29800 compile-api
 #
 #
 # Prerequisites:
@@ -265,7 +268,7 @@ step "Step 6: Run spec suite${FILTER:+  (filter: ${FILTER})}"
 # The remote exits non-zero if any phase failed; capture it (set -e would otherwise abort
 # before the completion banner) and propagate as this script's exit status.
 RUN_STATUS=0
-pod_run "FILTER='${FILTER}' bash -s" <<'RUN_SPECS' || RUN_STATUS=$?
+pod_run "FILTER='${FILTER}' COMPILE_API='${COMPILE_API:-0}' bash -s" <<'RUN_SPECS' || RUN_STATUS=$?
 set -e
 cd /root/crisp
 export CRISP_USE_SYSTEM_TOOLS=true
@@ -344,6 +347,27 @@ if [ -z "${FILTER:-}" ]; then
 else
     echo ""
     echo "  (filter active -> skipping --differentiate and negative phases)"
+fi
+
+# --- Endeavour 190: the compile API (opt-in: COMPILE_API=1 ./scripts/run-on-pod.sh ...) ---
+# (1) every CUDA hoist spec that runs its launcher, with the launcher compiling its kernel at run
+#     time through the API and checking the API's grid / block / shared bytes / scratch against its
+#     own (same expectations); (2) the C API suite through ctypes, on Linux; (3) the PyTorch toy:
+#     forward + gradient kernels from one --differentiate compile, inside torch.autograd.
+# A python phase's verdict is its exit status.  Needs a PyTorch image (torch + nvcc present).
+run_py() {
+    local label="$1"; shift
+    local logf="/tmp/crisp-$(echo "$label" | tr ' /,()' '_____').log"
+    echo ""
+    echo "=== [$(date +%H:%M:%S)] ${label} ==="
+    if stdbuf -oL -eL "$@" > "$logf" 2>&1; then echo "${label}|ok" >> "$PHASE_LOG"; else echo "${label}|FAIL" >> "$PHASE_LOG"; fi
+    tail -12 "$logf" | sed 's/^/    /'
+    echo "  [$(date +%H:%M:%S)] done  (full log: ${logf})"
+}
+if [ "${COMPILE_API:-0}" = "1" ]; then
+    run_phase "specs (binary, --hoist-kernel=source)" --script tests/run-specs.lisp --use-binary --skip-unit-tests --hoist-kernel=source ${FILTER_ARG}
+    run_py "compile API suite" python3 tests/api/test_crisp_api.py
+    run_py "torch toy" python3 c-api/examples/torch_square_scale.py
 fi
 
 # --- Aggregate summary: one place to look, at the very bottom ---

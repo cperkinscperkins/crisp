@@ -1,4 +1,5 @@
-"""crisp_ctypes -- a thin ctypes binding of c-api/include/crisp.h, for tests/api/.
+"""crisp_ctypes -- a thin ctypes binding of c-api/include/crisp.h (used by tests/api/ and
+c-api/examples/).
 
 Every function gets explicit argtypes/restype: ctypes' default (int) would truncate size_t and
 pointers on 64-bit.  This is deliberately a 1:1 binding, not a Pythonic wrapper -- the tests

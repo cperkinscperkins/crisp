@@ -474,6 +474,57 @@ it, (3) the whole-suite pass on the BMG.
             1x1x1; the rest 4/2/128/640 groups on one axis and ONE 32x32 tile grid.  The richer
             strategy cases (2-D :exact, scalar :one-thread-per, device limits, :occupancy) are
             covered by the Python tests against the hoister's formulas, not on hardware.
+2026-10-21  PTX + the PyTorch toy (all local; the pod runs them -- see the pod plan below).
+            Step 1-2: the launch object's PTX rules (hoist-cuda %emit-launch-base): CUDA sizes at
+            most two axes from :set-to / scalar :derive-from / scalar :exact (gridZ = 1) and has no
+            :interleaved special case; thread-block CLUSTERS (pad under :strided, refuse under
+            :exact or :cluster-reach); the dynamic-shared LAYOUT (local scratch tensors from 0, cells
+            after round8, crisp_launch_param_shared_offset = the pointer slot's value).  API minor 4.
+            Cross-checked against the CUDA hoister's own generated launcher (offsets 0/8, 12 bytes).
+            Python 42/42.
+            Step 3: CUDA hoister source mode (%cuda-hk-rewrite: kernelParams permuted into
+            crisp_params by slot; launch check before the launch lambda, after the cluster fix-up:
+            grid, block, shared bytes, scratch sizes, shared offsets).  The shared source-mode code
+            moved to src/hoist/source-mode.lisp (R25) -- L0 output byte-identical after the move.
+            LOCAL nvcc check (nvidia/cuda docker, put_temp_files_here/190/cuda_source_compile_check.py):
+            all 132 source-mode CUDA launchers (every spec whose CUDA validator runs it, MMA re-hoists
+            included) compile, as do the 132 file-mode controls; all 132 carry the launch check.
+            Runner overlay: CUDA source mode (validate-cuda-host-run links libcrisp.so with an rpath;
+            validate-cuda-mma-run keeps source mode).
+            COMPILER BUG FOUND + FIXED (A, Chris 2026-10-21): BUG 066's inherit ran only inside the
+            SPIR-V subgroup emitter, so every PTX _grad kernel had NO launch geometry.  Now in
+            ensure-opencl-kernel-metadata for every backend (compiler overlay -> src/codegen.lisp).
+            Measured first: PTX of all 903 --differentiate specs byte-identical; 379 _grad kernels
+            gain geometry in their metadata only.  Regression check in the unit spec (181/181).
+            The toy: c-api/examples/square_scale.crisp + torch_square_scale.py -- a generic launcher
+            (every argument by ROLE, grid from a launch object, the gradient kernel wired by
+            crisp_param_adjoint_of) inside a torch.autograd.Function, checked against PyTorch's own
+            autograd at n = 1, 7, 1000, 2^20, 2^20+3.  Syntax-checked only (no torch/GPU here).
+            The ctypes binding moved to c-api/python/crisp_ctypes.py (R26).
+            After the compiler fix: E2E 1500/1500, negative 354/354.
+            LINUX, first real run (put_temp_files_here/190/linux_api_check.sh: crisp built from this
+            tree in crisp-linux-release, libcrisp.so built with glibc gcc in nvidia/cuda): the Python
+            API suite 42/42 -- the fork/socketpair path, parallel contexts, shutdown/restart, missing
+            compiler all work; 3.9 s vs ~10 s on Windows (process launch is cheap there, as S0 said).
+            (The first attempt built the .so in crisp-c-validator, which is Alpine/musl -- unloadable
+            on glibc.  Not a library bug, but worth knowing: build the .so where it will run.)
+
+Pod plan (190) -- needs Chris: push a branch, rent the pod
+==========================================================
+GPU: H100 (sm_90) -- 16 CUDA hoist specs are Hopper-only and the runner does not gate by arch.
+Image: a RunPod PyTorch image (torch + nvcc + gcc present; gcc builds bin/libcrisp.so).
+Run ONE command:   COMPILE_API=1 ./scripts/run-on-pod.sh <host> <port> <branch>
+  existing phases: specs (binary), --differentiate (incl. VERIFY-AUTODIFF[CUDA] -- regression
+                   cover for the BUG 066 PTX fix), negative specs
+  190 phases:      specs with --hoist-kernel=source (132 CUDA launchers through the API, each
+                   checking grid / block / shared bytes / scratch / shared offsets), the C API suite
+                   on Linux, the PyTorch toy (TORCH-TOY: PASS/FAIL)
+What would WASTE the rental, and what was done locally to rule it out:
+  - Linux build or libcrisp load failure   -> built + ran on Linux in docker: 42/42
+  - generated CUDA launchers not compiling -> nvcc in docker: 132/132 source-mode compile
+  - no torch / nvcc on the pod             -> use the PyTorch image
+  - a non-Hopper GPU                       -> 16 sm_90 specs fail in BOTH modes (noise, not API)
+NOT a waste: a launch-check MISMATCH or a toy FAIL -- that is what the run is for.
 
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 

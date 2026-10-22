@@ -50,3 +50,60 @@
 ;;;;                                  (src/mma.lisp)
 
 (in-package :crisp.compiler)
+
+;; src/codegen.lisp -- REPLACES ensure-opencl-kernel-metadata (endeavour 190: BUG 066 on PTX -- a _GRAD kernel inherits its forward kernel's launch geometry on EVERY backend, not only inside the SPIR-V subgroup emitter)
+(defun ensure-opencl-kernel-metadata (func semantic-function module)
+  "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
+   Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
+   Endeavor 126: also stamps the denormal-fp-math attribute (all functions).
+   Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records
+   the EFFECTIVE extent (warning on degrade) for every entry point on every backend.
+   Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.
+
+   NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
+   as text during IR printing for SPIR-V."
+  (%apply-denormal-attribute func module)
+  (when (semantic-function-is-entry-point semantic-function)
+        (log:info "Marking function ~a as Kernel for backend ~a"
+                  (semantic-function-name semantic-function) *target-backend*)
+        ;; Endeavour 190 (BUG 066 on PTX): a _GRAD kernel inherits its forward kernel's launch
+        ;; geometry on EVERY backend.  It used to happen only inside the SPIR-V subgroup emitter
+        ;; below, so on PTX every gradient kernel's .metacrisp carried no global/local size and a
+        ;; caller had to guess.  Measured before the change: the PTX of all 903 specs that compile
+        ;; with --differentiate is byte-identical; only the metadata of 379 _grad kernels changes.
+        ;; (The SPIR-V call below stays -- the inherit only fills a missing entry, so it is a no-op.)
+        (%173-ensure-grad-dispatch-decls semantic-function)
+
+        (case *target-backend*
+          (:spirv
+           ;; calling convention spir_kernel (76)
+           (llvm-set-function-call-conv func 76)
+           ;; Endeavor 126: denormal handling reaches SPIR-V only via an execution mode.
+           (%emit-spirv-denorm-execution-mode func module)
+           ;; Endeavour 156 Phase 0: so does the subgroup size, and for the same reason --
+           ;; the function attribute does not survive the translator.
+           (%emit-spirv-subgroup-size-execution-mode func module semantic-function))
+          (:ptx
+           ;; Use ptx_kernel calling convention (71) so llc emits .entry
+           ;; If this crashes on Windows, we will need to revisit nvvm attributes.
+           (log:info "Setting CC 71 (ptx_kernel) for function ~a" (semantic-function-name semantic-function))
+           (llvm-set-function-call-conv func 71))
+          (t
+           ;; Default to C calling convention (0) for generic/unknown
+           (log:warn "Using default CC (0) for kernel in backend ~a" *target-backend*)
+           (llvm-set-function-call-conv func 0)))
+
+        ;; Endeavor 152: OUTSIDE the case on purpose.  This must run for every entry
+        ;; point on every backend -- it is what records the effective cluster extent
+        ;; and warns when a declared cluster could not be formed.  Gating it per
+        ;; backend is what let the SPIR-V degrade go silent.
+        (%apply-cluster-dims-attribute func semantic-function module)
+        ;; Endeavour 182: launch bounds for the kernel's occupancy target (PTX only; a no-op elsewhere).
+        (%apply-occupancy-bound func (semantic-function-name semantic-function) module))
+
+  (unless (semantic-function-is-entry-point semantic-function)
+    (case *target-backend*
+      (:spirv
+       ;; Use SPIR_FUNC (75) for non-kernel functions
+       (llvm-set-function-call-conv func 75)))))
+

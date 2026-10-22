@@ -603,7 +603,7 @@ static void crisp_parse_geo_ref(const char* tok, size_t len, crisp_geo_ref* out)
     buf[len] = '\0';
     memset(out, 0, sizeof *out);
     if (buf[0] == 'p') { out->kind = 1; out->param = (size_t)strtoull(buf + 1, NULL, 10); }
-    else if (buf[0] == '?') { out->kind = 2; snprintf(out->name, sizeof out->name, "%s", buf + 1); }
+    else if (buf[0] == '?') { out->kind = 2; snprintf(out->name, sizeof out->name, "%.63s", buf + 1); }
     else { out->kind = 0; out->value = (uint64_t)strtoull(buf, NULL, 10); }
 }
 
