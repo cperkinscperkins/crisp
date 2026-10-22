@@ -101,7 +101,12 @@ def load(path=None):
     fn("crisp_launch_group_count", U32, P, U32)
     fn("crisp_launch_param_bytes", U64, P, S)
     fn("crisp_launch_shared_bytes", U64, P)
+    fn("crisp_launch_param_shared_offset", U64, P, S)
+    fn("crisp_launch_cluster_size", U32, P, U32)
     return lib
+
+
+NO_SHARED_OFFSET = ctypes.c_uint64(-1).value
 
 
 def flags_array(flags):

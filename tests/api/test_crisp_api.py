@@ -103,7 +103,7 @@ class Basics(unittest.TestCase):
     def test_version(self):
         v = LIB.crisp_api_version()
         self.assertEqual(v >> 16, 0, "major must match CRISP_API_VERSION_MAJOR")
-        self.assertEqual(v & 0xFFFF, 3, "minor 3: the launch object")
+        self.assertEqual(v & 0xFFFF, 4, "minor 4: PTX shared offsets + clusters")
 
     def test_status_strings(self):
         for st in range(8):
@@ -519,6 +519,82 @@ class LaunchGeometry(unittest.TestCase):
                 self.assertEqual(LIB.crisp_launch_set_extent(L, 99, 0, 1), C.ERROR_INVALID_ARGUMENT)
                 self.assertEqual(LIB.crisp_launch_set_warp_size(L, 0), C.ERROR_INVALID_ARGUMENT)
             LIB.crisp_launch_destroy(None)
+
+
+class PtxLaunch(unittest.TestCase):
+    """The PTX rules (hoist-cuda %emit-launch-base): where CUDA differs from L0, local scratch as
+    offsets into one dynamic shared block, and thread-block clusters."""
+
+    def compiled(self, ctx, rel, flags=()):
+        name = os.path.basename(rel)
+        st = compile_text(ctx, spec_source(rel), name, flags=list(flags))
+        self.assertEqual(st, C.OK, s(LIB.crisp_diagnostics_text(ctx)))
+
+    def test_cuda_sizes_two_axes(self):
+        for target, expect in (("spv", (640, 480, 7)), ("ptx", (640, 480, 1))):
+            with self.subTest(target=target), Ctx(target) as ctx:
+                self.compiled(ctx, "089-strategy/17-hoist-3d.crisp")      # :derive-from (w h d)
+                with Launch(ctx) as L:
+                    for nm, v in (("w", 640), ("h", 480), ("d", 7)):
+                        LIB.crisp_launch_set_scalar(L, param_index(ctx, 0, nm), v)
+                    self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                    self.assertEqual(groups(L), expect, "CUDA leaves gridZ = 1")
+
+    def test_cuda_interleaved_takes_ordinary_rules(self):
+        for target, expect in (("spv", (1, 1, 1)), ("ptx", (1000, 1, 1))):
+            with self.subTest(target=target), Ctx(target) as ctx:
+                self.compiled(ctx, "089-strategy/18-hoist-interleaved-comment.crisp")   # :derive-from (n)
+                with Launch(ctx) as L:
+                    LIB.crisp_launch_set_scalar(L, param_index(ctx, 0, "n"), 1000)
+                    self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                    self.assertEqual(groups(L), expect)
+
+    def test_shared_block_layout(self):
+        with Ctx("ptx") as ctx:
+            self.compiled(ctx, "175-reductions/25-grid-reduce-last-man-metal.crisp")
+            names = [s(LIB.crisp_param_name(ctx, 0, 0, p)) for p in range(LIB.crisp_param_count(ctx, 0, 0))]
+            ix = {nm.split("_")[0]: i for i, nm in enumerate(names)}
+            with Launch(ctx) as L:
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                # sv: a LOCAL tensor of ceil(64/32) = 2 floats (no profile: 32 lanes) at offset 0;
+                # flag: a LOCAL uint cell after the tensors, from round8(8) = 8; block = 12 bytes
+                self.assertEqual(LIB.crisp_launch_param_bytes(L, ix["sv"]), 8)
+                self.assertEqual(LIB.crisp_launch_param_shared_offset(L, ix["sv"]), 0)
+                self.assertEqual(LIB.crisp_launch_param_shared_offset(L, ix["flag"]), 8)
+                self.assertEqual(LIB.crisp_launch_shared_bytes(L), 12)
+                self.assertEqual(LIB.crisp_launch_param_shared_offset(L, ix["ctr"]), C.NO_SHARED_OFFSET, "global")
+                self.assertEqual(LIB.crisp_launch_param_shared_offset(L, ix["out"]), C.NO_SHARED_OFFSET)
+        with Ctx("spv") as ctx:
+            self.compiled(ctx, "175-reductions/25-grid-reduce-last-man-metal.crisp")
+            with Launch(ctx) as L:
+                LIB.crisp_launch_compute(L)
+                self.assertEqual(LIB.crisp_launch_shared_bytes(L), 0, "SPIR-V: no shared block")
+                self.assertEqual(LIB.crisp_launch_param_shared_offset(L, 0), C.NO_SHARED_OFFSET)
+
+    def test_cluster_pads_strided(self):
+        with Ctx("ptx") as ctx:
+            self.compiled(ctx, "152-DSMEM-Cluster/02-cluster-size-shape.crisp", flags=["--ir-target-arch=sm_90"])
+            c = param_index(ctx, 0, "c")
+            with Launch(ctx) as L:
+                self.assertEqual((LIB.crisp_launch_cluster_size(L, 0), LIB.crisp_launch_cluster_size(L, 1)), (2, 1))
+                LIB.crisp_launch_set_extent(L, c, 0, 24)      # tile 8x8: grid (3, 2)
+                LIB.crisp_launch_set_extent(L, c, 1, 16)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (4, 2, 1), "x padded 3 -> 4 for the 2-wide cluster")
+
+    def test_cluster_reach_refuses_padding(self):
+        with Ctx("ptx") as ctx:
+            self.compiled(ctx, "152-DSMEM-Cluster/26-cluster-reach-refuses-padding.crisp", flags=["--ir-target-arch=sm_90"])
+            c = param_index(ctx, 0, "c")
+            with Launch(ctx) as L:
+                LIB.crisp_launch_set_extent(L, c, 0, 48)      # tile 16x16: grid (3, 3), cluster (2, 2)
+                LIB.crisp_launch_set_extent(L, c, 1, 48)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.ERROR_INVALID_ARGUMENT)
+                self.assertIn("cluster", s(LIB.crisp_launch_message(L)))
+                LIB.crisp_launch_set_extent(L, c, 0, 64)      # grid (4, 4): divisible, fine
+                LIB.crisp_launch_set_extent(L, c, 1, 64)
+                self.assertEqual(LIB.crisp_launch_compute(L), C.OK, s(LIB.crisp_launch_message(L)))
+                self.assertEqual(groups(L), (4, 4, 1))
 
 
 class Processes(unittest.TestCase):

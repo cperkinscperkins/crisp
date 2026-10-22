@@ -383,7 +383,13 @@
                         ((symbolp derive) (cons :tensor (rest (%api-param-ref derive params))))
                         ((consp derive) (cons :scalars (mapcar (lambda (s) (second (%api-param-ref s params))) derive))))
           :tile-shape (let ((ts (getf d :tile-shape))) (and (consp ts) (every #'integerp ts) ts))
-          :occupancy (let ((o (getf d :occupancy))) (and (realp o) o)))))
+          :occupancy (let ((o (getf d :occupancy))) (and (realp o) o))
+          ;; CUDA thread-block clusters (endeavour 152): the shape is baked into the PTX, so the
+          ;; launch only has to make the grid divisible by it -- pad under :strided, refuse under
+          ;; :exact or when the kernel uses its cluster's reach (multicast / cluster barrier, BUG 049).
+          :cluster (let ((c (getf k :effective-cluster-size)))
+                     (and (consp c) (every #'integerp c) (> (reduce #'* c) 1) c))
+          :cluster-reach (and (getf k :cluster-reach) t))))
 
 (defun %api-mark-pointer-slots (slots params)
   "SLOTS with every parameter's :pointer-role slot reported as a pointer in that parameter's address
@@ -646,6 +652,7 @@
 ;;;                         kernel.local "X Y" [kernel.dispatch] [kernel.strategy] [kernel.set-to "N|pI ..."]
 ;;;                         [kernel.derive "tensor pI" | "scalars pI ..."] [kernel.tile-shape "N ..."]
 ;;;                         [kernel.occupancy "R"] [kernel.warp-size "N"]       (launch geometry)
+;;;                         [kernel.cluster "X Y Z"] [kernel.cluster-reach "1"] (CUDA clusters)
 ;;;              slot ""    slot.type slot.size [slot.address-space]        (belongs to the last kernel)
 ;;;              param ""   param.name param.kind [param.direction] [param.element-type] param.rank
 ;;;                         [param.layout] [param.address-space] [param.adjoint-of]
@@ -754,7 +761,9 @@
                                                    (mapcar (lambda (i) (if (integerp i) (format nil "p~d" i) (format nil "?~a" i)))
                                                            (rest dv))))))
             (rec "kernel.tile-shape" (and (getf g :tile-shape) (format nil "~{~d~^ ~}" (getf g :tile-shape))))
-            (rec "kernel.occupancy" (and (getf g :occupancy) (format nil "~f" (getf g :occupancy))))))
+            (rec "kernel.occupancy" (and (getf g :occupancy) (format nil "~f" (getf g :occupancy))))
+            (rec "kernel.cluster" (and (getf g :cluster) (format nil "~{~d~^ ~}" (getf g :cluster))))
+            (rec "kernel.cluster-reach" (and (getf g :cluster-reach) "1"))))
         (rec "kernel.warp-size" (getf k :warp-size))
         (dolist (s (getf k :slots))
           (rec "slot" "")

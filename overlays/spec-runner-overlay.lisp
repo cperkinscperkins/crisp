@@ -13,29 +13,35 @@
           (when (plusp (length v)) (return (string-downcase v))))))))
 
 ;; tests/run-specs.lisp -- NEW (endeavour 190)
-(defun %hoist-kernel-source-p (file)
-  "T when FILE's L0 hoist should use --hoist-kernel=source: its HOIST-KERNEL directive says so, or
-   the runner was started with --hoist-kernel=source (the A6(A) pass: every L0 hoist spec through
-   the compile API, same expectations).  A spec saying HOIST-KERNEL: file opts out of the pass."
+(defun %hoist-kernel-source-p (file &optional (backend "L0"))
+  "T when FILE's BACKEND (\"L0\" or \"CUDA\") hoist should use --hoist-kernel=source: its HOIST-KERNEL
+   directive says so, or the runner was started with --hoist-kernel=source (the A6(A) pass: every
+   hoist spec that RUNS its launcher goes through the compile API, same expectations).  A spec
+   saying HOIST-KERNEL: file opts out of the pass."
   (let* ((directives (extract-test-directives file))
          (directive (parse-hoist-kernel directives)))
     (cond ((equal directive "source") t)
           ((equal directive "file") nil)
-          ;; The pass is about RUNNING the launcher: a spec whose L0 validator only inspects the
-          ;; generated .cpp text checks file-mode text (literal argument indices, which source mode
-          ;; rewrites to crisp_slot[N]), so it keeps file mode.
+          ;; The pass is about RUNNING the launcher: a spec whose validator only inspects the
+          ;; generated text checks file-mode text (literal argument indices, which source mode
+          ;; rewrites), so it keeps file mode.
           (t (and (member "--hoist-kernel=source" (uiop:command-line-arguments) :test #'string=)
-                  (%l0-hoist-runs-launcher-p directives))))))
+                  (%hoist-runs-launcher-p directives backend))))))
 
 ;; tests/run-specs.lisp -- NEW (endeavour 190)
-(defun %l0-hoist-runs-launcher-p (directive-lines)
-  "T when a TEST-HOIST[L0] directive in DIRECTIVE-LINES names a validator that compiles AND RUNS the
-   launcher on metal (validate-l0-host-run, validate-l0-mma-run)."
-  (some (lambda (line)
-          (let ((trimmed (string-left-trim ";; " line)))
-            (and (starts-with trimmed "TEST-HOIST[L0]:")
-                 (some (lambda (v) (search v trimmed)) '("validate-l0-host-run" "validate-l0-mma-run")))))
-        directive-lines))
+(defun %hoist-runs-launcher-p (directive-lines backend)
+  "T when a TEST-HOIST[BACKEND] directive in DIRECTIVE-LINES names a validator that compiles AND RUNS
+   the launcher (L0: validate-l0-host-run / validate-l0-mma-run; CUDA: validate-cuda-host-run /
+   validate-cuda-mma-run)."
+  (let ((prefix (format nil "TEST-HOIST[~a]:" backend))
+        (runners (if (string-equal backend "CUDA")
+                     '("validate-cuda-host-run" "validate-cuda-mma-run")
+                     '("validate-l0-host-run" "validate-l0-mma-run"))))
+    (some (lambda (line)
+            (let ((trimmed (string-left-trim ";; " line)))
+              (and (starts-with trimmed prefix)
+                   (some (lambda (v) (search v trimmed)) runners))))
+          directive-lines)))
 
 ;; tests/run-specs.lisp -- REPLACES run-spec-with-hoist (endeavour 190: --hoist-kernel=source via the HOIST-KERNEL directive or the runner's --hoist-kernel=source option)
 (defun run-spec-with-hoist (file backend &optional bc-files)
@@ -91,11 +97,10 @@
                        (let ((arch (parse-hoist-arch (extract-test-directives file))))
                          (when arch (list (format nil "--ir-target-arch=~a" arch))))
                        ;; Endeavour 190: the dogfood launcher -- embed the source, compile it at run
-                       ;; time through the C API.  L0 only (the CUDA hoister has no source mode yet).
+                       ;; time through the C API (L0 and CUDA).
                        ;; (never with foreign .bc libraries: a launcher cannot embed those)
-                       (when (and (string-equal (symbol-name backend) "L0")
-                                  (null bc-files)
-                                  (%hoist-kernel-source-p file))
+                       (when (and (null bc-files)
+                                  (%hoist-kernel-source-p file (symbol-name backend)))
                          (list "--hoist-kernel=source"))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
@@ -223,12 +228,13 @@
 
 
 ;; tests/run-specs.lisp -- NEW (endeavour 190)
-(defun %hoist-kernel-source-hoister-args (file)
-  "The crisp-hoist-l0 arguments that keep a RE-hoist of FILE (validate-l0-mma-run's --mma-test pass)
-   in source mode, or NIL when FILE's hoist is in file mode.  The flags are the ones the hoist compile
-   used (run-spec-with-hoist binds the same specials around the validator), minus the ones the
-   compile API refuses -- what crisp-compile's %hoist-kernel-source-args would have forwarded."
-  (when (%hoist-kernel-source-p file)
+(defun %hoist-kernel-source-hoister-args (file &optional (backend "L0"))
+  "The hoister arguments that keep a RE-hoist of FILE (validate-l0-mma-run's / validate-cuda-mma-run's
+   --mma-test pass) in source mode, or NIL when FILE's BACKEND hoist is in file mode.  The flags are
+   the ones the hoist compile used (run-spec-with-hoist binds the same specials around the
+   validator), minus the ones the compile API refuses -- what crisp-compile's
+   %hoist-kernel-source-args would have forwarded."
+  (when (%hoist-kernel-source-p file backend)
     (append (list "--hoist-kernel=source"
                   (format nil "--kernel-source=~a" (uiop:native-namestring (truename file))))
             (mapcar (lambda (f) (format nil "--kernel-flag=~a" f))
@@ -281,4 +287,121 @@
               (return-from validate-l0-mma-run nil))))))
     ;; The .cpp files are now the MMA test harnesses; compile + run + check MMA_CORRECT.
     (validate-l0-host-run file cpp-files)))
+
+
+;; tests/run-specs.lisp -- REPLACES validate-cuda-host-run (endeavour 190: --hoist-kernel=source on CUDA)
+(defun validate-cuda-host-run (crisp-file cu-files)
+  "Validates .cu files compile with nvcc AND run successfully on a CUDA GPU.
+   Checks HOIST-EXPECT: directives against program stdout.
+   SKIPs gracefully if nvcc is not available (e.g. Windows dev machine, CI without GPU)."
+  (let ((nvcc (resolve-nvcc-executable)))
+    (cond
+     ((null cu-files)
+      (format t "FAIL: No .cu files generated~%")
+      nil)
+
+     ((null nvcc)
+      (format t "SKIP (nvcc not available)~%")
+      t)
+
+     (t
+      (dolist (cu cu-files)
+        (let* ((exe-path (make-pathname :type #+windows "exe" #-windows nil
+                                        :defaults cu))
+               ;; Endeavour 190: a --hoist-kernel=source launcher calls the compile API.  Link the
+               ;; library with an rpath to bin/, so it is found without touching the environment
+               ;; (and finds crisp-compile beside itself).
+               (api-p (search "#include \"crisp.h\"" (uiop:read-file-string cu)))
+               (api-args (when api-p (%compile-api-link-args)))
+               (bin-dir (uiop:native-namestring (merge-pathnames "bin/" (uiop:getcwd)))))
+          (when (and api-p (null api-args))
+            (format t "FAIL: ~a needs the compile API library -- build it: bash c-api/build.sh~%" (file-namestring cu))
+            (return-from validate-cuda-host-run nil))
+          ;; 1. Compile
+          (multiple-value-bind (output error-output exit-code)
+              (uiop:run-program
+                (append (list nvcc (uiop:native-namestring cu))
+                        api-args
+                        (when (and api-p (not (uiop:os-windows-p)))
+                          (list "-Xlinker" (format nil "-rpath=~a" bin-dir)))
+                        (list "-lcuda" "-o" (uiop:native-namestring exe-path)))
+                :output :string :error-output :string :ignore-error-status t)
+            (declare (ignore output))
+            (unless (zerop exit-code)
+              (format t "FAIL: nvcc compilation error for ~a~%~a~%"
+                      (file-namestring cu) error-output)
+              (return-from validate-cuda-host-run nil))
+            (format t "Compiled ~a -> ~a... OK~%" (file-namestring cu) (file-namestring exe-path)))
+
+          ;; 2. Run
+          (multiple-value-bind (run-out run-err run-code)
+              (if api-p
+                  (%run-launcher-with-bin-on-path exe-path)   ; Windows needs PATH; harmless elsewhere
+                  (uiop:run-program (uiop:native-namestring exe-path)
+                    :output :string :error-output :string :ignore-error-status t))
+            (format t "Output:~%~a~%" run-out)
+            (unless (zerop run-code)
+              (format t "FAIL: ~a execution failed (Code ~a)~%Error: ~a~%"
+                      (file-namestring exe-path) run-code run-err)
+              (return-from validate-cuda-host-run nil))
+
+            ;; 3. Check HOIST-EXPECT
+            (let ((expectations (parse-hoist-expect (extract-test-directives crisp-file)))
+                  (passed t))
+              (when expectations
+                (dolist (exp expectations)
+                  (unless (search exp run-out)
+                    (format t "FAIL: Expectation not found in output: '~a'~%" exp)
+                    (setf passed nil))))
+              (if passed
+                  (format t "PASS: ~a ran successfully on CUDA!~%" (file-namestring cu))
+                  (return-from validate-cuda-host-run nil))))))
+      t))))
+
+
+
+
+;; tests/run-specs.lisp -- REPLACES validate-cuda-mma-run (endeavour 190: --hoist-kernel=source on CUDA)
+(defun validate-cuda-mma-run (file cu-files)
+  "Endeavor 134 (CUDA/PTX twin): re-hoist each kernel in --mma-test=M,N,K mode
+   (host-reference C=A·B check), then compile+run via validate-cuda-host-run
+   (which checks HOIST-EXPECT: MMA_CORRECT).  Skip-gated by nvcc availability."
+  (let* ((directives (extract-test-directives file))
+         (dims (parse-mma-dims directives))
+         (scale (parse-mma-scale directives)))
+    (unless (and dims (= (length dims) 3) (every #'integerp dims))
+      (format t "FAIL: validate-cuda-mma-run requires an `MMA-DIMS: M N K` directive~%")
+      (return-from validate-cuda-mma-run nil))
+    (let ((hoist (%crisp-hoist-cuda-binary)))
+      (unless (probe-file hoist)
+        (format t "FAIL: crisp-hoist-cuda binary not found at ~a~%" hoist)
+        (return-from validate-cuda-mma-run nil))
+      (dolist (cu cu-files)
+        (let* ((base (pathname-name cu))                       ; <spec>_<kernel>_CUDA
+               (mc-name (if (and (>= (length base) 5)
+                                 (string-equal (subseq base (- (length base) 5)) "_CUDA"))
+                            (subseq base 0 (- (length base) 5))
+                            base))
+               (metacrisp (make-pathname :name mc-name :type "metacrisp" :defaults cu)))
+          (unless (probe-file metacrisp)
+            (format t "FAIL: metacrisp not found for ~a (expected ~a)~%"
+                    (file-namestring cu) (file-namestring metacrisp))
+            (return-from validate-cuda-mma-run nil))
+          (multiple-value-bind (out err code)
+              (uiop:run-program (append (list (uiop:native-namestring hoist)
+                                              (format nil "--mma-test=~{~d~^,~}" dims))
+                                        (when (and scale (/= scale 1))
+                                          (list (format nil "--mma-scale=~d" scale)))
+                                        ;; Endeavour 190: a source-mode spec stays source-mode here
+                                        (%hoist-kernel-source-hoister-args file "CUDA")
+                                        (list (uiop:native-namestring metacrisp)))
+                :output :string :error-output :string :ignore-error-status t)
+            (declare (ignore out))
+            (unless (zerop code)
+              (format t "FAIL: crisp-hoist-cuda --mma-test failed (code ~a):~%~a~%" code err)
+              (return-from validate-cuda-mma-run nil))))))
+    ;; The .cu files are now the MMA test harnesses; compile + run + check MMA_CORRECT.
+    (validate-cuda-host-run file cu-files)))
+
+;; --- Endeavor 136 SPV Chapter 1: OpGroupAsyncCopy opcode-presence + on-metal check ---
 

@@ -123,6 +123,8 @@ typedef struct {
     int has_occupancy;
     double occupancy;
     uint32_t warp_size;                      /* from the hardware profile; 0 = none */
+    uint32_t cluster[3];                     /* CUDA thread-block cluster; 0 0 0 = none */
+    int cluster_reach;                       /* multicast / cluster barrier: padding unsafe */
 } crisp_geometry;
 
 typedef struct {
@@ -679,6 +681,12 @@ static int crisp_read_response(crisp_server* s, crisp_context* c, crisp_status* 
         }
         else if (ker && strcmp(tag, "kernel.occupancy") == 0) { ker->geo.has_occupancy = 1; ker->geo.occupancy = strtod(t, NULL); }
         else if (ker && strcmp(tag, "kernel.warp-size") == 0)  ker->geo.warp_size = (uint32_t)strtoul(t, NULL, 10);
+        else if (ker && strcmp(tag, "kernel.cluster") == 0) {
+            unsigned long x = 1, y = 1, z = 1;
+            int n = sscanf(t, "%lu %lu %lu", &x, &y, &z);
+            if (n >= 1) { ker->geo.cluster[0] = (uint32_t)x; ker->geo.cluster[1] = n >= 2 ? (uint32_t)y : 1; ker->geo.cluster[2] = n >= 3 ? (uint32_t)z : 1; }
+        }
+        else if (ker && strcmp(tag, "kernel.cluster-reach") == 0) ker->geo.cluster_reach = 1;
         else if (ker && strcmp(tag, "slot") == 0)   { slot = (crisp_slot_rec*)CRISP_PUSH(ker->slots, ker->n_slots, ker->cap_slots); }
         else if (slot && strcmp(tag, "slot.type") == 0)          slot->type = (crisp_type)crisp_lookup(crisp_types, t);
         else if (slot && strcmp(tag, "slot.size") == 0)          slot->size = (size_t)strtoul(t, NULL, 10);
@@ -1073,6 +1081,7 @@ struct crisp_launch {
     /* results */
     uint32_t groups[3];
     uint64_t* param_bytes;
+    uint64_t* shared_offset;                 /* PTX local scratch: byte offset in the shared block */
     uint64_t shared_bytes;
     int computed;
     char message[512];
@@ -1086,6 +1095,7 @@ CRISP_API void crisp_launch_destroy(crisp_launch* launch)
     free(launch->scalars);
     free(launch->scalar_set);
     free(launch->param_bytes);
+    free(launch->shared_offset);
     free(launch);
 }
 
@@ -1111,7 +1121,8 @@ CRISP_API crisp_status crisp_launch_create(const crisp_context* context, size_t 
     L->scalars = (uint64_t*)calloc(n, sizeof *L->scalars);
     L->scalar_set = (unsigned char*)calloc(n, 1);
     L->param_bytes = (uint64_t*)calloc(n, sizeof *L->param_bytes);
-    if (!L->extents || !L->extent_set || !L->scalars || !L->scalar_set || !L->param_bytes) {
+    L->shared_offset = (uint64_t*)calloc(n, sizeof *L->shared_offset);
+    if (!L->extents || !L->extent_set || !L->scalars || !L->scalar_set || !L->param_bytes || !L->shared_offset) {
         crisp_launch_destroy(L);
         return CRISP_ERROR_OUT_OF_MEMORY;
     }
@@ -1231,13 +1242,18 @@ static size_t crisp_type_bytes(crisp_type t)
     }
 }
 
-/* The group counts -- %l0-emit-group-count, branch for branch. */
+/* The group counts -- %l0-emit-group-count (SPIR-V) and %emit-launch-base (PTX, hoist-cuda), branch
+   for branch.  The two hoisters agree except where marked PTX: CUDA sizes at most TWO axes from a
+   :set-to list / scalar :derive-from / scalar :exact (gridZ = 1), and has no :interleaved special
+   case (it takes the ordinary rules). */
 static int crisp_compute_groups(crisp_launch* L)
 {
     const crisp_geometry* g = &L->ker->geo;
     const char* s = g->strategy;
     int strided = strcmp(s, "strided") == 0, exact = strcmp(s, "exact") == 0;
-    int interleaved = strcmp(s, "interleaved") == 0, one_thread_per = strcmp(s, "one-thread-per") == 0;
+    int interleaved = strcmp(s, "interleaved") == 0 && !L->is_ptx;   /* PTX: ordinary rules */
+    int one_thread_per = strcmp(s, "one-thread-per") == 0;
+    size_t max_axes = L->is_ptx ? 2 : 3;                               /* PTX: gridZ stays 1 */
     uint64_t lx = g->local[0], ly = g->local[1], v;
     uint32_t* G = L->groups;
     G[0] = G[1] = G[2] = 1;
@@ -1302,7 +1318,7 @@ static int crisp_compute_groups(crisp_launch* L)
         uint64_t ty = g->n_tile ? (g->n_tile > 1 && g->tile[1] ? g->tile[1] : 1) : (ly > 1 ? ly : 1);
         if (g->derive_kind == 2 && g->n_derive > 0) { if (!crisp_geo_value(L, &g->derive[0], &v)) return 0; G[0] = crisp_u32(crisp_ceil_div(v, tx)); }
         if (g->derive_kind == 2 && g->n_derive > 1) { if (!crisp_geo_value(L, &g->derive[1], &v)) return 0; G[1] = crisp_u32(crisp_ceil_div(v, ty)); }
-        if (g->derive_kind == 2 && g->n_derive > 2) { if (!crisp_geo_value(L, &g->derive[2], &v)) return 0; G[2] = crisp_u32(v); }
+        if (g->derive_kind == 2 && g->n_derive > 2 && max_axes > 2) { if (!crisp_geo_value(L, &g->derive[2], &v)) return 0; G[2] = crisp_u32(v); }
         return 1;
     }
     if (one_thread_per && g->derive_kind == 1) {
@@ -1322,12 +1338,43 @@ static int crisp_compute_groups(crisp_launch* L)
             G[0] = crisp_u32(crisp_ceil_div(v, lx));
             return 1;
         }
-        for (k = 0; k < nd && k < 3; k++) {
+        for (k = 0; k < nd && k < max_axes; k++) {
             if (!crisp_geo_value(L, &dims[k], &v)) return 0;
             G[k] = crisp_u32(crisp_ceil_div(v, div[k]));
         }
         return 1;
     }
+}
+
+/* PTX thread-block clusters (hoist-cuda %cuda-cluster-grid-fixup-string): the driver needs
+   gridDim % clusterDim == 0 on every axis.  :strided pads UP (its tile-stride loop leaves surplus
+   blocks nothing to claim); :exact, or a kernel using its cluster's reach (multicast / cluster
+   barrier), refuses -- a padded block would have no tile, or be a peer that exits early. */
+static int crisp_apply_cluster(crisp_launch* L)
+{
+    const crisp_geometry* g = &L->ker->geo;
+    uint32_t* G = L->groups;
+    int k, divisible = 1;
+    if (!L->is_ptx || (uint64_t)g->cluster[0] * (g->cluster[1] ? g->cluster[1] : 1) * (g->cluster[2] ? g->cluster[2] : 1) <= 1)
+        return 1;
+    for (k = 0; k < 3; k++) {
+        uint32_t c = g->cluster[k] ? g->cluster[k] : 1;
+        if (G[k] % c) divisible = 0;
+    }
+    if (divisible) return 1;
+    if (strcmp(g->strategy, "exact") == 0 || g->cluster_reach) {
+        snprintf(L->message, sizeof L->message,
+                 "grid (%u,%u,%u) is not divisible by the cluster (%u,%u,%u), and %s, so it cannot be padded",
+                 G[0], G[1], G[2], g->cluster[0], g->cluster[1] ? g->cluster[1] : 1, g->cluster[2] ? g->cluster[2] : 1,
+                 g->cluster_reach ? "the kernel multicasts or uses a cluster barrier (padded blocks would be peers that exit early)"
+                                  : ":strategy :exact has no stride loop");
+        return 0;
+    }
+    for (k = 0; k < 3; k++) {
+        uint32_t c = g->cluster[k] ? g->cluster[k] : 1;
+        G[k] = ((G[k] + c - 1) / c) * c;
+    }
+    return 1;
 }
 
 /* Scratch bytes per parameter -- %l0-scratch-symbolic-expr / %l0-scratch-dims, and the deferred
@@ -1360,7 +1407,28 @@ static int crisp_compute_scratch(crisp_launch* L)
             for (i = 0; i < par->n_size_elements; i++) count *= par->size_elements[i];
         }
         L->param_bytes[p] = count * crisp_type_bytes(par->element_type);
-        if (L->is_ptx && par->address_space == CRISP_ADDRESS_SPACE_LOCAL) L->shared_bytes += L->param_bytes[p];
+    }
+    if (L->is_ptx) {
+        /* hoist-cuda %cuda-shared-layout: local scratch TENSORS packed from offset 0 in slot order,
+           local scratch CELLS after them from the tensors' total rounded up to 8 (so an 8-byte cell
+           is aligned); the block is every byte the kernel can address, padding included. */
+        uint64_t tensor_bytes = 0, cell_base, cell_off;
+        int any_cell = 0;
+        for (p = 0; p < k->n_params; p++) {
+            const crisp_param_rec* par = &k->params[p];
+            L->shared_offset[p] = (uint64_t)-1;
+            if (par->purpose != CRISP_PURPOSE_SCRATCH || par->address_space != CRISP_ADDRESS_SPACE_LOCAL) continue;
+            if (par->kind == CRISP_PARAM_TENSOR) { L->shared_offset[p] = tensor_bytes; tensor_bytes += L->param_bytes[p]; }
+            else any_cell = 1;
+        }
+        cell_base = (tensor_bytes + 7) / 8 * 8;
+        cell_off = cell_base;
+        for (p = 0; p < k->n_params; p++) {
+            const crisp_param_rec* par = &k->params[p];
+            if (par->purpose != CRISP_PURPOSE_SCRATCH || par->address_space != CRISP_ADDRESS_SPACE_LOCAL) continue;
+            if (par->kind != CRISP_PARAM_TENSOR) { L->shared_offset[p] = cell_off; cell_off += L->param_bytes[p]; }
+        }
+        L->shared_bytes = any_cell ? cell_off : tensor_bytes;
     }
     return 1;
 }
@@ -1370,7 +1438,8 @@ CRISP_API crisp_status crisp_launch_compute(crisp_launch* launch)
     if (!launch) return CRISP_ERROR_INVALID_ARGUMENT;
     launch->message[0] = '\0';
     launch->computed = 0;
-    if (!crisp_compute_groups(launch) || !crisp_compute_scratch(launch)) return CRISP_ERROR_INVALID_ARGUMENT;
+    if (!crisp_compute_groups(launch) || !crisp_apply_cluster(launch) || !crisp_compute_scratch(launch))
+        return CRISP_ERROR_INVALID_ARGUMENT;
     launch->computed = 1;
     return CRISP_OK;
 }
@@ -1399,4 +1468,18 @@ CRISP_API uint64_t crisp_launch_param_bytes(const crisp_launch* launch, size_t p
 CRISP_API uint64_t crisp_launch_shared_bytes(const crisp_launch* launch)
 {
     return (launch && launch->computed) ? launch->shared_bytes : 0;
+}
+
+CRISP_API uint64_t crisp_launch_param_shared_offset(const crisp_launch* launch, size_t param)
+{
+    if (!launch || !launch->computed || !launch->is_ptx || param >= launch->ker->n_params) return CRISP_NO_SHARED_OFFSET;
+    return launch->shared_offset[param];
+}
+
+CRISP_API uint32_t crisp_launch_cluster_size(const crisp_launch* launch, uint32_t axis)
+{
+    uint32_t c;
+    if (!launch || axis > 2) return 0;
+    c = launch->ker->geo.cluster[axis];
+    return c ? c : 1;
 }

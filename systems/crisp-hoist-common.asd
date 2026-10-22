@@ -9,7 +9,8 @@
                                  :pathname "../src/hoist"
                                  :components ((:file "package")
                                               (:file "common")
-                                              (:file "codegen-base"))))
+                                              (:file "codegen-base")
+                                              (:file "source-mode"))))   ; Endeavour 190
            :in-order-to ((test-op (test-op "crisp-hoist-common/tests"))))
 
 ;; Load overlay after main system

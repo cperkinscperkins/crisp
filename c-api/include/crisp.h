@@ -67,7 +67,7 @@ extern "C" {
 /* ---------------------------------------------------------------------------------------------- */
 
 #define CRISP_API_VERSION_MAJOR 0      /* bumped on an incompatible change */
-#define CRISP_API_VERSION_MINOR 3      /* bumped when functions are added  */
+#define CRISP_API_VERSION_MINOR 4      /* bumped when functions are added  */
 
 /* The library's version as (major << 16) | minor.  A caller built against this header should
    check that the major matches CRISP_API_VERSION_MAJOR. */
@@ -375,14 +375,29 @@ CRISP_API uint32_t     crisp_launch_group_count(const crisp_launch* launch, uint
    any other parameter.  Bind workgroup-LOCAL scratch per runtime: Level Zero, its POINTER slot gets
    (size = these bytes, value = NULL). */
 CRISP_API uint64_t     crisp_launch_param_bytes(const crisp_launch* launch, size_t param);
-/* PTX: bytes of dynamic shared memory for cuLaunchKernel's sharedMemBytes.  SPIR-V: 0.
-   TODO(190): PTX local scratch binding (offsets into this block) is not yet implemented. */
+/* PTX: bytes of dynamic shared memory for cuLaunchKernel's sharedMemBytes -- every workgroup-local
+   scratch buffer lives in this one block.  Above the default 48 KB (in practice above 32 KB on sm_90,
+   which reserves ~1 KB) the caller must first opt in:
+       cuFuncSetAttribute(f, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, bytes).
+   SPIR-V: 0 (Level Zero sizes local scratch per argument instead). */
 CRISP_API uint64_t     crisp_launch_shared_bytes(const crisp_launch* launch);
+
+#define CRISP_NO_SHARED_OFFSET ((uint64_t)-1)
+
+/* PTX: a workgroup-LOCAL scratch parameter's byte offset in that shared block -- the value its
+   POINTER slot gets (a 64-bit integer, not a device pointer).  CRISP_NO_SHARED_OFFSET for any other
+   parameter, and on SPIR-V. */
+CRISP_API uint64_t     crisp_launch_param_shared_offset(const crisp_launch* launch, size_t param);
+
+/* PTX: the kernel's thread-block cluster shape per axis (1 = no clustering).  It is baked into the
+   PTX (.reqnctapercluster), so a plain cuLaunchKernel launches it; crisp_launch_compute has already
+   made the group counts divisible by it -- padding under :strided, or refusing (with a message) under
+   :exact or when the kernel multicasts / uses a cluster barrier. */
+CRISP_API uint32_t     crisp_launch_cluster_size(const crisp_launch* launch, uint32_t axis);
 
 /* ---------------------------------------------------------------------------------------------- */
 /* PLANNED -- added as the source-mode dogfood hoist needs them (A3), documented as they land:     */
 /*   - the debug log buffer, tensor-map descriptors                                                */
-/*   - PTX: local scratch offsets in the dynamic shared block                                      */
 /* ---------------------------------------------------------------------------------------------- */
 
 #ifdef __cplusplus

@@ -52,4 +52,23 @@
    #:%dispatch-sym-to-cpp-var
    #:%find-struct-def
    #:struct-type-p
-   #:%struct-emit-fields))
+   #:%struct-emit-fields
+
+   ;; Endeavour 190: --hoist-kernel=source, shared by both hoisters (source-mode.lisp)
+   #:*hoist-kernel-source-mode*
+   #:*hoist-kernel-sources*
+   #:*hoist-kernel-flags*
+   #:*hoist-current-kernel-name*
+   #:*hoist-current-signature*
+   #:*hoist-current-dispatch-info*
+   #:%hk-extract-args
+   #:%hk-c-string
+   #:%hk-source-literal
+   #:%hk-emit-embedded-sources
+   #:%hk-param-roles
+   #:%hk-slot-total
+   #:%hk-emit-compile-and-slot-map
+   #:%hk-strided-occupancy-p
+   #:%hk-emit-launch-inputs
+   #:%hk-emit-scratch-checks
+   #:%hk-replace-all))

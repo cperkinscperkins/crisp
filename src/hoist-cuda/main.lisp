@@ -72,7 +72,7 @@
         (unless args
           (format t "Usage: crisp-hoist-cuda [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
+        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args (%hk-extract-args args))
           (setf *mma-test-dims* dims)
           (setf *mma-scale* scale)
           (setf *mma-input-counter* 0)     ; reset role assignment for this run
@@ -289,17 +289,27 @@
                         kernel-name)
                 (progn
                  (format t "  Generating: ~a~%" output-name)
-                 (let ((dvec-types (%collect-dvec-types declared-sig aliases)))
+                 (let* ((dvec-types (%collect-dvec-types declared-sig aliases))
+                        (*hoist-current-kernel-name* kernel-name)
+                        (*hoist-current-signature* (list declared-sig full-sig aliases (metacrisp-records data)))
+                        (*hoist-current-dispatch-info* dispatch-info)
+                        (text (with-output-to-string (stream)
+                                (emit-preamble stream metacrisp-path kernel-name output-name)
+                                (emit-includes stream)
+                                (emit-typedefs stream aliases)
+                                (emit-cuda-dvec-ostream-operators stream dvec-types)
+                                (emit-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
+                                (emit-helpers stream)
+                                (emit-main stream kernel-name ptx-path full-sig aliases
+                                           (metacrisp-records data) dispatch-info
+                                           hw-compute-units))))
+                   ;; Endeavour 190: in source mode every argument goes to the API's slot, and the
+                   ;; launch is checked against the API's launch object (%cuda-hk-rewrite)
                    (with-open-file (stream output-path :direction :output :if-exists :supersede)
-                     (emit-preamble stream metacrisp-path kernel-name output-name)
-                     (emit-includes stream)
-                     (emit-typedefs stream aliases)
-                     (emit-cuda-dvec-ostream-operators stream dvec-types)
-                     (emit-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
-                     (emit-helpers stream)
-                     (emit-main stream kernel-name ptx-path full-sig aliases
-                                (metacrisp-records data) dispatch-info
-                                hw-compute-units)))
+                     (write-string (if *hoist-kernel-source-mode*
+                                       (%cuda-hk-rewrite text dispatch-info)
+                                       text)
+                                   stream)))
                  (format t "  Done: ~a~%" (namestring output-path))))))))))
 
 
@@ -327,7 +337,10 @@
   (format stream "#include <fstream>~%")
   (format stream "#include <vector>~%")
   (format stream "#include <cstring>~%")
-  (format stream "#include <cstdint>~%~%"))
+  (format stream "#include <cstdint>~%~%")
+  ;; Endeavour 190: --hoist-kernel=source (src/hoist/source-mode.lisp)
+  (when *hoist-kernel-source-mode*
+    (%hk-emit-embedded-sources stream)))
 
 (defun emit-typedefs (stream aliases)
   "Generate C++ typedef declarations from type aliases."
@@ -626,8 +639,121 @@ overrides the runtime SM-count query in the grid-size heuristic."
   (format stream "    CUcontext context;~%")
   (format stream "    CUDA_CHECK(cuCtxCreate(&context, 0, device));~%~%"))
 
+;;; ------------------------------------------------------------------------------------------------
+;;; Endeavour 190: --hoist-kernel=source, the CUDA parts.  (Shared parts: src/hoist/source-mode.lisp.)
+;;; The launcher is generated as usual, then rewritten (%cuda-hk-rewrite): kernelParams[] -- built in
+;;; the hoist's baked order -- is permuted into crisp_params[] at the slots the API names, and just
+;;; before the launch lambda (so AFTER the cluster grid fix-up and any late-bound scratch sizes) a
+;;; launch object is fed the values actually passed and its grid, block, shared bytes, scratch sizes
+;;; and shared offsets are CHECKED against this launcher's own; the launch then uses the API's grid.
+;;; ------------------------------------------------------------------------------------------------
+
+(defun %cuda-hk-block-dims (dispatch-info)
+  "(X Y): the block size %emit-launch-base launches with (local-size :set-to, else 1)."
+  (let* ((local-decl (getf dispatch-info :local-size))
+         (ls (and local-decl (getf (cdr local-decl) :set-to))))
+    (list (cond ((integerp ls) ls) ((and (consp ls) (integerp (first ls))) (first ls)) (t 1))
+          (cond ((and (consp ls) (integerp (second ls))) (second ls)) (t 1)))))
+
+(defun %cuda-hk-launch-check-block (n-params block shared-bytes)
+  "main()-scope C++ inserted just before the launch lambda (see the header above)."
+  (with-output-to-string (s)
+    (format s "    // ---- Endeavour 190: grid, block, shared memory + scratch from the compile API ------~%")
+    (format s "    {~%")
+    (format s "        static uint64_t crisp_arg_value[1024];   // what each slot receives, read back NOW~%")
+    (format s "        for (size_t i = 0; i < ~d; i++) {~%" n-params)
+    (format s "            size_t sl = crisp_slot[i];~%")
+    (format s "            size_t sz = crisp_slot_size(crisp_ctx, 0, crisp_k, sl);~%")
+    (format s "            if (sl < 1024) { crisp_arg_value[sl] = 0; memcpy(&crisp_arg_value[sl], kernelParams[i], sz < 8 ? sz : 8); }~%")
+    (format s "        }~%")
+    (format s "        crisp_launch* crisp_L = nullptr;~%")
+    (format s "        if (crisp_launch_create(crisp_ctx, 0, crisp_k, &crisp_L) != CRISP_OK) {~%")
+    (format s "            std::cerr << \"ERROR: crisp_launch_create failed\" << std::endl;~%")
+    (format s "            return 1;~%")
+    (format s "        }~%")
+    (%hk-emit-launch-inputs s "crisp_arg_value")
+    (when (%hk-strided-occupancy-p)
+      (format s "        // :strided -- the resident capacity this launcher measured (blocks per SM x SMs)~%")
+      (format s "        crisp_launch_set_resident_groups(crisp_L, (uint64_t)_blocksPerSM * (uint64_t)_numSMs);~%"))
+    (format s "        if (crisp_launch_compute(crisp_L) != CRISP_OK) {~%")
+    (format s "            std::cerr << \"ERROR: crisp_launch_compute: \" << crisp_launch_message(crisp_L) << std::endl;~%")
+    (format s "            return 1;~%")
+    (format s "        }~%")
+    (format s "        int crisp_bad = 0;~%")
+    (format s "        const uint32_t crisp_b[2] = { ~du, ~du };~%" (first block) (second block))
+    (format s "        for (uint32_t a = 0; a < 2; a++)~%")
+    (format s "            if (crisp_launch_local_size(crisp_L, a) != crisp_b[a]) {~%")
+    (format s "                std::cerr << \"MISMATCH: block axis \" << a << \": API \" << crisp_launch_local_size(crisp_L, a)~%")
+    (format s "                          << \", launcher \" << crisp_b[a] << std::endl;~%")
+    (format s "                crisp_bad = 1;~%")
+    (format s "            }~%")
+    (format s "        const uint32_t crisp_g[3] = { gridX, gridY, gridZ };~%")
+    (format s "        for (uint32_t a = 0; a < 3; a++)~%")
+    (format s "            if (crisp_launch_group_count(crisp_L, a) != crisp_g[a]) {~%")
+    (format s "                std::cerr << \"MISMATCH: grid axis \" << a << \": API \" << crisp_launch_group_count(crisp_L, a)~%")
+    (format s "                          << \", launcher \" << crisp_g[a] << std::endl;~%")
+    (format s "                crisp_bad = 1;~%")
+    (format s "            }~%")
+    (format s "        if (crisp_launch_shared_bytes(crisp_L) != ~dull) {~%" shared-bytes)
+    (format s "            std::cerr << \"MISMATCH: shared bytes: API \" << crisp_launch_shared_bytes(crisp_L) << \", launcher ~d\" << std::endl;~%" shared-bytes)
+    (format s "            crisp_bad = 1;~%")
+    (format s "        }~%")
+    (%hk-emit-scratch-checks s "crisp_arg_value" :shared-offsets t)
+    (format s "        if (crisp_bad) return 1;~%")
+    (format s "        gridX = crisp_launch_group_count(crisp_L, 0);   // launch with the API's grid~%")
+    (format s "        gridY = crisp_launch_group_count(crisp_L, 1);~%")
+    (format s "        gridZ = crisp_launch_group_count(crisp_L, 2);~%")
+    (format s "        std::cout << \"Launch geometry from the compile API: groups \" << gridX << \"x\" << gridY << \"x\" << gridZ~%")
+    (format s "                  << \", local \" << crisp_launch_local_size(crisp_L, 0) << \"x\" << crisp_launch_local_size(crisp_L, 1)~%")
+    (format s "                  << \", shared \" << crisp_launch_shared_bytes(crisp_L) << \", scratch sizes checked: \" << crisp_scratch << std::endl;~%")
+    (format s "        crisp_launch_destroy(crisp_L);~%")
+    (format s "    }~%")))
+
+(defun %cuda-hk-rewrite (text dispatch-info)
+  "The source-mode rewrite of a generated CUDA launcher's TEXT (see the header above).  The shared
+   byte count is read from the launch lambda the hoist emitted (`          <N>, 0,` before
+   `kernelParams, nullptr);`), so the check compares against exactly what it would launch with."
+  (let* ((params-at (search "    void* kernelParams[" text))
+         (n-params (if params-at
+                       (parse-integer text :start (+ params-at (length "    void* kernelParams[")) :junk-allowed t)
+                       0))
+         (params-end (and params-at (search (format nil "~%    };~%") text :start2 params-at)))
+         (call-at (search "          kernelParams, nullptr);" text))
+         (shared-line-end (and call-at (position #\Newline text :end call-at :from-end t)))
+         (shared-line-start (and shared-line-end (position #\Newline text :end shared-line-end :from-end t)))
+         (shared-bytes (or (and shared-line-start
+                                (parse-integer text :start (1+ shared-line-start) :end shared-line-end :junk-allowed t))
+                           0))
+         (lambda-at (search "    auto _crisp_launch = [&]() {" text)))
+    (unless (and params-at params-end call-at lambda-at (< params-end lambda-at))
+      ;; No arguments (or an unexpected shape): leave the launcher alone except for the parameters,
+      ;; and say so -- the launch check is then skipped, which the run's output makes visible.
+      (format t "  NOTE: source mode could not place the launch check in this launcher~%")
+      (return-from %cuda-hk-rewrite text))
+    (let* ((perm-end (+ params-end (length (format nil "~%    };~%"))))
+           (perm (with-output-to-string (s)
+                   (format s "    void* crisp_params[~d];   // Endeavour 190: each argument at the slot the compile API names~%" n-params)
+                   (format s "    for (size_t i = 0; i < ~d; i++) crisp_params[crisp_slot[i]] = kernelParams[i];~%" n-params)))
+           (with-perm (concatenate 'string (subseq text 0 perm-end) perm (subseq text perm-end)))
+           (lambda-at2 (search "    auto _crisp_launch = [&]() {" with-perm))
+           (checked (concatenate 'string (subseq with-perm 0 lambda-at2)
+                                 (%cuda-hk-launch-check-block n-params (%cuda-hk-block-dims dispatch-info) shared-bytes)
+                                 (subseq with-perm lambda-at2))))
+      (%hk-replace-all checked "          kernelParams, nullptr);" "          crisp_params, nullptr);"))))
+
 (defun emit-module-loading (stream ptx-path)
-  "Emit PTX module loading via cuModuleLoadData (JIT)."
+  "Emit PTX module loading via cuModuleLoadData (JIT).
+   Endeavour 190: under --hoist-kernel=source the PTX comes from the compile API at run time."
+  (if *hoist-kernel-source-mode*
+      (progn
+        (%hk-emit-compile-and-slot-map stream "ptx" "    const char* crisp_ptx = (const char*)crisp_bin;   // NUL-terminated PTX")
+        (format stream "    CUmodule module;~%")
+        (format stream "    CUDA_CHECK(cuModuleLoadData(&module, crisp_ptx));~%")
+        (format stream "    std::cout << \"PTX module loaded successfully\" << std::endl;~%~%"))
+      (%cuda-emit-ptx-file-load stream ptx-path)))
+
+(defun %cuda-emit-ptx-file-load (stream ptx-path)
+  "The ordinary (--hoist-kernel=file) launcher: read the .ptx from PTX-PATH and cuModuleLoadData it."
   (format stream "    // Load PTX module~%")
   (format stream "    const char* ptx_path = \"~a\";~%" (namestring ptx-path))
   (format stream "    std::string ptx_text;~%")

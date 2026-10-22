@@ -449,6 +449,19 @@
   (let ((g (getf (strategy-kernel "14-hoist-strided") :geometry)))
     (is eq :num-groups (getf g :dispatch) "num-groups stands in when there is no global-size")))
 
+(define-test (compile-api geometry-clusters)
+  (flet ((cluster-kernel (spec)
+           (first (kernels (compile-quietly
+                            (list (cons (uiop:read-file-string (format nil "tests/spec/152-DSMEM-Cluster/~a.crisp" spec))
+                                        (format nil "~a.crisp" spec)))
+                            :target "ptx" :flags '("--ir-target-arch=sm_90"))))))
+    (let ((g (getf (cluster-kernel "04-cluster-size-on-metal") :geometry)))
+      (is equal '(2 1) (subseq (getf g :cluster) 0 2) "(cluster-size :set-to (2 1))")
+      (false (getf g :cluster-reach)))
+    (let ((g (getf (cluster-kernel "26-cluster-reach-refuses-padding") :geometry)))
+      (is equal '(2 2) (subseq (getf g :cluster) 0 2))
+      (true (getf g :cluster-reach) "it multicasts / uses a cluster barrier: padding is unsafe"))))
+
 (define-test (compile-api geometry-undeclared-and-warp)
   (let ((k (kernel (compile-quietly (list (cons +two-kernels+ "two.crisp"))) "k_one")))
     (false (getf (getf k :geometry) :dispatch) "no global-size / num-groups")
