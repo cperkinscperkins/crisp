@@ -98,6 +98,10 @@
                                 ((string-equal head "MATRIX") 2)
                                 ((integerp (third type)) (third type))))))))
     (cond
+      ;; an implicit TMA descriptor (CUDA): ONE slot, whatever its :rank says -- :rank describes the
+      ;; tensor it maps, not this argument (found on the H100, 2026-10-22)
+      ((eq (getf param :kind) :tensor-map)
+       (list (list first-slot "CRISP_ROLE_VALUE" 0)))
       (rank
        (append (list (list first-slot "CRISP_ROLE_POINTER" 0) (list (+ first-slot 1) "CRISP_ROLE_BYTE_SIZE" 0))
                (loop for k below rank collect (list (+ first-slot 2 k) "CRISP_ROLE_OFFSET" k))

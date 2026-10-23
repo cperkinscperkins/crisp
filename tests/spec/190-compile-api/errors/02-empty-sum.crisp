@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "needs at least one operand"
+;;
+;; BUG 127 (endeavour 190) -- (+) has no type to take, so it is refused.
+
+(def-type fvec (vector float :address-space :global :align :compact))
+
+(def-kernel k_no_operands (A &out B)
+  (declare #'(fvec &out fvec => nil))
+  (set! (~ B 0) (+)))

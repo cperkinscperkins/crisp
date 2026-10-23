@@ -20,7 +20,7 @@ OK, ERROR_COMPILE, ERROR_INVALID_ARGUMENT, ERROR_NO_RESULT, ERROR_IO, \
 SEVERITY_INVALID, SEVERITY_ERROR, SEVERITY_WARNING, SEVERITY_NOTE = range(4)
 TYPE = {name: i for i, name in enumerate(
     ["invalid", "char", "uchar", "short", "ushort", "int", "uint", "long", "ulong",
-     "half", "bfloat16", "float", "double", "pointer"])}
+     "half", "bfloat16", "float", "double", "pointer", "aggregate"])}
 ADDRESS_SPACE = {"invalid": 0, "global": 1, "constant": 2, "local": 3}
 PARAM_KIND = {"invalid": 0, "scalar": 1, "cell": 2, "tensor": 3, "record": 4}
 DIRECTION = {"invalid": 0, "in": 1, "out": 2}

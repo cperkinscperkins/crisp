@@ -5,9 +5,63 @@
 
 ;; Redefine the macro with :device-vector added to the category whitelist,
 ;; then re-expand all four binary ops so the new check takes effect.
+;;; BUG 127 (endeavour 190): these analyzers once built their node from (second expr) (third expr)
+;;; and SILENTLY DROPPED any further operand -- (* x x w) compiled as (* x x).  Found by the
+;;; compile-API PyTorch example on the H100.  Now, as in Common Lisp, the CALL FORM folds and chains;
+;;; the function VALUE (#'+ passed to a reduction) is untouched -- %175-apply-binop always calls it
+;;; with exactly two arguments.  Anything that neither folds nor chains refuses extra operands.
+
+(defun %nary-fold-left (expr)
+  "(op a b c d) as ((op (op (op a b) c) d)): a LEFT fold, Common Lisp's order -- ((a*b)*c) -- and the
+   only one an IEEE compiler may use.  Each step is an ordinary two-operand form, so typing,
+   promotion and AD are exactly those of the nested form written by hand."
+  (let ((op (first expr)))
+    (reduce (lambda (acc x) (list op acc x)) (cdddr expr)
+            :initial-value (list op (second expr) (third expr)))))
+
+(defun %nary-chain-comparison (expr)
+  "(< a b c) as (and (< a b) (< b c)), Common Lisp's meaning.  Every operand is evaluated once and in
+   order: a non-atomic one is bound to a temporary first (a symbol or a literal is used directly)."
+  (let* ((op (first expr))
+         (cl-pkg (find-package :crisp-language))
+         (bindings nil)
+         (vals (loop for a in (rest expr)
+                     collect (if (or (symbolp a) (numberp a))
+                                 a
+                                 (let ((g (gensym "CMP")))
+                                   (push (list g a) bindings)
+                                   g))))
+         (chain (cons (intern "AND" cl-pkg)
+                      (loop for (x y) on vals while y collect (list op x y)))))
+    (if bindings
+        (list (intern "LET" cl-pkg) (nreverse bindings) chain)
+        chain)))
+
+(defun %nary-arith-prologue (expr op-string location)
+  "For (OP ...) with other than two operands: the form to analyze INSTEAD (a left fold, or the lone
+   operand of (+ x) / (* x)), or an error.  NIL for exactly two operands."
+  (let ((n (length (rest expr))))
+    (cond
+      ((= n 2) nil)
+      ((> n 2) (%nary-fold-left expr))
+      ((and (= n 1) (member op-string '("+" "*") :test #'string=)) (second expr))
+      ((= n 1)
+       (error 'crisp-compiler-error
+              :message (format nil "(~a x) with one operand is not supported~:[~;: Common Lisp's (/ x) is a reciprocal -- write (/ 1.0 x)~]."
+                               op-string (string= op-string "/"))
+              :source-location location))
+      (t
+       (error 'crisp-compiler-error
+              :message (format nil "(~a) needs at least one operand: an empty ~a has no type to take." op-string
+                               (if (string= op-string "*") "product" "sum"))
+              :source-location location)))))
+
 (defmacro def-binary-op-analyzer (name node-constructor op-string)
   `(defun ,name (expr env context location)
-     ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     ,(format nil "Analyzes a `(~a ...)` expression -- two operands; more fold left (BUG 127)." op-string)
+     (let ((instead (%nary-arith-prologue expr ,op-string location)))
+       (when instead
+         (return-from ,name (analyze-expression instead env context location))))
      (let* ((left-node (analyze-expression (second expr) env context (append location '(1))))
             (right-node (analyze-expression (third expr) env context (append location '(2))))
             (left-type (get-single-value-type left-node))
@@ -42,9 +96,17 @@
 (def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
 (def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
 
+(defun %require-arity (expr want op-string location)
+  "Errors unless (OP ...) EXPR has exactly WANT operands (BUG 127: never drop one silently)."
+  (unless (= (length (rest expr)) want)
+    (error 'crisp-compiler-error
+           :message (format nil "~a takes exactly ~r operand~:p; got ~d." op-string want (length (rest expr)))
+           :source-location location)))
+
 (defmacro def-unary-math-analyzer (name node-constructor op-string)
   `(defun ,name (expr env context location)
      ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     (%require-arity expr 1 ,op-string location)
      (let* ((arg-node (analyze-expression (second expr) env context (append location '(1))))
             (arg-type (get-single-value-type arg-node))
             (crisp-type (gethash arg-type *crisp-types*)))
@@ -70,6 +132,7 @@
    must be float; the result type is the (promoted) argument type."
   `(defun ,name (expr env context location)
      ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     (%require-arity expr 2 ,op-string location)
      (let* ((left-node  (analyze-expression (second expr) env context (append location '(1))))
             (right-node (analyze-expression (third expr)  env context (append location '(2))))
             (left-type  (get-single-value-type left-node))
@@ -92,7 +155,20 @@
 
 (defmacro def-comparison-analyzer (name node-constructor op-string)
   `(defun ,name (expr env context location)
-     ,(format nil "Analyzes a `(~a ...)` expression." op-string)
+     ,(format nil "Analyzes a `(~a ...)` expression -- two operands; more CHAIN, (and (~a a b) (~a b c)) (BUG 127)."
+              op-string op-string op-string)
+     (let ((n (length (rest expr))))
+       (cond
+         ((and (> n 2) (string= ,op-string "!="))
+          (error 'crisp-compiler-error
+                 :message "!= takes exactly two operands.  (Common Lisp's n-ary /= means ALL pairwise different -- n^2 comparisons, and easy to misread -- so Crisp does not offer it; spell out the pairs.)"
+                 :source-location location))
+         ((> n 2)
+          (return-from ,name (analyze-expression (%nary-chain-comparison expr) env context location)))
+         ((< n 2)
+          (error 'crisp-compiler-error
+                 :message (format nil "~a needs two operands; got ~d." ,op-string n)
+                 :source-location location))))
      (let* ((left-node (analyze-expression (second expr) env context (append location '(1))))
             (right-node (analyze-expression (third expr) env context (append location '(2))))
             (left-type (get-single-value-type left-node))
@@ -2575,11 +2651,14 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
 
 (defun %175-minmax-expand (expr which location)
   "Expands (min a b) / (max a b) into a single-evaluation comparison.
-   WHICH is :min or :max."
+   WHICH is :min or :max.  More operands fold left, (max (max a b) c) (BUG 127) -- the CALL form only:
+   #'max passed to a reduction is applied by %175-apply-binop with exactly two arguments."
+  (when (> (length (rest expr)) 2)
+    (return-from %175-minmax-expand (%nary-fold-left expr)))
   (unless (= (length (rest expr)) 2)
     (error 'crisp-compiler-error
-           :message (format nil "~(~a~) takes exactly two arguments, got ~a. Crisp's ~(~a~) is BINARY, unlike Common Lisp's variadic one: it exists to be passed as a #(T T => T) binop to the reduction family, which requires a fixed arity. Nest the calls to combine more than two values."
-                            which (length (rest expr)) which)
+           :message (format nil "~(~a~) needs at least two operands, got ~a. (~(~a~) a b c ...) folds left; #'~(~a~) passed to the reduction family is always applied to exactly two."
+                            which (length (rest expr)) which which)
            :source-location location))
   (let ((a (gensym "MM-A"))
         (b (gensym "MM-B")))

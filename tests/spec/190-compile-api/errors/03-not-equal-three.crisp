@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "!= takes exactly two operands"
+;;
+;; BUG 127 (endeavour 190) -- an n-ary != (Common Lisp's /=: ALL pairwise different) is refused;
+;; < <= > >= = chain, but != does not.
+
+(def-type ivec (vector int :address-space :global :align :compact))
+
+(def-kernel k_three_way (A &out B)
+  (declare #'(ivec &out ivec => nil))
+  (set! (~ B 0) (if (!= (~ A 0) (~ A 1) (~ A 2)) 1 0)))

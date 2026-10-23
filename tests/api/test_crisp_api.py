@@ -69,6 +69,23 @@ class Ctx:
         LIB.crisp_context_destroy(self.p)
 
 
+def _spirv_tools_present():
+    """Can this machine compile to SPIR-V?  A CUDA-only box (an H100 pod) has no llvm-spirv (BUG 128);
+    the SPIR-V-dependent tests then SKIP instead of failing, and the PTX ones still run."""
+    p = ctypes.c_void_p()
+    LIB.crisp_context_create(b"spv", ctypes.byref(p))
+    try:
+        LIB.crisp_add_source(p, TWO_KERNELS.encode(), b"probe.crisp")
+        return LIB.crisp_compile(p) == C.OK
+    finally:
+        LIB.crisp_context_destroy(p)
+
+
+SPV = _spirv_tools_present()
+TARGETS = ("spv", "ptx") if SPV else ("ptx",)
+requires_spv = unittest.skipUnless(SPV, "no SPIR-V toolchain on this machine (BUG 128)")
+
+
 def s(b):
     return None if b is None else b.decode("utf-8")
 
@@ -103,7 +120,7 @@ class Basics(unittest.TestCase):
     def test_version(self):
         v = LIB.crisp_api_version()
         self.assertEqual(v >> 16, 0, "major must match CRISP_API_VERSION_MAJOR")
-        self.assertEqual(v & 0xFFFF, 4, "minor 4: PTX shared offsets + clusters")
+        self.assertEqual(v & 0xFFFF, 5, "minor 5: CRISP_TYPE_AGGREGATE")
 
     def test_status_strings(self):
         for st in range(8):
@@ -142,6 +159,7 @@ class Basics(unittest.TestCase):
             self.assertIn("no sources", s(LIB.crisp_diagnostics_text(ctx)))
 
 
+@requires_spv
 class Compile(unittest.TestCase):
 
     def test_spv_two_kernels(self):
@@ -272,6 +290,7 @@ class Compile(unittest.TestCase):
             self.assertEqual(LIB.crisp_compile(ctx), C.ERROR_INVALID_ARGUMENT, "the bad flag survived the clear")
 
 
+@requires_spv
 class Flags(unittest.TestCase):
 
     REJECTED = ["--hoist=l0", "--metadata", "--ir-target=ptx", "--log-level=debug", "--no-such-flag",
@@ -308,6 +327,7 @@ class Flags(unittest.TestCase):
             self.assertEqual([d[0] for d in diagnostics(ctx)], [C.SEVERITY_WARNING])
 
 
+@requires_spv
 class Differentiate(unittest.TestCase):
 
     def test_primal_grad_and_pairing(self):
@@ -324,6 +344,7 @@ class Differentiate(unittest.TestCase):
             self.assertIn(b"vec_sq_lit_grad", data, "both entry points are in the one module")
 
 
+@requires_spv
 class ImplicitParams(unittest.TestCase):
     """Item 2, step 1: scratch the compiler added is in the parameter list, with its purpose."""
 
@@ -377,6 +398,7 @@ def local(L):
     return tuple(LIB.crisp_launch_local_size(L, a) for a in range(3))
 
 
+@requires_spv
 class LaunchGeometry(unittest.TestCase):
     """Item 2, step 2: the launch object does the geometry arithmetic (A10) -- the L0 hoister's
     rules, checked here case by case on the 089-strategy kernels."""
@@ -521,6 +543,26 @@ class LaunchGeometry(unittest.TestCase):
             LIB.crisp_launch_destroy(None)
 
 
+class Aggregates(unittest.TestCase):
+    """By-value structs and fixed arrays (found on the H100: their slots were sized 0, which a Level
+    Zero caller passes straight to zeKernelSetArgumentValue)."""
+
+    def test_struct_and_array_slot_sizes(self):
+        for target in TARGETS:
+            with self.subTest(target=target), Ctx(target) as ctx:
+                # (def-struct point (x fff) (y int)) passed by value: float + int, natural alignment = 8
+                self.assertEqual(compile_text(ctx, spec_source("056-struct-at-kernel-boundary/05-basic-strut-hoist.crisp"),
+                                              "s.crisp"), C.OK, s(LIB.crisp_diagnostics_text(ctx)))
+                self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, 0), C.TYPE["aggregate"])
+                self.assertEqual(LIB.crisp_slot_size(ctx, 0, 0, 0), 8)
+            with self.subTest(target=target, case="array"), Ctx(target) as ctx:
+                # (def-record data-rec (counts (array int 4))): the array field is one 16-byte slot
+                self.assertEqual(compile_text(ctx, spec_source("060-array/16-hoist-record-with-array.crisp"),
+                                              "a.crisp"), C.OK, s(LIB.crisp_diagnostics_text(ctx)))
+                self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, 0), C.TYPE["aggregate"])
+                self.assertEqual(LIB.crisp_slot_size(ctx, 0, 0, 0), 16)
+
+
 class PtxLaunch(unittest.TestCase):
     """The PTX rules (hoist-cuda %emit-launch-base): where CUDA differs from L0, local scratch as
     offsets into one dynamic shared block, and thread-block clusters."""
@@ -531,7 +573,7 @@ class PtxLaunch(unittest.TestCase):
         self.assertEqual(st, C.OK, s(LIB.crisp_diagnostics_text(ctx)))
 
     def test_cuda_sizes_two_axes(self):
-        for target, expect in (("spv", (640, 480, 7)), ("ptx", (640, 480, 1))):
+        for target, expect in [c for c in (("spv", (640, 480, 7)), ("ptx", (640, 480, 1))) if c[0] in TARGETS]:
             with self.subTest(target=target), Ctx(target) as ctx:
                 self.compiled(ctx, "089-strategy/17-hoist-3d.crisp")      # :derive-from (w h d)
                 with Launch(ctx) as L:
@@ -541,7 +583,7 @@ class PtxLaunch(unittest.TestCase):
                     self.assertEqual(groups(L), expect, "CUDA leaves gridZ = 1")
 
     def test_cuda_interleaved_takes_ordinary_rules(self):
-        for target, expect in (("spv", (1, 1, 1)), ("ptx", (1000, 1, 1))):
+        for target, expect in [c for c in (("spv", (1, 1, 1)), ("ptx", (1000, 1, 1))) if c[0] in TARGETS]:
             with self.subTest(target=target), Ctx(target) as ctx:
                 self.compiled(ctx, "089-strategy/18-hoist-interleaved-comment.crisp")   # :derive-from (n)
                 with Launch(ctx) as L:
@@ -564,6 +606,8 @@ class PtxLaunch(unittest.TestCase):
                 self.assertEqual(LIB.crisp_launch_shared_bytes(L), 12)
                 self.assertEqual(LIB.crisp_launch_param_shared_offset(L, ix["ctr"]), C.NO_SHARED_OFFSET, "global")
                 self.assertEqual(LIB.crisp_launch_param_shared_offset(L, ix["out"]), C.NO_SHARED_OFFSET)
+        if not SPV:
+            return
         with Ctx("spv") as ctx:
             self.compiled(ctx, "175-reductions/25-grid-reduce-last-man-metal.crisp")
             with Launch(ctx) as L:
@@ -597,6 +641,7 @@ class PtxLaunch(unittest.TestCase):
                 self.assertEqual(groups(L), (4, 4, 1))
 
 
+@requires_spv
 class Processes(unittest.TestCase):
 
     def test_parallel_contexts(self):

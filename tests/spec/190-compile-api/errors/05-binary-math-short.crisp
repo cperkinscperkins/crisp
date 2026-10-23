@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "takes exactly two operands"
+;;
+;; BUG 127 (endeavour 190) -- a binary math operator given one operand is refused (it read a NIL
+;; second operand before).
+
+(def-type fvec (vector float :address-space :global :align :compact))
+
+(def-kernel k_short_math (A &out B)
+  (declare #'(fvec &out fvec => nil))
+  (set! (~ B 0) (pow (~ A 0))))

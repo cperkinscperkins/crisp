@@ -21,6 +21,8 @@
 #   # endeavour 190: also run every CUDA hoist through the compile API, the C API suite on
 #   # Linux, and the PyTorch toy (needs a PyTorch image):
 #   COMPILE_API=1 ./scripts/run-on-pod.sh 149.36.1.192 29800 compile-api
+#   # ... and ONLY those phases (skips specs / --differentiate / negative):
+#   ONLY_COMPILE_API=1 COMPILE_API=1 ./scripts/run-on-pod.sh 149.36.1.192 29800 compile-api
 #
 #
 # Prerequisites:
@@ -268,7 +270,7 @@ step "Step 6: Run spec suite${FILTER:+  (filter: ${FILTER})}"
 # The remote exits non-zero if any phase failed; capture it (set -e would otherwise abort
 # before the completion banner) and propagate as this script's exit status.
 RUN_STATUS=0
-pod_run "FILTER='${FILTER}' COMPILE_API='${COMPILE_API:-0}' bash -s" <<'RUN_SPECS' || RUN_STATUS=$?
+pod_run "FILTER='${FILTER}' COMPILE_API='${COMPILE_API:-0}' ONLY_COMPILE_API='${ONLY_COMPILE_API:-0}' bash -s" <<'RUN_SPECS' || RUN_STATUS=$?
 set -e
 cd /root/crisp
 export CRISP_USE_SYSTEM_TOOLS=true
@@ -338,10 +340,12 @@ run_phase() {
     echo "  [$(date +%H:%M:%S)] done  (full log: ${logf})"
 }
 
+if [ "${ONLY_COMPILE_API:-0}" != "1" ]; then
 run_phase "specs (binary)" --script tests/run-specs.lisp --use-binary --skip-unit-tests ${FILTER_ARG}
+fi
 
 # A filter means a targeted run — skip the extra whole-suite phases.
-if [ -z "${FILTER:-}" ]; then
+if [ -z "${FILTER:-}" ] && [ "${ONLY_COMPILE_API:-0}" != "1" ]; then
     run_phase "specs (binary, --differentiate)" --script tests/run-specs.lisp --use-binary --differentiate --skip-unit-tests
     run_phase "negative specs" --script tests/run-error-specs.lisp
 else

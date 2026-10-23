@@ -563,7 +563,7 @@ static const crisp_name_value crisp_types[] = {
     { "ushort", CRISP_TYPE_USHORT }, { "int", CRISP_TYPE_INT }, { "uint", CRISP_TYPE_UINT },
     { "long", CRISP_TYPE_LONG }, { "ulong", CRISP_TYPE_ULONG }, { "half", CRISP_TYPE_HALF },
     { "bfloat16", CRISP_TYPE_BFLOAT16 }, { "float", CRISP_TYPE_FLOAT }, { "double", CRISP_TYPE_DOUBLE },
-    { "pointer", CRISP_TYPE_POINTER }, { NULL, 0 } };
+    { "pointer", CRISP_TYPE_POINTER }, { "aggregate", CRISP_TYPE_AGGREGATE }, { NULL, 0 } };
 static const crisp_name_value crisp_spaces[] = {
     { "global", CRISP_ADDRESS_SPACE_GLOBAL }, { "constant", CRISP_ADDRESS_SPACE_CONSTANT },
     { "local", CRISP_ADDRESS_SPACE_LOCAL }, { NULL, 0 } };

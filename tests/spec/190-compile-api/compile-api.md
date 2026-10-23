@@ -509,6 +509,42 @@ it, (3) the whole-suite pass on the BMG.
             (The first attempt built the .so in crisp-c-validator, which is Alpine/musl -- unloadable
             on glibc.  Not a library bug, but worth knowing: build the .so where it will run.)
 
+2026-10-22  H100 NVL run (branch in-mem-compilation-api, COMPILE_API=1).  Logs: put_temp_files_here/190/podlogs/.
+            ENVIRONMENT (not 190): the pod has no llvm-spirv -> all 136 --differentiate failures are
+            VERIFY-AUTODIFF falling back to a SPIR-V forward compile (no Level Zero) and dying at
+            llvm-spirv (exit 127); the API suite's SPIR-V tests failed the same way.  (bugs.md
+            candidate: VAD should SKIP, not compile SPIR-V, when there is no Level Zero.)
+            PRE-EXISTING, file mode (5): "PTX JIT compilation failed" for 122/07-ffi-libdevice,
+            128/13-sin-ptx-metal, 128/14-sin-fast-ptx-metal, 170/43-approx-metal-cuda; and
+            154/03-wgmma-two-warpgroups MMA mismatch.  190 does not touch forward-kernel code.
+            REAL, caught by the launch check (22 source-mode failures) -- fixed locally:
+              - scratch CELL byte size "API 4, launcher 0": the PTX .metacrisp types a scratch cell's
+                slots (ULONG VOIDP ULONG) though they are pointer/bytes/offset; the API sized VOIDP 0
+                so the check read 0 bytes.  Fix: non-pointer cell/tensor slots are ulong BY ROLE.
+              - "no slot for hoisted argument" (11): (a) TMA descriptors -- the HOISTER treated the
+                :rank-carrying tensor-map entry as a tensor; it is one slot (:range (0 0)) typed
+                (TENSOR-MAP A).  (b) parameterised records/structs (v-point :earnestness 3.0) were not
+                recognised as records by the API; record slot types are aliases (FFF).  (c) by-value
+                structs / fixed arrays had slot size 0 -> new CRISP_TYPE_AGGREGATE sized by C layout
+                (R27; API minor 5).
+              Offline check that now catches both classes WITHOUT a GPU:
+              put_temp_files_here/190/slotmap_check.py (every launcher's slot map vs the API).
+            THE TOY found a COMPILER BUG (not API): def-binary-op-analyzer (src/analysis/ops.lisp:8)
+            builds + - * / from (second expr) (third expr) and SILENTLY DROPS further operands, so
+            (* x x w) compiled as (* x x).  Confirmed in LLVM IR for float and int, * and +.  Fix
+            needs Chris: n-ary (left fold) or an error.
+2026-10-22  BUG 127 FIXED (Chris: Common Lisp's table; min/max too -- #'min stays a binary binop, since
+            %175-apply-binop always applies it to exactly two).  The analyzer folds + - * / min max and
+            chains < <= > >= =; refuses (/ x), (+), an n-ary !=, (max x), and wrong arity for the math
+            operators (src/analysis/ops.lisp -- MACROS, so edited in src: R28).  AD reads source, so
+            anf-transform normalises n-ary calls first (%nary-normalize, rebuilding only what changed --
+            a full rebuild broke EQ-keyed passes).  Specs: 03-nary-operators-metal (BMG: every value
+            right), 04-nary-product-ad (VERIFY-AUTODIFF on L0: analytical 12 = numerical 12; it was 3),
+            errors/01-06 (negative 360/360).  03 SKIP-WITH[--differentiate]: AD has no min/max rule
+            (BUG 132, pre-existing).  bugs.md: 127 (fixed), 128 VAD compiles SPIR-V with no Level Zero,
+            129 PTX metacrisp scratch-cell slot types, 130 SUSPECT cluster `return;` in int main,
+            131 the CLI fast/preserve warning, 132 no AD rule for min/max.
+
 Pod plan (190) -- needs Chris: push a branch, rent the pod
 ==========================================================
 GPU: H100 (sm_90) -- 16 CUDA hoist specs are Hopper-only and the runner does not gate by arch.
@@ -525,6 +561,15 @@ What would WASTE the rental, and what was done locally to rule it out:
   - no torch / nvcc on the pod             -> use the PyTorch image
   - a non-Hopper GPU                       -> 16 sm_90 specs fail in BOTH modes (noise, not API)
 NOT a waste: a launch-check MISMATCH or a toy FAIL -- that is what the run is for.
+
+Rerun (after the H100 fixes + BUG 127), SHORT:
+  ONLY_COMPILE_API=1 COMPILE_API=1 ./scripts/run-on-pod.sh <host> <port> in-mem-compilation-api ~/.ssh/id_ed25519
+  (skips specs / --differentiate / negative -- nothing new there, and --differentiate cannot run on a
+  CUDA-only pod: BUG 128).  Expect: the source-mode pass green except the 5 PRE-EXISTING file-mode
+  failures (BUG 089's four PTX JIT failures + 154/03 wgmma two-warpgroups), which fail in both modes;
+  the API suite 12 run / 31 skipped (no SPIR-V tools on the pod -- skipped, not failed); TORCH-TOY: PASS.
+  Locally verified first: all 132 CUDA source-mode launchers compile with nvcc AND their slot maps agree
+  with the API (slotmap_check.py: 132/132); E2E 1508/1508, negative 360/360, unit, API 43/43.
 
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 

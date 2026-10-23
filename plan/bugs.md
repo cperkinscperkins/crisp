@@ -4216,3 +4216,53 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         report UNEXPECTED-PASS once it is fixed.  CAUSE NOT INVESTIGATED; compare the shadow-struct work
         (NAME_ADJ for structs at the kernel boundary), which handles a struct PARAM but evidently not a
         cell OF a struct read through field accessors.
+
+[x] 127 FIXED -- AN OPERATOR CALL WITH MORE THAN TWO OPERANDS SILENTLY DROPPED THE EXTRA ONES.
+        FOUND 2026-10-22 (endeavour 190) by the compile-API PyTorch example on the H100: (* x x w) compiled
+        as (* x x) -- every value and gradient wrong, no error.  def-binary-op-analyzer and
+        def-comparison-analyzer (src/analysis/ops.lisp) built the node from (second expr) (third expr) and
+        ignored the rest; the unary / binary math analyzers (sin ..., pow, atan2) had no arity check
+        either.  Confirmed in LLVM IR for float and int, * and + and <.  Nested binary forms -- what every
+        spec wrote -- were never affected, which is why nothing caught it.
+        FIX (Chris's table, 2026-10-22): the CALL FORM now follows Common Lisp -- + - * / min max FOLD
+        LEFT, < <= > >= = CHAIN (each operand evaluated once), (+ x) and (* x) are x; refused with a
+        message: (/ x) (no silent reciprocal), (+) / (*), an n-ary != (CL's all-pairwise /=), (max x),
+        and any other arity for the unary / binary math operators.  #'+ / #'min passed to a reduction
+        are untouched: %175-apply-binop always calls them with exactly two operands.
+        SECOND HALF: AD reads SOURCE through anf-transform, not the analyzer's nodes, so the backward
+        pass still differentiated (* a b c) as (* a b) -- 190-compile-api/04-nary-product-ad measured
+        analytical 3 vs numerical 12.  anf-transform now normalises n-ary calls first (%nary-normalize,
+        the same helpers); it rebuilds only what changed -- rebuilding every cons broke later EQ-keyed
+        passes ("EXPLICIT-RETURN is undefined").  Now analytical 12 = numerical 12 on the BMG.
+        SPECS: 190-compile-api/03-nary-operators-metal (every form, on metal, L0 + CUDA),
+        04-nary-product-ad (VERIFY-AUTODIFF), errors/01..06.
+
+[ ] 128 VERIFY-AUTODIFF COMPILES SPIR-V ON A MACHINE WITH NO LEVEL ZERO, AND FAILS INSTEAD OF SKIPPING.
+        SEEN 2026-10-22 on an H100 pod (endeavour 190): all 136 --differentiate failures were "VERIFY-
+        AUTODIFF: forward compile failed" at llvm-spirv (exit 127, not installed) right after "Level Zero
+        loader not available -- :l0 runtime disabled".  Auto-selection is SPIR-V only (memory
+        verify-autodiff-runtime-selection); with no L0 runtime it should SKIP (or pick CUDA), not compile
+        for a runtime it already knows is absent.  Same family: tests/api/test_crisp_api.py defaults to
+        the spv target and fails on a box without the SPIR-V toolchain.
+
+[ ] 129 A PTX .metacrisp TYPES A SCRATCH CELL'S SLOTS (ULONG VOIDP ULONG) -- ITS LAYOUT IS POINTER, BYTE SIZE,
+        OFFSET.  Found 2026-10-22 (endeavour 190) by the source-mode launch check on the H100 ("scratch ...
+        bytes: API 4, launcher 0": the API sized VOIDP 0 and read nothing back).  Kernels and hoisters are
+        right (all pass the pointer first); only the recorded TYPES are out of order.  The compile API now
+        types cell / tensor slots BY ROLE (%api-mark-pointer-slots), so it no longer matters to it -- but
+        any other reader of :physical-signature is misled.  CAUSE NOT INVESTIGATED.
+
+[ ] 130 SUSPECT -- THE CUDA CLUSTER GRID FIX-UP EMITS `return;` INSIDE `int main()`.  %cuda-cluster-grid-fixup-
+        string's :exact / :cluster-reach branch ends with `return;`; the launcher's code is all in int main,
+        where that is ill-formed C++.  Noticed reading the generated launchers (endeavour 190); NOT
+        compiled -- the specs that take that branch use validate-cuda-cluster-no-pad, which the local nvcc
+        check did not cover.  Probably wants `return 1;`.
+
+[ ] 131 --math-precision=fast ALWAYS WARNS "the `preserve` request is not honored", though nobody asked for
+        preserve: parse-cli-args warns when precision is fast and denormal handling is :preserve -- and
+        :preserve is the DEFAULT.  The compile API warns only on an explicit --denormal-handling=preserve
+        (endeavour 190, R3); the CLI still warns every time.
+
+[ ] 132 AD HAS NO RULE FOR min / max.  "Function MAX is not differentiable" -- every spec using min/max
+        skips --differentiate or is forward-only.  Noticed 2026-10-22 (endeavour 190, BUG 127's spec 03).
+        min/max are piecewise-linear: the adjoint flows to the selected operand (ties: pick one, or split).

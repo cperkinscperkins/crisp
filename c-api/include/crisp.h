@@ -67,7 +67,7 @@ extern "C" {
 /* ---------------------------------------------------------------------------------------------- */
 
 #define CRISP_API_VERSION_MAJOR 0      /* bumped on an incompatible change */
-#define CRISP_API_VERSION_MINOR 4      /* bumped when functions are added  */
+#define CRISP_API_VERSION_MINOR 5      /* bumped when functions are added  */
 
 /* The library's version as (major << 16) | minor.  A caller built against this header should
    check that the major matches CRISP_API_VERSION_MAJOR. */
@@ -198,7 +198,9 @@ typedef enum crisp_type {
     CRISP_TYPE_LONG     = 7,  CRISP_TYPE_ULONG  = 8,
     CRISP_TYPE_HALF     = 9,  CRISP_TYPE_BFLOAT16 = 10,
     CRISP_TYPE_FLOAT    = 11, CRISP_TYPE_DOUBLE = 12,
-    CRISP_TYPE_POINTER  = 13  /* a device pointer; see crisp_slot_address_space */
+    CRISP_TYPE_POINTER  = 13, /* a device pointer; see crisp_slot_address_space */
+    CRISP_TYPE_AGGREGATE = 14 /* a struct or fixed array passed BY VALUE: crisp_slot_size bytes,
+                                 laid out as C would (natural alignment) */
     /* TODO(190): vector scalars (float4 ...) passed by value, if a kernel boundary allows them. */
 } crisp_type;
 

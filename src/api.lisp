@@ -208,13 +208,50 @@
     (:int . 4) (:uint . 4) (:float . 4) (:long . 8) (:ulong . 8) (:double . 8))
   "Bytes of each scalar type a physical slot can carry.")
 
-(defun %api-slot (entry)
-  "One :physical-signature ENTRY, (INDEX TYPE), as a slot plist."
-  (let ((type (second entry)))
-    (if (and (consp type) (string= (symbol-name (first type)) "C-POINTER"))
-        (list :type :pointer :size 8 :address-space (%api-kw (third type)))
-        (let ((kw (%api-kw type)))
-          (list :type kw :size (or (cdr (assoc kw +api-scalar-sizes+)) 0) :address-space nil)))))
+(defun %api-size-align (type aliases structs)
+  "(values BYTES ALIGNMENT) of TYPE laid out as C would: a scalar; (ARRAY T N); or a def-struct by
+   name, plain or parameterised -- (POINT EARNESTNESS 3.0) carries a compile-time field that takes
+   no space -- with each field at its natural alignment and the whole rounded to the largest.  NIL
+   when TYPE cannot be sized.  STRUCTS: alist of struct name -> ((FIELD TYPE) ...)."
+  (let* ((type (%api-resolve-type type aliases))
+         (head (and (consp type) (symbolp (first type)) (symbol-name (first type))))
+         (base (cond ((symbolp type) type) ((consp type) (first type))))
+         (fields (and base (symbolp base) (cdr (assoc (symbol-name base) structs :test #'string-equal))))
+         (scalar (and (symbolp type) (cdr (assoc (%api-kw type) +api-scalar-sizes+)))))
+    (cond
+      (scalar (values scalar scalar))
+      ((and head (string-equal head "ARRAY") (integerp (third type)))
+       (multiple-value-bind (s a) (%api-size-align (second type) aliases structs)
+         (and s (values (* s (third type)) a))))
+      (fields
+       (let ((offset 0) (max-align 1))
+         (dolist (f fields)
+           (multiple-value-bind (s a) (%api-size-align (second f) aliases structs)
+             (unless s (return-from %api-size-align nil))
+             (setf offset (* a (ceiling offset a))
+                   max-align (max max-align a))
+             (incf offset s)))
+         (values (* max-align (ceiling offset max-align)) max-align))))))
+
+(defun %api-slot (entry &optional aliases structs)
+  "One :physical-signature ENTRY, (INDEX TYPE), as a slot plist.  TYPE may be a def-type alias (a
+   record's FFF field is a float), so it is resolved through ALIASES first.  A by-value struct or
+   array is an :aggregate, sized by C layout rules (%api-size-align)."
+  (let ((type (%api-resolve-type (second entry) aliases)))
+    (cond
+      ((and (consp type) (symbolp (first type)) (string= (symbol-name (first type)) "C-POINTER"))
+       (list :type :pointer :size 8 :address-space (%api-kw (third type))))
+      ;; a CUDA TMA descriptor, (TENSOR-MAP <option>): option A passes a pointer to the descriptor
+      ;; in device global memory (see plan/ref.metacrisp)
+      ((and (consp type) (symbolp (first type)) (string= (symbol-name (first type)) "TENSOR-MAP"))
+       (list :type :pointer :size 8 :address-space :global))
+      ((and (symbolp type) (assoc (%api-kw type) +api-scalar-sizes+))
+       (list :type (%api-kw type) :size (cdr (assoc (%api-kw type) +api-scalar-sizes+)) :address-space nil))
+      (t
+       (let ((bytes (%api-size-align type aliases structs)))
+         (if bytes
+             (list :type :aggregate :size bytes :address-space nil)
+             (list :type (and (symbolp type) (%api-kw type)) :size 0 :address-space nil)))))))
 
 (defun %api-resolve-type (type aliases)
   "TYPE with def-type aliases followed (ALIASES: alist of symbol-name -> type form)."
@@ -274,7 +311,10 @@
          (kind (cond ((eq purpose :tensor-map) :scalar)   ; one slot: a descriptor pointer (CUDA TMA)
                      (rank :tensor)
                      ((and head (string-equal head "CELL")) :cell)
-                     ((and (symbolp type) (member (symbol-name type) record-names :test #'string-equal)) :record)
+                     ;; a record or struct, plain or PARAMETERISED -- (v-point :earnestness 3.0)
+                     ((let ((base (if (consp type) (first type) type)))
+                        (and base (symbolp base) (member (symbol-name base) record-names :test #'string-equal)))
+                      :record)
                      (t :scalar)))
          (element (case kind
                     ((:tensor :cell) (and (consp type) (%api-kw (second type))))
@@ -320,7 +360,12 @@
                         when (and (consp d) (string-equal (symbol-name (first d)) "DEF-TYPE"))
                           collect (cons (symbol-name (second d)) (third d))))
          (record-names (loop for d in (append (%api-section forms :records) (%api-section forms :structs))
-                             when (consp d) collect (symbol-name (second d)))))
+                             when (consp d) collect (symbol-name (second d))))
+         ;; struct name -> its fields ((NAME TYPE) ...), for sizing by-value struct slots
+         (structs (loop for d in (%api-section forms :structs)
+                        when (and (consp d) (symbolp (second d)))
+                          collect (cons (symbol-name (second d))
+                                        (remove-if-not (lambda (f) (and (consp f) (= (length f) 2))) (cddr d))))))
     (loop with profile = (first (%api-section forms :hardware-profile))
           for k in (%api-section forms :kernels)
           ;; declared + implicit, in SLOT order (A9: one list)
@@ -330,7 +375,8 @@
                                              (getf k :implicit-params)))
                              #'< :key (lambda (p) (or (third (first (getf p :roles))) most-positive-fixnum)))
           collect (list :name (getf k :name)
-                        :slots (%api-mark-pointer-slots (mapcar #'%api-slot (getf k :physical-signature)) params)
+                        :slots (%api-mark-pointer-slots
+                                (mapcar (lambda (e) (%api-slot e aliases structs)) (getf k :physical-signature)) params)
                         :params params
                         :geometry (%api-geometry k params)
                         ;; lanes per warp for :match-num-warps-per-workgroup scratch; NIL = no
@@ -393,17 +439,26 @@
 
 (defun %api-mark-pointer-slots (slots params)
   "SLOTS with every parameter's :pointer-role slot reported as a pointer in that parameter's address
-   space.  The .metacrisp records the TARGET's view of the slot: SPIR-V says (C-POINTER ADDRESS-SPACE
-   GLOBAL), but PTX says ULONG (PTX passes a pointer as a .param .b64).  The roles are the same on
-   every target, so they decide."
+   space, and every other cell / tensor layout slot (byte size, offsets, strides, extents, length) as
+   the ulong it always is.  The .metacrisp records the TARGET's view of a slot, which is not always
+   the layout: SPIR-V says (C-POINTER ADDRESS-SPACE GLOBAL) but PTX says ULONG for a pointer (a
+   .param .b64), and a PTX scratch cell is listed (ULONG VOIDP ULONG) although its slots are pointer,
+   byte size, offset (found on the H100, 2026-10-22).  The roles are the same on every target, so
+   they decide."
   (let ((slots (mapcar #'copy-list slots)))
     (dolist (p params slots)
       (dolist (r (getf p :roles))
-        (when (and (eq (first r) :pointer) (< -1 (third r) (length slots)))
+        (when (< -1 (third r) (length slots))
           (let ((s (nth (third r) slots)))
-            (setf (getf s :type) :pointer
-                  (getf s :size) 8
-                  (getf s :address-space) (getf p :address-space))
+            (case (first r)
+              (:pointer
+               (setf (getf s :type) :pointer
+                     (getf s :size) 8
+                     (getf s :address-space) (getf p :address-space)))
+              ((:byte-size :offset :stride :extent :length)
+               (setf (getf s :type) :ulong
+                     (getf s :size) 8
+                     (getf s :address-space) nil)))
             (setf (nth (third r) slots) s)))))))
 
 ;;; ------------------------------------------------------------------------------------------------

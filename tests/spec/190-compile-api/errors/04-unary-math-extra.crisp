@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "takes exactly one operand"
+;;
+;; BUG 127 (endeavour 190) -- a unary math operator given two operands once dropped the second
+;; silently; now it is refused.
+
+(def-type fvec (vector float :address-space :global :align :compact))
+
+(def-kernel k_two_into_one (A &out B)
+  (declare #'(fvec &out fvec => nil))
+  (set! (~ B 0) (sin (~ A 0) (~ A 1))))
