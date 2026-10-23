@@ -4,7 +4,7 @@
   "leaderboard_id": 543,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/543?tab=rankings",
   "directory": "01-vectoradd-v2",
-  "crisp_commit": "72b2dd5",
+  "crisp_commit": "c929d68e",
   "workload": {
     "dtype": "float16",
     "shape": [
@@ -44,10 +44,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-19T04:59:16Z",
+      "captured_at": "2026-10-21T15:12:30Z",
       "user_name": "cperkinscperkins",
-      "rank": 20,
-      "total_entrants": 66,
+      "rank": 21,
+      "total_entrants": 67,
       "file_name": "crisp_b200_inplace_2xhalf4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp",
       "py_file": "01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py",
@@ -57,13 +57,13 @@
       "submission_id": 962482,
       "top1_score_us": 225.45,
       "top1_user": "zjsxply",
-      "median_score_us": 236.34
+      "median_score_us": 235.91
     },
     "H100": {
-      "captured_at": "2026-10-19T04:59:16Z",
+      "captured_at": "2026-10-21T15:12:30Z",
       "user_name": "cperkinscperkins",
       "rank": 24,
-      "total_entrants": 41,
+      "total_entrants": 42,
       "file_name": "crisp_f16_direct_half4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_direct_half4.crisp",
       "py_file": "01-vectoradd-v2/crisp_f16_direct_half4.py",
@@ -73,13 +73,13 @@
       "submission_id": 962388,
       "top1_score_us": 512.59,
       "top1_user": "zjsxply",
-      "median_score_us": 525.97
+      "median_score_us": 526.18
     },
     "A100": {
-      "captured_at": "2026-10-19T04:59:16Z",
+      "captured_at": "2026-10-21T15:12:30Z",
       "user_name": "cperkinscperkins",
-      "rank": 55,
-      "total_entrants": 106,
+      "rank": 56,
+      "total_entrants": 107,
       "file_name": "crisp_f16_direct_half4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_direct_half4.crisp",
       "py_file": "01-vectoradd-v2/crisp_f16_direct_half4.py",
@@ -89,13 +89,13 @@
       "submission_id": 962434,
       "top1_score_us": 877.23,
       "top1_user": "zjsxply",
-      "median_score_us": 912.32
+      "median_score_us": 910.54
     },
     "L4": {
-      "captured_at": "2026-10-19T04:59:16Z",
+      "captured_at": "2026-10-21T15:12:30Z",
       "user_name": "cperkinscperkins",
-      "rank": 21,
-      "total_entrants": 37,
+      "rank": 22,
+      "total_entrants": 38,
       "file_name": "crisp_f16_direct_half4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_direct_half4.crisp",
       "py_file": "01-vectoradd-v2/crisp_f16_direct_half4.py",
@@ -485,5 +485,10 @@
       "public_score_us": 6934.73,
       "secret_score_us": 6926.34
     }
+  ],
+  "ablation_size_label": "size = 16384",
+  "takeaways": [
+    "**Blackwell (`B200`) vs. Hopper/Ampere/Ada (`H100`, `A100`, `L4`):**\n- On **B200** (`148 SMs`, `128 MB L2`, `8 TB/s HBM3e`), doubling per-thread work to **`2x half4` (`16 B/thread`) + in-place read-modify-write (`A += B`)** cut runtime from `276.08 µs` (#59) to **`233.48 µs` public / `232.89 µs` secret (#20 / 66, `6.90 TB/s`)** — a **15.4% speedup** (`96.6%` of the `#1` entry on the leaderboard).\n- On **H100**, **A100**, and **L4**, the smaller L2 caches (`40–50 MB`) and lower DRAM bandwidth mean `16384×16384` (`1.61 GB`) is strictly DRAM-bandwidth-bound. The minimal **10-register `direct_half4`** kernel (`1x half4` per thread, out-of-place) maximizes warp occupancy and achieves **`526.44 µs` (#24 on H100, `97.4%` of #1)**, **`912.90 µs` (#54 on A100, `96.8%` of #1)**, and **`6,891.89 µs` (#21 on L4, `97.6%` of #1)**.",
+    "**Grid-Stride Loops vs. Direct 1-to-1 Indexing on Single-Pass Elementwise Kernels:**\n- Replacing `loop-vector-stride` (`557.86 µs` on H100) with direct global indexing (`526.44 µs` on H100) saved `31.4 µs` by eliminating `cudaOccupancyMaxActiveBlocksPerMultiprocessor` host queries and loop-branch bookkeeping, dropping register pressure from `20` to `10` registers per thread."
   ]
 }

@@ -19,8 +19,9 @@ if hasattr(sys.stderr, "reconfigure"):
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CRISP_COMPILE = REPO_ROOT / "bin" / "crisp-compile.exe"
 POPCORN_CLI = Path(__file__).resolve().parent / "bin" / "popcorn-cli.exe"
-sys.path.insert(0, str(REPO_ROOT / "contests" / "leetgpu"))
-from package_leetgpu import ptx_entry_to_inline_asm
+
+sys.path.insert(0, str(REPO_ROOT))
+from contests.ptx_packager import ptx_entry_to_inline_asm
 
 
 def compile_crisp_with_profile(

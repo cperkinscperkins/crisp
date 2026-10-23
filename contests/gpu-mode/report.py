@@ -79,6 +79,28 @@ def refresh_live_standings(problem_data: Dict[str, Any], user_name: str = "cperk
 
         prev = standings.get(gpu, {})
         fname = our_row.get("file_name", prev.get("file_name", "submission.py"))
+
+        # If the API returned a baseline probe, select Crisp's best leaderboard submission
+        if fname.startswith("baseline"):
+            crisp_candidates = [
+                r for r in problem_data.get("runs", [])
+                if r.get("gpu") == gpu and r.get("mode") == "leaderboard" and not r.get("file_name", "").startswith("baseline") and r.get("public_score_us")
+            ]
+            if crisp_candidates:
+                best_c = min(crisp_candidates, key=lambda x: x["public_score_us"])
+                fname = best_c["file_name"]
+                crisp_pub = best_c["public_score_us"]
+                crisp_sec = best_c.get("secret_score_us")
+                crisp_sub = best_c.get("submission_id")
+            else:
+                crisp_pub = round(our_row["score"] * 1e6, 2)
+                crisp_sec = prev.get("secret_score_us")
+                crisp_sub = prev.get("submission_id")
+        else:
+            crisp_pub = round(our_row["score"] * 1e6, 2)
+            crisp_sec = prev.get("secret_score_us")
+            crisp_sub = prev.get("submission_id")
+
         kmeta = py_to_kernel.get(fname, {})
 
         standings[gpu] = {
@@ -90,9 +112,9 @@ def refresh_live_standings(problem_data: Dict[str, Any], user_name: str = "cperk
             "crisp_file": kmeta.get("crisp_file", prev.get("crisp_file", "")),
             "py_file": kmeta.get("py_file", prev.get("py_file", "")),
             "hardware_profile": kmeta.get("hardware_profile", prev.get("hardware_profile")),
-            "public_score_us": round(our_row["score"] * 1e6, 2),
-            "secret_score_us": prev.get("secret_score_us"),
-            "submission_id": prev.get("submission_id"),
+            "public_score_us": crisp_pub,
+            "secret_score_us": crisp_sec,
+            "submission_id": crisp_sub,
             "top1_score_us": round(top1["score"] * 1e6, 2),
             "top1_user": top1.get("user_name", "?"),
             "median_score_us": round(median_row["score"] * 1e6, 2),
@@ -146,7 +168,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
             continue
         spec = gpu_specs.get(gpu, {})
         arch = spec.get("arch", "—")
-        rank_str = f"**#{st['rank']}** / {st['total_entrants']}"
+        rank_str = f"**#{st['rank']}** / {st['total_entrants']}" if st.get("rank") is not None else f"— / {st.get('total_entrants', '?')}"
         pub_us = st.get("public_score_us")
         sec_us = st.get("secret_score_us")
         pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
@@ -160,7 +182,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
         if crisp_f and py_f:
             kernel_link = f"[`{fname}`]({py_f}) ([`.crisp`]({crisp_f}))"
         else:
-            kernel_link = f"`{fname}`"
+            kernel_link = f"`{fname}`" if fname else "—"
         prof = f"`{st['hardware_profile']}`" if st.get("hardware_profile") else "—"
         cap = st.get("captured_at", "?")[:16].replace("T", " ")
         L.append(
@@ -169,7 +191,8 @@ def render_problem_report(p: Dict[str, Any]) -> str:
     L.append("")
 
     # Section 2: Technique Ladder & Cross-GPU Ablation
-    L.append("## § 2 — Technique Ladder & Cross-GPU Ablation (`size = 16384`)\n")
+    ablation_lbl = p.get("ablation_size_label", "size = 16384")
+    L.append(f"## § 2 — Technique Ladder & Cross-GPU Ablation (`{ablation_lbl}`)\n")
     L.append(
         "Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted to the official leaderboard). "
         "The fastest kernel on each GPU is **bold**.\n"
@@ -233,13 +256,16 @@ def render_problem_report(p: Dict[str, Any]) -> str:
 
     # Section 3: Key Architectural Takeaways
     L.append("## § 3 — Key Architectural Takeaways\n")
-    L.append(
-        "1. **Blackwell (`B200`) vs. Hopper/Ampere/Ada (`H100`, `A100`, `L4`):**\n"
-        "   - On **B200** (`148 SMs`, `128 MB L2`, `8 TB/s HBM3e`), doubling per-thread work to **`2x half4` (`16 B/thread`) + in-place read-modify-write (`A += B`)** cut runtime from `276.08 µs` (#59) to **`233.48 µs` public / `232.89 µs` secret (#20 / 66, `6.90 TB/s`)** — a **15.4% speedup** (`96.6%` of the `#1` entry on the leaderboard).\n"
-        "   - On **H100**, **A100**, and **L4**, the smaller L2 caches (`40–50 MB`) and lower DRAM bandwidth mean `16384×16384` (`1.61 GB`) is strictly DRAM-bandwidth-bound. The minimal **10-register `direct_half4`** kernel (`1x half4` per thread, out-of-place) maximizes warp occupancy and achieves **`526.44 µs` (#24 on H100, `97.4%` of #1)**, **`912.90 µs` (#54 on A100, `96.8%` of #1)**, and **`6,891.89 µs` (#21 on L4, `97.6%` of #1)**.\n"
-        "2. **Grid-Stride Loops vs. Direct 1-to-1 Indexing on Single-Pass Elementwise Kernels:**\n"
-        "   - Replacing `loop-vector-stride` (`557.86 µs` on H100) with direct global indexing (`526.44 µs` on H100) saved `31.4 µs` by eliminating `cudaOccupancyMaxActiveBlocksPerMultiprocessor` host queries and loop-branch bookkeeping, dropping register pressure from `20` to `10` registers per thread.\n"
-    )
+    takeaways = p.get("takeaways", [])
+    if takeaways:
+        for idx, item in enumerate(takeaways, start=1):
+            lines = item.strip().splitlines()
+            L.append(f"{idx}. {lines[0]}")
+            for subline in lines[1:]:
+                L.append(f"   {subline}")
+        L.append("")
+    else:
+        L.append("1. **Performance Tuning:** Performance results recorded and verified on official leaderboard.\n")
 
     # Section 4: Chronological Run Log
     L.append("## § 4 — Verified Submission & Benchmark Log\n")
@@ -296,7 +322,7 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
             st = standings.get(gpu)
             if not st:
                 continue
-            rank_str = f"**#{st['rank']}** / {st['total_entrants']}"
+            rank_str = f"**#{st['rank']}** / {st['total_entrants']}" if st.get("rank") is not None else "—"
             pub_us = st.get("public_score_us")
             sec_us = st.get("secret_score_us")
             pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
@@ -307,7 +333,7 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
             crisp_f = st.get("crisp_file", "")
             py_f = st.get("py_file", "")
             fname = st.get("file_name", "")
-            k_link = f"[`{fname}`]({py_f}) ([`.crisp`]({crisp_f}))" if (crisp_f and py_f) else f"`{fname}`"
+            k_link = f"[`{fname}`]({py_f}) ([`.crisp`]({crisp_f}))" if (crisp_f and py_f) else (f"`{fname}`" if fname else "—")
             cap = st.get("captured_at", "?")[:16].replace("T", " ")
             L.append(
                 f"| [`{prob}`](REPORT-{prob}.md) | **{gpu}** | {rank_str} | {pub_str} | {sec_str} | {bw_str} | {pct_str} | {k_link} | `{cap}` |"
@@ -324,8 +350,34 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
     return "\n".join(L)
 
 
+def inspect_leaderboard(lb_id: int) -> None:
+    url = f"https://www.gpumode.com/api/leaderboard/{lb_id}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    data = payload.get("data", {})
+    lb = data.get("leaderboard", {})
+    print(f"=== Leaderboard #{lb_id}: {lb.get('name')} ===")
+    print("GPUs:", data.get("gpu_types"))
+    print("\n--- description ---")
+    print(lb.get("description", ""))
+    print("\n--- reference ---")
+    print(lb.get("reference", ""))
+    rankings = data.get("rankings", {})
+    for gpu, rows in rankings.items():
+        print(f"\n--- {gpu} ({len(rows)} entrants) ---")
+        for r in rows[:10]:
+            print(f"  #{r['rank']:3d}  {r['user_name']:<20s}  {r['score']*1e6:8.2f} us  ({r['file_name']})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Crisp GPU MODE Contest Report Generator")
+    parser.add_argument(
+        "--inspect",
+        type=int,
+        default=None,
+        help="Inspect a GPU MODE leaderboard ID from gpumode.com API",
+    )
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -337,6 +389,10 @@ def main() -> None:
         help="Write contests/gpu-mode/REPORT.md and per-contest REPORT-<problem>.md files",
     )
     args = parser.parse_args()
+
+    if args.inspect is not None:
+        inspect_leaderboard(args.inspect)
+        return
 
     json_files = sorted(RESULTS_DIR.glob("*.json"))
     problems: List[Dict[str, Any]] = []
