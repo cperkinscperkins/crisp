@@ -591,6 +591,12 @@ Rerun (after the H100 fixes + BUG 127), SHORT:
   CRISP_TYPE_AGGREGATE stays: a def-struct by value really is one aggregate parameter (probe: PTX
   .param .align 4 .b8 k_sa_param_0[16]); only the record-with-array test case was wrong.
 
+  FOLD (2026-10-22, at Chris's request): both overlays emptied into src/ by a script (verbatim copies,
+  last copy of a duplicate wins -- %hoist-runs-launcher-p had two): crisp-compiler-overlay ->
+  src/codegen.lisp (BUG 066 inherit), src/metadata-val.lisp + src/metadata.lisp (BUG 133);
+  spec-runner-overlay -> tests/run-specs.lisp (11 functions).  Script + pre-fold backups:
+  put_temp_files_here/190/fold/.
+
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 
 Don't forget (definition of done)

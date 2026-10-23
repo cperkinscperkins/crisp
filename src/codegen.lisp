@@ -534,6 +534,13 @@
   (when (semantic-function-is-entry-point semantic-function)
         (log:info "Marking function ~a as Kernel for backend ~a"
                   (semantic-function-name semantic-function) *target-backend*)
+        ;; Endeavour 190 (BUG 066 on PTX): a _GRAD kernel inherits its forward kernel's launch
+        ;; geometry on EVERY backend.  It used to happen only inside the SPIR-V subgroup emitter
+        ;; below, so on PTX every gradient kernel's .metacrisp carried no global/local size and a
+        ;; caller had to guess.  Measured before the change: the PTX of all 903 specs that compile
+        ;; with --differentiate is byte-identical; only the metadata of 379 _grad kernels changes.
+        ;; (The SPIR-V call below stays -- the inherit only fills a missing entry, so it is a no-op.)
+        (%173-ensure-grad-dispatch-decls semantic-function)
 
         (case *target-backend*
           (:spirv

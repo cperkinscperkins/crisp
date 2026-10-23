@@ -68,7 +68,7 @@ The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative
 | `(= mode :fast)`, `(!= a b)` | `eq`, `eql`, `equal`, `/=` | One equality, `=`; it compares enum keywords too.  `!=` for not-equal. |
 | `(set! x v)`, `(set! (~ v i) x)` | `setf`, `setq`, `incf` | Assignment is `set!`. |
 | `(~ v i)` | `aref` | Indexing a storage handle. |
-| `(cond (... ) (t default))` | `(cond ... (true default))` | In `cond` the catch-all clause is `t`.  There is no boolean literal (`true` / `false` are not values yet). |
+| `(cond (... ) (else default))` | `(cond ... (true default))` | In `cond` the catch-all clause is `else`, not `T`. This is because `T` is often used by users for template types.  There is no boolean literal (`true` / `false` are not values yet). |
 | `(* 2.0 x)` | `(* 2 x)` with a float `x` | No implicit int/float mixing — use float literals, or `(to-float n)`. |
 | `(< lid 32ul)` | `(< lid 32)` with a `ulong` | Integer literals are `int`; a literal compared with a `ulong` needs `ul` (see §4). |
 | `def-function` at top level | `defun`, nested functions | Functions are top-level forms; no closures, no recursion. |

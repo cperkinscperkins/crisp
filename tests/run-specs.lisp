@@ -1924,6 +1924,49 @@
                       (directory #P"/sys/class/drm/*/device/vendor")))
               t)))))
 
+;; Endeavour 190: --hoist-kernel=source, by the HOIST-KERNEL directive or the runner option.
+(defun parse-hoist-kernel (directive-lines)
+  "Parse HOIST-KERNEL: file|source (Endeavour 190).  Returns \"file\", \"source\" or nil.
+   `source` forwards --hoist-kernel=source to the hoist compile: the L0 launcher then embeds the
+   .crisp text and compiles it at run time through the compile API (c-api/include/crisp.h)."
+  (dolist (line directive-lines nil)
+    (let ((trimmed (string-left-trim ";; " line)))
+      (when (starts-with trimmed "HOIST-KERNEL:")
+        (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 13))))
+          (when (plusp (length v)) (return (string-downcase v))))))))
+
+(defun %hoist-kernel-source-p (file &optional (backend "L0"))
+  "T when FILE's BACKEND (\"L0\" or \"CUDA\") hoist should use --hoist-kernel=source: its HOIST-KERNEL
+   directive says so, or the runner was started with --hoist-kernel=source (the A6(A) pass: every
+   hoist spec that RUNS its launcher goes through the compile API, same expectations).  A spec
+   saying HOIST-KERNEL: file opts out of the pass."
+  (let* ((directives (extract-test-directives file))
+         (directive (parse-hoist-kernel directives)))
+    (cond ((equal directive "source") t)
+          ((equal directive "file") nil)
+          ;; The pass is about RUNNING the launcher: a spec whose validator only inspects the
+          ;; generated text checks file-mode text (literal argument indices, which source mode
+          ;; rewrites), so it keeps file mode.
+          (t (and (member "--hoist-kernel=source" (uiop:command-line-arguments) :test #'string=)
+                  (%hoist-runs-launcher-p directives backend))))))
+
+(defun %hoist-runs-launcher-p (directive-lines backend)
+  "T when a TEST-HOIST[BACKEND] directive in DIRECTIVE-LINES names a validator that compiles AND RUNS
+   the launcher (L0: validate-l0-host-run / validate-l0-mma-run; CUDA: validate-cuda-host-run /
+   validate-cuda-mma-run).  Whitespace between the ] and the colon is allowed, as the main runner allows it."
+  (let ((prefix (format nil "TEST-HOIST[~a]" backend))
+        (runners (if (string-equal backend "CUDA")
+                     '("validate-cuda-host-run" "validate-cuda-mma-run")
+                     '("validate-l0-host-run" "validate-l0-mma-run"))))
+    (some (lambda (line)
+            (let ((trimmed (string-left-trim ";; " line)))
+              (and (starts-with trimmed prefix)
+                   (let ((colon (position-if-not (lambda (ch) (member ch '(#\Space #\Tab)))
+                                                 trimmed :start (length prefix))))
+                     (and colon (char= (cl:char trimmed colon) #\:)))   ; CHAR here is Crisp's type
+                   (some (lambda (v) (search v trimmed)) runners))))
+          directive-lines)))
+
 (defun run-spec-with-hoist (file backend &optional bc-files)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated output files.
    For L0: discovers .cpp files.  For CUDA: discovers .cu files.
@@ -1976,6 +2019,12 @@
                        ;; sm_90+ gate at hoist time and emits the sm_90a PTX + CUtensorMap path.
                        (let ((arch (parse-hoist-arch (extract-test-directives file))))
                          (when arch (list (format nil "--ir-target-arch=~a" arch))))
+                       ;; Endeavour 190: the dogfood launcher -- embed the source, compile it at run
+                       ;; time through the C API (L0 and CUDA).
+                       ;; (never with foreign .bc libraries: a launcher cannot embed those)
+                       (when (and (null bc-files)
+                                  (%hoist-kernel-source-p file (symbol-name backend)))
+                         (list "--hoist-kernel=source"))
                        (list (uiop:native-namestring file))))
          (file-ext (if (string-equal (symbol-name backend) "CUDA") "cu" "cpp")))
     (multiple-value-bind (output error-output exit-code)
@@ -2090,6 +2139,37 @@
 
 
 
+;; Endeavour 190: a source-mode launcher links the compile API library and runs with bin/ on PATH.
+(defun %compile-api-link-args ()
+  "The clang arguments that let a launcher call the compile API: its header and its import library
+   (bin/libcrisp.dll.a on Windows, bin/libcrisp.so elsewhere), or NIL when the library is not
+   built (bash c-api/build.sh)."
+  (let* ((root (uiop:getcwd))
+         (include (merge-pathnames "c-api/include/" root))
+         (lib (merge-pathnames (if (uiop:os-windows-p) "bin/libcrisp.dll.a" "bin/libcrisp.so") root)))
+    (when (probe-file lib)
+      (list "-I" (uiop:native-namestring include) (uiop:native-namestring lib)))))
+
+(defun %run-launcher-with-bin-on-path (exe-path)
+  "Runs the launcher EXE-PATH with <repo>/bin prepended to ITS PATH -- a compile-API launcher must
+   find crisp.dll (Windows) at run time, and crisp.dll finds crisp-compile beside itself.  The
+   runner's OWN environment is never modified: the child gets an explicit :environment (setenv in a
+   long-lived runner was a suspect in an unexplained crash late in a full pass).
+   Returns (values STDOUT STDERR EXIT-CODE), like uiop:run-program with :output :string."
+  (let* ((bin (uiop:native-namestring (merge-pathnames "bin/" (uiop:getcwd))))
+         (sep (if (uiop:os-windows-p) ";" ":"))
+         (env (loop for e in (sb-ext:posix-environ)
+                    collect (if (and (> (length e) 5) (string-equal "PATH=" e :end2 5))
+                                (format nil "~a~a~a~a" (subseq e 0 5) bin sep (subseq e 5))
+                                e)))
+         (out (make-string-output-stream))
+         (err (make-string-output-stream))
+         (proc (sb-ext:run-program (uiop:native-namestring exe-path) nil
+                                   :environment env :search nil :wait t
+                                   :output out :error err)))
+    (values (get-output-stream-string out) (get-output-stream-string err)
+            (sb-ext:process-exit-code proc))))
+
 (defun validate-l0-host-run (crisp-file cpp-files)
   "Validates C++ files compile AND run. Links against system ze_loader.dll."
   (if (null cpp-files)
@@ -2106,16 +2186,24 @@
           (return-from validate-l0-host-run (validate-l0-compile-only crisp-file cpp-files)))
 
         (dolist (cpp cpp-files)
-          (let ((exe-path (make-pathname :type "exe" :defaults cpp)))
+          (let* ((exe-path (make-pathname :type "exe" :defaults cpp))
+                 ;; Endeavour 190: a --hoist-kernel=source launcher calls the compile API
+                 (api-p (search "#include \"crisp.h\"" (uiop:read-file-string cpp)))
+                 (api-args (when api-p (%compile-api-link-args))))
+            (when (and api-p (null api-args))
+              (format t "FAIL: ~a needs the compile API library -- build it: bash c-api/build.sh~%" (file-namestring cpp))
+              (return-from validate-l0-host-run nil))
             ;; 1. Compile & Link
             (multiple-value-bind (output error-output exit-code)
                 (uiop:run-program
-                  (list (uiop:native-namestring clang-exe)
-                        (uiop:native-namestring cpp)
-                        "-I" (namestring l0-include)
-                        (uiop:native-namestring ze-loader)
-                        "-static"
-                        "-o" (uiop:native-namestring exe-path))
+                  (append
+                   (list (uiop:native-namestring clang-exe)
+                         (uiop:native-namestring cpp)
+                         "-I" (namestring l0-include))
+                   api-args
+                   (list (uiop:native-namestring ze-loader)
+                         "-static"
+                         "-o" (uiop:native-namestring exe-path)))
                   :output :string :error-output :string :ignore-error-status t)
               (declare (ignore output))
 
@@ -2128,8 +2216,10 @@
                   (progn
                    (format t "Compiling ~a -> ~a... OK~%" (file-namestring cpp) (file-namestring exe-path))
                    (multiple-value-bind (run-out run-err run-code)
-                       (uiop:run-program (uiop:native-namestring exe-path)
-                         :output :string :error-output :string :ignore-error-status t)
+                       (if api-p
+                           (%run-launcher-with-bin-on-path exe-path)
+                           (uiop:run-program (uiop:native-namestring exe-path)
+                             :output :string :error-output :string :ignore-error-status t))
                      (format t "Output:~%~a~%" run-out)
                      (if (zerop run-code)
                          ;; Check Expectations
@@ -2150,6 +2240,25 @@
                             (file-namestring exe-path) run-code run-err)
                           (return-from validate-l0-host-run nil)))))))))
         t)))
+
+(defun %hoist-kernel-source-hoister-args (file &optional (backend "L0"))
+  "The hoister arguments that keep a RE-hoist of FILE (validate-l0-mma-run's / validate-cuda-mma-run's
+   --mma-test pass) in source mode, or NIL when FILE's BACKEND hoist is in file mode.  The flags are
+   the ones the hoist compile used (run-spec-with-hoist binds the same specials around the
+   validator), minus the ones the compile API refuses -- what crisp-compile's
+   %hoist-kernel-source-args would have forwarded."
+  (when (%hoist-kernel-source-p file backend)
+    (append (list "--hoist-kernel=source"
+                  (format nil "--kernel-source=~a" (uiop:native-namestring (truename file))))
+            (mapcar (lambda (f) (format nil "--kernel-flag=~a" f))
+                    (append (when *compile-denormal-handling*
+                              (list (format nil "--denormal-handling=~(~a~)" (symbol-name *compile-denormal-handling*))))
+                            (when *compile-math-precision*
+                              (list (format nil "--math-precision=~(~a~)" (symbol-name *compile-math-precision*))))
+                            (when *compile-hardware-profile*
+                              (list (format nil "--hardware-profile=~a" *compile-hardware-profile*)))
+                            (let ((arch (parse-hoist-arch (extract-test-directives file))))
+                              (when arch (list (format nil "--ir-target-arch=~a" arch)))))))))
 
 
 (defun validate-l0-compile-only (crisp-file cpp-files)
@@ -3318,15 +3427,25 @@
 
      (t
       (dolist (cu cu-files)
-        (let ((exe-path (make-pathname :type #+windows "exe" #-windows nil
-                                       :defaults cu)))
+        (let* ((exe-path (make-pathname :type #+windows "exe" #-windows nil
+                                        :defaults cu))
+               ;; Endeavour 190: a --hoist-kernel=source launcher calls the compile API.  Link the
+               ;; library with an rpath to bin/, so it is found without touching the environment
+               ;; (and finds crisp-compile beside itself).
+               (api-p (search "#include \"crisp.h\"" (uiop:read-file-string cu)))
+               (api-args (when api-p (%compile-api-link-args)))
+               (bin-dir (uiop:native-namestring (merge-pathnames "bin/" (uiop:getcwd)))))
+          (when (and api-p (null api-args))
+            (format t "FAIL: ~a needs the compile API library -- build it: bash c-api/build.sh~%" (file-namestring cu))
+            (return-from validate-cuda-host-run nil))
           ;; 1. Compile
           (multiple-value-bind (output error-output exit-code)
               (uiop:run-program
-                (list nvcc
-                      (uiop:native-namestring cu)
-                      "-lcuda"
-                      "-o" (uiop:native-namestring exe-path))
+                (append (list nvcc (uiop:native-namestring cu))
+                        api-args
+                        (when (and api-p (not (uiop:os-windows-p)))
+                          (list "-Xlinker" (format nil "-rpath=~a" bin-dir)))
+                        (list "-lcuda" "-o" (uiop:native-namestring exe-path)))
                 :output :string :error-output :string :ignore-error-status t)
             (declare (ignore output))
             (unless (zerop exit-code)
@@ -3337,8 +3456,10 @@
 
           ;; 2. Run
           (multiple-value-bind (run-out run-err run-code)
-              (uiop:run-program (uiop:native-namestring exe-path)
-                :output :string :error-output :string :ignore-error-status t)
+              (if api-p
+                  (%run-launcher-with-bin-on-path exe-path)   ; Windows needs PATH; harmless elsewhere
+                  (uiop:run-program (uiop:native-namestring exe-path)
+                    :output :string :error-output :string :ignore-error-status t))
             (format t "Output:~%~a~%" run-out)
             (unless (zerop run-code)
               (format t "FAIL: ~a execution failed (Code ~a)~%Error: ~a~%"
@@ -3471,6 +3592,8 @@
                                               (format nil "--mma-test=~{~d~^,~}" dims))
                                         (when (and scale (/= scale 1))
                                           (list (format nil "--mma-scale=~d" scale)))
+                                        ;; Endeavour 190: a source-mode spec stays source-mode here
+                                        (%hoist-kernel-source-hoister-args file)
                                         (list (uiop:native-namestring metacrisp)))
                 :output :string :error-output :string :ignore-error-status t)
             (declare (ignore out))
@@ -3515,6 +3638,8 @@
                                               (format nil "--mma-test=~{~d~^,~}" dims))
                                         (when (and scale (/= scale 1))
                                           (list (format nil "--mma-scale=~d" scale)))
+                                        ;; Endeavour 190: a source-mode spec stays source-mode here
+                                        (%hoist-kernel-source-hoister-args file "CUDA")
                                         (list (uiop:native-namestring metacrisp)))
                 :output :string :error-output :string :ignore-error-status t)
             (declare (ignore out))
@@ -3640,15 +3765,13 @@
   ;; The gradient scatter itself.  f32 atomic add into global = adjoint accumulation.
   (unless (search "atom.global.add.f32" ptx-string)
     (format *error-output*
-            "FAIL: backward has NO gradient scatter (expected 'atom.global.add.f32').~%~
-             This is BUG 038's signature: an empty backward that still compiles.~%")
+            "FAIL: backward has NO gradient scatter (expected 'atom.global.add.f32').~%This is BUG 038's signature: an empty backward that still compiles.~%")
     (return-from validate-ptx-tma-grad nil))
   ;; ...sourced from the staged tile in shared memory, which is what makes it the tile's
   ;; adjoint rather than some unrelated accumulation.
   (unless (search "ld.shared" ptx-string)
     (format *error-output*
-            "FAIL: gradient scatter is not fed from shared memory — the staged tile's adjoint~%~
-             is not what is being accumulated.~%")
+            "FAIL: gradient scatter is not fed from shared memory — the staged tile's adjoint~%is not what is being accumulated.~%")
     (return-from validate-ptx-tma-grad nil))
   ;; The forward TMA staging must still be there: the point is that AD did not cost us the
   ;; descriptor-driven copy.
@@ -4178,8 +4301,7 @@
        nil)
       ((search "tf32" ptx-string)
        (format *error-output*
-               "FAIL: fp16 MMA present but tf32 survives in the same module — some A/B path~%~
-                       still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
+               "FAIL: fp16 MMA present but tf32 survives in the same module — some A/B path~%still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
        nil)
       (t t))))
 
@@ -4213,8 +4335,7 @@
        nil)
       ((search "tf32" ptx-string)
        (format *error-output*
-               "FAIL: bf16 MMA present but tf32 survives in the same module — some A/B path~%~
-                       still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
+               "FAIL: bf16 MMA present but tf32 survives in the same module — some A/B path~%still mints tf32 fragments (the 155/02 partial-conversion failure mode).~%")
        nil)
       (t t))))
 
@@ -4238,8 +4359,7 @@
      nil)
     ((search "tf32" ptx-string)
      (format *error-output*
-             "FAIL: ~a wgmma present but tf32 survives in the same module — some operand path~%~
-                     still lowers as tf32.~%" label)
+             "FAIL: ~a wgmma present but tf32 survives in the same module — some operand path~%still lowers as tf32.~%" label)
      nil)
     (t t)))
 
@@ -4293,8 +4413,7 @@
              (format t "FAIL: ~a allocates USM but never calls zeMemAllocDevice~%" name)
              (setf passed nil))
            (unless copy
-             (format t "FAIL: ~a allocates device memory but never stages it ~
-                       (no zeCommandListAppendMemoryCopy)~%" name)
+             (format t "FAIL: ~a allocates device memory but never stages it (no zeCommandListAppendMemoryCopy)~%" name)
              (setf passed nil))))))
     (when passed
       (format t "PASS: device memory + staging in all ~a file(s).~%" (length cpp-files)))
