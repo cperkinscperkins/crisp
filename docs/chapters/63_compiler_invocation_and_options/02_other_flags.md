@@ -19,10 +19,10 @@ do with the debug output once it is retrieved. The hoisting code typically model
 When outputting LLVM-IR, include DWARF symbols
 
 
-#### `--hoist-dynamic=<KERNELNAME>` 📝
-This flag can be used repeatedly, each occurrence with a different KERNELNAME.  For each kernel named, the hoisting 
-code will demonstrate how to compile that same kernel by invoking the in-memory compilation API on the string that is that
-kernel. 
+#### `--hoist-kernel=file|source` ✅
+With `--hoist=l0`: where the generated launcher gets its kernel.  `file` (the default) loads the
+compiled `.spv`.  `source` embeds the `.crisp` source and the compile flags, compiles them at run
+time through the [Compile API](#compile-api), and takes every argument slot from the API.
 
 #### `--re-output-crisp=<DIRECTORY>` 📝
 This flag is passed a directory. The .crisp files that are being compiled will be copied into that directory. But they will 
@@ -59,30 +59,4 @@ Note that this not only skips the `c-t-check` entries that you put into your own
 regularly performs, including error checks that the documentation elsewhere says might be performed.
 When this flag is on, the compiler only performs the minimal checks required to
 move forward. This is inherently unsafe. 
-
-#### `--tree-shaking` 📝
-
-The `--tree-shaking` flag causes the compiler to carefully evaluate which functions and subfunctions are ACTUALLY 
-called by the kernels and only incorporate those into the final binaries.  This can make the compilation pass
-a little slower, but makes the kernel smaller, faster, and faster to load.
-
-But there is a second side effect that happens when tree shaking. Both the functions used and not from any 
-library files are precompiled for the compilation targets into .crisp_lib and .crisp_libc files and these
-files will make any future compilations that use these same libraries to these same targets MUCH
-faster. 
-
-<!--  Do we need flags to control where these lib files get written / read ?  Answer: YES -->
-
-<!-- NOTE
-1 - .crisp files with no kernels are automatically identified as "library" files.
-2a. - the user invokes the full compilation command. There is a --tree-shaking flag. It runs slow. We compile for whatever targets they specified, be they IR or binary.
-2b - when tree shaking, each "library" gets its entry point functions (*) compiled into their own little thing, one for each target. Bound up with a map into a big blob.
-2c - and the entry point functions that are actually used by my_kernel also get put into a second little thing, one for each target. blobbed together.
-     if a function is inlined when tree shaking, that is noted too. 
-3 - the NEXT invocation of the compiler we lean on 2c to really speed things up and fall back to 2b if necessary. If something was inlined before, 
-    we just do it again.
-4 - assuming the output target profile is the same, other kernel .crisp files could benefit from 2b at very least. 
--->
-
-<!--  (declare entry-point inline)  both need definitions -->
 

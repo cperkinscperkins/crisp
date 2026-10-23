@@ -367,10 +367,12 @@
 
 ## Hoisting Code ✅
 
-## In-Memory Compilation API 📝
-- [C API 📝](65_in_memory_compilation_api/01_c_api.md)
-- [Status Codes ✅](65_in_memory_compilation_api/02_status_codes.md)
-- [Flags](65_in_memory_compilation_api/03_flags.md)
+## C API for Runtime Compilation ✅
+- [Shape of it ✅](65_c_api_for_runtime_compilation/01_shape_of_it.md)
+- [What a caller can ask ✅](65_c_api_for_runtime_compilation/02_what_a_caller_can_ask.md)
+- [Flags ✅](65_c_api_for_runtime_compilation/03_flags.md)
+- [How it runs ✅](65_c_api_for_runtime_compilation/04_how_it_runs.md)
+- [Dogfood: `--hoist-kernel=source` ✅](65_c_api_for_runtime_compilation/05_dogfood_hoist_kernelsource.md)
 
 ## APPENDIX #1 - Summary: set / get vars, storage handles, and structs
 

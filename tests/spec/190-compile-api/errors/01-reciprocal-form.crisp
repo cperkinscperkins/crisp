@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "Common Lisp's (/ x) is a reciprocal"
+;;
+;; BUG 127 (endeavour 190) -- one-operand / is refused rather than silently turned into a reciprocal.
+
+(def-type fvec (vector float :address-space :global :align :compact))
+
+(def-kernel k_one_operand (A &out B)
+  (declare #'(fvec &out fvec => nil))
+  (set! (~ B 0) (/ (~ A 0))))

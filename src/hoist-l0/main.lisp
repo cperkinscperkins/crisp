@@ -22,6 +22,117 @@
   "Endeavour 175: the active hardware profile's :simd-width (lanes per warp), or NIL.
    Latched by %l0-latch-hardware-profile; consumed by the symbolic scratch-size resolver.")
 
+;;; ------------------------------------------------------------------------------------------------
+;;; Endeavour 190: --hoist-kernel=source, the Level Zero parts.  (The parts both hoisters share --
+;;; the arguments, the embedded sources, the API compile + slot map -- are in src/hoist/source-mode.lisp.)
+;;; The emitters below write the ordinary launcher; in source mode generate-l0-launcher then rewrites
+;;; it (%l0-hk-rewrite): every `zeKernelSetArgumentValue(kernel, N,` -- all 48 emit sites share that
+;;; exact spelling -- goes through crisp_set_arg with the API's slot, and the launch-object check is
+;;; inserted before the launch.
+;;; ------------------------------------------------------------------------------------------------
+
+(defun %l0-hk-emit-wrappers (stream)
+  "File-scope C++: every argument and the group size go through these, so the launch-object check
+   can compare what this launcher actually passed with what the API computes."
+  (format stream "// Every argument this launcher sets is recorded (by slot), so the compile API's launch~%")
+  (format stream "// facts can be checked against what was actually passed.~%")
+  (format stream "static size_t   crisp_arg_size[1024];~%")
+  (format stream "static uint64_t crisp_arg_value[1024];   // the first <= 8 bytes, little-endian~%")
+  (format stream "static uint32_t crisp_group_size[3] = { 0, 0, 0 };~%")
+  (format stream "static ze_result_t crisp_set_arg(ze_kernel_handle_t k, uint32_t i, size_t sz, const void* v) {~%")
+  (format stream "    if (i < 1024) {~%")
+  (format stream "        crisp_arg_size[i] = sz;~%")
+  (format stream "        crisp_arg_value[i] = 0;~%")
+  (format stream "        if (v) memcpy(&crisp_arg_value[i], v, sz < 8 ? sz : 8);~%")
+  (format stream "    }~%")
+  (format stream "    return zeKernelSetArgumentValue(k, i, sz, v);~%")
+  (format stream "}~%")
+  (format stream "static ze_result_t crisp_set_group_size(ze_kernel_handle_t k, uint32_t x, uint32_t y, uint32_t z) {~%")
+  (format stream "    crisp_group_size[0] = x; crisp_group_size[1] = y; crisp_group_size[2] = z;~%")
+  (format stream "    return zeKernelSetGroupSize(k, x, y, z);~%")
+  (format stream "}~%~%"))
+
+(defun %l0-hk-launch-check-block ()
+  "main()-scope C++ inserted just before the launch: a compile-API launch object fed with the values
+   this launcher actually passed (read back from the recorded arguments, exactly what an API caller
+   would supply), then its local size, group counts and scratch byte sizes CHECKED against this
+   launcher's own -- any mismatch fails the run -- and the launch then uses the API's group counts."
+  (with-output-to-string (s)
+    (format s "    // ---- Endeavour 190: launch geometry + scratch sizes from the compile API -----------~%")
+    (format s "    {~%")
+    (format s "        crisp_launch* crisp_L = nullptr;~%")
+    (format s "        if (crisp_launch_create(crisp_ctx, 0, crisp_k, &crisp_L) != CRISP_OK) {~%")
+    (format s "            std::cerr << \"ERROR: crisp_launch_create failed\" << std::endl;~%")
+    (format s "            return 1;~%")
+    (format s "        }~%")
+    (%hk-emit-launch-inputs s "crisp_arg_value")
+    (when (%hk-strided-occupancy-p)
+      (format s "        // :strided -- the resident capacity this launcher measured, before any :occupancy derate~%")
+      (format s "        crisp_launch_set_resident_groups(crisp_L, (uint64_t)(_hw_threads_full / _threads_per_group));~%"))
+    (format s "        if (crisp_launch_compute(crisp_L) != CRISP_OK) {~%")
+    (format s "            std::cerr << \"ERROR: crisp_launch_compute: \" << crisp_launch_message(crisp_L) << std::endl;~%")
+    (format s "            return 1;~%")
+    (format s "        }~%")
+    (format s "        int crisp_bad = 0;~%")
+    (format s "        for (uint32_t a = 0; a < 2; a++)~%")
+    (format s "            if (crisp_launch_local_size(crisp_L, a) != crisp_group_size[a]) {~%")
+    (format s "                std::cerr << \"MISMATCH: local size axis \" << a << \": API \" << crisp_launch_local_size(crisp_L, a)~%")
+    (format s "                          << \", launcher \" << crisp_group_size[a] << std::endl;~%")
+    (format s "                crisp_bad = 1;~%")
+    (format s "            }~%")
+    (format s "        const uint32_t crisp_g[3] = { groupCount.groupCountX, groupCount.groupCountY, groupCount.groupCountZ };~%")
+    (format s "        for (uint32_t a = 0; a < 3; a++)~%")
+    (format s "            if (crisp_launch_group_count(crisp_L, a) != crisp_g[a]) {~%")
+    (format s "                std::cerr << \"MISMATCH: group count axis \" << a << \": API \" << crisp_launch_group_count(crisp_L, a)~%")
+    (format s "                          << \", launcher \" << crisp_g[a] << std::endl;~%")
+    (format s "                crisp_bad = 1;~%")
+    (format s "            }~%")
+    (%hk-emit-scratch-checks s "crisp_arg_value")
+    (format s "        if (crisp_bad) return 1;~%")
+    (format s "        groupCount.groupCountX = crisp_launch_group_count(crisp_L, 0);   // launch with the API's numbers~%")
+    (format s "        groupCount.groupCountY = crisp_launch_group_count(crisp_L, 1);~%")
+    (format s "        groupCount.groupCountZ = crisp_launch_group_count(crisp_L, 2);~%")
+    (format s "        std::cout << \"Launch geometry from the compile API: groups \" << groupCount.groupCountX << \"x\"~%")
+    (format s "                  << groupCount.groupCountY << \"x\" << groupCount.groupCountZ << \", local \"~%")
+    (format s "                  << crisp_launch_local_size(crisp_L, 0) << \"x\" << crisp_launch_local_size(crisp_L, 1)~%")
+    (format s "                  << \", scratch sizes checked: \" << crisp_scratch << std::endl;~%")
+    (format s "        crisp_launch_destroy(crisp_L);~%")
+    (format s "    }~%")))
+
+(defun %l0-hk-rewrite (text)
+  "The source-mode rewrite of a generated L0 launcher's TEXT:
+     `zeKernelSetArgumentValue(kernel, <digits>,` -> `crisp_set_arg(kernel, (uint32_t)crisp_slot[<digits>],`
+       (every slot from the API's answers, and recorded for the launch check);
+     `zeKernelSetGroupSize(kernel,` -> `crisp_set_group_size(kernel,` (recorded);
+     and %l0-hk-launch-check-block inserted just before the launch call.
+   BUG 133: the highest argument index must match the metacrisp's slot count (%hk-check-argument-count)."
+  (let* ((needle "zeKernelSetArgumentValue(kernel, ")
+         (start 0)
+         (n-args 0)
+         (args (with-output-to-string (out)
+                 (loop
+                   (let ((hit (search needle text :start2 start)))
+                     (unless hit
+                       (write-string text out :start start)
+                       (return))
+                     (let* ((num-start (+ hit (length needle)))
+                            (num-end (or (position-if-not #'digit-char-p text :start num-start) (length text))))
+                       (write-string text out :start start :end hit)
+                       (if (and (> num-end num-start) (< num-end (length text)) (char= (char text num-end) #\,))
+                           (progn
+                             (setf n-args (max n-args (1+ (parse-integer text :start num-start :end num-end))))
+                             (format out "crisp_set_arg(kernel, (uint32_t)crisp_slot[~a]" (subseq text num-start num-end)))
+                           (write-string text out :start hit :end num-end))
+                       (setf start num-end))))))
+         (checked-count (%hk-check-argument-count n-args "L0"))
+         (sized (%hk-replace-all args "zeKernelSetGroupSize(kernel," "crisp_set_group_size(kernel,"))
+         (launch "    result = zeCommandListAppendLaunchKernel(cmdList, kernel, &groupCount")
+         (at (search launch sized)))
+    (declare (ignore checked-count))
+    (if at
+        (concatenate 'string (subseq sized 0 at) (%l0-hk-launch-check-block) (subseq sized at))
+        sized)))
+
 (defun %l0-latch-hardware-profile (data)
   "Endeavor 144: cache the active hardware profile's L0-relevant decisions in the specials
    above, from an already-parsed metacrisp plist.
@@ -73,7 +184,7 @@
         (unless args
           (format t "Usage: crisp-hoist-l0 [--mma-test=M,N,K] <path-to-metacrisp-file>~%")
           (uiop:quit 1))
-        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args args)
+        (multiple-value-bind (metacrisp-path dims scale) (%mma-parse-args (%hk-extract-args args))
           (setf *mma-test-dims* dims)
           (setf *mma-scale* scale)
           (unless (and metacrisp-path (probe-file metacrisp-path))
@@ -174,15 +285,21 @@
                   kernel-name)
                 (progn
                  (format t "  Generating: ~a~%" output-name)
-                 (let ((dvec-types (%collect-dvec-types declared-sig aliases)))
+                 (let* ((dvec-types (%collect-dvec-types declared-sig aliases))
+                        (*hoist-current-kernel-name* kernel-name)
+                        (*hoist-current-signature* (list declared-sig full-sig aliases (metacrisp-records data)))
+                        (*hoist-current-dispatch-info* dispatch-info)
+                        (text (with-output-to-string (stream)
+                                (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
+                                (generate-cpp-includes stream)
+                                (generate-cpp-typedefs stream aliases)
+                                (generate-cpp-dvec-typedefs stream dvec-types)
+                                (generate-cpp-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
+                                (generate-cpp-helpers stream)
+                                (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data) dispatch-info))))
+                   ;; Endeavour 190: in source mode every argument index comes from the API's slot map
                    (with-open-file (stream output-path :direction :output :if-exists :supersede)
-                     (generate-cpp-preamble stream metacrisp-path kernel-name output-name)
-                     (generate-cpp-includes stream)
-                     (generate-cpp-typedefs stream aliases)
-                     (generate-cpp-dvec-typedefs stream dvec-types)
-                     (generate-cpp-structs stream (append (metacrisp-records data) (metacrisp-structs data)))
-                     (generate-cpp-helpers stream)
-                     (generate-cpp-main stream kernel-name spv-path full-sig aliases (metacrisp-records data) dispatch-info)))
+                     (write-string (if *hoist-kernel-source-mode* (%l0-hk-rewrite text) text) stream)))
                  (format t "  Done: ~a~%" (namestring output-path))))))))))
 
 (defun generate-cpp-preamble (stream metacrisp-path kernel-name output-name)
@@ -210,7 +327,9 @@
   (format stream "#include <vector>~%")
   (format stream "#include <cstring>~%")
   (format stream "#include <cstdint>~%")
-  (format stream "#include <chrono>~%~%"))
+  (format stream "#include <chrono>~%~%")
+  (when *hoist-kernel-source-mode*
+    (%hk-emit-embedded-sources stream #'%l0-hk-emit-wrappers)))
 
 
 (defun generate-cpp-structs (stream structs)
@@ -514,7 +633,15 @@
   "Generate SPIR-V module loading code.
 
    Endeavor 144 Phase 4: pBuildFlags now carries the compiler-selected register allocation
-   (see %l0-register-build-flags) instead of being unconditionally nullptr."
+   (see %l0-register-build-flags) instead of being unconditionally nullptr.
+   Endeavour 190: under --hoist-kernel=source the SPIR-V comes from the compile API at run time."
+  (if *hoist-kernel-source-mode*
+      (%hk-emit-compile-and-slot-map stream "spv" "    std::vector<uint8_t> spirv_data((const uint8_t*)crisp_bin, (const uint8_t*)crisp_bin + crisp_bin_size);")
+      (%l0-emit-spirv-file-read stream spv-path))
+  (%l0-emit-module-create stream))
+
+(defun %l0-emit-spirv-file-read (stream spv-path)
+  "The launcher's spirv_data, read from SPV-PATH (the ordinary --hoist-kernel=file launcher)."
   (format stream "    // Load SPIR-V module~%")
   (format stream "    const char* spv_path = \"~a\";~%" (namestring spv-path))
   (format stream "    std::vector<uint8_t> spirv_data;~%")
@@ -523,8 +650,11 @@
   (format stream "    } catch (const std::exception& e) {~%")
   (format stream "        std::cerr << \"ERROR: \" << e.what() << std::endl;~%")
   (format stream "        return 1;~%")
-  (format stream "    }~%~%")
+  (format stream "    }~%~%"))
 
+(defun %l0-emit-module-create (stream)
+  "zeModuleCreate over the launcher's spirv_data (however it was obtained), with the
+   compiler-selected register build flags (Endeavor 144 Phase 4)."
   (let ((flags (%l0-register-build-flags)))
     (when flags
       (format stream "    // Endeavor 144: the kernel's register-tile demand (~a registers/thread)~%"
@@ -647,6 +777,10 @@
           (format stream "    zeKernelGetProperties(kernel, &_kernelProps);~%")
           (format stream "    // Derate occupancy by 2x if kernel spilled to private memory~%")
           (format stream "    if (_kernelProps.spillMemSize > 0) { _hw_threads /= 2; }~%")
+          ;; Endeavour 190: the compile API applies :occupancy itself, so the source-mode launcher
+          ;; hands it the resident capacity BEFORE the derate below.
+          (when *hoist-kernel-source-mode*
+            (format stream "    uint32_t _hw_threads_full = _hw_threads;   // before any :occupancy derate~%"))
           (unless (= ratio 1.0)
             (format stream "    // :occupancy ~a — user-requested derate from max~%" occupancy)
             (format stream "    _hw_threads = (uint32_t)(_hw_threads * ~f);~%" ratio)

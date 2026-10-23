@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "needs at least two operands"
+;;
+;; BUG 127 (endeavour 190) -- (max a b c) now folds left, but (max a) is still refused.
+
+(def-type fvec (vector float :address-space :global :align :compact))
+
+(def-kernel k_lonely (A &out B)
+  (declare #'(fvec &out fvec => nil))
+  (set! (~ B 0) (max (~ A 0))))

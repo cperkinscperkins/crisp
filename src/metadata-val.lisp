@@ -957,11 +957,40 @@
                                   *crisp-types*)))))
     (and type-rec (eq (crisp-type-category type-rec) :record))))
 
+;; Endeavour 190 / BUG 133: a fixed array -- a record member or a bare kernel parameter -- is split
+;; into one kernel parameter per element by codegen, so the metacrisp splits it too.  def-structs are
+;; untouched: they really are one aggregate parameter.
+(defun %physical-array-split (type-spec)
+  "When TYPE-SPEC (or the def-type alias it names) is (ARRAY ELEM N) with an integer N, returns
+   (VALUES ELEM N); otherwise NIL.  Used by %enumerate-physical-types to split a record's array
+   member into one physical slot per element, as codegen does."
+  (let ((resolved (if (symbolp type-spec)
+                      (or (ignore-errors (resolve-type-alias type-spec)) type-spec)
+                      type-spec)))
+    (when (and (consp resolved)
+               (symbolp (first resolved))
+               (string-equal (symbol-name (first resolved)) "ARRAY"))
+      (let ((elem (second resolved))
+            (n (third resolved)))
+        (if (integerp n)
+            (values elem n)
+            (progn
+              (log:warn "%physical-array-split: array ~s has no integer length; recorded as one physical slot"
+                        resolved)
+              nil))))))
+
 (defun %enumerate-physical-types (type-spec)
   "Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.
    Records are recursively flattened to their runtime members (excluding :c-t members).
    List forms like (v-point :earnestness 3.0) use the base record type.
-   Brand-typed members are resolved to their base types."
+   Brand-typed members are resolved to their base types.
+   BUG 133 (endeavour 190): an (ARRAY ELEM N) -- a record's array member -- is N copies of ELEM's
+   own flattening, because codegen passes each element as its own kernel parameter."
+  (multiple-value-bind (arr-elem arr-n) (%physical-array-split type-spec)
+    (when arr-n
+      (log:debug "%enumerate-physical-types: splitting ~s into ~d x ~s" type-spec arr-n arr-elem)
+      (return-from %enumerate-physical-types
+        (loop repeat arr-n append (%enumerate-physical-types arr-elem)))))
   (let* ((base-sym (cond
                      ((and (consp type-spec) (symbolp (car type-spec))
                            (not (%storage-handle-type-p type-spec)))

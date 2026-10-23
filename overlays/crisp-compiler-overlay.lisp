@@ -5,7 +5,12 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
-;;;; EMPTY as of 2026-10-13 -- the "/=" entry in *unsupported-form-hints* folded into src/errors.lisp.
+;;;; EMPTY as of 2026-10-22 -- endeavour 190 (compile API) folded into src/:
+;;;;   * BUG 066 on PTX  -> ensure-opencl-kernel-metadata calls %173-ensure-grad-dispatch-decls on every backend (src/codegen.lisp)
+;;;;   * BUG 133         -> %physical-array-split (new), %enumerate-physical-types (src/metadata-val.lisp);
+;;;;                        get-physical-width, generate-physical-signature (src/metadata.lisp)
+;;;;   (spec-runner-overlay.lisp -> tests/run-specs.lisp the same day: --hoist-kernel=source)
+;;;; Before that, EMPTY as of 2026-10-13 -- the "/=" entry in *unsupported-form-hints* folded into src/errors.lisp.
 ;;;; Before that, 2026-10-12 (later) -- endeavour 185 (math-ops) folded into src/:
 ;;;;   * overrides          -> analyze-let-expression (src/analysis/control.lisp); register-ops-analyzers,
 ;;;;                           analyze-mod-expression, analyze-rem-expression (src/analysis/ops.lisp);

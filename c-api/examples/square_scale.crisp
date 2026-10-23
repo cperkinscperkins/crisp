@@ -1,0 +1,13 @@
+;; The kernel behind c-api/examples/torch_square_scale.py: y = x * x * w, elementwise.
+;; One --differentiate compile through the compile API gives both square_scale and its gradient
+;; kernel square_scale_grad, which the example wires into a torch.autograd.Function.
+;; :compact tensors: the caller passes contiguous tensors (the fast path; crisp_param_layout says so).
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel square_scale (X W &out Y)
+  (declare #'(vec-t vec-t &out vec-t => nil)
+           (global-size :derive-from X :strategy :one-thread-per)
+           (local-size  :set-to 256))
+  (loop-vector-stride X (i)
+    (set! (~ Y i) (* (~ X i) (~ X i) (~ W i)))))

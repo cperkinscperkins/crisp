@@ -409,7 +409,9 @@
 
 (defun get-physical-width (type)
   "Returns the number of physical ABI slots for TYPE.
-   Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1."
+   Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1.
+   BUG 133 (endeavour 190): an (ARRAY ELEM N) parameter is N x ELEM's width -- codegen passes each
+   element as its own kernel parameter."
   (cond
    ((%storage-handle-type-p type)
      (let* ((canonical (canonicalize-type-specifier type))
@@ -429,6 +431,8 @@
      2)
    ((%user-record-type-p type)
      (length (%enumerate-physical-types type)))
+   ((nth-value 1 (%physical-array-split type))
+     (length (%enumerate-physical-types type)))
    (t 1)))
 
 
@@ -437,7 +441,9 @@
 (defun generate-physical-signature (sig-or-params)
   "Generates the physical ABI signature from kernel parameters.
    Records are flattened to primitive scalar entries.
-   Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple."
+   Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple.
+   BUG 133 (endeavour 190): an (ARRAY ELEM N) parameter is flattened like a record's array member --
+   one entry per element, as codegen passes them."
   (let ((params (if (typep sig-or-params 'function-signature)
                     (append (function-signature-implicit-parameters sig-or-params)
                       (function-signature-parameters sig-or-params))
@@ -487,7 +493,8 @@
                 (t
                   (push (list current-index (strip-package-qualifiers type)) physical-args)
                   (incf current-index)))))
-           ((%user-record-type-p type)
+           ((or (%user-record-type-p type)
+                (nth-value 1 (%physical-array-split type)))
              (dolist (prim-type (%enumerate-physical-types type))
                (push (list current-index (strip-package-qualifiers prim-type)) physical-args)
                (incf current-index)))

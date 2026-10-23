@@ -14,7 +14,7 @@ The hoisting code that Crisp outputs demonstrates the following:
 - - waiting for it to complete
 - - enqueing any "copy back" operations for result vectors.
 
-Further, if the `--hoist-dynamic` flag is used, then the example code will actually 
-include the string of that kernel and pass it to the in-memory compilation API (etc.).
+Further, with `--hoist-kernel=source` (L0) the launcher instead holds the kernel's Crisp source
+and compiles it at run time through the [Compile API](#compile-api) -- see there.
 
 

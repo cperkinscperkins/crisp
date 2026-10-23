@@ -218,6 +218,9 @@ $ sbcl  --non-interactive --load .\tests\run-specs.lisp
 
 # run the negative tests (errors)
 $ sbcl --non-interactive --load .\tests\run-error-specs.lisp
+
+# run the compile API suite (needs bin/crisp.dll or bin/libcrisp.so, see Compile API below)
+$ python tests/api/test_crisp_api.py
 ```
 
 ### Windows: 
@@ -257,6 +260,26 @@ Test interactively from SBCL
 (load #P"./tests/run-ci.lisp")
 (sb-ext:quit)
 ```
+
+Compile API (C)
+===============
+
+Crisp kernels can also be compiled from a running program -- source strings in, a SPIR-V / PTX
+binary and the facts needed to launch it out -- through a small C library (any FFI can call it).
+The header is `c-api/include/crisp.h`; the design doc's "Compile API" chapter is the overview.
+
+`build/build.lisp` builds the library into `bin/` whenever it finds a C compiler (`$CC`, else `gcc`
+or `clang` on PATH); without one it prints a warning and skips it.  To build it alone:
+
+```
+$ bash c-api/build.sh            # or: sbcl --non-interactive --load build/build-c-api.lisp
+```
+
+It produces `bin/crisp.dll` (+ `bin/libcrisp.dll.a` to link against) on Windows and `bin/libcrisp.so`
+on Linux.  Keep it in `bin/` beside `crisp-compile`: it starts `crisp-compile --serve` helper
+processes and finds them there (or set `CRISP_HOME` to the repo root).  On Windows a running
+program that has loaded `crisp.dll` locks it, so a rebuild fails until that program exits.
+
 
 Generate C++ Code
 =================

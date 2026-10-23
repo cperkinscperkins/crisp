@@ -469,12 +469,44 @@ Pre-strips execution-context declares so anf-normalize never sees them."
       ((symbolp (car form)) `(,(car form) ,@(ren-args (cdr form) env bound)))
       (t (ren-args form env bound)))))
 
+(defparameter +nary-fold-ops+ '("+" "-" "*" "/" "MIN" "MAX")
+  "BUG 127: operators whose call form with more than two operands folds LEFT (src/analysis/ops.lisp).")
+
+(defparameter +nary-chain-ops+ '("<" "<=" ">" ">=" "=")
+  "BUG 127: comparisons whose call form with more than two operands CHAINS (src/analysis/ops.lisp).")
+
+(defun %nary-normalize (form)
+  "BUG 127: FORM with every operator call of more than two operands rewritten to two-operand forms --
+   (* a b c) -> (* (* a b) c), (< a b c) -> (and (< a b) (< b c)) -- by the SAME helpers the analyzer
+   uses (%nary-fold-left, %nary-chain-comparison).  AD reads SOURCE through anf-transform, not the
+   analyzer's nodes, so without this the backward pass still differentiated (* a b c) as (* a b)
+   (found by 190-compile-api/04-nary-product-ad: analytical 3, numerical 12).  declare and quote forms
+   are left alone."
+  (cond
+    ((atom form) form)
+    ((and (symbolp (first form)) (member (symbol-name (first form)) '("DECLARE" "QUOTE") :test #'string=))
+     form)
+    ((and (symbolp (first form)) (> (length (rest form)) 2)
+          (member (symbol-name (first form)) +nary-fold-ops+ :test #'string=))
+     (%nary-normalize (%nary-fold-left form)))
+    ((and (symbolp (first form)) (> (length (rest form)) 2)
+          (member (symbol-name (first form)) +nary-chain-ops+ :test #'string=))
+     (%nary-normalize (%nary-chain-comparison form)))
+    ;; Rebuild ONLY what changed: an untouched form keeps its identity (EQ), which later passes rely
+    ;; on -- rebuilding every cons broke them ("EXPLICIT-RETURN is undefined").  A dotted list is
+    ;; left as it is.
+    ((cdr (last form)) form)
+    (t (let ((new (mapcar #'%nary-normalize form)))
+         (if (every #'eq new form) form new)))))
+
 (defun anf-transform (expr)
   "Transforms a Crisp expression into A-Normal Form.
-   ADV-001: first alpha-renames let bindings that shadow a name in scope, because ANF flattens
+   BUG 127: first rewrites n-ary operator calls into two-operand forms (%nary-normalize), exactly as
+   the analyzer reads them.
+   ADV-001: then alpha-renames let bindings that shadow a name in scope, because ANF flattens
    nested lets and the AD walk keys adjoints by name (see %alpha-rename-shadowed-lets)."
   (let ((*anf-counter* 0))
-    (%anf-transform (%alpha-rename-shadowed-lets expr))))
+    (%anf-transform (%alpha-rename-shadowed-lets (%nary-normalize expr)))))
 
 
 (defun anf-transform-module (forms)
