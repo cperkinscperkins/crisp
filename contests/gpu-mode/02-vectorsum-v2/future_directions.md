@@ -50,3 +50,4 @@ In single precision, 4 accumulators occupy 4 registers (`4 × 32-bit = 16 bytes`
    The only reason pure FP32 failed validation was that 2,112 warps were doing asynchronous flat `atom.global.add.f32` directly into one cell in random order. If each block writes its partial sum to a 264-element scratch array, and a 1-warp second pass sums them in a balanced binary tree ($\text{depth} = 8$), the numerical error is bounded by $8\epsilon \approx 10^{-6}$, which passes `rtol=1e-5` while running at 100% native FP32 speed.
 3. **Kahan Compensated Summation:**
    If we keep an FP32 error compensation term in registers, we get 48-bit effective mantissa precision with pure FP32 instructions, avoiding FP64 entirely.
+   

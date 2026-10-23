@@ -36,3 +36,11 @@ third_party/
 # release staging (scripts/build-linux-release.sh, package_prerelease.py)
 dist/
 crisp-prerelease-*.zip
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+

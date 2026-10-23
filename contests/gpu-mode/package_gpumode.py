@@ -19,92 +19,9 @@ if hasattr(sys.stderr, "reconfigure"):
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CRISP_COMPILE = REPO_ROOT / "bin" / "crisp-compile.exe"
 POPCORN_CLI = Path(__file__).resolve().parent / "bin" / "popcorn-cli.exe"
-def ptx_entry_to_inline_asm(
-    ptx_text: str, entry_name: str, param_c_exprs: dict[int, tuple[str, str]]
-) -> tuple[str, str]:
-    """
-    Extracts `.visible .entry <entry_name>(...) { BODY }` from PTX and converts it into
-    a CUDA C++ `asm volatile(...)` statement.
-    param_c_exprs maps parameter index (0..N-1) -> (constraint, c_expr), e.g. {0: ("l", "a_ptr")}.
-    """
-    m = re.search(
-        rf"\.visible \.entry\s+{re.escape(entry_name)}\s*\((.*?)\)\s*(?://[^\n]*)?\n\{{(.*?)\n\}}",
-        ptx_text,
-        flags=re.DOTALL,
-    )
-    if not m:
-        raise ValueError(f"Could not find .visible .entry {entry_name} in PTX")
 
-    body = m.group(2)
-
-    # Find which param indices are actually loaded via ld.param.<type> %reg, [<entry_name>_param_<idx>];
-    used_indices = sorted(
-        {
-            int(idx_str)
-            for idx_str in re.findall(rf"\b{re.escape(entry_name)}_param_(\d+)\b", body)
-        }
-    )
-    idx_to_asm_slot = {param_idx: slot for slot, param_idx in enumerate(used_indices)}
-
-    special_regs = {
-        "ctaid", "ntid", "tid", "nctaid", "laneid", "warpid", "smid", "gridid",
-        "clock", "clock64", "pm0", "pm1", "pm2", "pm3",
-    }
-
-    def prefix_ptx_registers(text: str, prefix: str = "cr_") -> str:
-        def repl(match: re.Match) -> str:
-            name = match.group(1)
-            base = name.split(".")[0]
-            if base in special_regs or base.startswith("envreg"):
-                return match.group(0)
-            return f"%{prefix}{name}"
-
-        return re.sub(r"%(?!\d)([\w.]+)", repl, text)
-
-    prefixed_body = prefix_ptx_registers(body)
-    escaped_body = prefixed_body.replace("%", "%%")
-
-    # Replace ld.param.<type> %%cr_reg, [<entry_name>_param_<idx>]; with mov.<type> %%cr_reg, %<slot>;
-    def replace_ld_param(match: re.Match) -> str:
-        ld_type = match.group(1)  # e.g., b64, u64, b32, f32
-        reg = match.group(2)
-        param_idx = int(match.group(3))
-        slot = idx_to_asm_slot[param_idx]
-        mov_type = "b64" if "64" in ld_type else ("f32" if "f32" in ld_type else "b32")
-        return f"mov.{mov_type} \t{reg}, %{slot};"
-
-    escaped_body = re.sub(
-        rf"ld\.param\.(\w+)\s+(%%cr_\w+),\s*\[{re.escape(entry_name)}_param_(\d+)\];",
-        replace_ld_param,
-        escaped_body,
-    )
-
-    # Replace `ret;` inside the entry body with a jump to the end of the inline asm block
-    escaped_body = re.sub(r"\bret;", "bra.uni $L__crisp_inline_exit;", escaped_body)
-
-    asm_lines = ["    asm volatile(\n        \"{\\n\""]
-    for line in escaped_body.splitlines():
-        stripped = line.rstrip()
-        if not stripped:
-            continue
-        safe_line = stripped.replace("\\", "\\\\").replace('"', '\\"')
-        asm_lines.append(f'        "{safe_line}\\n"')
-    asm_lines.append('        "$L__crisp_inline_exit:\\n"')
-    asm_lines.append('        "}\\n"')
-
-    operand_strs = []
-    for param_idx in used_indices:
-        constraint, c_expr = param_c_exprs[param_idx]
-        operand_strs.append(f'"{constraint}"({c_expr})')
-
-    asm_lines.append("        : : " + ", ".join(operand_strs))
-    asm_lines.append('        : "memory"\n    );')
-
-    m_bounds = re.search(r"\.(?:reqntid|maxntid)\s+(\d+)", ptx_text)
-    bsize = m_bounds.group(1) if m_bounds else "256"
-    launch_bounds = f"__launch_bounds__({bsize})"
-
-    return "\n".join(asm_lines), launch_bounds
+sys.path.insert(0, str(REPO_ROOT))
+from contests.ptx_packager import ptx_entry_to_inline_asm
 
 
 def compile_crisp_with_profile(

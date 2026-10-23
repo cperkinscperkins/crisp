@@ -51,16 +51,19 @@ The crash occurs on *all* input sizes, including trivial cases like $N = 1$, eve
    reads from the *inner uninitialized register `%rd1`* (evaluating to `0` or uninitialized garbage) rather than the outer `%rd1` holding the real GPU device pointer!
 6. Any subsequent read or write (e.g. `ld.global` or `atom.global`) dereferences garbage, immediately causing a hardware MMU fault (`cudaErrorIllegalAddress`).
 
-### Resolution & Mitigation
-In the Python PTX packager (`ptx_entry_to_inline_asm`), all PTX virtual register declarations and references emitted by Crisp are systematically renamed to a distinct namespace prefix (`%cr_`):
-- `%rd<N>` $\rightarrow$ `%cr_rd<N>`
-- `%r<N>`  $\rightarrow$ `%cr_r<N>`
-- `%p<N>`  $\rightarrow$ `%cr_p<N>`
-- `%f<N>`  $\rightarrow$ `%cr_f<N>`
-- `%d<N>`  $\rightarrow$ `%cr_d<N>`
-- `%rs<N>` $\rightarrow$ `%cr_rs<N>`
+### Why Did Earlier `vectoradd` Submissions Avoid the Crash?
+1. In the first contest entry (`fa7ccff4`), winning submission files such as [`crisp_f16_direct_half4.py`](contests/gpu-mode/01-vectoradd-v2/crisp_f16_direct_half4.py) were originally generated with prefixed registers (`%%cr_`).
+2. In subsequent commits, refactoring separated `package_gpumode.py` without consolidating the packager, leaving some regeneration scripts using unprefixed registers.
+3. Crucially, in simple 3-parameter streaming kernels where all parameters are copied in the very first basic block before inner registers are reused, register allocator luck can sometimes allow NVCC to map outer and inner registers without observable clobbering. However, in kernels with later parameter reads (such as `vectorsum` reading `param_8` zero offset at line 918) or wider register sets, the shadowing collision is 100% deterministic and fatal.
 
-Hardware registers (`%ctaid`, `%ntid`, `%tid`, `%nctaid`, `%laneid`, `%warpid`, `%smid`, `%gridid`, `%clock`, etc.) and branch labels (`$L__...`) are strictly excluded from renaming.
+### Resolution & Mitigation
+The packaging logic is centralized into a single canonical module: [`contests/ptx_packager.py`](contests/ptx_packager.py).
+
+Instead of maintaining a fragile whitelist of hardware registers, the packager matches LLVM's exact NVPTX virtual register classes via regex:
+```python
+LLVM_REG_PATTERN = re.compile(r"%(rd|rs|r|fd|f|p|h|hh)(\d+|<[0-9]+>)")
+```
+All virtual registers (`%rd<N>`, `%r<N>`, `%p<N>`, `%f<N>`, etc.) are prefixed to `%cr_rd...`, `%cr_r...`. All special hardware registers (`%ctaid`, `%ntid`, `%tid`, `%laneid`, `%lanemask_*`, `%globaltimer`, `%cluster_*`, `%nsmid`, `%dynamic_smem_size`, etc.) remain completely untouched.
 
 Because the inner registers are named `%cr_rd...`, `nvcc`'s outer `%rd1` is never shadowed:
 ```ptx
@@ -70,9 +73,9 @@ Because the inner registers are named `%cr_rd...`, `nvcc`'s outer `%rd1` is neve
 }
 ```
 
-### Long-Term Compiler Roadmap Items
-- **Option A (Direct Emitter Namespace):** Add a flag `--ptx-reg-prefix=<str>` to `bin/crisp-compile` so LLVM's NVPTX emitter or Crisp's PTX post-pass can output prefixed registers directly.
-- **Option B (CUBIN / Driver API):** Package contest entries using compiled `.cubin` / PTX loaded directly via `cuModuleLoadData` / `cuLaunchKernel` or PyTorch's `cuda.CUDAModule`, bypassing `nvcc`'s C++ inline assembly parser entirely.
+### Compiler Architecture Decisions
+- **Option A (Compiler Flag `--ptx-reg-prefix`): Declined.** Register namespacing for C++ inline assembly is strictly a submission packaging artifact, not a compiler IR concern. The Crisp compiler remains clean and focused on standard PTX emission, with packaging handled in [`contests/ptx_packager.py`](contests/ptx_packager.py).
+- **Future Direction (Direct CUBIN / Driver API):** Package contest entries using compiled `.cubin` / PTX loaded directly via `cuModuleLoadData` / `cuLaunchKernel` or PyTorch's `cuda.CUDAModule`, bypassing `nvcc`'s C++ inline assembly parser entirely.
 
 ---
 

@@ -406,44 +406,44 @@
 	ret;
                                         // -- End function
 }
-	// .globl	parent__cell_float_global // -- Begin function parent__cell_float_global
-.visible .func  (.param .align 8 .b8 func_retval0[16]) parent__cell_float_global(
-	.param .b64 parent__cell_float_global_param_0,
-	.param .b64 parent__cell_float_global_param_1,
-	.param .b64 parent__cell_float_global_param_2
-)                                       // @parent__cell_float_global
+	// .globl	parent__cell_double_global // -- Begin function parent__cell_double_global
+.visible .func  (.param .align 8 .b8 func_retval0[16]) parent__cell_double_global(
+	.param .b64 parent__cell_double_global_param_0,
+	.param .b64 parent__cell_double_global_param_1,
+	.param .b64 parent__cell_double_global_param_2
+)                                       // @parent__cell_double_global
 {
 	.reg .b64 	%rd<3>;
 
 // %bb.0:                               // %entry
-	ld.param.b64 	%rd1, [parent__cell_float_global_param_0];
-	ld.param.b64 	%rd2, [parent__cell_float_global_param_1];
+	ld.param.b64 	%rd1, [parent__cell_double_global_param_0];
+	ld.param.b64 	%rd2, [parent__cell_double_global_param_1];
 	st.param.b64 	[func_retval0+8], %rd2;
 	st.param.b64 	[func_retval0], %rd1;
 	ret;
                                         // -- End function
 }
-	// .globl	offset__cell_float_global // -- Begin function offset__cell_float_global
-.visible .func  (.param .b64 func_retval0) offset__cell_float_global(
-	.param .b64 offset__cell_float_global_param_0,
-	.param .b64 offset__cell_float_global_param_1,
-	.param .b64 offset__cell_float_global_param_2
-)                                       // @offset__cell_float_global
+	// .globl	offset__cell_double_global // -- Begin function offset__cell_double_global
+.visible .func  (.param .b64 func_retval0) offset__cell_double_global(
+	.param .b64 offset__cell_double_global_param_0,
+	.param .b64 offset__cell_double_global_param_1,
+	.param .b64 offset__cell_double_global_param_2
+)                                       // @offset__cell_double_global
 {
 	.reg .b64 	%rd<2>;
 
 // %bb.0:                               // %entry
-	ld.param.b64 	%rd1, [offset__cell_float_global_param_2];
+	ld.param.b64 	%rd1, [offset__cell_double_global_param_2];
 	st.param.b64 	[func_retval0], %rd1;
 	ret;
                                         // -- End function
 }
-	// .globl	address_space__cell_float_global // -- Begin function address_space__cell_float_global
-.visible .func  (.param .b32 func_retval0) address_space__cell_float_global(
-	.param .b64 address_space__cell_float_global_param_0,
-	.param .b64 address_space__cell_float_global_param_1,
-	.param .b64 address_space__cell_float_global_param_2
-)                                       // @address_space__cell_float_global
+	// .globl	address_space__cell_double_global // -- Begin function address_space__cell_double_global
+.visible .func  (.param .b32 func_retval0) address_space__cell_double_global(
+	.param .b64 address_space__cell_double_global_param_0,
+	.param .b64 address_space__cell_double_global_param_1,
+	.param .b64 address_space__cell_double_global_param_2
+)                                       // @address_space__cell_double_global
 {
 
 
@@ -452,34 +452,34 @@
 	ret;
                                         // -- End function
 }
-	// .globl	_parent__cell_float_global // -- Begin function _parent__cell_float_global
-.visible .func  (.param .align 8 .b8 func_retval0[16]) _parent__cell_float_global(
-	.param .b64 _parent__cell_float_global_param_0,
-	.param .b64 _parent__cell_float_global_param_1,
-	.param .b64 _parent__cell_float_global_param_2
-)                                       // @_parent__cell_float_global
+	// .globl	_parent__cell_double_global // -- Begin function _parent__cell_double_global
+.visible .func  (.param .align 8 .b8 func_retval0[16]) _parent__cell_double_global(
+	.param .b64 _parent__cell_double_global_param_0,
+	.param .b64 _parent__cell_double_global_param_1,
+	.param .b64 _parent__cell_double_global_param_2
+)                                       // @_parent__cell_double_global
 {
 	.reg .b64 	%rd<3>;
 
 // %bb.0:                               // %entry
-	ld.param.b64 	%rd1, [_parent__cell_float_global_param_0];
-	ld.param.b64 	%rd2, [_parent__cell_float_global_param_1];
+	ld.param.b64 	%rd1, [_parent__cell_double_global_param_0];
+	ld.param.b64 	%rd2, [_parent__cell_double_global_param_1];
 	st.param.b64 	[func_retval0+8], %rd2;
 	st.param.b64 	[func_retval0], %rd1;
 	ret;
                                         // -- End function
 }
-	// .globl	_offset__cell_float_global // -- Begin function _offset__cell_float_global
-.visible .func  (.param .b64 func_retval0) _offset__cell_float_global(
-	.param .b64 _offset__cell_float_global_param_0,
-	.param .b64 _offset__cell_float_global_param_1,
-	.param .b64 _offset__cell_float_global_param_2
-)                                       // @_offset__cell_float_global
+	// .globl	_offset__cell_double_global // -- Begin function _offset__cell_double_global
+.visible .func  (.param .b64 func_retval0) _offset__cell_double_global(
+	.param .b64 _offset__cell_double_global_param_0,
+	.param .b64 _offset__cell_double_global_param_1,
+	.param .b64 _offset__cell_double_global_param_2
+)                                       // @_offset__cell_double_global
 {
 	.reg .b64 	%rd<2>;
 
 // %bb.0:                               // %entry
-	ld.param.b64 	%rd1, [_offset__cell_float_global_param_2];
+	ld.param.b64 	%rd1, [_offset__cell_double_global_param_2];
 	st.param.b64 	[func_retval0], %rd1;
 	ret;
                                         // -- End function
@@ -749,177 +749,190 @@
 	.param .u64 vectorsum_kernel_param_8
 )                                       // @vectorsum_kernel
 {
-	.reg .pred 	%p<10>;
-	.reg .b32 	%r<111>;
-	.reg .b64 	%rd<81>;
+	.reg .pred 	%p<9>;
+	.reg .b32 	%r<42>;
+	.reg .b64 	%rd<149>;
 
 // %bb.0:                               // %entry
-	ld.param.b64 	%rd38, [vectorsum_kernel_param_5];
-	ld.param.b64 	%rd41, [vectorsum_kernel_param_0];
-	ld.param.b64 	%rd42, [vectorsum_kernel_param_1];
-	cvta.to.global.u64 	%rd1, %rd41;
-	ld.param.b64 	%rd43, [vectorsum_kernel_param_6];
-	cvta.to.global.u64 	%rd2, %rd43;
-	shr.u64 	%rd44, %rd42, 4;
-	mov.u32 	%r33, %ctaid.x;
-	mov.u32 	%r34, %ntid.x;
-	mov.u32 	%r35, %tid.x;
-	cvt.u64.u32 	%rd6, %r35;
-	mul.wide.u32 	%rd7, %r33, %r34;
-	add.s64 	%rd8, %rd7, %rd6;
-	mov.u32 	%r36, %nctaid.x;
-	mul.wide.u32 	%rd10, %r36, %r34;
-	setp.ge.u64 	%p1, %rd8, %rd44;
-	mov.b64 	%rd75, 0;
+	ld.param.b64 	%rd54, [vectorsum_kernel_param_5];
+	ld.param.b64 	%rd57, [vectorsum_kernel_param_0];
+	ld.param.b64 	%rd58, [vectorsum_kernel_param_1];
+	cvta.to.global.u64 	%rd1, %rd57;
+	ld.param.b64 	%rd59, [vectorsum_kernel_param_6];
+	cvta.to.global.u64 	%rd2, %rd59;
+	shr.u64 	%rd60, %rd58, 4;
+	mov.u32 	%r4, %ctaid.x;
+	mov.u32 	%r5, %ntid.x;
+	mov.u32 	%r6, %tid.x;
+	cvt.u64.u32 	%rd6, %r6;
+	mul.wide.u32 	%rd61, %r4, %r5;
+	add.s64 	%rd7, %rd61, %rd6;
+	mov.u32 	%r7, %nctaid.x;
+	mul.wide.u32 	%rd9, %r7, %r5;
+	setp.ge.u64 	%p1, %rd7, %rd60;
+	mov.b64 	%rd128, 0;
 	@%p1 bra 	$L__BB43_5;
 // %bb.1:                               // %else
-	not.b64 	%rd45, %rd8;
-	add.s64 	%rd11, %rd44, %rd45;
-	or.b64 	%rd46, %rd11, %rd10;
-	and.b64 	%rd47, %rd46, -4294967296;
-	setp.ne.b64 	%p2, %rd47, 0;
+	not.b64 	%rd62, %rd7;
+	add.s64 	%rd10, %rd60, %rd62;
+	or.b64 	%rd63, %rd10, %rd9;
+	and.b64 	%rd64, %rd63, -4294967296;
+	setp.ne.b64 	%p2, %rd64, 0;
 	@%p2 bra 	$L__BB43_3;
 	bra.uni 	$L__BB43_2;
 $L__BB43_3:
-	div.u64 	%rd74, %rd11, %rd10;
+	div.u64 	%rd127, %rd10, %rd9;
 	bra.uni 	$L__BB43_4;
 $L__BB43_2:
-	cvt.u32.u64 	%r37, %rd10;
-	cvt.u32.u64 	%r38, %rd11;
-	div.u32 	%r39, %r38, %r37;
-	cvt.u64.u32 	%rd74, %r39;
+	cvt.u32.u64 	%r8, %rd9;
+	cvt.u32.u64 	%r9, %rd10;
+	div.u32 	%r10, %r9, %r8;
+	cvt.u64.u32 	%rd127, %r10;
 $L__BB43_4:
-	add.s64 	%rd75, %rd74, 1;
+	add.s64 	%rd128, %rd127, 1;
 $L__BB43_5:                             // %ifcont
-	and.b64 	%rd3, %rd38, -4;
-	setp.eq.b64 	%p3, %rd75, 0;
-	mov.b32 	%r106, 0f00000000;
-	mov.b32 	%r107, %r106;
-	mov.b32 	%r108, %r106;
-	mov.b32 	%r109, %r106;
-	@%p3 bra 	$L__BB43_12;
+	and.b64 	%rd3, %rd54, -4;
+	setp.eq.b64 	%p3, %rd128, 0;
+	mov.b64 	%rd144, 0d0000000000000000;
+	mov.b64 	%rd136, %rd144;
+	mov.b64 	%rd137, %rd144;
+	mov.b64 	%rd138, %rd144;
+	@%p3 bra 	$L__BB43_11;
 // %bb.6:                               // %dt_body.preheader
-	cvt.u64.u32 	%rd4, %r33;
-	cvt.u64.u32 	%rd5, %r34;
-	cvt.u64.u32 	%rd9, %r36;
-	and.b64 	%rd80, %rd75, 3;
-	setp.lt.u64 	%p4, %rd75, 4;
-	mov.b32 	%r109, 0f00000000;
-	mov.b64 	%rd78, 0;
-	mov.b32 	%r108, %r109;
-	mov.b32 	%r107, %r109;
-	mov.b32 	%r106, %r109;
+	and.b64 	%rd16, %rd128, 1;
+	setp.eq.b64 	%p4, %rd128, 1;
+	mov.b64 	%rd138, 0d0000000000000000;
+	mov.b64 	%rd139, 0;
+	mov.b64 	%rd137, %rd138;
+	mov.b64 	%rd136, %rd138;
+	mov.b64 	%rd144, %rd138;
 	@%p4 bra 	$L__BB43_9;
 // %bb.7:                               // %dt_body.preheader.new
-	and.b64 	%rd18, %rd75, -4;
-	shl.b64 	%rd50, %rd7, 4;
-	add.s64 	%rd51, %rd50, %rd1;
-	add.s64 	%rd19, %rd51, 12;
-	shl.b64 	%rd76, %rd6, 4;
-	shl.b64 	%rd21, %rd10, 6;
-	mad.lo.s64 	%rd52, %rd9, 3, %rd4;
-	mul.lo.s64 	%rd53, %rd52, %rd5;
-	shl.b64 	%rd54, %rd53, 4;
-	add.s64 	%rd55, %rd54, %rd1;
-	add.s64 	%rd22, %rd55, 12;
-	add.s64 	%rd56, %rd4, %rd9;
-	mul.lo.s64 	%rd57, %rd56, %rd5;
-	shl.b64 	%rd58, %rd57, 4;
-	add.s64 	%rd23, %rd1, %rd58;
-	shl.b64 	%rd59, %rd9, 1;
-	add.s64 	%rd60, %rd59, %rd4;
-	mul.lo.s64 	%rd61, %rd60, %rd5;
-	shl.b64 	%rd62, %rd61, 4;
-	add.s64 	%rd63, %rd62, %rd1;
-	add.s64 	%rd24, %rd63, 8;
-	mov.b32 	%r109, 0f00000000;
-	mov.b64 	%rd78, 0;
-	mov.b32 	%r108, %r109;
-	mov.b32 	%r107, %r109;
-	mov.b32 	%r106, %r109;
+	cvt.u64.u32 	%rd4, %r4;
+	cvt.u64.u32 	%rd5, %r5;
+	cvt.u64.u32 	%rd8, %r7;
+	and.b64 	%rd17, %rd128, -2;
+	shl.b64 	%rd71, %rd7, 4;
+	or.b64 	%rd18, %rd71, 12;
+	shl.b64 	%rd19, %rd9, 5;
+	add.s64 	%rd72, %rd4, %rd8;
+	mad.lo.s64 	%rd73, %rd72, %rd5, %rd6;
+	shl.b64 	%rd20, %rd73, 4;
+	mov.b64 	%rd138, 0d0000000000000000;
+	mov.b64 	%rd139, 0;
+	mov.b64 	%rd129, %rd1;
+	mov.b64 	%rd137, %rd138;
+	mov.b64 	%rd136, %rd138;
+	mov.b64 	%rd144, %rd138;
 $L__BB43_8:                             // %dt_body
                                         // =>This Inner Loop Header: Depth=1
-	add.s64 	%rd64, %rd19, %rd76;
-	ld.global.v4.b32 	{%r44, %r45, %r46, %r47}, [%rd64+-12];
-	add.rn.f32 	%r48, %r106, %r44;
-	add.rn.f32 	%r49, %r107, %r45;
-	add.rn.f32 	%r50, %r108, %r46;
-	add.rn.f32 	%r51, %r109, %r47;
-	add.s64 	%rd65, %rd23, %rd76;
-	ld.global.v4.b32 	{%r52, %r53, %r54, %r55}, [%rd65];
-	add.rn.f32 	%r56, %r48, %r52;
-	add.rn.f32 	%r57, %r49, %r53;
-	add.rn.f32 	%r58, %r50, %r54;
-	add.rn.f32 	%r59, %r51, %r55;
-	add.s64 	%rd66, %rd24, %rd76;
-	ld.global.v4.b32 	{%r60, %r61, %r62, %r63}, [%rd66+-8];
-	add.rn.f32 	%r64, %r56, %r60;
-	add.rn.f32 	%r65, %r57, %r61;
-	add.rn.f32 	%r66, %r58, %r62;
-	add.rn.f32 	%r67, %r59, %r63;
-	add.s64 	%rd67, %rd22, %rd76;
-	ld.global.v4.b32 	{%r68, %r69, %r70, %r71}, [%rd67+-12];
-	add.rn.f32 	%r106, %r64, %r68;
-	add.rn.f32 	%r107, %r65, %r69;
-	add.rn.f32 	%r108, %r66, %r70;
-	add.rn.f32 	%r109, %r67, %r71;
-	add.s64 	%rd78, %rd78, 4;
-	add.s64 	%rd76, %rd76, %rd21;
-	setp.ne.b64 	%p5, %rd18, %rd78;
+	add.s64 	%rd74, %rd129, %rd18;
+	ld.global.v4.b32 	{%r11, %r12, %r13, %r14}, [%rd74+-12];
+	cvt.f64.f32 	%rd75, %r11;
+	add.rn.f64 	%rd76, %rd144, %rd75;
+	cvt.f64.f32 	%rd77, %r12;
+	add.rn.f64 	%rd78, %rd136, %rd77;
+	cvt.f64.f32 	%rd79, %r13;
+	add.rn.f64 	%rd80, %rd137, %rd79;
+	cvt.f64.f32 	%rd81, %r14;
+	add.rn.f64 	%rd82, %rd138, %rd81;
+	add.s64 	%rd83, %rd129, %rd20;
+	ld.global.v4.b32 	{%r15, %r16, %r17, %r18}, [%rd83];
+	cvt.f64.f32 	%rd84, %r15;
+	add.rn.f64 	%rd144, %rd76, %rd84;
+	cvt.f64.f32 	%rd85, %r16;
+	add.rn.f64 	%rd136, %rd78, %rd85;
+	cvt.f64.f32 	%rd86, %r17;
+	add.rn.f64 	%rd137, %rd80, %rd86;
+	cvt.f64.f32 	%rd87, %r18;
+	add.rn.f64 	%rd138, %rd82, %rd87;
+	add.s64 	%rd139, %rd139, 2;
+	add.s64 	%rd129, %rd129, %rd19;
+	setp.ne.b64 	%p5, %rd17, %rd139;
 	@%p5 bra 	$L__BB43_8;
 $L__BB43_9:                             // %dt_exit.loopexit.unr-lcssa
-	setp.eq.b64 	%p6, %rd80, 0;
-	@%p6 bra 	$L__BB43_12;
-// %bb.10:                              // %dt_body.epil.preheader
-	mad.lo.s64 	%rd68, %rd78, %rd9, %rd4;
-	mad.lo.s64 	%rd69, %rd68, %rd5, %rd6;
-	shl.b64 	%rd70, %rd69, 4;
-	add.s64 	%rd71, %rd70, %rd1;
-	add.s64 	%rd79, %rd71, 8;
-	shl.b64 	%rd31, %rd10, 4;
-$L__BB43_11:                            // %dt_body.epil
-                                        // =>This Inner Loop Header: Depth=1
-	.pragma "nounroll";
-	ld.global.v4.b32 	{%r72, %r73, %r74, %r75}, [%rd79+-8];
-	add.rn.f32 	%r106, %r106, %r72;
-	add.rn.f32 	%r107, %r107, %r73;
-	add.rn.f32 	%r108, %r108, %r74;
-	add.rn.f32 	%r109, %r109, %r75;
-	add.s64 	%rd80, %rd80, -1;
-	add.s64 	%rd79, %rd79, %rd31;
-	setp.ne.b64 	%p7, %rd80, 0;
-	@%p7 bra 	$L__BB43_11;
-$L__BB43_12:                            // %dt_exit
+	setp.eq.b64 	%p6, %rd16, 0;
+	@%p6 bra 	$L__BB43_11;
+// %bb.10:                              // %dt_body.epil
+	mad.lo.s64 	%rd88, %rd139, %rd9, %rd7;
+	shl.b64 	%rd89, %rd88, 4;
+	add.s64 	%rd90, %rd1, %rd89;
+	ld.global.v4.b32 	{%r19, %r20, %r21, %r22}, [%rd90];
+	cvt.f64.f32 	%rd91, %r19;
+	add.rn.f64 	%rd144, %rd144, %rd91;
+	cvt.f64.f32 	%rd92, %r20;
+	add.rn.f64 	%rd136, %rd136, %rd92;
+	cvt.f64.f32 	%rd93, %r21;
+	add.rn.f64 	%rd137, %rd137, %rd93;
+	cvt.f64.f32 	%rd94, %r22;
+	add.rn.f64 	%rd138, %rd138, %rd94;
+$L__BB43_11:                            // %dt_exit
 	mov.u32 	%r1, %laneid;
-	add.s64 	%rd72, %rd3, %rd8;
-	setp.ge.u64 	%p8, %rd72, %rd38;
-	@%p8 bra 	$L__BB43_14;
-// %bb.13:                              // %then114
-	shl.b64 	%rd73, %rd72, 2;
-	add.s64 	%rd36, %rd1, %rd73;
-	ld.global.b32 	%r76, [%rd36];
-	add.rn.f32 	%r106, %r106, %r76;
-$L__BB43_14:                            // %ifcont116
-	add.rn.f32 	%r77, %r107, %r106;
-	add.rn.f32 	%r78, %r108, %r109;
-	add.rn.f32 	%r79, %r78, %r77;
-	shfl.sync.bfly.b32 	%r80, %r79, 16, 31, -1;
-	add.rn.f32 	%r81, %r79, %r80;
-	shfl.sync.bfly.b32 	%r82, %r81, 8, 31, -1;
-	add.rn.f32 	%r83, %r81, %r82;
-	shfl.sync.bfly.b32 	%r84, %r83, 4, 31, -1;
-	add.rn.f32 	%r85, %r83, %r84;
-	shfl.sync.bfly.b32 	%r86, %r85, 2, 31, -1;
-	add.rn.f32 	%r87, %r85, %r86;
-	shfl.sync.bfly.b32 	%r88, %r87, 1, 31, -1;
-	setp.ne.b32 	%p9, %r1, 0;
-	@%p9 bra 	$L__BB43_16;
-// %bb.15:                              // %then143
-	ld.param.b64 	%rd39, [vectorsum_kernel_param_8];
-	add.rn.f32 	%r32, %r87, %r88;
-	add.s64 	%rd37, %rd2, %rd39;
-	atom.global.add.f32 	%r89, [%rd37], %r32;
-$L__BB43_16:                            // %ifcont145
+	add.s64 	%rd95, %rd3, %rd7;
+	setp.ge.u64 	%p7, %rd95, %rd54;
+	@%p7 bra 	$L__BB43_13;
+// %bb.12:                              // %then117
+	shl.b64 	%rd96, %rd95, 2;
+	add.s64 	%rd50, %rd1, %rd96;
+	ld.global.b32 	%r23, [%rd50];
+	cvt.f64.f32 	%rd97, %r23;
+	add.rn.f64 	%rd144, %rd144, %rd97;
+$L__BB43_13:                            // %ifcont119
+	add.rn.f64 	%rd98, %rd136, %rd144;
+	add.rn.f64 	%rd99, %rd137, %rd138;
+	add.rn.f64 	%rd100, %rd99, %rd98;
+	cvt.u32.u64 	%r24, %rd100;
+	{ .reg .b32 tmp; mov.b64 {tmp, %r25}, %rd100; }
+	shfl.sync.bfly.b32 	%r26, %r24, 16, 31, -1;
+	shfl.sync.bfly.b32 	%r27, %r25, 16, 31, -1;
+	cvt.u64.u32 	%rd101, %r26;
+	cvt.u64.u32 	%rd102, %r27;
+	shl.b64 	%rd103, %rd102, 32;
+	or.b64 	%rd104, %rd103, %rd101;
+	add.rn.f64 	%rd105, %rd100, %rd104;
+	cvt.u32.u64 	%r28, %rd105;
+	{ .reg .b32 tmp; mov.b64 {tmp, %r29}, %rd105; }
+	shfl.sync.bfly.b32 	%r30, %r28, 8, 31, -1;
+	shfl.sync.bfly.b32 	%r31, %r29, 8, 31, -1;
+	cvt.u64.u32 	%rd106, %r30;
+	cvt.u64.u32 	%rd107, %r31;
+	shl.b64 	%rd108, %rd107, 32;
+	or.b64 	%rd109, %rd108, %rd106;
+	add.rn.f64 	%rd110, %rd105, %rd109;
+	cvt.u32.u64 	%r32, %rd110;
+	{ .reg .b32 tmp; mov.b64 {tmp, %r33}, %rd110; }
+	shfl.sync.bfly.b32 	%r34, %r32, 4, 31, -1;
+	shfl.sync.bfly.b32 	%r35, %r33, 4, 31, -1;
+	cvt.u64.u32 	%rd111, %r34;
+	cvt.u64.u32 	%rd112, %r35;
+	shl.b64 	%rd113, %rd112, 32;
+	or.b64 	%rd114, %rd113, %rd111;
+	add.rn.f64 	%rd115, %rd110, %rd114;
+	cvt.u32.u64 	%r36, %rd115;
+	{ .reg .b32 tmp; mov.b64 {tmp, %r37}, %rd115; }
+	shfl.sync.bfly.b32 	%r38, %r36, 2, 31, -1;
+	shfl.sync.bfly.b32 	%r39, %r37, 2, 31, -1;
+	cvt.u64.u32 	%rd116, %r38;
+	cvt.u64.u32 	%rd117, %r39;
+	shl.b64 	%rd118, %rd117, 32;
+	or.b64 	%rd119, %rd118, %rd116;
+	add.rn.f64 	%rd53, %rd115, %rd119;
+	cvt.u32.u64 	%r40, %rd53;
+	{ .reg .b32 tmp; mov.b64 {tmp, %r41}, %rd53; }
+	shfl.sync.bfly.b32 	%r2, %r40, 1, 31, -1;
+	shfl.sync.bfly.b32 	%r3, %r41, 1, 31, -1;
+	setp.ne.b32 	%p8, %r1, 0;
+	@%p8 bra 	$L__BB43_15;
+// %bb.14:                              // %then147
+	ld.param.b64 	%rd55, [vectorsum_kernel_param_8];
+	cvt.u64.u32 	%rd120, %r3;
+	shl.b64 	%rd121, %rd120, 32;
+	cvt.u64.u32 	%rd122, %r2;
+	or.b64 	%rd123, %rd121, %rd122;
+	add.rn.f64 	%rd124, %rd53, %rd123;
+	add.s64 	%rd125, %rd2, %rd55;
+	atom.global.add.f64 	%rd126, [%rd125], %rd124;
+$L__BB43_15:                            // %ifcont149
 	ret;
                                         // -- End function
 }

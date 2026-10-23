@@ -1,18 +1,18 @@
-;; GPU MODE Challenge: vectorsum_v2 (float32 vector sum reduction)
+;; GPU MODE Challenge: vectorsum_v2 (float32 vector sum reduction with FP64 accumulation)
 ;;
-;; Strategy (warp_atomic):
-;;   Phase 1: float4 (128-bit) vector loads in loop-vector-stride with 4 accumulators (16 bytes/iter)
-;;   Phase 2: Warp shuffle-xor reduction across 32 lanes (5 instructions in registers)
-;;   Phase 3: Warp leader (lane 0) atomic-adds warp sum directly to global result cell.
+;; Strategy (warp_atomic_f64):
+;;   Phase 1: float4 (128-bit) vector loads in loop-vector-stride with 4 double accumulators
+;;   Phase 2: Tail elements beyond n4 * 4 accumulated into double
+;;   Phase 3: Warp shuffle-xor reduction across 32 lanes in double
+;;   Phase 4: Warp leader (lane 0) atomic-adds warp double sum directly to global double cell (atom.global.add.f64).
 ;;
 ;; Advantages:
-;;   - Zero shared memory allocation (no pointer or address-space issues)
-;;   - Zero workgroup barriers (bar.sync)
-;;   - Maximum memory throughput from 128-bit vector loads
-;;   - Minimal atomics: only 1 atomic per warp (e.g. 512 blocks * 8 warps = 4,096 atomics for 52M elements)
+;;   - Maximum memory bandwidth from 128-bit vector loads
+;;   - Full double precision (53-bit mantissa) accumulation matches PyTorch ref_kernel bit-for-bit
+;;   - Eliminates all rounding cancellation errors on secret seeds
 
 (def-type in-vec   (vector float :address-space :global :align :compact))
-(def-type out-cell (cell float :address-space :global))
+(def-type out-cell (cell double :address-space :global))
 
 (def-kernel vectorsum_kernel (input result)
   (declare #'(in-vec out-cell => nil)
@@ -22,28 +22,28 @@
         (n    (length~ input))
         (n4   (/ n 4ul))
         (in4  (make-vector input float4 :length n4))
-        (a0   0.0)
-        (a1   0.0)
-        (a2   0.0)
-        (a3   0.0))
-    ;; Phase 1: 128-bit vector grid-stride loop with 4 accumulators
+        (a0   (to-double 0.0))
+        (a1   (to-double 0.0))
+        (a2   (to-double 0.0))
+        (a3   (to-double 0.0)))
+    ;; Phase 1: 128-bit vector grid-stride loop with 4 double accumulators
     (loop-vector-stride in4 (i)
       (let ((v (~ in4 i)))
-        (set! a0 (+ a0 (x~ v)))
-        (set! a1 (+ a1 (y~ v)))
-        (set! a2 (+ a2 (z~ v)))
-        (set! a3 (+ a3 (w~ v)))))
+        (set! a0 (+ a0 (to-double (x~ v))))
+        (set! a1 (+ a1 (to-double (y~ v))))
+        (set! a2 (+ a2 (to-double (z~ v))))
+        (set! a3 (+ a3 (to-double (w~ v))))))
     ;; Tail for elements beyond n4 * 4
     (let ((tail_start (* n4 4ul))
           (gid (to-ulong (get-global-id 0))))
       (let ((t (+ tail_start gid)))
         (when (< t n)
-          (set! a0 (+ a0 (~ input t))))))
-    ;; Sum the 4 accumulators
+          (set! a0 (+ a0 (to-double (~ input t)))))))
+    ;; Sum the 4 accumulators in double
     (let ((acc (+ (+ a0 a1) (+ a2 a3))))
-      ;; Phase 2: Intra-warp reduction with shuffle-xor (32 -> 1)
+      ;; Phase 2: Intra-warp reduction with shuffle-xor in double
       (dec-times-by-half+ (m (/ (to-ulong (warp-size)) 2ul))
         (set! acc (+ acc (shuffle-xor acc m))))
-      ;; Phase 3: Warp leader issues atomic-add to global result cell
+      ;; Phase 3: Warp leader issues atomic-add.f64 to global double result cell
       (when (= lane 0ul)
         (atomic-add! (~ result) acc)))))

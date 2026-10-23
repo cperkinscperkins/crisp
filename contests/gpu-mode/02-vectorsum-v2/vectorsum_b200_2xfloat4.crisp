@@ -1,7 +1,7 @@
-;; GPU MODE Challenge: vectorsum_v2 (B200 Tuned: 2x float4 = 32B per thread)
+;; GPU MODE Challenge: vectorsum_v2 (B200 Tuned: 2x float4 with FP64 accumulation)
 ;; Uses def-hardware-profile for B200, 2x float4 vector loads (32B/iteration)
-;; with 8 independent FP32 accumulators to saturate B200 memory bandwidth,
-;; followed by warp shuffle-xor reduction and direct warp atomic add.
+;; with 8 independent FP64 accumulators to saturate B200 memory bandwidth,
+;; followed by warp shuffle-xor reduction in double and atom.global.add.f64.
 
 (def-hardware-profile b200
   :simd-width 32
@@ -16,7 +16,7 @@
   :mma-shapes '((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4)))
 
 (def-type in-vec   (vector float :address-space :global :align :compact))
-(def-type out-cell (cell float :address-space :global))
+(def-type out-cell (cell double :address-space :global))
 
 (def-kernel vectorsum_b200_kernel (input result)
   (declare #'(in-vec out-cell => nil)
@@ -28,37 +28,37 @@
         (n      (length~ input))
         (n4     (/ n 4ul))
         (in4    (make-vector input float4 :length n4))
-        (a0     0.0) (a1 0.0) (a2 0.0) (a3 0.0)
-        (b0     0.0) (b1 0.0) (b2 0.0) (b3 0.0)
+        (a0     (to-double 0.0)) (a1 (to-double 0.0)) (a2 (to-double 0.0)) (a3 (to-double 0.0))
+        (b0     (to-double 0.0)) (b1 (to-double 0.0)) (b2 (to-double 0.0)) (b3 (to-double 0.0))
         (stride (* 2ul gs)))
     ;; Main 2x float4 loop (stride = 2 * gs)
     (let ((iters (if (>= gid n4) 0ul (+ 1ul (/ (- (- n4 1ul) gid) stride))))
           (idx gid))
       (dotimes (k iters)
         (let ((v0 (~ in4 idx)))
-          (set! a0 (+ a0 (x~ v0)))
-          (set! a1 (+ a1 (y~ v0)))
-          (set! a2 (+ a2 (z~ v0)))
-          (set! a3 (+ a3 (w~ v0))))
+          (set! a0 (+ a0 (to-double (x~ v0))))
+          (set! a1 (+ a1 (to-double (y~ v0))))
+          (set! a2 (+ a2 (to-double (z~ v0))))
+          (set! a3 (+ a3 (to-double (w~ v0)))))
         (let ((idx1 (+ idx gs)))
           (when (< idx1 n4)
             (let ((v1 (~ in4 idx1)))
-              (set! b0 (+ b0 (x~ v1)))
-              (set! b1 (+ b1 (y~ v1)))
-              (set! b2 (+ b2 (z~ v1)))
-              (set! b3 (+ b3 (w~ v1))))))
+              (set! b0 (+ b0 (to-double (x~ v1))))
+              (set! b1 (+ b1 (to-double (y~ v1))))
+              (set! b2 (+ b2 (to-double (z~ v1))))
+              (set! b3 (+ b3 (to-double (w~ v1)))))))
         (set! idx (+ idx stride))))
     ;; Tail for elements beyond n4 * 4
     (let ((tail_start (* n4 4ul)))
       (let ((t (+ tail_start gid)))
         (when (< t n)
-          (set! a0 (+ a0 (~ input t))))))
-    ;; Sum the 8 accumulators
+          (set! a0 (+ a0 (to-double (~ input t)))))))
+    ;; Sum the 8 accumulators in double
     (let ((acc (+ (+ (+ a0 a1) (+ a2 a3))
                   (+ (+ b0 b1) (+ b2 b3)))))
-      ;; Intra-warp reduction with shuffle-xor (32 -> 1)
+      ;; Intra-warp reduction with shuffle-xor in double
       (dec-times-by-half+ (m (/ (to-ulong (warp-size)) 2ul))
         (set! acc (+ acc (shuffle-xor acc m))))
-      ;; Warp leader atomic-adds directly to global output
+      ;; Warp leader issues atomic-add.f64 to global double result cell
       (when (= lane 0ul)
         (atomic-add! (~ result) acc)))))

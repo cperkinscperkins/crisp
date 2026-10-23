@@ -20,6 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CRISP_COMPILE = REPO_ROOT / "bin" / "crisp-compile.exe"
 POPCORN_CLI = Path(__file__).resolve().parents[1] / "bin" / "popcorn-cli.exe"
 
+sys.path.insert(0, str(REPO_ROOT))
+from contests.ptx_packager import ptx_entry_to_inline_asm
+
 
 def compile_crisp_with_profile(
     crisp_path: Path,
@@ -41,102 +44,13 @@ def compile_crisp_with_profile(
     return crisp_path.with_suffix(".ptx")
 
 
-def ptx_entry_to_inline_asm(
-    ptx_text: str, entry_name: str, param_c_exprs: dict[int, tuple[str, str]]
-) -> tuple[str, str]:
-    m = re.search(
-        rf"\.visible \.entry\s+{re.escape(entry_name)}\s*\((.*?)\)\s*(?://[^\n]*)?\n\{{(.*?)\n\}}",
-        ptx_text,
-        flags=re.DOTALL,
-    )
-    if not m:
-        raise ValueError(f"Could not find .visible .entry {entry_name} in PTX")
-
-    body = m.group(2)
-
-    used_indices = sorted(
-        {
-            int(idx_str)
-            for idx_str in re.findall(rf"\b{re.escape(entry_name)}_param_(\d+)\b", body)
-        }
-    )
-    idx_to_asm_slot = {param_idx: slot for slot, param_idx in enumerate(used_indices)}
-
-    special_regs = {
-        "ctaid", "ntid", "tid", "nctaid", "laneid", "warpid", "smid", "gridid",
-        "clock", "clock64", "pm0", "pm1", "pm2", "pm3",
-    }
-
-    def prefix_ptx_registers(text: str, prefix: str = "cr_") -> str:
-        def repl(match: re.Match) -> str:
-            name = match.group(1)
-            base = name.split(".")[0]
-            if base in special_regs or base.startswith("envreg"):
-                return match.group(0)
-            return f"%{prefix}{name}"
-
-        return re.sub(r"%(?!\d)([\w.]+)", repl, text)
-
-    prefixed_body = prefix_ptx_registers(body)
-    escaped_body = prefixed_body.replace("%", "%%")
-
-    has_smem = "__crisp_dynamic_smem" in body
-
-    def replace_ld_param(match: re.Match) -> str:
-        ld_type = match.group(1)
-        reg = match.group(2)
-        param_idx = int(match.group(3))
-        slot = idx_to_asm_slot[param_idx]
-        mov_type = "b64" if "64" in ld_type else ("f32" if "f32" in ld_type else "b32")
-        return f"mov.{mov_type} \t{reg}, %{slot};"
-
-    escaped_body = re.sub(
-        rf"ld\.param\.(\w+)\s+(%%cr_\w+),\s*\[{re.escape(entry_name)}_param_(\d+)\];",
-        replace_ld_param,
-        escaped_body,
-    )
-
-    if has_smem:
-        smem_slot = len(used_indices)
-        escaped_body = re.sub(r"\b__crisp_dynamic_smem\b", f"%{smem_slot}", escaped_body)
-
-    escaped_body = re.sub(r"\bret;", "bra.uni $L__crisp_inline_exit;", escaped_body)
-
-    asm_lines = ["    asm volatile(\n        \"{\\n\""]
-    for line in escaped_body.splitlines():
-        stripped = line.rstrip()
-        if not stripped:
-            continue
-        safe_line = stripped.replace("\\", "\\\\").replace('"', '\\"')
-        asm_lines.append(f'        "{safe_line}\\n"')
-    asm_lines.append('        "$L__crisp_inline_exit:\\n"')
-    asm_lines.append('        "}\\n"')
-
-    operand_strs = []
-    for param_idx in used_indices:
-        constraint, c_expr = param_c_exprs[param_idx]
-        operand_strs.append(f'"{constraint}"({c_expr})')
-
-    if has_smem:
-        operand_strs.append('"l"(smem_ptr)')
-
-    asm_lines.append("        : : " + ", ".join(operand_strs))
-    asm_lines.append('        : "memory"\n    );')
-
-    m_bounds = re.search(r"\.(?:reqntid|maxntid)\s+(\d+)", ptx_text)
-    bsize = m_bounds.group(1) if m_bounds else "256"
-    launch_bounds = f"__launch_bounds__({bsize})"
-
-    return "\n".join(asm_lines), launch_bounds
-
-
 def make_gpumode_vectorsum(
     crisp_path: Path,
     out_py_path: Path,
     kernel_name: str = "vectorsum_kernel",
     arch: str = "sm_80",
     hardware_profile: str | None = None,
-    smem_bytes: int = 128,
+    smem_bytes: int = 0,
     elems_per_thread: int = 4,
     grid_multiplier: int = 2,
     f64_acc: bool = True,
@@ -163,6 +77,8 @@ def make_gpumode_vectorsum(
 
     commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
 
+    smem_arg = f", {smem_bytes}" if smem_bytes > 0 else ""
+
     if f64_acc:
         launch_body = f"""
     auto d_out = torch::zeros({{1}}, input.options().dtype(torch::kFloat64));
@@ -179,7 +95,7 @@ def make_gpumode_vectorsum(
     if (needed_blocks < 1) needed_blocks = 1;
     int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
 
-    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE, {smem_bytes}>>>(
+    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE{smem_arg}>>>(
         reinterpret_cast<uint64_t>(input.data_ptr()),
         reinterpret_cast<uint64_t>(d_out.data_ptr()),
         static_cast<uint64_t>(N)
@@ -203,7 +119,7 @@ def make_gpumode_vectorsum(
     if (needed_blocks < 1) needed_blocks = 1;
     int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
 
-    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE, {smem_bytes}>>>(
+    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE{smem_arg}>>>(
         reinterpret_cast<uint64_t>(input.data_ptr()),
         reinterpret_cast<uint64_t>(output.data_ptr()),
         static_cast<uint64_t>(N)
@@ -223,11 +139,8 @@ void crisp_vectorsum_kernel(
     uint64_t out_ptr,
     uint64_t len
 ) {{
-    uint64_t smem_ptr = 0ULL;
     uint64_t bytes = len * 4ULL;
-    uint64_t four = 4ULL;
     uint64_t zero = 0ULL;
-    uint64_t one = 1ULL;
 {inline_asm_code}
 }}
 
@@ -361,7 +274,7 @@ if __name__ == "__main__":
 
     # 1. Universal float4 FP64-accumulating warp reduce kernel (H100, A100, L4)
     make_gpumode_vectorsum(
-        base / "vectorsum_f64_acc.crisp",
+        base / "vectorsum_warp_reduce.crisp",
         base / "crisp_vectorsum_warp_reduce.py",
         kernel_name="vectorsum_kernel",
         arch="sm_80",
@@ -372,7 +285,7 @@ if __name__ == "__main__":
 
     # 2. B200 2x float4 FP64-accumulating tuned kernel
     make_gpumode_vectorsum(
-        base / "vectorsum_b200_f64_acc.crisp",
+        base / "vectorsum_b200_2xfloat4.crisp",
         base / "crisp_vectorsum_b200_2xfloat4.py",
         kernel_name="vectorsum_b200_kernel",
         arch="sm_80",

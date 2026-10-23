@@ -1,6 +1,6 @@
 # Generated from Crisp (https://github.com/cperkinscperkins/crisp)
 #
-# Crisp Source (vectorsum_b200_f64_acc.crisp):
+# Crisp Source (vectorsum_b200_2xfloat4.crisp):
 # -------------------------------------------------------------------------
 #   ;; GPU MODE Challenge: vectorsum_v2 (B200 Tuned: 2x float4 with FP64 accumulation)
 #   ;; Uses def-hardware-profile for B200, 2x float4 vector loads (32B/iteration)
@@ -84,17 +84,14 @@ void crisp_vectorsum_kernel(
     uint64_t out_ptr,
     uint64_t len
 ) {
-    uint64_t smem_ptr = 0ULL;
     uint64_t bytes = len * 4ULL;
-    uint64_t four = 4ULL;
     uint64_t zero = 0ULL;
-    uint64_t one = 1ULL;
     asm volatile(
         "{\n"
         "	.reg .pred 	%%cr_p<8>;\n"
         "	.reg .b32 	%%cr_r<38>;\n"
         "	.reg .b64 	%%cr_rd<146>;\n"
-        "// %%cr_bb.0:                               // %%cr_entry\n"
+        "// %%bb.0:                               // %%entry\n"
         "	mov.b64 	%%cr_rd59, %1;\n"
         "	mov.b64 	%%cr_rd62, %0;\n"
         "	cvta.to.global.u64 	%%cr_rd1, %%cr_rd62;\n"
@@ -113,7 +110,7 @@ void crisp_vectorsum_kernel(
         "	setp.ge.u64 	%%cr_p1, %%cr_rd6, %%cr_rd9;\n"
         "	mov.b64 	%%cr_rd121, 0;\n"
         "	@%%cr_p1 bra 	$L__BB43_5;\n"
-        "// %%cr_bb.1:                               // %%cr_else\n"
+        "// %%bb.1:                               // %%else\n"
         "	not.b64 	%%cr_rd65, %%cr_rd6;\n"
         "	add.s64 	%%cr_rd11, %%cr_rd9, %%cr_rd65;\n"
         "	or.b64 	%%cr_rd66, %%cr_rd11, %%cr_rd10;\n"
@@ -131,7 +128,7 @@ void crisp_vectorsum_kernel(
         "	cvt.u64.u32 	%%cr_rd120, %%cr_r10;\n"
         "$L__BB43_4:\n"
         "	add.s64 	%%cr_rd121, %%cr_rd120, 1;\n"
-        "$L__BB43_5:                             // %%cr_ifcont\n"
+        "$L__BB43_5:                             // %%ifcont\n"
         "	setp.eq.b64 	%%cr_p3, %%cr_rd121, 0;\n"
         "	mov.b64 	%%cr_rd132, 0d0000000000000000;\n"
         "	mov.b64 	%%cr_rd131, %%cr_rd132;\n"
@@ -142,7 +139,7 @@ void crisp_vectorsum_kernel(
         "	mov.b64 	%%cr_rd126, %%cr_rd132;\n"
         "	mov.b64 	%%cr_rd125, %%cr_rd132;\n"
         "	@%%cr_p3 bra 	$L__BB43_10;\n"
-        "// %%cr_bb.6:                               // %%cr_dt_body.preheader\n"
+        "// %%bb.6:                               // %%dt_body.preheader\n"
         "	cvt.u64.u32 	%%cr_rd3, %%cr_r4;\n"
         "	cvt.u64.u32 	%%cr_rd4, %%cr_r5;\n"
         "	cvt.u64.u32 	%%cr_rd7, %%cr_r7;\n"
@@ -163,7 +160,7 @@ void crisp_vectorsum_kernel(
         "	mov.b64 	%%cr_rd131, %%cr_rd125;\n"
         "	mov.b64 	%%cr_rd132, %%cr_rd125;\n"
         "	bra.uni 	$L__BB43_7;\n"
-        "$L__BB43_9:                             // %%cr_ifcont74\n"
+        "$L__BB43_9:                             // %%ifcont74\n"
         "                                        //   in Loop: Header=BB43_7 Depth=1\n"
         "	cvt.f64.f32 	%%cr_rd74, %%cr_r11;\n"
         "	add.rn.f64 	%%cr_rd132, %%cr_rd132, %%cr_rd74;\n"
@@ -179,14 +176,14 @@ void crisp_vectorsum_kernel(
         "	setp.lt.u64 	%%cr_p5, %%cr_rd124, %%cr_rd121;\n"
         "	@%%cr_p5 bra 	$L__BB43_7;\n"
         "	bra.uni 	$L__BB43_10;\n"
-        "$L__BB43_7:                             // %%cr_dt_body\n"
+        "$L__BB43_7:                             // %%dt_body\n"
         "                                        // =>This Inner Loop Header: Depth=1\n"
         "	add.s64 	%%cr_rd73, %%cr_rd123, %%cr_rd17;\n"
         "	ld.global.v4.b32 	{%%cr_r11, %%cr_r12, %%cr_r13, %%cr_r14}, [%%cr_rd73+-12];\n"
         "	setp.lt.u64 	%%cr_p4, %%cr_rd122, %%cr_rd9;\n"
         "	@%%cr_p4 bra 	$L__BB43_8;\n"
         "	bra.uni 	$L__BB43_9;\n"
-        "$L__BB43_8:                             // %%cr_then72\n"
+        "$L__BB43_8:                             // %%then72\n"
         "                                        //   in Loop: Header=BB43_7 Depth=1\n"
         "	add.s64 	%%cr_rd78, %%cr_rd123, %%cr_rd20;\n"
         "	ld.global.v4.b32 	{%%cr_r15, %%cr_r16, %%cr_r17, %%cr_r18}, [%%cr_rd78];\n"
@@ -199,20 +196,20 @@ void crisp_vectorsum_kernel(
         "	cvt.f64.f32 	%%cr_rd82, %%cr_r18;\n"
         "	add.rn.f64 	%%cr_rd125, %%cr_rd125, %%cr_rd82;\n"
         "	bra.uni 	$L__BB43_9;\n"
-        "$L__BB43_10:                            // %%cr_dt_exit\n"
+        "$L__BB43_10:                            // %%dt_exit\n"
         "	mov.u32 	%%cr_r1, %%laneid;\n"
         "	and.b64 	%%cr_rd83, %%cr_rd59, -4;\n"
         "	add.s64 	%%cr_rd84, %%cr_rd83, %%cr_rd6;\n"
         "	setp.lt.u64 	%%cr_p6, %%cr_rd84, %%cr_rd59;\n"
         "	@%%cr_p6 bra 	$L__BB43_11;\n"
         "	bra.uni 	$L__BB43_12;\n"
-        "$L__BB43_11:                            // %%cr_then115\n"
+        "$L__BB43_11:                            // %%then115\n"
         "	shl.b64 	%%cr_rd85, %%cr_rd84, 2;\n"
         "	add.s64 	%%cr_rd44, %%cr_rd1, %%cr_rd85;\n"
         "	ld.global.b32 	%%cr_r19, [%%cr_rd44];\n"
         "	cvt.f64.f32 	%%cr_rd86, %%cr_r19;\n"
         "	add.rn.f64 	%%cr_rd132, %%cr_rd132, %%cr_rd86;\n"
-        "$L__BB43_12:                            // %%cr_ifcont117\n"
+        "$L__BB43_12:                            // %%ifcont117\n"
         "	add.rn.f64 	%%cr_rd87, %%cr_rd131, %%cr_rd132;\n"
         "	add.rn.f64 	%%cr_rd88, %%cr_rd130, %%cr_rd129;\n"
         "	add.rn.f64 	%%cr_rd89, %%cr_rd88, %%cr_rd87;\n"
@@ -262,7 +259,7 @@ void crisp_vectorsum_kernel(
         "	shfl.sync.bfly.b32 	%%cr_r3, %%cr_r37, 1, 31, -1;\n"
         "	setp.ne.b32 	%%cr_p7, %%cr_r1, 0;\n"
         "	@%%cr_p7 bra 	$L__BB43_14;\n"
-        "// %%cr_bb.13:                              // %%cr_then153\n"
+        "// %%bb.13:                              // %%then153\n"
         "	mov.b64 	%%cr_rd60, %3;\n"
         "	cvt.u64.u32 	%%cr_rd113, %%cr_r3;\n"
         "	shl.b64 	%%cr_rd114, %%cr_rd113, 32;\n"
@@ -271,7 +268,7 @@ void crisp_vectorsum_kernel(
         "	add.rn.f64 	%%cr_rd117, %%cr_rd58, %%cr_rd116;\n"
         "	add.s64 	%%cr_rd118, %%cr_rd2, %%cr_rd60;\n"
         "	atom.global.add.f64 	%%cr_rd119, [%%cr_rd118], %%cr_rd117;\n"
-        "$L__BB43_14:                            // %%cr_ifcont155\n"
+        "$L__BB43_14:                            // %%ifcont155\n"
         "	bra.uni $L__crisp_inline_exit;\n"
         "                                        // -- End function\n"
         "$L__crisp_inline_exit:\n"
@@ -302,7 +299,7 @@ torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output) 
     if (needed_blocks < 1) needed_blocks = 1;
     int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
 
-    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE, 128>>>(
+    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE>>>(
         reinterpret_cast<uint64_t>(input.data_ptr()),
         reinterpret_cast<uint64_t>(d_out.data_ptr()),
         static_cast<uint64_t>(N)
