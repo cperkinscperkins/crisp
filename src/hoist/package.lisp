@@ -67,6 +67,7 @@
    #:%hk-emit-embedded-sources
    #:%hk-param-roles
    #:%hk-slot-total
+   #:%hk-check-argument-count
    #:%hk-emit-compile-and-slot-map
    #:%hk-strided-occupancy-p
    #:%hk-emit-launch-inputs

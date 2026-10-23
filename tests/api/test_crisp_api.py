@@ -556,11 +556,33 @@ class Aggregates(unittest.TestCase):
                 self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, 0), C.TYPE["aggregate"])
                 self.assertEqual(LIB.crisp_slot_size(ctx, 0, 0, 0), 8)
             with self.subTest(target=target, case="array"), Ctx(target) as ctx:
-                # (def-record data-rec (counts (array int 4))): the array field is one 16-byte slot
+                # (def-record data-rec (counts (array int 4))): a RECORD is split, its array member
+                # included -- the kernel takes four ints, then the cell's three (BUG 133: the
+                # metacrisp once said one (ARRAY INT 4) slot, and a launcher sized from it segfaulted)
                 self.assertEqual(compile_text(ctx, spec_source("060-array/16-hoist-record-with-array.crisp"),
                                               "a.crisp"), C.OK, s(LIB.crisp_diagnostics_text(ctx)))
-                self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, 0), C.TYPE["aggregate"])
-                self.assertEqual(LIB.crisp_slot_size(ctx, 0, 0, 0), 16)
+                self.assertEqual(LIB.crisp_slot_count(ctx, 0, 0), 7)
+                r, c = param_index(ctx, 0, "r"), param_index(ctx, 0, "c")
+                for i in range(4):
+                    self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, i), C.TYPE["int"], i)
+                    self.assertEqual(LIB.crisp_slot_size(ctx, 0, 0, i), 4, i)
+                    self.assertEqual(LIB.crisp_param_slot(ctx, 0, 0, r, C.ROLE["field"], i), i)
+                self.assertEqual(LIB.crisp_param_slot(ctx, 0, 0, r, C.ROLE["field"], 4), C.NO_SLOT)
+                self.assertEqual(LIB.crisp_param_slot(ctx, 0, 0, c, C.ROLE["pointer"], 0), 4)
+                self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, 4), C.TYPE["pointer"])
+            with self.subTest(target=target, case="bare array"), Ctx(target) as ctx:
+                # a fixed array PARAMETER is split the same way: four ints, FIELD 0..3 (BUG 133)
+                self.assertEqual(compile_text(ctx, "(def-type out-c (cell int :address-space :global))\n"
+                                                   "(def-kernel k_arr (a &out c)\n"
+                                                   "  (declare forward-only #'((array int 4) &out out-c))\n"
+                                                   "  (set! (~ c) (~ a 3)))\n", "b.crisp"),
+                                 C.OK, s(LIB.crisp_diagnostics_text(ctx)))
+                self.assertEqual(LIB.crisp_slot_count(ctx, 0, 0), 7)
+                a = param_index(ctx, 0, "a")
+                for i in range(4):
+                    self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, i), C.TYPE["int"], i)
+                    self.assertEqual(LIB.crisp_param_slot(ctx, 0, 0, a, C.ROLE["field"], i), i)
+                self.assertEqual(LIB.crisp_slot_type(ctx, 0, 0, 4), C.TYPE["pointer"])
 
 
 class PtxLaunch(unittest.TestCase):

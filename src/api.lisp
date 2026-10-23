@@ -235,8 +235,9 @@
 
 (defun %api-slot (entry &optional aliases structs)
   "One :physical-signature ENTRY, (INDEX TYPE), as a slot plist.  TYPE may be a def-type alias (a
-   record's FFF field is a float), so it is resolved through ALIASES first.  A by-value struct or
-   array is an :aggregate, sized by C layout rules (%api-size-align)."
+   record's FFF field is a float), so it is resolved through ALIASES first.  A by-value struct is an
+   :aggregate, sized by C layout rules (%api-size-align).  (Records and fixed arrays never reach here
+   whole: the metacrisp splits them, one entry per field / element -- BUG 133.)"
   (let ((type (%api-resolve-type (second entry) aliases)))
     (cond
       ((and (consp type) (symbolp (first type)) (string= (symbol-name (first type)) "C-POINTER"))
@@ -315,6 +316,8 @@
                      ((let ((base (if (consp type) (first type) type)))
                         (and base (symbolp base) (member (symbol-name base) record-names :test #'string-equal)))
                       :record)
+                     ;; BUG 133: a fixed array parameter is split like a record, one FIELD per element
+                     ((and head (string-equal head "ARRAY")) :record)
                      (t :scalar)))
          (element (case kind
                     ((:tensor :cell) (and (consp type) (%api-kw (second type))))

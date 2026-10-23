@@ -14047,7 +14047,10 @@ crisp_context_destroy(ctx);
 A parameter is what the Crisp source declares; a SLOT is what the launch API receives.  A tensor
 parameter becomes a pointer, a byte size, an offset / stride / extent per axis and a length.  The
 caller asks by ROLE rather than learning that layout.  BYTE_SIZE is in bytes; offsets, strides,
-extents and length are in elements.
+extents and length are in elements.  A `def-record` or a fixed `(array T N)` parameter is split,
+one slot per field or element in order -- FIELD 0, FIELD 1, ... (an array member of a record counts
+as N fields).  A `def-struct` is ONE slot, passed by value: `CRISP_TYPE_AGGREGATE`, `crisp_slot_size`
+bytes in C layout.
 
 `crisp_param_layout` reports the alignment the kernel's author declared for each tensor (`:align`
 in its `def-type`), which tells the caller what data it may pass.  A `:compact` tensor is the fast

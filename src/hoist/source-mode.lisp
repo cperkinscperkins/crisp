@@ -111,7 +111,8 @@
       ((cell-type-p type)
        (list (list first-slot "CRISP_ROLE_POINTER" 0) (list (+ first-slot 1) "CRISP_ROLE_BYTE_SIZE" 0)
              (list (+ first-slot 2) "CRISP_ROLE_OFFSET" 0)))
-      ((or (record-type-p type records) (struct-type-p type))
+      ;; BUG 133: a fixed array parameter is split like a record -- one FIELD per element slot
+      ((or (record-type-p type records) (struct-type-p type) (%array-type-p type))
        (loop for slot from first-slot to last-slot for i from 0 collect (list slot "CRISP_ROLE_FIELD" i)))
       (t (list (list first-slot "CRISP_ROLE_VALUE" 0))))))
 
@@ -120,6 +121,19 @@
   (destructuring-bind (declared full aliases records) *hoist-current-signature*
     (declare (ignore declared aliases records))
     (or (loop for p in full for r = (getf p :range) when (consp r) maximize (1+ (second r))) 0)))
+
+(defun %hk-check-argument-count (n-args hoister)
+  "Refuse to write a source-mode launcher whose own argument list (N-ARGS, as HOISTER built it from
+   the kernel's types) disagrees with the slot count the metacrisp records (%hk-slot-total).  The
+   launcher sizes crisp_slot[] from the metacrisp and indexes it by its own argument numbers, so a
+   disagreement is an out-of-bounds write at run time (BUG 133: a record's array member, recorded
+   as one slot, launched as N -- a segfault on the H100).  Better a hoist-time error naming both."
+  ;; (no log4cl here: the hoist image doesn't load it -- the error below names both counts)
+  (let ((total (%hk-slot-total)))
+    (unless (= n-args total)
+      (error "--hoist-kernel=source: the ~a launcher for kernel ~a passes ~d arguments, but its metacrisp :physical-signature records ~d slots.  The two must agree (the compile API answers from the metacrisp); this is a compiler bug."
+             hoister *hoist-current-kernel-name* n-args total))
+    t))
 
 (defun %hk-emit-compile-and-slot-map (stream target binary-line)
   "main()-scope C++: compile the embedded source through the API for TARGET (\"spv\" / \"ptx\"), then

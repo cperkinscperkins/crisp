@@ -571,6 +571,26 @@ Rerun (after the H100 fixes + BUG 127), SHORT:
   Locally verified first: all 132 CUDA source-mode launchers compile with nvcc AND their slot maps agree
   with the API (slotmap_check.py: 132/132); E2E 1508/1508, negative 360/360, unit, API 43/43.
 
+  RESULT 2026-10-22 (put_temp_files_here/190/pod-run2.log): API suite 43 ran, 12 ok / 31 skipped;
+  TORCH-TOY: PASS (exact match to torch at n = 1, 7, 1000, 2^20, 2^20+3).  Source-mode pass 1502/1508:
+  the 5 expected + 060-array/16-hoist-record-with-array, a segfault (exit 11) -- it had crashed in run 1
+  too, and I missed it in the 22.  That is BUG 133: a def-record's array member is ONE slot in the
+  metacrisp but N kernel parameters, so the launcher's crisp_slot[] (sized from the metacrisp) was
+  indexed past its end.  The BMG never ran it in source mode: its `TEST-HOIST[L0] :` (space before
+  the colon) slipped past %hoist-runs-launcher-p, as did 16 other launcher-running specs -- the L0
+  "1500/1500" pass was missing them; fixed.  slotmap_check could not catch it -- the
+  launcher and the API both read the same wrong metacrisp, so they agreed.  The lesson: check the slot
+  map against the KERNEL's own parameter list, which is what the new hoist-time guard does.
+  FIXED (R29 below); needs the H100 again only to see 060/16 run.
+
+  R29 (2026-10-22, agreed with Chris): fix %enumerate-physical-types to split record array members
+  (overlay; fold to src/metadata-val.lisp) -- and, found while fixing it, a BARE array parameter too
+  (get-physical-width / generate-physical-signature, overlay; fold to src/metadata.lisp; API + hoister
+  roles FIELD 0..N-1) -- and make source-mode launchers refuse at hoist time when
+  their argument count disagrees with the metacrisp (%hk-check-argument-count, src/hoist/source-mode.lisp).
+  CRISP_TYPE_AGGREGATE stays: a def-struct by value really is one aggregate parameter (probe: PTX
+  .param .align 4 .b8 k_sa_param_0[16]); only the record-with-array test case was wrong.
+
 Layout: the C side lives in ./c-api/ (c-api/include/crisp.h, c-api/src/...).  src/ stays Lisp.
 
 Don't forget (definition of done)

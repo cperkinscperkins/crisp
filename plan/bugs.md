@@ -4266,3 +4266,25 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 [ ] 132 AD HAS NO RULE FOR min / max.  "Function MAX is not differentiable" -- every spec using min/max
         skips --differentiate or is forward-only.  Noticed 2026-10-22 (endeavour 190, BUG 127's spec 03).
         min/max are piecewise-linear: the adjoint flows to the selected operand (ties: pick one, or split).
+
+[x] 133 FIXED -- A def-record's ARRAY MEMBER WAS ONE SLOT IN THE METACRISP, BUT THE KERNEL TAKES ONE PARAMETER
+        PER ELEMENT.  Found 2026-10-22 on the H100 (endeavour 190): 060-array/16-hoist-record-with-array's
+        source-mode CUDA launcher segfaulted (exit 11) in both pod runs.  (def-record data-rec (counts
+        (array int 4))) compiles to four i32 parameters (PTX and SPIR-V alike), but :physical-signature
+        said ((0 (ARRAY INT 4)) ...) and every :range after it was short by 3.  The compile API reported 4
+        slots for a 7-parameter kernel; the launcher sized crisp_slot[] from that and indexed it to 6.  The BMG
+        never saw it: the spec spells its directive `TEST-HOIST[L0] : ...` (space before the colon) and
+        the source-mode pass's matcher (%hoist-runs-launcher-p) wanted `]:` -- 17 launcher-running specs
+        (records, structs, scratch tensors, cells) were silently left out of the L0 pass.  The matcher
+        now allows the space.  Pre-190 nothing read the signature for this (file-mode launchers derive their own
+        arguments), which is why it never showed.
+        CAUSE: %enumerate-physical-types (src/metadata-val.lisp) returned an array member as one entry.
+        FIX: it splits (ARRAY ELEM N) into N x ELEM's own flattening (nested records and arrays of records
+        too); :range comes from get-physical-width, which counts the same list.  A BARE (array int 4)
+        kernel parameter had the same defect (four u32 in the PTX, one slot in the metacrisp):
+        get-physical-width / generate-physical-signature now split it too, and the API and the
+        source-mode hoister give it roles FIELD 0..N-1, as for a record.  def-structs unchanged --
+        they really are one aggregate parameter.  GUARD: source-mode launchers now refuse at HOIST time
+        when their own argument count disagrees with the metacrisp (%hk-check-argument-count).
+        TEST: tests/api/test_crisp_api.py Aggregates (7 slots, four int FIELD slots) -- it had encoded the
+        wrong one-16-byte-slot answer.  Needs the H100 to see the launcher run.

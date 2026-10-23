@@ -107,3 +107,168 @@
        ;; Use SPIR_FUNC (75) for non-kernel functions
        (llvm-set-function-call-conv func 75)))))
 
+
+
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 190 / BUG 133: a def-record's ARRAY member is split into one kernel parameter per
+;;; element (k_ra (counts (array int 4)) takes four i32), but the metacrisp listed it as ONE
+;;; (ARRAY INT 4) slot -- :physical-signature and every :range after it were short by N-1.  The
+;;; compile API reported 4 slots for a 7-parameter kernel and the source-mode launcher indexed its
+;;; slot map past the end (H100 segfault, 060-array/16).  def-structs are untouched: they really
+;;; are one aggregate parameter.
+;;; ---------------------------------------------------------------------------------------------
+
+;; src/metadata-val.lisp
+(defun %physical-array-split (type-spec)
+  "When TYPE-SPEC (or the def-type alias it names) is (ARRAY ELEM N) with an integer N, returns
+   (VALUES ELEM N); otherwise NIL.  Used by %enumerate-physical-types to split a record's array
+   member into one physical slot per element, as codegen does."
+  (let ((resolved (if (symbolp type-spec)
+                      (or (ignore-errors (resolve-type-alias type-spec)) type-spec)
+                      type-spec)))
+    (when (and (consp resolved)
+               (symbolp (first resolved))
+               (string-equal (symbol-name (first resolved)) "ARRAY"))
+      (let ((elem (second resolved))
+            (n (third resolved)))
+        (if (integerp n)
+            (values elem n)
+            (progn
+              (log:warn "%physical-array-split: array ~s has no integer length; recorded as one physical slot"
+                        resolved)
+              nil))))))
+
+;; src/metadata-val.lisp
+(defun %enumerate-physical-types (type-spec)
+  "Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.
+   Records are recursively flattened to their runtime members (excluding :c-t members).
+   List forms like (v-point :earnestness 3.0) use the base record type.
+   Brand-typed members are resolved to their base types.
+   BUG 133 (endeavour 190): an (ARRAY ELEM N) -- a record's array member -- is N copies of ELEM's
+   own flattening, because codegen passes each element as its own kernel parameter."
+  (multiple-value-bind (arr-elem arr-n) (%physical-array-split type-spec)
+    (when arr-n
+      (log:debug "%enumerate-physical-types: splitting ~s into ~d x ~s" type-spec arr-n arr-elem)
+      (return-from %enumerate-physical-types
+        (loop repeat arr-n append (%enumerate-physical-types arr-elem)))))
+  (let* ((base-sym (cond
+                     ((and (consp type-spec) (symbolp (car type-spec))
+                           (not (%storage-handle-type-p type-spec)))
+                      (car type-spec))
+                     ((symbolp type-spec) type-spec)
+                     (t nil)))
+         (struct-def (when (and base-sym (symbolp base-sym))
+                       (lookup-struct-definition base-sym)))
+         (type-rec (when (and base-sym (symbolp base-sym))
+                     (or (gethash base-sym *crisp-types*)
+                         (gethash (intern (symbol-name base-sym) :crisp-language)
+                                  *crisp-types*)))))
+    (if (and type-rec (eq (crisp-type-category type-rec) :record) struct-def)
+        ;; Record: flatten runtime members recursively
+        (let* ((all-members (crisp-struct-definition-members struct-def))
+               (runtime-members (remove-if (lambda (m) (and (consp m) (eq (third m) :c-t)))
+                                           all-members)))
+          (mapcan (lambda (m) (%enumerate-physical-types (second m))) runtime-members))
+        ;; Not a record: resolve brand to base type if applicable
+        (let* ((brand-def (and (symbolp type-spec) (is-brand-type-p type-spec)))
+               (final-type (if brand-def (brand-definition-base-type brand-def) type-spec)))
+          (list final-type)))))
+
+
+;; src/metadata.lisp  (BUG 133: array parameters -- REPLACES get-physical-width)
+(defun get-physical-width (type)
+  "Returns the number of physical ABI slots for TYPE.
+   Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1.
+   BUG 133 (endeavour 190): an (ARRAY ELEM N) parameter is N x ELEM's width -- codegen passes each
+   element as its own kernel parameter."
+  (cond
+   ((%storage-handle-type-p type)
+     (let* ((canonical (canonicalize-type-specifier type))
+            (base (if (consp canonical) (first canonical) canonical)))
+       (cond
+        ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+          3)
+        ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+          ;; 2 (ptr + byte-size) + 3N (offsets, strides, extents) + 1 (length) = 3N+3
+          (let ((n (if (integerp (third canonical))
+                       (third canonical)
+                       (parse-integer (symbol-name (third canonical))))))
+            (+ 3 (* 3 n))))
+        (t 1))))
+   ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
+        (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
+     2)
+   ((%user-record-type-p type)
+     (length (%enumerate-physical-types type)))
+   ((nth-value 1 (%physical-array-split type))
+     (length (%enumerate-physical-types type)))
+   (t 1)))
+
+
+
+
+;; src/metadata.lisp  (BUG 133: array parameters -- REPLACES generate-physical-signature)
+(defun generate-physical-signature (sig-or-params)
+  "Generates the physical ABI signature from kernel parameters.
+   Records are flattened to primitive scalar entries.
+   Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple.
+   BUG 133 (endeavour 190): an (ARRAY ELEM N) parameter is flattened like a record's array member --
+   one entry per element, as codegen passes them."
+  (let ((params (if (typep sig-or-params 'function-signature)
+                    (append (function-signature-implicit-parameters sig-or-params)
+                      (function-signature-parameters sig-or-params))
+                    sig-or-params))
+        (physical-args nil)
+        (current-index 0))
+    (dolist (param params)
+      (let ((type (if (typep param 'parameter-def)
+                      (parameter-def-type param)
+                      param)))
+        (unless (and (symbolp type) (string-equal (symbol-name type) "&OUT"))
+          (cond
+           ((or (and (symbolp type) (string-equal (symbol-name type) "STORAGE"))
+                (and (consp type) (string-equal (symbol-name (car type)) "STORAGE")))
+             (push (list current-index (strip-package-qualifiers '(c-pointer address-space global))) physical-args)
+             (incf current-index)
+             (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
+             (incf current-index))
+           ((%storage-handle-type-p type)
+             (let* ((canonical (canonicalize-type-specifier type))
+                    (base (if (consp canonical) (first canonical) canonical)))
+               (cond
+                ((and (symbolp base) (string-equal (symbol-name base) "CELL"))
+                  (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
+                  (incf current-index)
+                  (push (list current-index (strip-package-qualifiers 'voidp)) physical-args)
+                  (incf current-index)
+                  (push (list current-index (strip-package-qualifiers 'ulong)) physical-args)
+                  (incf current-index))
+                ((and (symbolp base) (string-equal (symbol-name base) "TENSOR"))
+                  ;; ABI: PTR, BYTE_SIZE, OFF_0..N-1, STR_0..N-1, EXT_0..N-1, LENGTH
+                  (let* ((n (if (integerp (third canonical))
+                                (third canonical)
+                                (parse-integer (symbol-name (third canonical)))))
+                         ;; 6-tuple: (tensor elem N ADDR aln ct) — addr positionally at index 3
+                         (as (or (fourth canonical) :global))
+                         (ptr-type (strip-package-qualifiers `(c-pointer :address-space ,as))))
+                    (push (list current-index ptr-type) physical-args) (incf current-index)
+                    (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index)
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (dotimes (_ n)
+                      (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index))
+                    (push (list current-index (strip-package-qualifiers 'ulong)) physical-args) (incf current-index)))
+                (t
+                  (push (list current-index (strip-package-qualifiers type)) physical-args)
+                  (incf current-index)))))
+           ((or (%user-record-type-p type)
+                (nth-value 1 (%physical-array-split type)))
+             (dolist (prim-type (%enumerate-physical-types type))
+               (push (list current-index (strip-package-qualifiers prim-type)) physical-args)
+               (incf current-index)))
+           (t
+             (push (list current-index (strip-package-qualifiers type)) physical-args)
+             (incf current-index))))))
+    (nreverse physical-args)))

@@ -104,9 +104,11 @@
      `zeKernelSetArgumentValue(kernel, <digits>,` -> `crisp_set_arg(kernel, (uint32_t)crisp_slot[<digits>],`
        (every slot from the API's answers, and recorded for the launch check);
      `zeKernelSetGroupSize(kernel,` -> `crisp_set_group_size(kernel,` (recorded);
-     and %l0-hk-launch-check-block inserted just before the launch call."
+     and %l0-hk-launch-check-block inserted just before the launch call.
+   BUG 133: the highest argument index must match the metacrisp's slot count (%hk-check-argument-count)."
   (let* ((needle "zeKernelSetArgumentValue(kernel, ")
          (start 0)
+         (n-args 0)
          (args (with-output-to-string (out)
                  (loop
                    (let ((hit (search needle text :start2 start)))
@@ -117,12 +119,16 @@
                             (num-end (or (position-if-not #'digit-char-p text :start num-start) (length text))))
                        (write-string text out :start start :end hit)
                        (if (and (> num-end num-start) (< num-end (length text)) (char= (char text num-end) #\,))
-                           (format out "crisp_set_arg(kernel, (uint32_t)crisp_slot[~a]" (subseq text num-start num-end))
+                           (progn
+                             (setf n-args (max n-args (1+ (parse-integer text :start num-start :end num-end))))
+                             (format out "crisp_set_arg(kernel, (uint32_t)crisp_slot[~a]" (subseq text num-start num-end)))
                            (write-string text out :start hit :end num-end))
                        (setf start num-end))))))
+         (checked-count (%hk-check-argument-count n-args "L0"))
          (sized (%hk-replace-all args "zeKernelSetGroupSize(kernel," "crisp_set_group_size(kernel,"))
          (launch "    result = zeCommandListAppendLaunchKernel(cmdList, kernel, &groupCount")
          (at (search launch sized)))
+    (declare (ignore checked-count))
     (if at
         (concatenate 'string (subseq sized 0 at) (%l0-hk-launch-check-block) (subseq sized at))
         sized)))

@@ -730,6 +730,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
       ;; and say so -- the launch check is then skipped, which the run's output makes visible.
       (format t "  NOTE: source mode could not place the launch check in this launcher~%")
       (return-from %cuda-hk-rewrite text))
+    ;; BUG 133: the launcher's own argument count must match the metacrisp's slot count
+    (%hk-check-argument-count n-params "CUDA")
     (let* ((perm-end (+ params-end (length (format nil "~%    };~%"))))
            (perm (with-output-to-string (s)
                    (format s "    void* crisp_params[~d];   // Endeavour 190: each argument at the slot the compile API names~%" n-params)

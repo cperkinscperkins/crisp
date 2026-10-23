@@ -405,3 +405,23 @@
 
 ;; --- Endeavor 136 SPV Chapter 1: OpGroupAsyncCopy opcode-presence + on-metal check ---
 
+
+;; tests/run-specs.lisp -- REPLACES %hoist-runs-launcher-p (endeavour 190, BUG 133 follow-up: 17 specs spell the
+;; directive `TEST-HOIST[L0] : ...` with a space before the colon -- the main runner accepts that, this
+;; matcher did not, so they were silently left out of the --hoist-kernel=source pass)
+(defun %hoist-runs-launcher-p (directive-lines backend)
+  "T when a TEST-HOIST[BACKEND] directive in DIRECTIVE-LINES names a validator that compiles AND RUNS
+   the launcher (L0: validate-l0-host-run / validate-l0-mma-run; CUDA: validate-cuda-host-run /
+   validate-cuda-mma-run).  Whitespace between the ] and the colon is allowed, as the main runner allows it."
+  (let ((prefix (format nil "TEST-HOIST[~a]" backend))
+        (runners (if (string-equal backend "CUDA")
+                     '("validate-cuda-host-run" "validate-cuda-mma-run")
+                     '("validate-l0-host-run" "validate-l0-mma-run"))))
+    (some (lambda (line)
+            (let ((trimmed (string-left-trim ";; " line)))
+              (and (starts-with trimmed prefix)
+                   (let ((colon (position-if-not (lambda (ch) (member ch '(#\Space #\Tab)))
+                                                 trimmed :start (length prefix))))
+                     (and colon (char= (cl:char trimmed colon) #\:)))   ; CHAR here is Crisp's type
+                   (some (lambda (v) (search v trimmed)) runners))))
+          directive-lines)))
