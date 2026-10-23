@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-20T06:50:04.804792Z
+Generated on 2026-10-23T06:52:14.744682Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1940,6 +1940,27 @@ Generated on 2026-10-20T06:50:04.804792Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\ops.lisp`
 
+### DEFUN `%NARY-FOLD-LEFT`
+- **Args**: `(EXPR)`
+
+  > (op a b c d) as ((op (op (op a b) c) d)): a LEFT fold, Common Lisp's order -- ((a*b)*c) -- and the  >    only one an IEEE compiler may use.  Each step is an ordinary two-operand form, so typing,  >    promotion and AD are exactly those of the nested form written by hand.
+
+
+---
+### DEFUN `%NARY-CHAIN-COMPARISON`
+- **Args**: `(EXPR)`
+
+  > (< a b c) as (and (< a b) (< b c)), Common Lisp's meaning.  Every operand is evaluated once and in  >    order: a non-atomic one is bound to a temporary first (a symbol or a literal is used directly).
+
+
+---
+### DEFUN `%NARY-ARITH-PROLOGUE`
+- **Args**: `(EXPR OP-STRING LOCATION)`
+
+  > For (OP ...) with other than two operands: the form to analyze INSTEAD (a left fold, or the lone  >    operand of (+ x) / (* x)), or an error.  NIL for exactly two operands.
+
+
+---
 ### DEFMACRO `DEF-BINARY-OP-ANALYZER`
 - **Args**: `(NAME NODE-CONSTRUCTOR OP-STRING)`
 
@@ -1948,6 +1969,13 @@ Generated on 2026-10-20T06:50:04.804792Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzes a `(- ...)` expression.  With two arguments, subtraction.  With ONE, negation -- analyzed as  >    (* x -1), exact IEEE negation including -0.0 and infinities (BUG 095).
+
+
+---
+### DEFUN `%REQUIRE-ARITY`
+- **Args**: `(EXPR WANT OP-STRING LOCATION)`
+
+  > Errors unless (OP ...) EXPR has exactly WANT operands (BUG 127: never drop one silently).
 
 
 ---
@@ -2782,7 +2810,7 @@ Generated on 2026-10-20T06:50:04.804792Z
 ### DEFUN `%175-MINMAX-EXPAND`
 - **Args**: `(EXPR WHICH LOCATION)`
 
-  > Expands (min a b) / (max a b) into a single-evaluation comparison.  >    WHICH is :min or :max.
+  > Expands (min a b) / (max a b) into a single-evaluation comparison.  >    WHICH is :min or :max.  More operands fold left, (max (max a b) c) (BUG 127) -- the CALL form only:  >    #'max passed to a reduction is applied by %175-apply-binop with exactly two arguments.
 
 
 ---
@@ -3441,10 +3469,29 @@ Generated on 2026-10-20T06:50:04.804792Z
 
 
 ---
+### DEFPARAMETER `+NARY-FOLD-OPS+`
+
+  > BUG 127: operators whose call form with more than two operands folds LEFT (src/analysis/ops.lisp).
+
+
+---
+### DEFPARAMETER `+NARY-CHAIN-OPS+`
+
+  > BUG 127: comparisons whose call form with more than two operands CHAINS (src/analysis/ops.lisp).
+
+
+---
+### DEFUN `%NARY-NORMALIZE`
+- **Args**: `(FORM)`
+
+  > BUG 127: FORM with every operator call of more than two operands rewritten to two-operand forms --  >    (* a b c) -> (* (* a b) c), (< a b c) -> (and (< a b) (< b c)) -- by the SAME helpers the analyzer  >    uses (%nary-fold-left, %nary-chain-comparison).  AD reads SOURCE through anf-transform, not the  >    analyzer's nodes, so without this the backward pass still differentiated (* a b c) as (* a b)  >    (found by 190-compile-api/04-nary-product-ad: analytical 3, numerical 12).  declare and quote forms  >    are left alone.
+
+
+---
 ### DEFUN `ANF-TRANSFORM`
 - **Args**: `(EXPR)`
 
-  > Transforms a Crisp expression into A-Normal Form.  >    ADV-001: first alpha-renames let bindings that shadow a name in scope, because ANF flattens  >    nested lets and the AD walk keys adjoints by name (see %alpha-rename-shadowed-lets).
+  > Transforms a Crisp expression into A-Normal Form.  >    BUG 127: first rewrites n-ary operator calls into two-operand forms (%nary-normalize), exactly as  >    the analyzer reads them.  >    ADV-001: then alpha-renames let bindings that shadow a name in scope, because ANF flattens  >    nested lets and the AD walk keys adjoints by name (see %alpha-rename-shadowed-lets).
 
 
 ---
@@ -3570,7 +3617,7 @@ Generated on 2026-10-20T06:50:04.804792Z
 ---
 ### DEFUN `%API-METADATA-PACKAGE`
 
-  > A private package to read .metacrisp text into, so its symbols never land in a compiler package.
+  > A private package to read .metacrisp text into, so its symbols never land in a compiler package.  >    It imports CL:NIL and CL:T: a package that uses nothing would otherwise read `nil` (e.g.  >    `:size-expr nil`) as a symbol of its own -- true, not false.
 
 
 ---
@@ -3601,10 +3648,17 @@ Generated on 2026-10-20T06:50:04.804792Z
 
 
 ---
-### DEFUN `%API-SLOT`
-- **Args**: `(ENTRY)`
+### DEFUN `%API-SIZE-ALIGN`
+- **Args**: `(TYPE ALIASES STRUCTS)`
 
-  > One :physical-signature ENTRY, (INDEX TYPE), as a slot plist.
+  > (values BYTES ALIGNMENT) of TYPE laid out as C would: a scalar; (ARRAY T N); or a def-struct by  >    name, plain or parameterised -- (POINT EARNESTNESS 3.0) carries a compile-time field that takes  >    no space -- with each field at its natural alignment and the whole rounded to the largest.  NIL  >    when TYPE cannot be sized.  STRUCTS: alist of struct name -> ((FIELD TYPE) ...).
+
+
+---
+### DEFUN `%API-SLOT`
+- **Args**: `(ENTRY &OPTIONAL ALIASES STRUCTS)`
+
+  > One :physical-signature ENTRY, (INDEX TYPE), as a slot plist.  TYPE may be a def-type alias (a  >    record's FFF field is a float), so it is resolved through ALIASES first.  A by-value struct is an  >    :aggregate, sized by C layout rules (%api-size-align).  (Records and fixed arrays never reach here  >    whole: the metacrisp splits them, one entry per field / element -- BUG 133.)
 
 
 ---
@@ -3622,10 +3676,24 @@ Generated on 2026-10-20T06:50:04.804792Z
 
 
 ---
-### DEFUN `%API-PARAM`
-- **Args**: `(DECL ALIASES RECORD-NAMES)`
+### DEFUN `%API-TENSOR-TYPE-RANK`
+- **Args**: `(TYPE)`
 
-  > One :declared-signature DECL as a parameter plist.
+  > The rank a tensor TYPE form spells out -- (tensor ELEM N ...), (vector ...) = 1, (matrix ...) = 2 --  >    or NIL when TYPE is not a tensor form.  Implicit (scratch) params carry no :rank key, only this.
+
+
+---
+### DEFUN `%API-TYPE-ALIGN`
+- **Args**: `(TYPE)`
+
+  > The :align a tensor TYPE form spells out: positional in (tensor ELEM N SPACE ALIGN ORDER), a  >    keyword argument in (vector ELEM :align A ...) / (matrix ...).  NIL if absent.
+
+
+---
+### DEFUN `%API-PARAM`
+- **Args**: `(DECL ALIASES RECORD-NAMES &KEY IMPLICIT)`
+
+  > One :declared-signature DECL (or, with IMPLICIT, one :implicit-params entry) as a parameter plist.  >    Item 2 (A9): implicit params share the list, told apart by :purpose.
 
 
 ---
@@ -3636,10 +3704,31 @@ Generated on 2026-10-20T06:50:04.804792Z
 
 
 ---
+### DEFUN `%API-DECL-PLIST`
+- **Args**: `(FORM)`
+
+  > The keyword arguments of a declaration FORM such as (global-size :set-to 256), or NIL.
+
+
+---
+### DEFUN `%API-PARAM-REF`
+- **Args**: `(SYM PARAMS)`
+
+  > SYM (a name in a declaration) as (:param INDEX) into PARAMS, or (:unknown NAME).
+
+
+---
+### DEFUN `%API-GEOMETRY`
+- **Args**: `(K PARAMS)`
+
+  > Kernel K's launch geometry declarations, normalised -- the same reading the L0 hoister gives them  >    (src/hoist-l0/main.lisp %l0-emit-dispatch):  >      :local     (X Y)  from local-size :set-to (int or list); (1 1) otherwise.  local-size :derive-from  >                        is NOT honoured, as in the hoister.  >      :dispatch  :global-size, else :num-groups (which the hoister reads exactly like global-size), else NIL  >      :strategy  :one-thread-per | :exact | :strided | :interleaved | NIL  >      :set-to    list of integers and (:param I) references  >      :derive    (:tensor I) for a bare symbol, (:scalars I ...) for a list  >      :tile-shape list of integers;  :occupancy a number
+
+
+---
 ### DEFUN `%API-MARK-POINTER-SLOTS`
 - **Args**: `(SLOTS PARAMS)`
 
-  > SLOTS with every parameter's :pointer-role slot reported as a pointer in that parameter's address  >    space.  The .metacrisp records the TARGET's view of the slot: SPIR-V says (C-POINTER ADDRESS-SPACE  >    GLOBAL), but PTX says ULONG (PTX passes a pointer as a .param .b64).  The roles are the same on  >    every target, so they decide.
+  > SLOTS with every parameter's :pointer-role slot reported as a pointer in that parameter's address  >    space, and every other cell / tensor layout slot (byte size, offsets, strides, extents, length) as  >    the ulong it always is.  The .metacrisp records the TARGET's view of a slot, which is not always  >    the layout: SPIR-V says (C-POINTER ADDRESS-SPACE GLOBAL) but PTX says ULONG for a pointer (a  >    .param .b64), and a PTX scratch cell is listed (ULONG VOIDP ULONG) although its slots are pointer,  >    byte size, offset (found on the H100, 2026-10-22).  The roles are the same on every target, so  >    they decide.
 
 
 ---
@@ -7978,10 +8067,38 @@ Generated on 2026-10-20T06:50:04.804792Z
 
 
 ---
+### DEFUN `%CUDA-HK-BLOCK-DIMS`
+- **Args**: `(DISPATCH-INFO)`
+
+  > (X Y): the block size %emit-launch-base launches with (local-size :set-to, else 1).
+
+
+---
+### DEFUN `%CUDA-HK-LAUNCH-CHECK-BLOCK`
+- **Args**: `(N-PARAMS BLOCK SHARED-BYTES)`
+
+  > main()-scope C++ inserted just before the launch lambda (see the header above).
+
+
+---
+### DEFUN `%CUDA-HK-REWRITE`
+- **Args**: `(TEXT DISPATCH-INFO)`
+
+  > The source-mode rewrite of a generated CUDA launcher's TEXT (see the header above).  The shared  >    byte count is read from the launch lambda the hoist emitted (`          <N>, 0,` before  >    `kernelParams, nullptr);`), so the check compares against exactly what it would launch with.
+
+
+---
 ### DEFUN `EMIT-MODULE-LOADING`
 - **Args**: `(STREAM PTX-PATH)`
 
-  > Emit PTX module loading via cuModuleLoadData (JIT).
+  > Emit PTX module loading via cuModuleLoadData (JIT).  >    Endeavour 190: under --hoist-kernel=source the PTX comes from the compile API at run time.
+
+
+---
+### DEFUN `%CUDA-EMIT-PTX-FILE-LOAD`
+- **Args**: `(STREAM PTX-PATH)`
+
+  > The ordinary (--hoist-kernel=file) launcher: read the .ptx from PTX-PATH and cuModuleLoadData it.
 
 
 ---
@@ -8259,82 +8376,23 @@ Generated on 2026-10-20T06:50:04.804792Z
 
 
 ---
-### DEFVAR `*HOIST-KERNEL-SOURCE-MODE*`
-
-  > Endeavour 190: T when crisp-compile asked for --hoist-kernel=source.
-
-
----
-### DEFVAR `*HOIST-KERNEL-SOURCES*`
-
-  > Endeavour 190: the .crisp paths to embed, in compile order (from --kernel-source=).
-
-
----
-### DEFVAR `*HOIST-KERNEL-FLAGS*`
-
-  > Endeavour 190: the compile flags to embed, in order (from --kernel-flag=).
-
-
----
-### DEFVAR `*HOIST-CURRENT-KERNEL-NAME*`
-
-  > Endeavour 190: the kernel being emitted, for the source-mode slot map.
-
-
----
-### DEFVAR `*HOIST-CURRENT-SIGNATURE*`
-
-  > Endeavour 190: (DECLARED-SIG FULL-SIG ALIASES RECORDS) of the kernel being emitted.
-
-
----
-### DEFUN `%HK-EXTRACT-ARGS`
-- **Args**: `(ARGS)`
-
-  > Splits the endeavour-190 arguments out of ARGS, setting the *hoist-kernel-...* specials.  >    Returns the remaining arguments (for %mma-parse-args).
-
-
----
-### DEFUN `%HK-C-STRING`
-- **Args**: `(S)`
-
-  > S as a C string literal.
-
-
----
-### DEFUN `%HK-SOURCE-LITERAL`
-- **Args**: `(TEXT)`
-
-  > TEXT as a C++ raw string literal (an escaped ordinary literal if TEXT contains the delimiter).
-
-
----
-### DEFUN `%HK-EMIT-EMBEDDED-SOURCES`
+### DEFUN `%L0-HK-EMIT-WRAPPERS`
 - **Args**: `(STREAM)`
 
-  > File-scope C++: the compile API header, the embedded sources and the flags.
+  > File-scope C++: every argument and the group size go through these, so the launch-object check  >    can compare what this launcher actually passed with what the API computes.
 
 
 ---
-### DEFUN `%HK-PARAM-ROLES`
-- **Args**: `(PARAM ALIASES RECORDS)`
+### DEFUN `%L0-HK-LAUNCH-CHECK-BLOCK`
 
-  > The (BAKED-SLOT ROLE AXIS) of each slot of the declared PARAM, by the layout the hoist emits  >    against (cell ~L1210, tensor ~L1387) -- the same layout src/api.lisp %api-roles describes, which  >    is the point: the launcher asks the API and the run proves the two agree.
-
-
----
-### DEFUN `%HK-EMIT-COMPILE-AND-SLOT-MAP`
-- **Args**: `(STREAM)`
-
-  > main()-scope C++: compile the embedded source through the API into spirv_data, find this  >    launcher's kernel in the result, and build crisp_slot[] -- baked argument index -> the slot the  >    API says.  Implicit parameters (scratch ...) are not yet described by the API (crisp.h PLANNED),  >    so their entries stay identity.
+  > main()-scope C++ inserted just before the launch: a compile-API launch object fed with the values  >    this launcher actually passed (read back from the recorded arguments, exactly what an API caller  >    would supply), then its local size, group counts and scratch byte sizes CHECKED against this  >    launcher's own -- any mismatch fails the run -- and the launch then uses the API's group counts.
 
 
 ---
-### DEFUN `%HK-REWRITE-ARG-INDICES`
+### DEFUN `%L0-HK-REWRITE`
 - **Args**: `(TEXT)`
 
-  > TEXT with every `zeKernelSetArgumentValue(kernel, <digits>,` rewritten to  >    `zeKernelSetArgumentValue(kernel, crisp_slot[<digits>],`.
+  > The source-mode rewrite of a generated L0 launcher's TEXT:  >      `zeKernelSetArgumentValue(kernel, <digits>,` -> `crisp_set_arg(kernel, (uint32_t)crisp_slot[<digits>],`  >        (every slot from the API's answers, and recorded for the launch check);  >      `zeKernelSetGroupSize(kernel,` -> `crisp_set_group_size(kernel,` (recorded);  >      and %l0-hk-launch-check-block inserted just before the launch call.  >    BUG 133: the highest argument index must match the metacrisp's slot count (%hk-check-argument-count).
 
 
 ---
@@ -8971,6 +9029,126 @@ Generated on 2026-10-20T06:50:04.804792Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\package.lisp`
 
+## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\source-mode.lisp`
+
+### DEFVAR `*HOIST-KERNEL-SOURCE-MODE*`
+
+  > Endeavour 190: T when crisp-compile asked for --hoist-kernel=source.
+
+
+---
+### DEFVAR `*HOIST-KERNEL-SOURCES*`
+
+  > Endeavour 190: the .crisp paths to embed, in compile order (from --kernel-source=).
+
+
+---
+### DEFVAR `*HOIST-KERNEL-FLAGS*`
+
+  > Endeavour 190: the compile flags to embed, in order (from --kernel-flag=).
+
+
+---
+### DEFVAR `*HOIST-CURRENT-KERNEL-NAME*`
+
+  > Endeavour 190: the kernel being emitted, for the source-mode slot map.
+
+
+---
+### DEFVAR `*HOIST-CURRENT-SIGNATURE*`
+
+  > Endeavour 190: (DECLARED-SIG FULL-SIG ALIASES RECORDS) of the kernel being emitted.
+
+
+---
+### DEFVAR `*HOIST-CURRENT-DISPATCH-INFO*`
+
+  > Endeavour 190: the dispatch-info plist of the kernel being emitted (for the launch-object check).
+
+
+---
+### DEFUN `%HK-EXTRACT-ARGS`
+- **Args**: `(ARGS)`
+
+  > Splits the endeavour-190 arguments out of ARGS, setting the *hoist-kernel-...* specials.  >    Returns the remaining arguments (for the hoister's own argument parsing).
+
+
+---
+### DEFUN `%HK-C-STRING`
+- **Args**: `(S)`
+
+  > S as a C string literal.
+
+
+---
+### DEFUN `%HK-SOURCE-LITERAL`
+- **Args**: `(TEXT)`
+
+  > TEXT as a C++ raw string literal (an escaped ordinary literal if TEXT contains the delimiter).
+
+
+---
+### DEFUN `%HK-EMIT-EMBEDDED-SOURCES`
+- **Args**: `(STREAM &OPTIONAL EMIT-WRAPPERS)`
+
+  > File-scope C++: the compile API header, then EMIT-WRAPPERS (a function of STREAM: the hoister's own  >    recording wrappers, if any), then the embedded sources and the flags.
+
+
+---
+### DEFUN `%HK-PARAM-ROLES`
+- **Args**: `(PARAM ALIASES RECORDS)`
+
+  > The (BAKED-SLOT ROLE AXIS) of each slot of PARAM, by the layout both hoisters emit against (a  >    cell: pointer, byte size, offset; a tensor: pointer, byte size, offsets, strides, extents, length)  >    -- the layout src/api.lisp %api-roles describes, which is the point: the launcher asks the API and  >    the run proves the two agree.
+
+
+---
+### DEFUN `%HK-SLOT-TOTAL`
+
+  > The number of argument slots the current kernel's launcher was generated for.
+
+
+---
+### DEFUN `%HK-CHECK-ARGUMENT-COUNT`
+- **Args**: `(N-ARGS HOISTER)`
+
+  > Refuse to write a source-mode launcher whose own argument list (N-ARGS, as HOISTER built it from  >    the kernel's types) disagrees with the slot count the metacrisp records (%hk-slot-total).  The  >    launcher sizes crisp_slot[] from the metacrisp and indexes it by its own argument numbers, so a  >    disagreement is an out-of-bounds write at run time (BUG 133: a record's array member, recorded  >    as one slot, launched as N -- a segfault on the H100).  Better a hoist-time error naming both.
+
+
+---
+### DEFUN `%HK-EMIT-COMPILE-AND-SLOT-MAP`
+- **Args**: `(STREAM TARGET BINARY-LINE)`
+
+  > main()-scope C++: compile the embedded source through the API for TARGET ("spv" / "ptx"), then  >    BINARY-LINE (the hoister's line handing crisp_bin / crisp_bin_size to its runtime), find this  >    launcher's kernel in the result, and build crisp_slot[] -- baked argument index -> the slot the  >    API says -- for EVERY parameter, declared and implicit.
+
+
+---
+### DEFUN `%HK-STRIDED-OCCUPANCY-P`
+
+  > T when the current kernel's group count comes from the occupancy path (:strategy :strided with  >    no tile grid) -- the test both hoisters' dispatch emitters make -- so the launcher has its  >    resident-group capacity to hand the API.
+
+
+---
+### DEFUN `%HK-EMIT-LAUNCH-INPUTS`
+- **Args**: `(S VALUE-ARRAY)`
+
+  > C++ that feeds the launch object crisp_L the values this launcher ACTUALLY passed: each declared  >    tensor's extents and each declared scalar, read back from VALUE-ARRAY (indexed by API slot).
+
+
+---
+### DEFUN `%HK-EMIT-SCRATCH-CHECKS`
+- **Args**: `(S VALUE-ARRAY &KEY SHARED-OFFSETS)`
+
+  > C++ comparing every scratch parameter's BYTE_SIZE slot value (from VALUE-ARRAY, by API slot) with  >    crisp_launch_param_bytes -- and, with SHARED-OFFSETS (PTX), each local scratch's POINTER slot  >    value with crisp_launch_param_shared_offset.  Sets crisp_bad; counts crisp_scratch.
+
+
+---
+### DEFUN `%HK-REPLACE-ALL`
+- **Args**: `(TEXT OLD NEW)`
+
+  > TEXT with every OLD replaced by NEW.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\llvm-bindings.lisp`
 
 ### DEFUN `LLVM-BFLOAT-TYPE`
@@ -10315,10 +10493,17 @@ Generated on 2026-10-20T06:50:04.804792Z
 
 
 ---
+### DEFUN `%PHYSICAL-ARRAY-SPLIT`
+- **Args**: `(TYPE-SPEC)`
+
+  > When TYPE-SPEC (or the def-type alias it names) is (ARRAY ELEM N) with an integer N, returns  >    (VALUES ELEM N); otherwise NIL.  Used by %enumerate-physical-types to split a record's array  >    member into one physical slot per element, as codegen does.
+
+
+---
 ### DEFUN `%ENUMERATE-PHYSICAL-TYPES`
 - **Args**: `(TYPE-SPEC)`
 
-  > Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.  >    Records are recursively flattened to their runtime members (excluding :c-t members).  >    List forms like (v-point :earnestness 3.0) use the base record type.  >    Brand-typed members are resolved to their base types.
+  > Returns a flat list of primitive Crisp type-specs for TYPE-SPEC.  >    Records are recursively flattened to their runtime members (excluding :c-t members).  >    List forms like (v-point :earnestness 3.0) use the base record type.  >    Brand-typed members are resolved to their base types.  >    BUG 133 (endeavour 190): an (ARRAY ELEM N) -- a record's array member -- is N copies of ELEM's  >    own flattening, because codegen passes each element as its own kernel parameter.
 
 
 ---
@@ -10784,14 +10969,14 @@ Generated on 2026-10-20T06:50:04.804792Z
 ### DEFUN `GET-PHYSICAL-WIDTH`
 - **Args**: `(TYPE)`
 
-  > Returns the number of physical ABI slots for TYPE.  >    Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1.
+  > Returns the number of physical ABI slots for TYPE.  >    Cell -> 3, Storage -> 2, user-defined records -> recursively counted, others -> 1.  >    BUG 133 (endeavour 190): an (ARRAY ELEM N) parameter is N x ELEM's width -- codegen passes each  >    element as its own kernel parameter.
 
 
 ---
 ### DEFUN `GENERATE-PHYSICAL-SIGNATURE`
 - **Args**: `(SIG-OR-PARAMS)`
 
-  > Generates the physical ABI signature from kernel parameters.  >    Records are flattened to primitive scalar entries.  >    Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple.
+  > Generates the physical ABI signature from kernel parameters.  >    Records are flattened to primitive scalar entries.  >    Fixed: tensor address-space is at (fourth canonical) in the positional 6-tuple.  >    BUG 133 (endeavour 190): an (ARRAY ELEM N) parameter is flattened like a record's array member --  >    one entry per element, as codegen passes them.
 
 
 ---

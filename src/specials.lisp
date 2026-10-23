@@ -182,6 +182,8 @@
           *WGMMA-ACC-OCCUPANCY-WARN-FRACTION*
           *WGMMA-NODE-SWIZZLE*
           *XE-NATIVE-OPERAND-ELEM*
+          +NARY-CHAIN-OPS+
+          +NARY-FOLD-OPS+
           +SPV-OPT-PIPELINE+
           ))
 

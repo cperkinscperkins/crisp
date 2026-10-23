@@ -22,6 +22,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%EMIT-MAIN-BASE STREAM KERNEL-NAME PTX-PATH DECLARED-SIG ALIASES RECORDS &OPTIONAL DISPATCH-INFO COMPUTE-UNITS)  hoist-cuda/main.lisp
 - - - - - (EMIT-CUDA-INIT STREAM)  hoist-cuda/main.lisp
 - - - - - (EMIT-MODULE-LOADING STREAM PTX-PATH)  hoist-cuda/main.lisp
+- - - - - - (%CUDA-EMIT-PTX-FILE-LOAD STREAM PTX-PATH)  hoist-cuda/main.lisp
 - - - - - (EMIT-KERNEL-RESOURCE-REPORT STREAM)  hoist-cuda/main.lisp
 - - - - - (EMIT-KERNEL-ARGS STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)  hoist-cuda/main.lisp
 - - - - - - (%CUDA-SHARED-LAYOUT DECLARED-SIG ALIASES)  hoist-cuda/main.lisp
@@ -81,6 +82,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - (%CUDA-CLUSTER-GRID-FIXUP-STRING DISPATCH-INFO)  hoist-cuda/main.lisp
 - - - - - (EMIT-READBACK STREAM ALLOCATIONS)  hoist-cuda/main.lisp
 - - - - - - (%CUDA-EMIT-MMA-REFERENCE STREAM ALLOCATIONS)  hoist-cuda/main.lisp
+- - - (%CUDA-HK-REWRITE TEXT DISPATCH-INFO)  hoist-cuda/main.lisp
+- - - - (%CUDA-HK-LAUNCH-CHECK-BLOCK N-PARAMS BLOCK SHARED-BYTES)  hoist-cuda/main.lisp
+- - - - (%CUDA-HK-BLOCK-DIMS DISPATCH-INFO)  hoist-cuda/main.lisp
 - - (SERVE-MAIN) :CRISP.MAIN  api.lisp
 - - - (%PROTO-WRITE-RECORD STREAM TAG PAYLOAD) :CRISP.MAIN  api.lisp
 - - - - (%PROTO-OCTETS PAYLOAD) :CRISP.MAIN  api.lisp
@@ -339,9 +343,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (ENSURE-OPENCL-KERNEL-METADATA FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%APPLY-DENORMAL-ATTRIBUTE FUNC MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-DENORM-EXECUTION-MODE FUNC MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-SUBGROUP-SIZE-EXECUTION-MODE FUNC MODULE SEMANTIC-FUNCTION)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - - - - (%175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING SEMANTIC-FUNCTION PINNED-P)  codegen.lisp
@@ -1264,10 +1269,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - - - - - - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
 - - - - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp
+- - - - - - - - - - - - - (%PHYSICAL-ARRAY-SPLIT TYPE-SPEC)  metadata-val.lisp
+- - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [RECURSION]
 - - - - - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - - - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [RECURSION]
 - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - - - (%PHYSICAL-ARRAY-SPLIT TYPE-SPEC)  metadata-val.lisp [See above]
 - - - - - - - - - - - (STRIP-PACKAGE-QUALIFIERS TYPE-SPEC)  metadata.lisp
 - - - - - - - - - - (%HP-SCRATCH-ELEM-BYTES ELEM-TYPE)  hardware-profile.lisp
 - - - - - - - - (%HP-REPORT-SHARED-MEMORY KERNEL-NAME PROFILE)  hardware-profile.lisp
@@ -1363,6 +1371,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - (%STORAGE-HANDLE-TYPE-P TYPE-SPEC)  macros.lisp [See above]
 - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - (%USER-RECORD-TYPE-P TYPE-SPEC)  metadata-val.lisp [See above]
+- - - - - - - - - - (%PHYSICAL-ARRAY-SPLIT TYPE-SPEC)  metadata-val.lisp [See above]
 - - - - - - - - - - (%ENUMERATE-PHYSICAL-TYPES TYPE-SPEC)  metadata-val.lisp [See above]
 - - - - - - - - - (GENERATE-DECLARED-SIGNATURE SIG &OPTIONAL DECLARED-PARAMS)  metadata.lisp
 - - - - - - - - - - (GET-PHYSICAL-WIDTH TYPE)  metadata.lisp [See above]
@@ -1381,11 +1390,23 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (%API-READ-METACRISP PATH) :CRISP.MAIN  api.lisp
 - - - - - - - - - (%API-METADATA-PACKAGE) :CRISP.MAIN  api.lisp
 - - - - - - - - (%API-SECTION FORMS KEY) :CRISP.MAIN  api.lisp
-- - - - - - - - (%API-PARAM DECL ALIASES RECORD-NAMES) :CRISP.MAIN  api.lisp
+- - - - - - - - (%API-PARAM DECL ALIASES RECORD-NAMES &KEY IMPLICIT) :CRISP.MAIN  api.lisp
 - - - - - - - - - (%API-RESOLVE-TYPE TYPE ALIASES) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-TENSOR-TYPE-RANK TYPE) :CRISP.MAIN  api.lisp
 - - - - - - - - - (%API-KW SYM) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-TYPE-ALIGN TYPE) :CRISP.MAIN  api.lisp
 - - - - - - - - - (%API-ROLES KIND RANK FIRST LAST) :CRISP.MAIN  api.lisp
 - - - - - - - - (%API-MARK-POINTER-SLOTS SLOTS PARAMS) :CRISP.MAIN  api.lisp
+- - - - - - - - (%API-SLOT ENTRY &OPTIONAL ALIASES STRUCTS) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-RESOLVE-TYPE TYPE ALIASES) :CRISP.MAIN  api.lisp [See above]
+- - - - - - - - - (%API-KW SYM) :CRISP.MAIN  api.lisp [See above]
+- - - - - - - - - (%API-SIZE-ALIGN TYPE ALIASES STRUCTS) :CRISP.MAIN  api.lisp
+- - - - - - - - - - (%API-RESOLVE-TYPE TYPE ALIASES) :CRISP.MAIN  api.lisp [See above]
+- - - - - - - - - - (%API-KW SYM) :CRISP.MAIN  api.lisp [See above]
+- - - - - - - - - - (%API-SIZE-ALIGN TYPE ALIASES STRUCTS) :CRISP.MAIN  api.lisp [RECURSION]
+- - - - - - - - (%API-GEOMETRY K PARAMS) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-DECL-PLIST FORM) :CRISP.MAIN  api.lisp
+- - - - - - - - - (%API-PARAM-REF SYM PARAMS) :CRISP.MAIN  api.lisp
 - - - - - - - (%API-WRITE-KERNEL-METACRISP KERNEL PATH SOURCE OUTPUT-TARGETS) :CRISP.MAIN  api.lisp
 - - - - - - - - (COLLECT-KERNEL-DEPENDENCIES KERNEL-NAMES)  metadata.lisp [See above]
 - - - - - - - - (SERIALIZE-ALIASES STREAM ALIASES-HASH)  metadata.lisp [See above]
@@ -1587,6 +1608,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%ANALYZE-MAX-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%175-MINMAX-EXPAND EXPR WHICH LOCATION)  analysis/ops.lisp
+- - - (%NARY-FOLD-LEFT EXPR)  analysis/ops.lisp
 
 - (%ANALYZE-MIN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -1640,9 +1662,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%ANALYZE-WARP-SIZE EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
 - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
-
-- (%API-SLOT ENTRY) :CRISP.MAIN  api.lisp
-- - (%API-KW SYM) :CRISP.MAIN  api.lisp [See above]
 
 - (%COMBINER-CALL COMBINER ARGS)  analysis/ops.lisp
 - - (%FUNCTION-FORM-P X)  analysis/ops.lisp [See above]
@@ -3052,6 +3071,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%FORM-MENTIONS-SYMBOL-P FORM SYM)  analysis/control.lisp [See above]
 - - - (%FRESH-SHADOW-NAME SYM)  anf-transform.lisp
 - - - (%DOTIMES-FAMILY-HEAD-P HEAD)  anf-transform.lisp [See above]
+- - (%NARY-NORMALIZE FORM)  anf-transform.lisp
+- - - (%NARY-NORMALIZE FORM)  anf-transform.lisp [RECURSION]
+- - - (%NARY-FOLD-LEFT EXPR)  analysis/ops.lisp [See above]
+- - - (%NARY-CHAIN-COMPARISON EXPR)  analysis/ops.lisp
 
 - (ANF-TRANSFORM-MODULE FORMS)  anf-transform.lisp
 - - (WITH-TEMPLATE-TYPE PARAMS &BODY BODY)  templates.lisp
@@ -3070,6 +3093,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (CREATE-NUMERIC-HIERARCHY TYPE-NAMES)  types/hierarchy.lisp
 
 - (DEF-BINARY-MATH-ANALYZER NAME NODE-CONSTRUCTOR OP-STRING)  analysis/ops.lisp
+- - (%REQUIRE-ARITY EXPR WANT OP-STRING LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
@@ -3082,6 +3106,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 
 - (DEF-BINARY-OP-ANALYZER NAME NODE-CONSTRUCTOR OP-STRING)  analysis/ops.lisp
+- - (%NARY-ARITH-PROLOGUE EXPR OP-STRING LOCATION)  analysis/ops.lisp
+- - - (%NARY-FOLD-LEFT EXPR)  analysis/ops.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (GET-PROMOTED-TYPE TYPE-A-NAME TYPE-B-NAME)  type-checker.lisp [See above]
@@ -3105,6 +3131,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (DEF-COMPARISON-ANALYZER NAME NODE-CONSTRUCTOR OP-STRING)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%NARY-CHAIN-COMPARISON EXPR)  analysis/ops.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (GET-PROMOTED-TYPE TYPE-A-NAME TYPE-B-NAME)  type-checker.lisp [See above]
 - - (CREATE-IMPLICIT-CAST NODE TARGET-TYPE LOCATION)  analysis/ops.lisp [See above]
@@ -3176,6 +3203,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (DEF-UNARY-MATH-ANALYZER NAME NODE-CONSTRUCTOR OP-STRING)  analysis/ops.lisp
+- - (%REQUIRE-ARITY EXPR WANT OP-STRING LOCATION)  analysis/ops.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 

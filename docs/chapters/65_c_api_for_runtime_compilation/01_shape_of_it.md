@@ -1,6 +1,8 @@
 # Shape of it ✅
 
 
+The following C code demonstrates how to use the Crisp Compilation API. 
+
 ```c
 crisp_context* ctx = NULL;
 crisp_context_create("spv", &ctx);                       /* one target per context: "spv" or "ptx" */

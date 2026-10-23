@@ -492,38 +492,27 @@ Other Flags,490,partially implemented
 `--runtime-checks`,491,implemented
 `--logging-output`,492,not implemented
 `--debug` or `-g`,493,implemented
-`--hoist-dynamic=<KERNELNAME>`,494,not implemented
+`--hoist-kernel=file|source`,494,implemented
 `--re-output-crisp=<DIRECTORY>`,495,not implemented
 `--no-inference`,496,not implemented
 `--no-static-analysis`,497,not implemented
 `--single-pass`,498,implemented
 `--skip-c-t-checks`,499,not implemented
-`--tree-shaking`,500,not implemented
-Compiliation Flags,501,implemented
-`-D`,502,not implemented
-Math Flags `--math-precision`,503,not implemented
-Fast Compilation,504,implemented
-Compiler Invocations and Files,505,implemented
-Hoisting Code,506,implemented
-In-Memory Compilation API,507,not implemented
-C API,508,not implemented
-`new_context( target_identifier )`,509,not implemented
-"`set_tree_shake_directory( context, path )`",510,not implemented
-"`add_input_file( context, file.crisp )`",511,not implemented
-"`add_input_string ( context, crisp_string, virtual_file_name )`",512,not implemented
-"`set_flags( context, string )`",513,not implemented
-"`get_flags( context, char** flagHandle, size_t* sz )`",514,not implemented
-"`compile(context, size_t* sz)`",515,not implemented
-"`compile( context,  string, size_t* sz )`",516,not implemented
-"`bool get_binary(context, const void** out_data, size_t* out_size)`",517,not implemented
-`long get_compilation_error_code(context)`,518,not implemented
-`const char* get_messages(context)`,519,not implemented
-`const char* get_metadata(context)`,520,not implemented
-`destroy_context( context )`,521,not implemented
-Status Codes,522,implemented
-dot product and matmul,523,not implemented
-max-pool,524,not implemented
-Average Pool,525,not implemented
-ReLU,526,not implemented
-Acknowledgements,527,implemented
-SUMMARY (Total: 527),Impl: 285 (54.1%),Not Impl: 219 (41.6%) | Part: 23 (4.4%)
+Compiliation Flags,500,implemented
+`-D`,501,not implemented
+Math Flags `--math-precision`,502,not implemented
+Fast Compilation,503,implemented
+Compiler Invocations and Files,504,implemented
+Hoisting Code,505,implemented
+C API for Runtime Compilation,506,implemented
+Shape of it,507,implemented
+What a caller can ask,508,implemented
+Flags,509,implemented
+How it runs,510,implemented
+Dogfood: `--hoist-kernel=source`,511,implemented
+dot product and matmul,512,not implemented
+max-pool,513,not implemented
+Average Pool,514,not implemented
+ReLU,515,not implemented
+Acknowledgements,516,implemented
+SUMMARY (Total: 516),Impl: 291 (56.4%),Not Impl: 202 (39.1%) | Part: 23 (4.5%)
