@@ -190,6 +190,73 @@ def render_problem_report(p: Dict[str, Any]) -> str:
         )
     L.append("")
 
+    # Section 1b: Beauty Contestant Showcase
+    beauty = p.get("beauty_entry")
+    if beauty:
+        L.append("## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)\n")
+        title = beauty.get("title", "Idiomatic Crisp Kernel")
+        desc = beauty.get("description", "")
+        sloc = beauty.get("sloc", "?")
+        crisp_file = beauty.get("crisp_file", "")
+        py_file = beauty.get("py_file", "")
+        crisp_path = REPO_ROOT / "contests" / "gpu-mode" / crisp_file
+
+        L.append(
+            "> **Philosophy:** High-level, declarative Crisp code utilizing built-in language idioms "
+            "(`loop-vector-stride`, vectorized types/views, monomorphic collective reductions) "
+            "without manual pointer chasing, inline PTX hacks, or complex register budgeting.\n"
+        )
+        if desc:
+            L.append(f"> **Design:** {desc} (`{sloc}` SLOC)\n>\n")
+        idioms = beauty.get("idioms", [])
+        if idioms:
+            L.append("> **Crisp Abstractions Showcased:**\n")
+            for idm in idioms:
+                L.append(f"> - {idm}\n")
+            L.append("\n")
+
+        L.append(
+            "| GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |"
+        )
+        L.append("|---|---|---:|---:|---:|---:|---|---|---:|")
+
+        b_scores = beauty.get("scores", {})
+        for gpu in GPUS:
+            b_info = b_scores.get(gpu)
+            if not b_info:
+                continue
+            spec = gpu_specs.get(gpu, {})
+            arch = spec.get("arch", "—")
+            b_us = b_info.get("score_us")
+            b_score_str = f"**{b_us:.2f} µs**" if b_us is not None else "—"
+            bw_str = format_bw(total_bytes, b_us) if b_us else "—"
+
+            st = standings.get(gpu, {})
+            top1_us = st.get("top1_score_us")
+            pct_top1 = f"**{(top1_us / b_us) * 100.0:.1f}%** (`{top1_us:.2f} µs`)" if (top1_us and b_us) else "—"
+
+            tuned_us = st.get("public_score_us") or st.get("secret_score_us")
+            pct_tuned = f"{(tuned_us / b_us) * 100.0:.1f}% (`{tuned_us:.2f} µs`)" if (tuned_us and b_us) else "—"
+            tuned_fname = st.get("file_name", "tuned")
+            tuned_py = st.get("py_file", "")
+            tuned_link = f"[`{tuned_fname}`]({tuned_py})" if tuned_py else f"`{tuned_fname}`"
+
+            mode_str = b_info.get("mode", "benchmark")
+            sub_id = b_info.get("submission_id", "—")
+            sub_str = f"`#{sub_id}`" if sub_id != "—" else "—"
+
+            L.append(
+                f"| **{gpu}** | {arch} | {b_score_str} | {bw_str} | {pct_top1} | {pct_tuned} | {tuned_link} | `{mode_str}` | {sub_str} |"
+            )
+        L.append("")
+
+        if crisp_path.exists():
+            code_text = crisp_path.read_text(encoding="utf-8").strip()
+            L.append(f"### Crisp Implementation ([`{crisp_file}`]({crisp_file}))\n")
+            L.append("```lisp")
+            L.append(code_text)
+            L.append("```\n")
+
     # Section 2: Technique Ladder & Cross-GPU Ablation
     ablation_lbl = p.get("ablation_size_label", "size = 16384")
     L.append(f"## § 2 — Technique Ladder & Cross-GPU Ablation (`{ablation_lbl}`)\n")
@@ -337,6 +404,56 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
             cap = st.get("captured_at", "?")[:16].replace("T", " ")
             L.append(
                 f"| [`{prob}`](REPORT-{prob}.md) | **{gpu}** | {rank_str} | {pub_str} | {sec_str} | {bw_str} | {pct_str} | {k_link} | `{cap}` |"
+            )
+    L.append("")
+
+    L.append("## ✨ Beauty Contestants — Idiomatic Crisp Showcase\n")
+    L.append(
+        "For each contest, Crisp provides a **Beauty Contestant**: a clean, readable, high-level reference implementation "
+        "relying strictly on Crisp's built-in abstractions (`loop-vector-stride`, typed views, monomorphic reductions) "
+        "rather than aggressive hardware-specific micro-tuning or manual loop unrolling.\n"
+    )
+    L.append(
+        "| Contest | Beauty Kernel (`.crisp`) | SLOC | Primary Abstractions | Best GPU | Beauty Score | % of #1 (`top1`) | % of Tuned Crisp |"
+    )
+    L.append("|---|---|---:|---|---|---:|---:|---:|")
+    for p in problems:
+        prob = p["problem"]
+        beauty = p.get("beauty_entry")
+        if not beauty:
+            continue
+        crisp_f = beauty.get("crisp_file", "")
+        sloc = beauty.get("sloc", "?")
+        idioms_str = ", ".join(beauty.get("idioms", [])[:2])
+        b_scores = beauty.get("scores", {})
+
+        best_gpu = None
+        best_pct_top1 = 0.0
+        best_score_us = None
+        best_pct_tuned = None
+
+        for gpu, b_info in b_scores.items():
+            b_us = b_info.get("score_us")
+            if not b_us:
+                continue
+            st = p.get("standings", {}).get(gpu, {})
+            top1_us = st.get("top1_score_us")
+            if top1_us and b_us:
+                pct = (top1_us / b_us) * 100.0
+                if pct > best_pct_top1:
+                    best_pct_top1 = pct
+                    best_gpu = gpu
+                    best_score_us = b_us
+                    tuned_us = st.get("public_score_us") or st.get("secret_score_us")
+                    if tuned_us:
+                        best_pct_tuned = (tuned_us / b_us) * 100.0
+
+        if best_gpu:
+            k_link = f"[`{Path(crisp_f).name}`]({crisp_f})"
+            pct_top1_str = f"**{best_pct_top1:.1f}%**"
+            pct_tuned_str = f"{best_pct_tuned:.1f}%" if best_pct_tuned else "—"
+            L.append(
+                f"| [`{prob}`](REPORT-{prob}.md) | {k_link} | {sloc} | {idioms_str} | **{best_gpu}** | {best_score_us:.2f} µs | {pct_top1_str} | {pct_tuned_str} |"
             )
     L.append("")
     L.append("## Regenerating & Refreshing Live Standings\n")

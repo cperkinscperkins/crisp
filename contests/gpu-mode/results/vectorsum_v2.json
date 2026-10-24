@@ -67,13 +67,13 @@
       "user_name": "cperkinscperkins",
       "rank": 55,
       "total_entrants": 66,
-      "file_name": "crisp_vectorsum_warp_reduce.py",
-      "crisp_file": "02-vectorsum-v2/vectorsum_warp_reduce.crisp",
-      "py_file": "02-vectorsum-v2/crisp_vectorsum_warp_reduce.py",
+      "file_name": "crisp_vectorsum_beauty.py",
+      "crisp_file": "02-vectorsum-v2/vectorsum_beauty.crisp",
+      "py_file": "02-vectorsum-v2/crisp_vectorsum_beauty.py",
       "hardware_profile": null,
-      "public_score_us": 101.01,
-      "secret_score_us": 100.88,
-      "submission_id": 964112,
+      "public_score_us": 93.85,
+      "secret_score_us": 95.21,
+      "submission_id": 965749,
       "top1_score_us": 67.92,
       "top1_user": "salad",
       "median_score_us": 83.89
@@ -147,6 +147,20 @@
       "block_size": 256,
       "registers": 28,
       "hardware_profile": "b200"
+    },
+    {
+      "step": "✨ Beauty",
+      "key": "beauty",
+      "role": "beauty",
+      "crisp_file": "02-vectorsum-v2/vectorsum_beauty.crisp",
+      "py_file": "02-vectorsum-v2/crisp_vectorsum_beauty.py",
+      "strategy": "Idiomatic Crisp (float4 views, loop-vector-stride, reduce-warp collective, atomic-add!)",
+      "sloc": 24,
+      "inplace": false,
+      "bytes_per_thread": 16,
+      "block_size": 256,
+      "registers": 34,
+      "hardware_profile": null
     }
   ],
   "runs": [
@@ -345,6 +359,54 @@
       "benchmark_worst_us": null,
       "public_score_us": 974.52,
       "secret_score_us": 975.7
+    },
+    {
+      "timestamp": "2026-10-24T00:26:25Z",
+      "gpu": "B200",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectorsum_beauty.py",
+      "mode": "benchmark",
+      "submission_id": 965744,
+      "benchmark_mean_us": 67.8,
+      "benchmark_std_us": 0.18,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T00:28:49Z",
+      "gpu": "H100",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectorsum_beauty.py",
+      "mode": "benchmark",
+      "submission_id": 965746,
+      "benchmark_mean_us": 95.2,
+      "benchmark_std_us": 0.09,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T00:31:25Z",
+      "gpu": "H100",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectorsum_beauty.py",
+      "mode": "leaderboard",
+      "submission_id": 965749,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "public_score_us": 93.85,
+      "secret_score_us": 95.21
+    },
+    {
+      "timestamp": "2026-10-24T00:35:25Z",
+      "gpu": "B200",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectorsum_beauty.py",
+      "mode": "leaderboard",
+      "submission_id": 965751,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "public_score_us": 66.61,
+      "secret_score_us": 66.63
     }
   ],
   "ablation_size_label": "size = 52,428,800 (and 6 benchmark sizes)",
@@ -353,5 +415,38 @@
     "**Blackwell (`B200`) Architecture Profile:** Leveraging Crisp's `def-hardware-profile b200` with 2x `float4` loads (32 bytes/thread) and 8 independent FP64 accumulators achieved **89.44 µs** public / **88.26 µs** secret (2.34 TB/s read throughput), outperforming the universal 1x float4 kernel.",
     "**Achieved Memory Bandwidth:** Reading 209.7 MB in 89.44 µs on B200 achieves **2.34 TB/s**, while H100 achieves **2.08 TB/s** (101.01 µs), A100 achieves **1.28 TB/s** (164.36 µs), and L4 achieves **215.2 GB/s** (974.52 µs).",
     "**Host Launch vs. Kernel Latency:** The remaining gap to the fastest leaderboard entries (e.g. 67.9 µs on H100) is dominated by host-side PyTorch launch overhead (`torch::zeros` allocation and `.to(kFloat32)` conversion). Future iterations using last-thread-finishes direct FP32 output will eliminate host dispatch latency."
-  ]
+  ],
+  "beauty_entry": {
+    "crisp_file": "02-vectorsum-v2/vectorsum_beauty.crisp",
+    "py_file": "02-vectorsum-v2/crisp_vectorsum_beauty.py",
+    "kernel_key": "beauty",
+    "sloc": 24,
+    "title": "Idiomatic Vectorized Reduction (float4 views + reduce-warp)",
+    "description": "High-level parallel reduction combining 128-bit float4 loop-vector-stride with Crisp Endeavour 175 reduce-warp collective and double atomic accumulation, eliminating manual butterfly bit manipulation.",
+    "idioms": [
+      "make-vector float4 128-bit view",
+      "loop-vector-stride grid-stride loop",
+      "to-double exact precision conversion",
+      "reduce-warp collective reduction",
+      "atomic-add! global cell accumulation"
+    ],
+    "scores": {
+      "B200": {
+        "score_us": 66.61,
+        "public_score_us": 66.61,
+        "secret_score_us": 66.63,
+        "benchmark_mean_us": 67.8,
+        "mode": "leaderboard",
+        "submission_id": 965751
+      },
+      "H100": {
+        "score_us": 93.85,
+        "public_score_us": 93.85,
+        "secret_score_us": 95.21,
+        "benchmark_mean_us": 95.2,
+        "mode": "leaderboard",
+        "submission_id": 965749
+      }
+    }
+  }
 }
