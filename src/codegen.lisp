@@ -520,6 +520,71 @@
              (node-val (crisp.llvm-bindings::llvm-metadata-as-value ctx node)))
         (llvm-add-named-metadata-operand module "spirv.ExecutionMode" node-val)))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 192 (cache hints) -- per-entry-point cache-hint table (LLVM param index -> hint + read-only)
+;;;; See tests/spec/192-cache-hints/cache-hints.md.
+;;;; ----------------------------------------------------------------------
+
+;; src/codegen.lisp
+(defvar *kernel-cache-hint-table* (make-hash-table :test 'equal)
+  "Endeavour 192.  LLVM entry-point name (string) -> list of
+   (PHYSICAL-PARAM-INDEX INTENT PREFETCH READONLY-P), one entry per storage-handle POINTER
+   parameter that carries a :cache hint and/or is read-only (read-only-ness lets the post-opt pass
+   re-apply !invariant.load, which -O3 drops on lane-accessed vector loads -- BUG 134).
+   Written by ensure-opencl-kernel-metadata for every entry point (an empty list overwrites a
+   stale entry); read by %apply-cache-hints-to-ll.")
+
+;; src/codegen.lisp
+(defun %kernel-llvm-name (semantic-function)
+  "Endeavour 192.  The LLVM function name generate-function-prototype gives an ENTRY POINT."
+  (substitute #\_ #\~ (substitute #\_ #\- (string-downcase
+                                            (symbol-name (semantic-function-name semantic-function))))))
+
+;; src/codegen.lisp
+(defun %compute-kernel-cache-hints (semantic-function &optional module)
+  "Endeavour 192.  The *KERNEL-CACHE-HINT-TABLE* entries for SEMANTIC-FUNCTION (an entry point).
+
+   Physical parameters are the flattened handle fields (INPUT_PTR INPUT_BYTE_SIZE ...); the
+   POINTER field <NAME>_PTR is matched to the declared parameter NAME in
+   *KERNEL-DECLARED-SIGNATURES*, whose types are the declared (alias or raw) specs.  Each semantic
+   parameter's LLVM width is (length (get-expanded-types TYPE MODULE)) -- the same expansion
+   create-llvm-function-type performs -- so the recorded index is the LLVM parameter's position even
+   when struct-typed nodes (implicit scratch tiles) precede it.  Without MODULE every node counts 1.
+
+   Adjoints inherit nothing: in a *_GRAD kernel a parameter P_GRAD whose P is also declared is a
+   gradient (shadow) buffer -- its access pattern is not the forward pass's, so it gets no hint
+   even though it is declared with the same alias type (decision 2026-10-23)."
+  (let* ((fn-name  (semantic-function-name semantic-function))
+         (declared (remove-if (lambda (p) (string= (symbol-name (car p)) "&OUT"))
+                              (gethash fn-name *kernel-declared-signatures*)))
+         (names    (mapcar (lambda (p) (symbol-name (car p))) declared))
+         (grad-p   (alexandria:ends-with-subseq "_GRAD" (symbol-name fn-name)))
+         (readonly (ignore-errors (%collect-readonly-tensor-param-syms semantic-function)))
+         (phys     0)
+         (entries  '()))
+    (dolist (node (semantic-function-param-list semantic-function))
+      (let ((pname (symbol-name (semantic-param-name node)))
+            (width (or (and module
+                            (ignore-errors (length (get-expanded-types (semantic-param-type node) module))))
+                       1)))
+        (when (alexandria:ends-with-subseq "_PTR" pname)
+          (let* ((logical (subseq pname 0 (- (length pname) 4)))
+                 (decl    (find logical declared :key (lambda (p) (symbol-name (car p)))
+                                                 :test #'string=)))
+            (when decl
+              (let* ((adjoint-p (and grad-p
+                                     (alexandria:ends-with-subseq "_GRAD" logical)
+                                     (member (subseq logical 0 (- (length logical) 5)) names
+                                             :test #'string=)))
+                     (hint (unless adjoint-p (%cache-hint-of-type (cdr decl))))
+                     (ro   (and (hash-table-p readonly) (gethash (car decl) readonly) t)))
+                (when adjoint-p
+                  (log:debug "192: ~a: ~a is an adjoint -- no cache hint" fn-name logical))
+                (when (or hint ro)
+                  (push (list phys (first hint) (second hint) ro) entries))))))
+        (incf phys width)))
+    (nreverse entries)))
+
 (defun ensure-opencl-kernel-metadata (func semantic-function module)
   "Marks a function as a SPIR-V/PTX kernel if it's an entry point.
    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).
@@ -529,7 +594,16 @@
    Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.
 
    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added
-   as text during IR printing for SPIR-V."
+   as text during IR printing for SPIR-V.
+   Endeavour 192: also records the entry point's cache-hint table (*KERNEL-CACHE-HINT-TABLE*),
+   indexed by LLVM parameter position, for the post-opt pass (%apply-cache-hints-to-ll)."
+  ;; Endeavour 192: record this entry point's cache-hint table for the post-opt pass.
+  (when (semantic-function-is-entry-point semantic-function)
+    (let ((entries (%compute-kernel-cache-hints semantic-function module))
+          (name (%kernel-llvm-name semantic-function)))
+      (setf (gethash name *kernel-cache-hint-table*) entries)
+      (when entries
+        (log:info "192: ~a cache-hint table (index intent prefetch readonly): ~s" name entries))))
   (%apply-denormal-attribute func module)
   (when (semantic-function-is-entry-point semantic-function)
         (log:info "Marking function ~a as Kernel for backend ~a"

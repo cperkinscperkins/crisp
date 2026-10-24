@@ -5,7 +5,22 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
-;;;; EMPTY as of 2026-10-22 -- endeavour 190 (compile API) folded into src/:
+;;;; EMPTY as of 2026-10-24 -- endeavour 192 (cache hints) folded into src/ (only the LAST copy of each
+;;;; re-appended function was taken; wrappers folded as one call each, their defvar scaffolding dropped):
+;;;;   * :cache parsing      -> +cache-intents+, %cache-intent-keyword, %parse-cache-hint,
+;;;;                            %check-cache-hint-address-space, %cache-hint-of-type, and a CACHE clause in
+;;;;                            the four %expand-*-type-specifier (src/types/validation.lisp)
+;;;;   * hint table          -> *kernel-cache-hint-table*, %kernel-llvm-name, %compute-kernel-cache-hints;
+;;;;                            ensure-opencl-kernel-metadata records it (src/codegen.lisp)
+;;;;   * post-opt pass       -> the %ll-* / %ptx-* / %spv-cache-controls block + %apply-cache-hints-to-ll,
+;;;;                            called from compile-to-ptx (+ptx74) and compile-to-spirv (src/compiler.lisp)
+;;;;   * tile ops            -> %refuse-per-operation-cache, called by analyze-load-tile-at-expression /
+;;;;                            analyze-store-tile-at-expression (src/analysis/control.lisp) and
+;;;;                            analyze-prefetch-tile (src/mma.lisp)
+;;;;   * spec validators     -> %spv-cache-control-census + validate-spv-cache-* (src/mma.lisp)
+;;;;   (spec-runner-overlay.lisp -> tests/run-specs.lisp the same day: the %c192-* / validate-ptx-cache-*
+;;;;    validators)
+;;;; Before that, EMPTY as of 2026-10-22 -- endeavour 190 (compile API) folded into src/:
 ;;;;   * BUG 066 on PTX  -> ensure-opencl-kernel-metadata calls %173-ensure-grad-dispatch-decls on every backend (src/codegen.lisp)
 ;;;;   * BUG 133         -> %physical-array-split (new), %enumerate-physical-types (src/metadata-val.lisp);
 ;;;;                        get-physical-width, generate-physical-signature (src/metadata.lisp)

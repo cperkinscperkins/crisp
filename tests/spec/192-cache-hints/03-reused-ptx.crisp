@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-reused
+;;
+;; Endeavour 192.  `:cache :reused` on every handle (sm_90): loads AND stores are .L2::cache_hint under a
+;; createpolicy.fractional.L2::evict_last policy -- the only L2 evict-last form ptxas accepts on ld/st
+;; (a bare .L2::evict_last is refused).  createpolicy needs PTX ISA 7.4.
+
+(def-type r-vec (vector float :address-space :global :align :compact :cache :reused))
+
+(def-kernel cache_reused (A B &out C)
+  (declare #'(r-vec r-vec &out r-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

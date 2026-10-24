@@ -4289,12 +4289,26 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         TEST: tests/api/test_crisp_api.py Aggregates (7 slots, four int FIELD slots) -- it had encoded the
         wrong one-16-byte-slot answer.  Needs the H100 to see the launcher run.
 
-[ ] 134 A RETYPED VIEW OF A READ-ONLY INPUT LOSES ld.global.nc.  Found 2026-10-23 (contest BUG-002 work,
+[ ] 134 LANE ACCESS TO A float4 VIEW OF A READ-ONLY INPUT LOSES ld.global.nc.  Found 2026-10-23 (contest BUG-002 work,
         vectorsum_lastman_wg_u8.crisp).  (make-vector input float4 :length n4) over a float `input` that is
         never written: with `&out` on the written cells, the scalar tail load `(~ input t)` is
         ld.global.nc.b32, but every float4 load through the view is plain ld.global.v4.b32 (9 of them).
         Without `&out` in the signature NOTHING is .nc -- the contest kernels (AG's and mine) were all
         written that way, so no contest entry has had read-only loads.  BUG 125 (endeavour 186) fixed .nc
-        through views; this looks like the case where the view changes the element type.  HYPOTHESIS only
-        -- not yet traced in the codegen.  Perf effect unmeasured on its own (being measured together with
-        an L1::no_allocate.L2::256B hint, which Crisp also cannot express today).
+        through views -- and the retyping hypothesis first written here was WRONG: 186's own float4 views
+        are .nc (03-readonly-view-metal: 10 x ld.global.nc.v4).
+        CAUSE (traced 2026-10-23, put_temp_files_here/192-spike/b134/): codegen is right -- the view load is
+        `load <4 x float> ... !invariant.load` before opt.  When the kernel then uses LANES of the float4
+        (x~ y~ z~ w~) instead of the whole value, LLVM -O3 narrows the vector load to scalar lane loads
+        (`%comp_0 = load float ...`) and DROPS !invariant.load; llc's load/store vectorizer re-merges them
+        into a plain ld.global.v4.  A kernel that stores the whole float4 keeps .nc (v3 probe).
+        FIX: endeavour 192's post-opt provenance pass (load -> base kernel argument) re-applies
+        !invariant.load to loads from read-only arguments -- the same walk that places :cache hints.
+
+[ ] 135 154-nvidia-perf/03-wgmma-two-warpgroups IS MMA_WRONG ON AN H100 PCIe (C all zeros, 32768 mismatches).
+        Observed 2026-10-24 on a RunPod H100 PCIe, driver 595.91.07, during endeavour 192's full CUDA run.
+        Identical on main @ a2983e5c (pre-192) built beside it on the same pod, so not caused by 192.
+        Cause unknown -- not investigated.  Unknown whether it ever passed on a PCIe part (154's runs were
+        on SXM?); the other 154 specs pass.  Also seen in that full run: 122/07, 128/13, 128/14, 170/43
+        (libdevice FFI hoists) failed "execution failed (Code 1)" but pass when run singly on both
+        builds -- order / environment, not a compiler change.

@@ -122,6 +122,15 @@ Grid sizes are decided *in the kernel* and emitted to the `.metacrisp` file.
 * **`:tile-shape`**: Defines the grid rank and shape (inferred from `tile-stride` if omitted). **Trap:** Using a 1-D grid under an N-D `tile-stride` will serialize an axis and destroy performance.
 * **`:occupancy`**: A grid-size multiplier against max-resident-workgroups. Only applies when there is no exact `:tile-shape`.
 
+### Cache Hints (`:cache`, endeavour 192)
+
+A `:global` storage-handle type can carry `:cache :streaming | :reused | :no-l1`, optionally with an L2
+prefetch size (`(:streaming :prefetch 256)`).  Views and tile operations inherit it; it never changes a
+result.  Measured so far: **[NVIDIA]** about 3% on an H100 streaming reduction (vectorsum, 52M floats,
+`(:streaming :prefetch 256)` + `(unroll 8)`), **nothing on B200**.  **[Intel]** see anti-pattern 2 --
+the driver default has matched hand-placed cache controls.  For matmul, the natural declaration is A and
+B `:reused`, C `:streaming`; it has not been benchmarked (192 left benchmarks out of scope).
+
 ---
 
 ## 2. Compiler & Environment (Layer 2)
@@ -169,7 +178,7 @@ Do not waste time retrying these approaches for this specific algorithm class; t
 **[Intel]**
 
 1. **SLM Staging of Operands:** `SPV_INTEL_2d_block_io` is a global-memory facility. Staging through SLM drops the 2D block load entirely, resulting in catastrophic throughput loss on Xe2.
-2. **Cache Control Directives:** Manually applying `SPV_INTEL_cache_controls` (e.g., L1/L3 caching) has proven ineffective or slightly regressive. The driver default for 2D block IO already matches or ignores these pointer decorations.
+2. **Cache Control Directives:** Manually applying `SPV_INTEL_cache_controls` (e.g., L1/L3 caching) has proven ineffective or slightly regressive. The driver default for 2D block IO already matches or ignores these pointer decorations.  (Since endeavour 192 they are declared with `:cache` on the operand types, not the `CRISP_CACHE_CONTROL` probe switch; the measurement has not been repeated.)
 3. **Deep Rings on Large Tiles:** Ring depth $\ge 3$ on `32x64` subgroup tiles guarantees register collapse.
 4. **More subgroups as a throughput lever:** scaling the workgroup tile across many subgroups does *not* beat a single well-tuned subgroup on this part. It is a correctness-preserving geometry change, not a speedup.
 

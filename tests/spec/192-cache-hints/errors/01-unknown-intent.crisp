@@ -1,0 +1,12 @@
+;; CHECK-FAIL: ":cache must be one of"
+;;
+;; Endeavour 192.  an intent outside :default :streaming :reused :no-l1 is refused, not ignored.
+
+(def-type e-vec (vector float :address-space :global :align :compact :cache :sometimes))
+(def-type o-vec (vector float :address-space :global :align :compact))
+
+(def-kernel refused_one (A &out B)
+  (declare #'(e-vec &out o-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ B i) (~ A i))))

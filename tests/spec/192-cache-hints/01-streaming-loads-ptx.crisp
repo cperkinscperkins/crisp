@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-streaming-loads
+;;
+;; Endeavour 192.  `:cache :streaming` on the INPUT types: every load of A and B is ld.global.cs[.nc]
+;; (evict-first in L1 and L2; SASS LDG.E.EF), and the store to C (no :cache) carries no hint.
+
+(def-type s-vec (vector float :address-space :global :align :compact :cache :streaming))
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel cache_stream_loads (A B &out C)
+  (declare #'(s-vec s-vec &out f-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

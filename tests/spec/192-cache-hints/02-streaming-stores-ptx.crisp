@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-streaming-stores
+;;
+;; Endeavour 192.  `:cache :streaming` on the OUTPUT type only: the stores to C are st.global.cs
+;; (SASS STG.E.EF); the loads of A and B carry no cache hint (.nc is fine -- that is inferred
+;; read-only-ness, not a hint).
+
+(def-type s-vec (vector float :address-space :global :align :compact :cache :streaming))
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel cache_stream_stores (A B &out C)
+  (declare #'(f-vec f-vec &out s-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

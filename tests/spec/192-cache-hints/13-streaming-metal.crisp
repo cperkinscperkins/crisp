@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 0 2 4 6
+;;
+;; Endeavour 192.  A hint never changes results: C = A + B with every handle `:streaming`, on BMG and on
+;; CUDA (the hoister's 0 1 2 3 inputs).  On CUDA this runs the inline-asm loads/stores and the raised
+;; PTX ISA through the driver JIT; on BMG the CacheControl decorations through IGC.
+
+(def-type s-vec (vector float :address-space :global :align :compact :cache :streaming))
+
+(def-kernel cache_stream_metal (A B &out C)
+  (declare #'(s-vec s-vec &out s-vec => nil)
+           (global-size :set-to 4))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

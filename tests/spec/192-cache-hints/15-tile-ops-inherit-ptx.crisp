@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-all-streaming
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 2 3 1 2
+;;
+;; Endeavour 192.  Tile operations honour the TYPE-level hint: load-tile / load-tile-at expand into
+;; element reads of V, and those trace back to V's argument like any other access -- so every global
+;; load and store here is .cs, while the scratch tiles (shared memory) are untouched.  Same kernel and
+;; expectation as 111/16 (V = 0 1 2 3 from the hoister): OUT = [2,3, 1,2].
+
+(def-type vec-t (vector ulong :address-space :global :align :compact :cache :streaming))
+
+(def-kernel cache_tile_grid_vs_abs (V &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tileG (make-scratch-vector ulong 2))
+        (tileA (make-scratch-vector ulong 2)))
+    (load-tile    V tileG (1))
+    (load-tile-at V tileA (1))
+    (workgroup-stride tileG (lx)
+      (set! (~ OUT lx)                  (~ tileG lx))
+      (set! (~ OUT (+ lx (to-ulong 2))) (~ tileA lx)))))

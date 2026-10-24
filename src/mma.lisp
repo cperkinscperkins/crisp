@@ -838,7 +838,11 @@
    hardware-profile-required.  Lowered by reusing the coop-op node with a :prefetch kind.
 
    Endeavour 158: :warp-partitioned distributes the footprint across the workgroup's warps, each
-   warp computing its own block index from warp-id.  See the block comment above."
+   warp computing its own block index from warp-id.  See the block comment above.
+
+   Endeavour 192: a per-operation :cache key is refused (the hint comes from SRC's type)."
+  ;; Endeavour 192: the cache hint comes from SRC's type; a per-operation :cache is refused.
+  (%refuse-per-operation-cache "prefetch-tile" (nthcdr 3 expr) location)
   (unless (active-hardware-profile)
     (error 'crisp-compiler-error
       :message "prefetch-tile requires a hardware profile (pass --hardware-profile): its L1 / GRF limits drive the register-pipeline safety analysis."
@@ -3989,6 +3993,109 @@
                             (incf loads))))))
         (log:debug "180: ~a has ~d f~d load(s) outside *_grad functions" spv-path loads width)
         loads))))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 192 (cache hints) -- SPIR-V spec validators (CacheControl{Load,Store}INTEL census)
+;;;; See tests/spec/192-cache-hints/cache-hints.md.
+;;;; ----------------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %spv-cache-control-census (spv-path)
+  "Endeavour 192.  Read SPV-PATH (llvm-spirv --to-text) and return, as a plist:
+     :load-deco  hash id -> list of (level control) from `Decorate ID CacheControlLoadINTEL L C`
+     :store-deco hash id -> list of (level control) from `Decorate ID CacheControlStoreINTEL L C`
+     :load-ptrs  pointer ids of every OpLoad   (`N Load TYPE RESULT PTR ...`)
+     :store-ptrs pointer ids of every OpStore  (`N Store PTR VALUE ...`)
+   or NIL when llvm-spirv is unavailable."
+  (let ((txt (%spv-disasm spv-path)))
+    (when txt
+      (let ((ld (make-hash-table :test 'equal)) (st (make-hash-table :test 'equal))
+            (load-ptrs '()) (store-ptrs '()))
+        (with-input-from-string (s txt)
+          (loop for line = (read-line s nil) while line
+                do (let ((toks (%spv-tokens line)))
+                     (cond ((and (>= (length toks) 6) (string= (second toks) "Decorate")
+                                 (member (fourth toks) '("CacheControlLoadINTEL" "6442") :test #'string=))
+                            (push (list (fifth toks) (sixth toks)) (gethash (third toks) ld)))
+                           ((and (>= (length toks) 6) (string= (second toks) "Decorate")
+                                 (member (fourth toks) '("CacheControlStoreINTEL" "6443") :test #'string=))
+                            (push (list (fifth toks) (sixth toks)) (gethash (third toks) st)))
+                           ((and (>= (length toks) 5) (string= (second toks) "Load"))
+                            (push (fifth toks) load-ptrs))
+                           ((and (>= (length toks) 4) (string= (second toks) "Store"))
+                            (push (third toks) store-ptrs))))))
+        (log:debug "192: ~a: ~d load-decorated id(s), ~d store-decorated id(s), ~d load(s), ~d store(s)"
+                   spv-path (hash-table-count ld) (hash-table-count st) (length load-ptrs) (length store-ptrs))
+        (list :load-deco ld :store-deco st :load-ptrs load-ptrs :store-ptrs store-ptrs)))))
+
+;; src/mma.lisp
+(defun %spv-cache-fail (fmt &rest args)
+  "Endeavour 192.  Print a FAIL line (the SPIR-V validators report on stdout, like 180's) and return NIL."
+  (format t "FAIL: ~?~%" fmt args)
+  nil)
+
+;; src/mma.lisp
+(defun %spv-deco-is (deco level control)
+  "Endeavour 192.  T when the decoration list DECO contains (LEVEL CONTROL)."
+  (member (list (princ-to-string level) (princ-to-string control)) deco :test #'equal))
+
+;; src/mma.lisp
+(defun validate-spv-cache-streaming-loads (spv-path)
+  "Endeavour 192 / spec 11: A is :streaming, B is not.  Some load goes through a CacheControlLoadINTEL
+   pointer; every such pointer is L1 Streaming + L3 Streaming (0 2 / 1 2); no pointer is
+   store-decorated."
+  (let ((c (%spv-cache-control-census spv-path)))
+    (if (null c)
+        (progn (format t "  (llvm-spirv unavailable -- cache-control check skipped)~%") t)
+        (let* ((ld (getf c :load-deco)) (st (getf c :store-deco))
+               (hinted (remove-if-not (lambda (p) (gethash p ld)) (getf c :load-ptrs)))
+               (plain (remove-if (lambda (p) (gethash p ld)) (getf c :load-ptrs))))
+          (cond ((null hinted) (%spv-cache-fail "no load through a CacheControlLoadINTEL pointer"))
+                ((null plain) (%spv-cache-fail "every load is decorated; B is not :streaming"))
+                ((notevery (lambda (p) (and (%spv-deco-is (gethash p ld) 0 2) (%spv-deco-is (gethash p ld) 1 2)))
+                           hinted)
+                 (%spv-cache-fail "a decorated load is not L1 Streaming + L3 Streaming (0 2 / 1 2)"))
+                ((plusp (hash-table-count st)) (%spv-cache-fail "a store is decorated (only A, an input, is :streaming)"))
+                (t t))))))
+
+;; src/mma.lisp
+(defun validate-spv-cache-streaming-stores (spv-path)
+  "Endeavour 192 / spec 12: C is :streaming.  Some store goes through a CacheControlStoreINTEL pointer;
+   every such pointer is L1 Streaming + L3 Streaming (0 3 / 1 3); no pointer is load-decorated."
+  (let ((c (%spv-cache-control-census spv-path)))
+    (if (null c)
+        (progn (format t "  (llvm-spirv unavailable -- cache-control check skipped)~%") t)
+        (let* ((ld (getf c :load-deco)) (st (getf c :store-deco))
+               (hinted (remove-if-not (lambda (p) (gethash p st)) (getf c :store-ptrs))))
+          (cond ((null hinted) (%spv-cache-fail "no store through a CacheControlStoreINTEL pointer"))
+                ((notevery (lambda (p) (and (%spv-deco-is (gethash p st) 0 3) (%spv-deco-is (gethash p st) 1 3)))
+                           hinted)
+                 (%spv-cache-fail "a decorated store is not L1 Streaming + L3 Streaming (0 3 / 1 3)"))
+                ((plusp (hash-table-count ld)) (%spv-cache-fail "a load is decorated (only C, the output, is :streaming)"))
+                (t t))))))
+
+;; src/mma.lisp
+(defun validate-spv-cache-coop-streaming (spv-path)
+  "Endeavour 192 / spec 16: an Intel XMX matmul whose A, B, C are :streaming.  Some id carries
+   CacheControlLoadINTEL L1+L3 Streaming (0 2 / 1 2) and some id CacheControlStoreINTEL L1+L3
+   Streaming (0 3 / 1 3); no decoration names any other control."
+  (let ((c (%spv-cache-control-census spv-path)))
+    (if (null c)
+        (progn (format t "  (llvm-spirv unavailable -- cache-control check skipped)~%") t)
+        (let ((ld (getf c :load-deco)) (st (getf c :store-deco)))
+          (flet ((streaming-ids (table l c3)
+                   (loop for id being the hash-keys of table using (hash-value deco)
+                         when (and (%spv-deco-is deco 0 l) (%spv-deco-is deco 1 c3)) collect id))
+                 (odd-ids (table good)
+                   (loop for id being the hash-keys of table using (hash-value deco)
+                         unless (every (lambda (d) (string= (second d) good)) deco) collect id)))
+            (cond ((null (streaming-ids ld 2 2))
+                   (%spv-cache-fail "no CacheControlLoadINTEL 0 2 / 1 2 (streaming) decoration"))
+                  ((null (streaming-ids st 3 3))
+                   (%spv-cache-fail "no CacheControlStoreINTEL 0 3 / 1 3 (streaming) decoration"))
+                  ((or (odd-ids ld "2") (odd-ids st "3"))
+                   (%spv-cache-fail "a cache-control decoration names a non-streaming control"))
+                  (t t)))))))
 
 (defun %validate-spv-stream-loads (spv-path width lo hi what)
   "Endeavour 180.  T when SPV-PATH has between LO and HI (inclusive; HI NIL = no limit) WIDTH-bit

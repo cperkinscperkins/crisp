@@ -1,0 +1,13 @@
+;; VERIFY-AUTODIFF: x=3.0 y=4.0 atol=1e-3 expect.x=4.0 expect.y=3.0
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90 --differentiate] : validate-ptx-cache-adjoints-unhinted
+;;
+;; Endeavour 192.  A hint is AD-neutral: the gradient of z = x*y is unchanged when every cell is
+;; `:streaming`.  The adjoint (shadow) buffers do NOT inherit :cache -- an adjoint's access pattern is
+;; not the forward pass's (decision 2026-10-23).  In the _grad kernel the PRIMAL reads of x and y keep
+;; their hint, while every store (the adjoints x_adj / y_adj) is unhinted.
+
+(def-type s-cell (cell float :address-space :global :cache :streaming))
+
+(def-kernel cache_cell_product (x y &out z)
+  (declare #'(s-cell s-cell &out s-cell))
+  (set! (~ z) (* (~ x) (~ y))))

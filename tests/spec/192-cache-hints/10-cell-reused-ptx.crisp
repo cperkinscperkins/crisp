@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-cell-reused
+;;
+;; Endeavour 192.  `:cache` on a CELL: the scalar read of K is .L2::cache_hint under an evict_last
+;; policy; the vector handles have no :cache, so no store is hinted.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-type r-cell (cell float :address-space :global :cache :reused))
+
+(def-kernel cache_cell_scale (K A &out C)
+  (declare #'(r-cell f-vec &out f-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (* (~ K) (~ A i)))))
