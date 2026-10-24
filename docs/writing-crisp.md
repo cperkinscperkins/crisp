@@ -129,6 +129,12 @@ well supported inside the MMA paths.
   `make-scratch-matrix`, `make-scratch-cell`).  It is workgroup-local by default and the compiler adds the
   allocation to the kernel's launch for you.
 - **Barriers**: `(sync-workgroup)` between writes and reads of shared scratch.
+- **Read-only inputs**: put the outputs after `&out`.  Tensors declared before `&out` are read-only, so
+  their loads use the read-only path (`ld.global.nc` on NVIDIA) -- a signature with no `&out` gets none.
+- **Cache hints**: a `:global` type can add `:cache :streaming`, `:reused`, `:no-l1`, or
+  `(:streaming :prefetch 256)`.  The hint is not part of the type, views and tile operations inherit
+  it, and it never changes a result.  It is a knob to measure, not a default: about 3% on an H100
+  streaming reduction, nothing on B200 (ideal_001, *Cache hints*).
 
 ---
 

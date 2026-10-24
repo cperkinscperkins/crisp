@@ -194,3 +194,66 @@
                 ((some #'%c192-hinted-p sts)
                  (%c192-fail "_grad: hinted adjoint store(s) -- shadow buffers must not inherit :cache: ~{~a~^, ~}" sts))
                 (t t))))))
+
+;; tests/run-specs.lisp
+;; Endeavour 192 -- validators updated for the ptxas-verified mapping (decision 2, 2026-10-24):
+;; :streaming is .cs, :reused is .L2::cache_hint with a createpolicy...L2::evict_last policy.
+;; FOLD: only these LAST copies are live.
+(defun %c192-streaming-p (op)
+  "Endeavour 192.  The :streaming qualifier (.cs: evict-first in L1 and L2)."
+  (%c192-has op "cs"))
+
+;; tests/run-specs.lisp
+(defun %c192-reused-p (op)
+  "Endeavour 192.  The :reused qualifier on sm_80+ (.L2::cache_hint; the policy is evict_last)."
+  (%c192-has op "L2::cache_hint"))
+
+;; tests/run-specs.lisp
+(defun %c192-has-evict-last-policy (ptx-string)
+  "Endeavour 192.  T when the PTX creates an L2 evict_last access policy (the :reused hint's)."
+  (search "createpolicy.fractional.L2::evict_last" ptx-string))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cache-streaming-loads (file ptx-string)
+  "Endeavour 192 / spec 01: every load .cs, no store hinted."
+  (declare (ignore file))
+  (%c192-check ptx-string :load-pred #'%c192-streaming-p :store-pred #'%c192-unhinted-p :min-version nil))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cache-streaming-stores (file ptx-string)
+  "Endeavour 192 / spec 02: every store .cs, no load hinted."
+  (declare (ignore file))
+  (%c192-check ptx-string :load-pred #'%c192-unhinted-p :store-pred #'%c192-streaming-p :min-version nil))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cache-reused (file ptx-string)
+  "Endeavour 192 / spec 03 (sm_90): every load and store .L2::cache_hint, an evict_last policy is
+   created, and the ISA is >= 7.4 (createpolicy needs it)."
+  (declare (ignore file))
+  (cond ((not (%c192-has-evict-last-policy ptx-string))
+         (%c192-fail "no createpolicy.fractional.L2::evict_last in the PTX"))
+        (t (%c192-check ptx-string :load-pred #'%c192-reused-p :store-pred #'%c192-reused-p))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cache-cell-reused (file ptx-string)
+  "Endeavour 192 / spec 10: some load (the cell K) is .L2::cache_hint with an evict_last policy;
+   no store is hinted."
+  (declare (ignore file))
+  (let ((lds (%c192-access-opcodes ptx-string "ld.global"))
+        (sts (%c192-access-opcodes ptx-string "st.global")))
+    (cond ((notany #'%c192-reused-p lds)
+           (%c192-fail "no .L2::cache_hint load (expected the :reused cell's read): ~{~a~^, ~}" lds))
+          ((not (%c192-has-evict-last-policy ptx-string))
+           (%c192-fail "no createpolicy.fractional.L2::evict_last in the PTX"))
+          ((some #'%c192-hinted-p sts) (%c192-fail "hinted store(s): ~{~a~^, ~}" sts))
+          (t t))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cache-all-streaming (file ptx-string)
+  "Endeavour 192 / spec 15: tile operations inherit the type hint -- every global load AND store .cs."
+  (declare (ignore file))
+  (%c192-check ptx-string :load-pred #'%c192-streaming-p :store-pred #'%c192-streaming-p :min-version nil))
+
+;; tests/run-specs.lisp
+(defun validate-spv-cache-coop-streaming (spv-path)
+  (funcall (find-symbol "VALIDATE-SPV-CACHE-COOP-STREAMING" :crisp.compiler) spv-path))

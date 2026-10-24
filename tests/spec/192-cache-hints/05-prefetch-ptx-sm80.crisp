@@ -1,7 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80] : validate-ptx-cache-prefetch-256
 ;;
-;; Endeavour 192.  `:cache (:streaming :prefetch 256)`: every load of A and B also carries L2::256B.
+;; Endeavour 192.  `:cache (:streaming :prefetch 256)`: every load of A and B is .cs AND .L2::256B.
 ;; Compiled for sm_80 ON PURPOSE -- llc defaults sm_80 to PTX ISA 7.0, which ptxas rejects for
 ;; L2::NNNB ("requires PTX ISA .version 7.4"), so the module's .version must have been raised.
 

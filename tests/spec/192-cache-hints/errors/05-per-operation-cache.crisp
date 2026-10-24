@@ -1,0 +1,15 @@
+;; CHECK-FAIL: "per-operation :cache is not supported"
+;;
+;; Endeavour 192.  Tile operations take their cache hint from the storage handle's TYPE; a :cache key
+;; on the operation itself is refused (not silently ignored) until a per-operation override exists.
+
+(def-type v-vec (vector float :address-space :global :align :compact))
+
+(def-kernel refused_two (V &out OUT)
+  (declare #'(v-vec &out v-vec => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tileA (make-scratch-vector float 4)))
+    (load-tile-at V tileA (0) :cache :streaming)
+    (workgroup-stride tileA (lx)
+      (set! (~ OUT lx) (~ tileA lx)))))

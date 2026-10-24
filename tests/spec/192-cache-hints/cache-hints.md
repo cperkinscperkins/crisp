@@ -197,6 +197,53 @@ Rules:
   WriteThrough 1, WriteBack 2, Streaming 3). Level 0 = L1, 1 = L3.
 - Every combination must be verified against ptxas / spirv-val in the specs, not assumed.
 
+## Decisions made overnight 2026-10-23/24 (Chris away -- FOR REVIEW)
+
+1. **`:cache` is not part of the canonical type or type identity.** The four expanders
+   (`%expand-{vector,matrix,tensor,cell}-type-specifier`) validate and STRIP it. def-type keeps the
+   RAW spec in `*crisp-type-aliases*`, and `%cache-hint-of-type` reads the hint back from there
+   (following the alias chain). So `(vector float ... :cache :streaming)` and the same without
+   `:cache` are one type, like C's `restrict`. This leaves the positional 6-tuple untouched.
+2. **PTX mapping changed from the agreed table -- ptxas forced it.** CUDA 12.4 ptxas REFUSES
+   `L1::no_allocate.L2::evict_first` ("Multiple cache eviction priority modifiers") and a bare
+   `L2::evict_last` on ld/st ("'.L1::eviction_priority' syntax expected"). The verified-legal forms
+   (all assembled for sm_80 and sm_90; `put_temp_files_here/192-spike/combos.ll`) are now the mapping:
+   `:streaming` -> `.cs` (SASS `LDG.E.EF` / `STG.E.EF`, evict-first in L1 and L2); `:reused` ->
+   `.L2::cache_hint` under `createpolicy.fractional.L2::evict_last` on sm_80+ (`L1::evict_last` on
+   loads below sm_80, no store form there); `:no-l1` -> `.cg`; prefetch -> `.L2::NB`; `.nc` combines
+   with all. The table in "Intent -> instruction mapping" above is superseded for PTX.
+3. **Per-operation `:cache` on tile operations is REFUSED, not implemented.** Tile operations honour
+   the TYPE-level hint on every path: their element accesses trace back to the argument, and Intel
+   block / coop builtins have their pointer decorated. A per-operation override needs a construct
+   that survives -O3 (one tensor, two access patterns -- the post-opt walk cannot tell the accesses
+   apart, and metadata is dropped). Sketch for a follow-up: route the operation's view through an
+   opaque marker call `@__crisp_cache_hint.<intent>(ptr)` that the post-opt pass resolves and
+   removes. The motivating matmul case (A, B `:reused`; C `:streaming`) uses separate tensors, so the
+   type level already covers it. Refusing beats silently ignoring.
+4. **cp.async and TMA are not hinted (left exactly as before).** 4- and 8-byte `cp.async.ca` has no
+   L1-bypass form (`cp.async.cg` is 16-byte only), and L2 policies on cp.async / TMA need either
+   inline asm on shared addresses or a policy operand built at codegen. Neither can be verified on
+   metal tonight. Follow-up.
+5. **Adjoints inherit nothing.** In a `*_GRAD` kernel, a parameter `P_GRAD` whose `P` is also
+   declared is a shadow buffer and gets no hint, though it is declared with the same alias type.
+   Primal reads in the `_GRAD` kernel keep theirs. Spec 14 checks it.
+6. **The read-only re-mark is guarded.** The post-opt pass re-applies `!invariant.load` (BUG 134) to
+   loads traced to a read-only argument, i.e. a tensor before `&out` (codegen's existing
+   convention), but never to an argument the same function stores to, updates atomically, or passes
+   to a call.
+7. **The compile API (190) does not report `:cache`.** It has no runtime effect, and the stripped
+   canonical type is what the metacrisp / ABI already carry. Decided, not accidental.
+8. **PTX accesses of other element types are left unhinted:** anything but `float` / `double` /
+   `i32` / `i64` scalars and 2- / 4-lane vectors, and under-aligned vectors (a `.v4` needs natural
+   alignment). Correct, just not hinted.
+9. **`-mattr=+ptx74` is passed whenever a hint is emitted.** It only ever RAISES the PTX version
+   (sm_80 7.0 -> 7.4; sm_89 / sm_90 / sm_100 unchanged).
+10. **Implementation lives in overlays** (`crisp-compiler-overlay.lisp`, `spec-runner-overlay.lisp`).
+    Several functions were re-appended as bugs were found; **only the LAST copy is live**, and the
+    last copies say "FOLD: this is the one to take". Wrappers (`ensure-opencl-kernel-metadata`, the
+    three tile analyzers) use the `(defvar *orig* (fdefinition ...))` pattern; the FOLD comment says
+    where the one added call goes.
+
 ## TODO
 
 - [x] Agree the design direction and scope (2026-10-23). Key name: `:cache`.
@@ -226,13 +273,47 @@ Rules:
   Validators: PTX in `overlays/spec-runner-overlay.lisp` (`%c192-*`, `validate-ptx-cache-*`); SPIR-V
   in `overlays/crisp-compiler-overlay.lisp` (`%spv-cache-control-census`, `validate-spv-cache-*`).
   Tile-op specs come with that phase.
-- [ ] Implementation: type parsing (`:cache` on vector/matrix/tensor/cell) + the error messages.
-- [ ] Implementation: codegen side table (param index -> intent; views inherit).
-- [ ] Implementation: post-opt provenance pass (LSV, walk to argument, re-apply `!invariant.load`).
-- [ ] Implementation: PTX emitter (inline asm, ISA raise) and SPIR-V emitter (decorations).
-- [ ] Implementation: AD (adjoints inherit nothing).
-- [ ] Tile ops phase.
-- [ ] Unit tests (`cache-hints.unit.lisp`) for the parser / normalizer once those functions exist.
+- [x] Implementation: type parsing (`:cache` on vector/matrix/tensor/cell) + the error messages.
+- [x] Implementation: codegen side table (LLVM param index -> intent + read-only; views inherit by
+      construction -- a view's accesses walk back to the parent's argument).
+- [x] Implementation: post-opt provenance pass (LSV first on PTX, walk to argument, re-apply
+      `!invariant.load` with the write guard).
+- [x] Implementation: PTX emitter (inline asm, `+ptx74`) and SPIR-V emitter (decorations: typed
+      zero-offset GEP for plain accesses; the pointer's defining instruction for block / coop builtins).
+- [x] Implementation: AD (adjoints inherit nothing).
+- [x] Tile ops: type-level hint honoured on every path (spec 15: sync load-tile / load-tile-at, BMG
+      metal; spec 16: Intel XMX coop loads + C store, BMG metal MMA_CORRECT); per-operation `:cache`
+      refused (errors/05).  cp.async / TMA: follow-up (decision 4).
+- [x] Unit tests: `cache-hints.unit.lisp` (parser, opcode builder, SPIR-V controls, .ll parsing,
+      pointer walk incl. the i64 + inttoptr chain).
+- [x] Docs: ideal_001 (`:cache` subsection, `prefetch-tile` section), writing-crisp, performance-levers;
+      chapters / reference / call graph / globals / specials regenerated.  NOTE: the generators scan
+      src/ only -- regenerate reference.md / call_graph.md / globals AFTER the overlay fold to pick up the
+      new functions.
+- [x] Handoff for AG: `contests/gpu-mode/HANDOFF-192-cache-hints.md`.
+- [x] ci.yml / run-all-tests.bat: no change needed (both follow ci-stop.txt).
+- [x] **Final suites on the final build (2026-10-24):** unit 392/392, E2E spine 1529/1529, negative
+      365/365.  (Local runs: CUDA hoists SKIP -- no nvcc here.)
+- [ ] **NVIDIA metal** (spec 13 / 15 TEST-HOIST[CUDA], spec 14 VERIFY-AUTODIFF[CUDA] if pinned):
+      needs the pod.  Every spec's PTX already assembles with CUDA 12.4 ptxas for its .target.
+- [ ] Fold the overlays into src/ (Chris).  Take the LAST copy of each re-appended function.
+
+## Bugs found and fixed during the night (all caught by checks beyond the spec validators)
+
+- PTX mapping illegal to ptxas -> remapped (decision 2).  Caught by assembling every spec's PTX.
+- `char` / `return` are shadowed in :crisp.compiler (Crisp's types / return); use `cl:char` /
+  `cl:return` in compiler-side Lisp.
+- PTX kernels take every handle field as i64 and rebuild pointers with `inttoptr`; the walk follows it.
+- SPIR-V: an i8 decoration GEP made llvm-spirv insert an undecorated bitcast; the GEP is now typed with
+  the accessed type.
+- The write-guard regex was written with single backslashes before `(` and `)`, which a Lisp string
+  silently drops -- the pattern became a regex group that never matches real IR -- so it never
+  matched; an escape audit of every overlay string literal found no other instance.
+- **The physical parameter index ignored multi-slot semantic parameters** (an implicit scratch tile
+  is one node, six LLVM params): a kernel with scratch ahead of a hinted / read-only tensor indexed the
+  WRONG argument, and the read-only re-mark could have tagged another argument's loads.  Fixed with the
+  same get-expanded-types widths create-llvm-function-type uses; spec 15 is the regression test.  The
+  first full E2E run (1526/1526) predates this fix; the suites were rerun on the final build.
 - [ ] **Document `prefetch-tile` in `docs/ideal_001.md`.** It appears only inside MMA examples (lines
       ~12751, ~13312-13328). It has no section of its own. Facts from `analyze-prefetch-tile`
       (`src/mma.lisp`): `(prefetch-tile SRC (COORD-Y COORD-X) :size (H W) &key warp-partitioned)`;
