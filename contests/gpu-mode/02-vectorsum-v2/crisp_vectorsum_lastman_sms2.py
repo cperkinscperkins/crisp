@@ -85,10 +85,6 @@ void crisp_vectorsum_kernel(
     uint64_t len
 ) {
     uint64_t bytes = len * 4ULL;
-    uint64_t zero = 0ULL;
-    uint64_t one = 1ULL;
-    uint64_t four = 4ULL;
-    uint64_t eight = 8ULL;
     asm volatile(
         "{\n"
         "	.reg .pred 	%%cr_p<12>;\n"
@@ -337,7 +333,7 @@ void crisp_vectorsum_kernel(
         "                                        // -- End function\n"
         "$L__crisp_inline_exit:\n"
         "}\n"
-        : : "l"(in_ptr), "l"(bytes), "l"(len), "l"(partial_ptr), "l"(zero), "l"(ticket_ptr), "l"(zero), "l"(out_ptr), "l"(zero)
+        : : "l"(in_ptr), "l"(bytes), "l"(len), "l"(partial_ptr), "l"(0ULL), "l"(ticket_ptr), "l"(0ULL), "l"(out_ptr), "l"(0ULL)
         : "memory"
     );
 }

@@ -44,3 +44,5 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# contest packaging scratch (package_vectorsum.py compiles copies + CUDA hoist here)
+contests/gpu-mode/**/_build/

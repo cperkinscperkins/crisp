@@ -269,6 +269,60 @@ def parse_and_record_run(
     print(f"Recorded run {sub_id} in {results_file.name}")
 
 
+def compile_crisp_with_cuda_hoist(
+    crisp_path: Path,
+    kernel_name: str,
+    arch: str = "sm_80",
+    hardware_profile: str | None = None,
+) -> tuple[Path, str]:
+    """
+    Compile a copy of `crisp_path` in `_build/` with `--hoist=cuda`, so the hoist's launcher and
+    metadata do not clutter the contest directory. Returns (ptx_path, hoisted launcher source).
+    """
+    build_dir = crisp_path.parent / "_build"
+    build_dir.mkdir(exist_ok=True)
+    build_src = build_dir / crisp_path.name
+    build_src.write_text(crisp_path.read_text(encoding="utf-8"), encoding="utf-8")
+    cmd = [str(CRISP_COMPILE), "--ir-target=ptx", f"--ir-target-arch={arch}", "--hoist=cuda"]
+    if hardware_profile:
+        cmd.append(f"--hardware-profile={hardware_profile}")
+    cmd.append(str(build_src))
+    subprocess.run(cmd, cwd=str(REPO_ROOT), check=True, capture_output=True)
+    hoist_cu = build_dir / f"{crisp_path.stem}_{kernel_name}_CUDA.cu"
+    return build_src.with_suffix(".ptx"), hoist_cu.read_text(encoding="utf-8")
+
+
+def param_map_from_cuda_hoist(
+    hoist_cu: str, runtime_exprs: dict[str, str]
+) -> tuple[dict[int, tuple[str, str]], int]:
+    """
+    Read the kernel ABI from a Crisp CUDA hoist launcher.
+
+    Each `kernelParams` entry becomes (constraint "l", C expression): the expression from
+    `runtime_exprs` when the parameter is a runtime value (pointers, lengths), otherwise the
+    integer the hoist assigns it (`uint64_t name = 64ULL;`).  Raises on anything unresolved.
+    Also returns the dynamic shared-memory bytes the hoist passes to cuLaunchKernel.
+    """
+    m = re.search(r"void\*\s+kernelParams\[\d+\]\s*=\s*\{(.*?)\};", hoist_cu, flags=re.DOTALL)
+    if not m:
+        raise ValueError("no kernelParams array in the CUDA hoist")
+    names = re.findall(r"&(\w+)", m.group(1))
+    param_map: dict[int, tuple[str, str]] = {}
+    for idx, name in enumerate(names):
+        if name in runtime_exprs:
+            param_map[idx] = ("l", runtime_exprs[name])
+            continue
+        lit = re.search(rf"uint64_t\s+{re.escape(name)}\s*=\s*(\d+)(?:ULL)?\s*;", hoist_cu)
+        if not lit:
+            raise ValueError(f"kernel param {idx} '{name}' is neither a runtime value nor a literal")
+        param_map[idx] = ("l", f"{lit.group(1)}ULL")
+    m_smem = re.search(r"cuLaunchKernel\(kernel,\s*gridX,\s*gridY,\s*gridZ,\s*\d+,\s*\d+,\s*\d+,\s*(\d+),",
+                       hoist_cu)
+    if not m_smem:
+        raise ValueError("no cuLaunchKernel shared-memory argument in the CUDA hoist")
+    return param_map, int(m_smem.group(1))
+
+
 def make_gpumode_vectorsum_lastman(
     crisp_path: Path,
     out_py_path: Path,
@@ -278,6 +332,7 @@ def make_gpumode_vectorsum_lastman(
     grid_policy: str = "occupancy",
     grid_multiplier: int = 4,
     elems_per_thread: int = 16,
+    load_hint: str | None = None,
 ) -> None:
     """
     Package a last-man vectorsum kernel (input partial ticket result) as a GPU MODE submission.
@@ -290,25 +345,36 @@ def make_gpumode_vectorsum_lastman(
       "occupancy": blocks = occupancy-blocks-per-SM * num_SMs * grid_multiplier (capped by work)
       "sms":       blocks = num_SMs * grid_multiplier (capped by work)
     """
-    ptx_path = compile_crisp_with_profile(crisp_path, arch=arch, hardware_profile=hardware_profile)
+    ptx_path, hoist_cu = compile_crisp_with_cuda_hoist(crisp_path, kernel_name, arch=arch,
+                                                       hardware_profile=hardware_profile)
     crisp_src = crisp_path.read_text(encoding="utf-8").strip()
     raw_ptx = ptx_path.read_text(encoding="utf-8")
+    if load_hint:
+        # EXPERIMENT: Crisp has no cache-hint control yet, so rewrite the input loads in the PTX
+        # (e.g. load_hint="cs": ld.global.cs = streaming, evict-first in L1 and L2).
+        raw_ptx = re.sub(r"\bld\.global\.(v4\.b32|b32)\b", rf"ld.global.{load_hint}.\1", raw_ptx)
 
-    # Parameter ABI: vector = (ptr, bytes, offset, stride, extent, length); cell = (ptr, bytes, offset)
-    param_map = {
-        0: ("l", "in_ptr"), 1: ("l", "bytes"), 2: ("l", "zero"), 3: ("l", "one"), 4: ("l", "len"), 5: ("l", "len"),
-        6: ("l", "partial_ptr"), 7: ("l", "eight"), 8: ("l", "zero"),
-        9: ("l", "ticket_ptr"), 10: ("l", "four"), 11: ("l", "zero"),
-        12: ("l", "out_ptr"), 13: ("l", "four"), 14: ("l", "zero"),
+    # The kernel ABI (including implicit scratch Crisp adds, e.g. reduce-workgroup's local vector)
+    # comes from Crisp's own CUDA hoist, not from a hand-written positional map.
+    runtime_exprs = {
+        "input_ptr": "in_ptr", "input_byte_size": "bytes", "input_ext0": "len", "input_length": "len",
+        "partial_ptr": "partial_ptr", "partial_size_bytes": "8ULL",
+        "ticket_ptr": "ticket_ptr", "ticket_size_bytes": "4ULL",
+        "result_ptr": "out_ptr", "result_size_bytes": "4ULL",
     }
+    param_map, smem_bytes = param_map_from_cuda_hoist(hoist_cu, runtime_exprs)
     inline_asm_code, launch_bounds = ptx_entry_to_inline_asm(raw_ptx, kernel_name, param_map)
+    smem_decl = ("    extern __shared__ __align__(128) unsigned char crisp_smem[];\n"
+                 "    uint64_t smem_ptr = static_cast<uint64_t>(__cvta_generic_to_shared(crisp_smem));\n"
+                 if smem_bytes > 0 else "")
+    smem_launch = f", {smem_bytes}" if smem_bytes > 0 else ""
     m_bs = re.search(r"__launch_bounds__\((\d+)", launch_bounds)
     block_size = int(m_bs.group(1)) if m_bs else 256
     commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
 
     if grid_policy == "occupancy":
         grid_init = f"""        int blocks_per_sm = 0;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, crisp_vectorsum_kernel, BLOCK_SIZE, 0);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, crisp_vectorsum_kernel, BLOCK_SIZE, {smem_bytes});
         max_grid = (blocks_per_sm > 0 && num_sms > 0) ? (blocks_per_sm * num_sms * {grid_multiplier}) : 1024;"""
     elif grid_policy == "sms":
         grid_init = f"""        max_grid = (num_sms > 0) ? (num_sms * {grid_multiplier}) : 256;"""
@@ -330,11 +396,7 @@ void crisp_vectorsum_kernel(
     uint64_t len
 ) {{
     uint64_t bytes = len * 4ULL;
-    uint64_t zero = 0ULL;
-    uint64_t one = 1ULL;
-    uint64_t four = 4ULL;
-    uint64_t eight = 8ULL;
-{inline_asm_code}
+{smem_decl}{inline_asm_code}
 }}
 
 torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output) {{
@@ -364,7 +426,7 @@ torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output) 
     int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
 
     uint64_t partial = reinterpret_cast<uint64_t>(scratch.data_ptr());
-    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE>>>(
+    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE{smem_launch}>>>(
         reinterpret_cast<uint64_t>(input.data_ptr()),
         partial,
         partial + 8ULL,
