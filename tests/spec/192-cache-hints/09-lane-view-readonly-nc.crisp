@@ -1,5 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-view-loads-nc
+;; KNOWN-ISSUE[differentiate]: BUG-061
+;;   (autodiff of float4 lane access mints a scalar adjoint -- a pre-existing AD gap, not a cache-hint issue)
 ;;
 ;; Endeavour 192 / BUG 134.  No :cache at all: a float4 view of a read-only input, used lane by lane.
 ;; Codegen tags the view load !invariant.load, but -O3 narrows it to scalar lane loads and drops the

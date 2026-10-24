@@ -1,5 +1,7 @@
 ;; TEST-EXPECT: PASS
 ;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-view-inherits
+;; KNOWN-ISSUE[differentiate]: BUG-061
+;;   (autodiff of float4 lane access mints a scalar adjoint -- a pre-existing AD gap, not a cache-hint issue)
 ;;
 ;; Endeavour 192.  A float4 view of a `:streaming` input inherits the hint (make-vector takes no :cache
 ;; argument).  The kernel uses the LANES of each float4 -- the shape where -O3 narrows the vector load

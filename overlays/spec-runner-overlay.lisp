@@ -257,3 +257,59 @@
 ;; tests/run-specs.lisp
 (defun validate-spv-cache-coop-streaming (spv-path)
   (funcall (find-symbol "VALIDATE-SPV-CACHE-COOP-STREAMING" :crisp.compiler) spv-path))
+
+;; tests/run-specs.lisp
+;; Endeavour 192 -- validators skip *_grad entries.  Under the --differentiate phase every compile
+;; also emits the _GRAD kernel, whose adjoint accesses are unhinted BY DESIGN (decision 5), so the
+;; forward-kernel claims must not see them (found by the H100 full run, 2026-10-24).  The adjoint
+;; validator reads the _grad entry itself, through the raw scan.  FOLD: only these LAST copies are live.
+(defun %c192-access-opcodes-raw (ptx-string prefix)
+  "Endeavour 192.  The opcode token of every PTX line whose opcode starts with PREFIX, in order,
+   whatever entry it is in."
+  (let ((out '()))
+    (with-input-from-string (s ptx-string)
+      (loop for line = (read-line s nil) while line
+            do (let* ((trimmed (string-left-trim '(#\Space #\Tab) line))
+                      (end (or (position-if (lambda (c) (member c '(#\Space #\Tab))) trimmed)
+                               (length trimmed)))
+                      (op (subseq trimmed 0 end)))
+                 (when (and (>= (length op) (length prefix))
+                            (string= prefix op :end2 (length prefix)))
+                   (push op out)))))
+    (nreverse out)))
+
+;; tests/run-specs.lisp
+(defun %c192-access-opcodes (ptx-string prefix)
+  "Endeavour 192.  As %c192-access-opcodes-raw, but skipping every .entry whose name contains
+   _grad (the --differentiate phase's gradient kernel)."
+  (let ((out '()) (in-grad nil))
+    (with-input-from-string (s ptx-string)
+      (loop for line = (read-line s nil) while line
+            do (let* ((trimmed (string-left-trim '(#\Space #\Tab) line))
+                      (end (or (position-if (lambda (c) (member c '(#\Space #\Tab))) trimmed)
+                               (length trimmed)))
+                      (op (subseq trimmed 0 end)))
+                 (let ((e (search ".entry " line)))
+                   (when e (setf in-grad (and (search "_grad" line :start2 e) t))))
+                 (when (and (not in-grad)
+                            (>= (length op) (length prefix))
+                            (string= prefix op :end2 (length prefix)))
+                   (push op out)))))
+    (nreverse out)))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-cache-adjoints-unhinted (file ptx-string)
+  "Endeavour 192 / spec 14 (--differentiate): in the _grad kernel, some load (a primal read of a
+   :streaming cell) is streaming, and no store (the adjoints) carries any cache hint."
+  (declare (ignore file))
+  (let ((grad (%c192-entry-text ptx-string "_grad")))
+    (if (null grad)
+        (%c192-fail "no _grad entry in the --differentiate PTX")
+        (let ((lds (%c192-access-opcodes-raw grad "ld.global"))
+              (sts (%c192-access-opcodes-raw grad "st.global")))
+          (cond ((notany #'%c192-streaming-p lds)
+                 (%c192-fail "_grad: no streaming load (the primal x / y reads keep their hint): ~{~a~^, ~}" lds))
+                ((null sts) (%c192-fail "_grad: no st.global (expected the adjoint stores)"))
+                ((some #'%c192-hinted-p sts)
+                 (%c192-fail "_grad: hinted adjoint store(s) -- shadow buffers must not inherit :cache: ~{~a~^, ~}" sts))
+                (t t))))))

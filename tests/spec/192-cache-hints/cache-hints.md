@@ -294,7 +294,23 @@ Rules:
 - [x] ci.yml / run-all-tests.bat: no change needed (both follow ci-stop.txt).
 - [x] **Final suites on the final build (2026-10-24):** unit 392/392, E2E spine 1529/1529, negative
       365/365.  (Local runs: CUDA hoists SKIP -- no nvcc here.)
-- [ ] **NVIDIA metal** (spec 13 / 15 TEST-HOIST[CUDA], spec 14 VERIFY-AUTODIFF[CUDA] if pinned):
+- [x] **NVIDIA metal, H100 PCIe (driver 595.91), 2026-10-24:** targeted run 21/21; spec 13 (`.cs`
+      loads + stores) `c: 0 2 4 6`, spec 15 (tile ops, 64-bit `.cs`) `out: 2 3 1 2`.  Spec 14's
+      VERIFY-AUTODIFF is unpinned, so it runs on SPIR-V only (BMG-verified).
+- [x] **Full CUDA suite on the H100 PCIe (2026-10-24):** main phase 1524/1529, `--differentiate`
+      1383/1529, negative 365/365.  Accounted for:
+      - 137 `--differentiate` failures: VERIFY-AUTODIFF auto-selects the SPIR-V route, and the pod has
+        no `llvm-spirv` (exit 127) or `libze_loader.so`.  Environment; these kernels carry no hints.
+      - 6 were **192's validators**, too strict under `--differentiate`: the `_grad` kernel's adjoint
+        loads are unhinted by design.  The validators now skip `_grad` entries; spec 14's adjoint
+        validator reads the `_grad` entry raw.
+      - 08 / 09 under `--differentiate`: BUG 061 (AD of float4 lane access mints a scalar adjoint),
+        pre-existing -> `KNOWN-ISSUE[differentiate]: BUG-061`.
+      - Main phase: 122/07, 128/13, 128/14, 170/43 (libdevice FFI hoists) pass when run singly on BOTH
+        main and cache-hints built side by side on the pod; 154/03 wgmma-two-warpgroups is MMA_WRONG on
+        both builds -> pre-existing, filed as BUG 135.
+      - Local after the fixes: 192 default 21/21, 192 `--differentiate` 21/21 (2 KNOWN-FAIL BUG-061).
+- [ ] (superseded) **NVIDIA metal** (spec 13 / 15 TEST-HOIST[CUDA], spec 14 VERIFY-AUTODIFF[CUDA] if pinned):
       needs the pod.  Every spec's PTX already assembles with CUDA 12.4 ptxas for its .target.
 - [ ] Fold the overlays into src/ (Chris).  Take the LAST copy of each re-appended function.
 

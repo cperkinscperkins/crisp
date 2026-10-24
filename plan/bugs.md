@@ -4304,3 +4304,11 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         into a plain ld.global.v4.  A kernel that stores the whole float4 keeps .nc (v3 probe).
         FIX: endeavour 192's post-opt provenance pass (load -> base kernel argument) re-applies
         !invariant.load to loads from read-only arguments -- the same walk that places :cache hints.
+
+[ ] 135 154-nvidia-perf/03-wgmma-two-warpgroups IS MMA_WRONG ON AN H100 PCIe (C all zeros, 32768 mismatches).
+        Observed 2026-10-24 on a RunPod H100 PCIe, driver 595.91.07, during endeavour 192's full CUDA run.
+        Identical on main @ a2983e5c (pre-192) built beside it on the same pod, so not caused by 192.
+        Cause unknown -- not investigated.  Unknown whether it ever passed on a PCIe part (154's runs were
+        on SXM?); the other 154 specs pass.  Also seen in that full run: 122/07, 128/13, 128/14, 170/43
+        (libdevice FFI hoists) failed "execution failed (Code 1)" but pass when run singly on both
+        builds -- order / environment, not a compiler change.
