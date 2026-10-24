@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-no-cache-hints
+;;
+;; Endeavour 192.  `:cache :default` is exactly "no key": no ld/st carries a cache hint.
+
+(def-type d-vec (vector float :address-space :global :align :compact :cache :default))
+
+(def-kernel cache_default (A B &out C)
+  (declare #'(d-vec d-vec &out d-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

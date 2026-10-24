@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=spv] : validate-spv-cache-streaming-loads
+;;
+;; Endeavour 192.  SPIR-V: only A is `:streaming`.  Its loads' pointers carry CacheControlLoadINTEL
+;; L1 Streaming (0 2) and L3 Streaming (1 2); B's do not, and no store is decorated.  (Decorations are
+;; re-attached after -O3, which strips !spirv.Decorations.)
+
+(def-type s-vec (vector float :address-space :global :align :compact :cache :streaming))
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel cache_stream_spv (A B &out C)
+  (declare #'(s-vec f-vec &out f-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

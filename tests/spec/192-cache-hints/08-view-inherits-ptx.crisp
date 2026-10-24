@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-view-inherits
+;;
+;; Endeavour 192.  A float4 view of a `:streaming` input inherits the hint (make-vector takes no :cache
+;; argument).  The kernel uses the LANES of each float4 -- the shape where -O3 narrows the vector load
+;; and drops metadata (BUG 134) -- so every load must still be vector-width, hinted, and .nc.
+
+(def-type s-vec (vector float :address-space :global :align :compact :cache :streaming))
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel cache_view_lanes (A &out C)
+  (declare #'(s-vec &out f-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (let ((n  (length~ A))
+        (n4 (/ n 4ul))
+        (a4 (make-vector A float4 :length n4)))
+    (loop-vector-stride a4 (i)
+      (let ((v (~ a4 i)))
+        (set! (~ C i) (+ (+ (x~ v) (y~ v)) (+ (z~ v) (w~ v))))))))

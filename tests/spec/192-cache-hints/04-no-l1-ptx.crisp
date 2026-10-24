@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-no-l1
+;;
+;; Endeavour 192.  `:cache :no-l1` on every handle: loads are ld.global.cg, stores st.global.cg.
+
+(def-type n-vec (vector float :address-space :global :align :compact :cache :no-l1))
+
+(def-kernel cache_no_l1 (A B &out C)
+  (declare #'(n-vec n-vec &out n-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))

@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-cache-mixed
+;;
+;; Endeavour 192.  Only A is `:streaming`.  A and B are loaded symmetrically, so the hint must land on
+;; exactly half the loads -- the post-opt pass must trace each load to ITS kernel argument, not hint
+;; every load in a kernel that mentions :cache.
+
+(def-type s-vec (vector float :address-space :global :align :compact :cache :streaming))
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel cache_mixed (A B &out C)
+  (declare #'(s-vec f-vec &out f-vec => nil)
+           (global-size :derive-from A :strategy :strided))
+  (loop-vector-stride A (i)
+    (set! (~ C i) (+ (~ A i) (~ B i)))))
