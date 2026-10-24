@@ -98,8 +98,17 @@ def refresh_live_standings(problem_data: Dict[str, Any], user_name: str = "cperk
                 crisp_sub = prev.get("submission_id")
         else:
             crisp_pub = round(our_row["score"] * 1e6, 2)
-            crisp_sec = prev.get("secret_score_us")
-            crisp_sub = prev.get("submission_id")
+            matching_runs = [
+                r for r in problem_data.get("runs", [])
+                if r.get("gpu") == gpu and r.get("mode") == "leaderboard" and r.get("file_name") == fname
+            ]
+            if matching_runs:
+                best_m = min(matching_runs, key=lambda x: x.get("public_score_us") or 1e9)
+                crisp_sec = best_m.get("secret_score_us")
+                crisp_sub = best_m.get("submission_id")
+            else:
+                crisp_sec = prev.get("secret_score_us") if prev.get("file_name") == fname else None
+                crisp_sub = prev.get("submission_id") if prev.get("file_name") == fname else None
 
         kmeta = py_to_kernel.get(fname, {})
 

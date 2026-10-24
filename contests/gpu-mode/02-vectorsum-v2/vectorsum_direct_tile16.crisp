@@ -1,0 +1,95 @@
+;; GPU MODE Challenge: vectorsum_v2 -- Direct 64 KB contiguous-tile kernel with L2::256B streaming prefetch.
+;;
+;; Strategy:
+;;   - Each workgroup of 256 threads processes a contiguous 64 KB tile (16 float4s/thread = 4,096 float4s
+;;     = 16,384 floats/block) in a single pass.
+;;   - All 6 benchmark sizes (1,638,400 .. 52,428,800) are exact multiples of 16,384 (100 .. 3,200 blocks),
+;;     so the fast path (< (+ tile_base 4095ul) n4) runs with ZERO loops, ZERO runtime stride arithmetic,
+;;     and only ONE 64-bit base pointer register across 16 constant-offset `ld.global.cs.nc.L2::256B.v4.f32`
+;;     loads and pairwise FP32 tree summation.
+;;   - Each thread widens its 64-element FP32 sum to FP64 once, reduces across the workgroup via
+;;     `reduce-workgroup`, and thread 0 performs 1 `atom.global.add.f64` + last-man ticket write of float.
+
+(def-type in-vec      (vector float :address-space :global :align :compact :cache (:streaming :prefetch 256)))
+(def-type acc-cell    (cell double :address-space :global))
+(def-type ticket-cell (cell uint :address-space :global))
+(def-type out-cell    (cell float :address-space :global))
+
+(def-kernel vectorsum_kernel (input &out partial ticket result)
+  (declare #'(in-vec &out acc-cell ticket-cell out-cell => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((bid  (to-ulong (get-workgroup-id 0)))
+        (tid  (to-ulong (get-local-id 0)))
+        (ng   (to-ulong (get-num-groups 0)))
+        (n    (length~ input))
+        (n4   (/ n 4ul))
+        (in4  (make-vector input float4 :length n4))
+        (tile_base (* bid 4096ul))
+        (base (+ tile_base tid))
+        (a0   0.0)
+        (a1   0.0)
+        (a2   0.0)
+        (a3   0.0))
+    (if (< (+ tile_base 4095ul) n4)
+        ;; Fast path: full 64KB tile (16 float4s per thread = 4096 float4s per block), zero bounds checks
+        (progn
+          (let ((v0 (~ in4 base))
+                (v1 (~ in4 (+ base 256ul)))
+                (v2 (~ in4 (+ base 512ul)))
+                (v3 (~ in4 (+ base 768ul)))
+                (v4 (~ in4 (+ base 1024ul)))
+                (v5 (~ in4 (+ base 1280ul)))
+                (v6 (~ in4 (+ base 1536ul)))
+                (v7 (~ in4 (+ base 1792ul))))
+            (set! a0 (+ (+ (x~ v0) (x~ v1)) (+ (x~ v2) (x~ v3))))
+            (set! a1 (+ (+ (y~ v0) (y~ v1)) (+ (y~ v2) (y~ v3))))
+            (set! a2 (+ (+ (z~ v0) (z~ v1)) (+ (z~ v2) (z~ v3))))
+            (set! a3 (+ (+ (w~ v0) (w~ v1)) (+ (w~ v2) (w~ v3))))
+            (set! a0 (+ a0 (+ (+ (x~ v4) (x~ v5)) (+ (x~ v6) (x~ v7)))))
+            (set! a1 (+ a1 (+ (+ (y~ v4) (y~ v5)) (+ (y~ v6) (y~ v7)))))
+            (set! a2 (+ a2 (+ (+ (z~ v4) (z~ v5)) (+ (z~ v6) (z~ v7)))))
+            (set! a3 (+ a3 (+ (+ (w~ v4) (w~ v5)) (+ (w~ v6) (w~ v7))))))
+          (let ((v8  (~ in4 (+ base 2048ul)))
+                (v9  (~ in4 (+ base 2304ul)))
+                (v10 (~ in4 (+ base 2560ul)))
+                (v11 (~ in4 (+ base 2816ul)))
+                (v12 (~ in4 (+ base 3072ul)))
+                (v13 (~ in4 (+ base 3328ul)))
+                (v14 (~ in4 (+ base 3584ul)))
+                (v15 (~ in4 (+ base 3840ul))))
+            (set! a0 (+ a0 (+ (+ (x~ v8) (x~ v9)) (+ (x~ v10) (x~ v11)))))
+            (set! a1 (+ a1 (+ (+ (y~ v8) (y~ v9)) (+ (y~ v10) (y~ v11)))))
+            (set! a2 (+ a2 (+ (+ (z~ v8) (z~ v9)) (+ (z~ v10) (z~ v11)))))
+            (set! a3 (+ a3 (+ (+ (w~ v8) (w~ v9)) (+ (w~ v10) (w~ v11)))))
+            (set! a0 (+ a0 (+ (+ (x~ v12) (x~ v13)) (+ (x~ v14) (x~ v15)))))
+            (set! a1 (+ a1 (+ (+ (y~ v12) (y~ v13)) (+ (y~ v14) (y~ v15)))))
+            (set! a2 (+ a2 (+ (+ (z~ v12) (z~ v13)) (+ (z~ v14) (z~ v15)))))
+            (set! a3 (+ a3 (+ (+ (w~ v12) (w~ v13)) (+ (w~ v14) (w~ v15)))))))
+        ;; Slow path: partial tile + 0..3 scalar tail (only entered when N is not a multiple of 16384)
+        (progn
+          (dotimes (k 16ul)
+            (declare (unroll nil))
+            (let ((idx (+ base (* k 256ul))))
+              (when (< idx n4)
+                (let ((v (~ in4 idx)))
+                  (set! a0 (+ a0 (x~ v)))
+                  (set! a1 (+ a1 (y~ v)))
+                  (set! a2 (+ a2 (z~ v)))
+                  (set! a3 (+ a3 (w~ v)))))))
+          (when (= bid (- ng 1ul))
+            (let ((t (+ (* n4 4ul) tid)))
+              (when (< t n)
+                (set! a0 (+ a0 (~ input t))))))))
+    ;; Widen once, workgroup reduction in double, last-man write
+    (let ((acc (to-double (+ (+ a0 a1) (+ a2 a3)))))
+      (reduce-workgroup #'+ acc 0.0d)
+      (when-thread-in-group-is 0
+        (atomic-add! (~ partial) acc)
+        (mem-fence)
+        (let ((arrived (to-ulong (atomic-inc! (~ ticket)))))
+          (when (= arrived (- ng 1ul))
+            (mem-fence)
+            (set! (~ result) (to-float (atomic-xchg! (~ partial) 0.0d)))
+            (atomic-xchg! (~ ticket) 0u)))))))
+

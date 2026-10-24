@@ -4,7 +4,7 @@
   "leaderboard_id": 543,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/543?tab=rankings",
   "directory": "01-vectoradd-v2",
-  "crisp_commit": "c929d68e",
+  "crisp_commit": "e8225625",
   "workload": {
     "dtype": "float16",
     "shape": [
@@ -44,10 +44,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-21T15:12:30Z",
+      "captured_at": "2026-10-24T20:11:21Z",
       "user_name": "cperkinscperkins",
       "rank": 21,
-      "total_entrants": 67,
+      "total_entrants": 68,
       "file_name": "crisp_b200_inplace_2xhalf4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp",
       "py_file": "01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py",
@@ -57,13 +57,13 @@
       "submission_id": 962482,
       "top1_score_us": 225.45,
       "top1_user": "zjsxply",
-      "median_score_us": 235.91
+      "median_score_us": 236.34
     },
     "H100": {
-      "captured_at": "2026-10-21T15:12:30Z",
+      "captured_at": "2026-10-24T20:11:21Z",
       "user_name": "cperkinscperkins",
       "rank": 24,
-      "total_entrants": 42,
+      "total_entrants": 43,
       "file_name": "crisp_f16_direct_half4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_direct_half4.crisp",
       "py_file": "01-vectoradd-v2/crisp_f16_direct_half4.py",
@@ -76,7 +76,7 @@
       "median_score_us": 526.18
     },
     "A100": {
-      "captured_at": "2026-10-21T15:12:30Z",
+      "captured_at": "2026-10-24T20:11:21Z",
       "user_name": "cperkinscperkins",
       "rank": 56,
       "total_entrants": 107,
@@ -87,12 +87,12 @@
       "public_score_us": 912.9,
       "secret_score_us": 914.09,
       "submission_id": 962434,
-      "top1_score_us": 877.23,
-      "top1_user": "zjsxply",
-      "median_score_us": 910.54
+      "top1_score_us": 868.35,
+      "top1_user": "WGX11",
+      "median_score_us": 911.81
     },
     "L4": {
-      "captured_at": "2026-10-21T15:12:30Z",
+      "captured_at": "2026-10-24T20:11:21Z",
       "user_name": "cperkinscperkins",
       "rank": 22,
       "total_entrants": 38,

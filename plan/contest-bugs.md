@@ -79,39 +79,37 @@ Because the inner registers are named `%cr_rd...`, `nvcc`'s outer `%rd1` is neve
 
 ---
 
-## [BUG-002] FP32 Single-Precision Accumulation Drift vs. Double-Precision Reference Trap
+## [BUG-002] Concurrent FP32 Global Atomic Drift vs. Per-Thread FP32 / Cross-Thread FP64 Reduction
 
-- **Date Discovered:** 2026-10-21
+- **Date Discovered:** 2026-10-21 (Refined 2026-10-24)
 - **Component:** Reduction Kernels (`vectorsum_v2` and future reduction tasks like `softmax`, `norm`, `gemm`)
-- **Severity:** High (intermittent `ranked validation failed` in `leaderboard` mode while passing `--mode test` or benchmark sizes)
-- **Status:** Resolved via native FP64 accumulation in Crisp registers (`to-double`, `shuffle-xor`, `atom.global.add.f64`).
+- **Severity:** High (intermittent `ranked validation failed` in `leaderboard` mode while passing `--mode test` or single-seed `benchmark` runs)
+- **Status:** Resolved via FP32 per-thread accumulation + single widening `(to-double ...)` per thread + FP64 `reduce-workgroup` + 1 `atom.global.add.f64` per workgroup + last-workgroup ticket write (`vectorsum_lastman_wg_u8.crisp` / `vectorsum_direct_tile16.crisp`).
 
 ### Symptoms
-A reduction kernel compiles cleanly, runs at high bandwidth, and passes standard test cases (e.g. $N \le 4,096$). However, under official `--mode leaderboard` evaluation, the submission fails with:
+A reduction kernel compiles cleanly, runs at high bandwidth, and passes `--mode test` and `--mode benchmark`. However, under official `--mode leaderboard` evaluation, a pure-FP32 global atomic reduction fails with:
 ```
 Application error: Submission <ID> failed: ranked validation failed on <GPU>; submission will not appear on the leaderboard
 ```
 
 ### Root Cause Analysis
-1. In competition harnesses like GPU MODE, reference kernels are implemented with high precision to prevent numerical ambiguity:
+1. In GPU MODE `vectorsum_v2`, the reference kernel accumulates in `float64` and casts back to `float32`:
    ```python
    # reference.py
    def ref_kernel(data):
        data, output = data
        return data.to(torch.float64).sum().to(torch.float32)
    ```
-2. Validation checks use strict tolerances:
-   ```python
-   torch.allclose(received, expected, rtol=1e-05, atol=1e-08)
-   ```
-3. When reducing $52,428,800$ floats in single precision (`float32`), the 24-bit mantissa loses precision when large numbers are accumulated. Furthermore, if intermediate sums cancel out (e.g., standard normal inputs scaled and offset close to 0), catastrophic cancellation causes relative error to exceed $10^{-5}$ (`atol=1e-08` dominates when the expected sum is small).
-4. If tens of thousands of warps perform `atom.global.add.f32` concurrently, non-deterministic addition order introduces random LSB truncation.
+   and checks `torch.allclose(received, expected, rtol=1e-05, atol=1e-05)`.
+2. Crucially, `benchmark` mode runs `check_implementation` once per case with a fixed seed (`4242`), whereas `leaderboard` mode re-seeds (`seed += 42`) and re-validates on **every timing repetition** — hundreds of random `offset` / `scale` draws across the run.
+3. Monte Carlo analysis (`5,000` random seeds at $N = 52,428,800$, matching `task.py`'s generator) proved that **widening every loaded element to `double` in the inner loop is unnecessary** and hurts throughput (since `FP64` runs at 1:64 of `FP32` throughput on L4 `sm_89` and 1:2 on A100/H100/B200, plus 64-bit register pressure):
+   - **Thousands of sequential `atom.global.add.f32` into one cell**: maximum relative error $= 3.31 \times 10^{-5}$, failing `rtol = 1e-5` on **5.8% of random seeds** (explaining why single-seed `benchmark` passed while multi-seed `leaderboard` failed).
+   - **Per-thread `FP32` accumulation (`a0..a3` as `float`, $\le 200$ adds per accumulator) followed by `FP64` reduction across threads/workgroups**: maximum relative error across 5,000 seeds $= \mathbf{9.48 \times 10^{-8}}$ (**0 failures**, $> 100\times$ inside the $10^{-5}$ tolerance!).
 
 ### Resolution & Architectural Solution in Crisp
-1. **Load 128-bit Vectors:** Keep global memory loads as `float4` (128-bit) to saturate memory bandwidth.
-2. **Promote Accumulators to Double in Registers:** Upcast each vector component with `(to-double ...)` and accumulate in 64-bit double registers (`a0..a3` typed as `double`).
-3. **Double-Precision Warp Reduction:** Warp shuffles reduce the 64-bit double values across lanes using Crisp's native 64-bit shuffle decomposition.
-4. **Native FP64 Global Atomic:** The warp leader issues `atom.global.add.f64` directly into an 8-byte double accumulator.
-5. **Final FP32 Cast:** The final scalar sum is cast back to `float32` once at the very end, matching the reference kernel's mathematical definition bit-for-bit.
+1. **Load 128-bit Vectors & Accumulate in FP32 Per Thread:** Keep global memory loads as `float4` (with `:cache (:streaming :prefetch 256)` and `&out` read-only `.nc`) and accumulate into four `float` registers (`a0..a3`) inside the inner loop or contiguous block tile.
+2. **Widen to FP64 Once Per Thread:** After the per-thread load loop/tile completes, widen the thread's sum once: `(let ((acc (to-double (+ (+ a0 a1) (+ a2 a3))))) ...)`.
+3. **Workgroup Reduction in FP64:** Use `(reduce-workgroup #'+ acc 0.0d)` so only thread 0 of each workgroup holds the block's `double` sum (1 atomic per 256-thread block instead of 8 per block).
+4. **Single-Launch Last-Workgroup Ticket Pattern:** Thread 0 issues one `atomic-add!` into a persistent `double` scratch cell (`partial`), executes `(mem-fence)`, and increments a `uint` `ticket` cell. The last workgroup to arrive (`(= arrived (- (get-num-groups 0) 1ul))`) executes `(mem-fence)`, resets `partial` via `(atomic-xchg! (~ partial) 0.0d)`, converts the final sum to `float32` (`to-float`), writes `result`, and resets `ticket` to `0u`. This eliminates all per-call host allocation, zeroing, or dtype conversion launches.
 
 

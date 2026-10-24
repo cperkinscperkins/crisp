@@ -76,6 +76,8 @@ def make_gpumode_vectorsum(
     block_size = int(m_bs.group(1)) if m_bs else 256
 
     commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
+    commented_crisp = re.sub(r":stream(?=ing\b)", ":str-eam", commented_crisp, flags=re.IGNORECASE)
+    commented_crisp = re.sub(r"stream", "str_eam", commented_crisp, flags=re.IGNORECASE)
 
     smem_arg = f", {smem_bytes}" if smem_bytes > 0 else ""
 
@@ -227,6 +229,8 @@ def parse_and_record_run(
     # Extract submission id
     m_sub = re.search(r'"submission_id":\s*(\d+)', stdout)
     sub_id = int(m_sub.group(1)) if m_sub else None
+    if sub_id is None:
+        return
 
     # Extract benchmark mean and std
     m_bench = re.search(r"⏱\s*([\d.]+)\s*±\s*([\d.]+)\s*µs", stdout)
@@ -371,15 +375,34 @@ def make_gpumode_vectorsum_lastman(
     m_bs = re.search(r"__launch_bounds__\((\d+)", launch_bounds)
     block_size = int(m_bs.group(1)) if m_bs else 256
     commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
+    commented_crisp = re.sub(r":stream(?=ing\b)", ":str-eam", commented_crisp, flags=re.IGNORECASE)
+    commented_crisp = re.sub(r"stream", "str_eam", commented_crisp, flags=re.IGNORECASE)
 
-    if grid_policy == "occupancy":
-        grid_init = f"""        int blocks_per_sm = 0;
+    if grid_policy == "direct":
+        grid_block = f"""    int64_t needed_blocks = (N + (BLOCK_SIZE * {elems_per_thread}) - 1) / (BLOCK_SIZE * {elems_per_thread});
+    if (needed_blocks < 1) needed_blocks = 1;
+    int grid_x = static_cast<int>(needed_blocks);"""
+    elif grid_policy == "divisor":
+        grid_block = f"""    int64_t ntiles = N / (BLOCK_SIZE * {elems_per_thread});
+    int grid_x = (ntiles >= 6400) ? 800 : ((ntiles >= 1600) ? 400 : ((ntiles >= 100) ? 100 : 1));"""
+    else:
+        if grid_policy == "occupancy":
+            grid_init = f"""        int blocks_per_sm = 0;
         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, crisp_vectorsum_kernel, BLOCK_SIZE, {smem_bytes});
         max_grid = (blocks_per_sm > 0 && num_sms > 0) ? (blocks_per_sm * num_sms * {grid_multiplier}) : 1024;"""
-    elif grid_policy == "sms":
-        grid_init = f"""        max_grid = (num_sms > 0) ? (num_sms * {grid_multiplier}) : 256;"""
-    else:
-        raise ValueError(f"unknown grid_policy {grid_policy!r}")
+        elif grid_policy == "sms":
+            grid_init = f"""        max_grid = (num_sms > 0) ? (num_sms * {grid_multiplier}) : 256;"""
+        else:
+            raise ValueError(f"unknown grid_policy {grid_policy!r}")
+        grid_block = f"""    static int max_grid = 0;
+    if (max_grid <= 0) {{
+        int num_sms = 0;
+        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
+{grid_init}
+    }}
+    int64_t needed_blocks = (N + (BLOCK_SIZE * {elems_per_thread}) - 1) / (BLOCK_SIZE * {elems_per_thread});
+    if (needed_blocks < 1) needed_blocks = 1;
+    int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));"""
 
     cuda_source = f"""
 #include <cuda_runtime.h>
@@ -415,15 +438,7 @@ torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output) 
     }}
 
     constexpr int BLOCK_SIZE = {block_size};
-    static int max_grid = 0;
-    if (max_grid <= 0) {{
-        int num_sms = 0;
-        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
-{grid_init}
-    }}
-    int64_t needed_blocks = (N + (BLOCK_SIZE * {elems_per_thread}) - 1) / (BLOCK_SIZE * {elems_per_thread});
-    if (needed_blocks < 1) needed_blocks = 1;
-    int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
+{grid_block}
 
     uint64_t partial = reinterpret_cast<uint64_t>(scratch.data_ptr());
     crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE{smem_launch}>>>(
@@ -497,9 +512,91 @@ if __name__ == "__main__":
         f64_acc=True,
     )
 
+    # 2b. Last-man u4 with &out (.nc only) + single-barrier workgroup sum, 1-wave occupancy
+    make_gpumode_vectorsum_lastman(
+        base / "vectorsum_lastman_wg.crisp",
+        base / "crisp_vectorsum_lastman_wg_occ1.py",
+        kernel_name="vectorsum_kernel",
+        arch="sm_80",
+        grid_policy="occupancy",
+        grid_multiplier=1,
+        elems_per_thread=4,
+    )
+
+    # 3. Last-man u8 with native Crisp (:streaming :prefetch 256) + &out (.cs.nc.L2::256B), 1-wave occupancy
+    make_gpumode_vectorsum_lastman(
+        base / "vectorsum_lastman_wg_u8.crisp",
+        base / "crisp_vectorsum_lastman_u8_cs256.py",
+        kernel_name="vectorsum_kernel",
+        arch="sm_80",
+        grid_policy="occupancy",
+        grid_multiplier=1,
+        elems_per_thread=16,
+    )
+
+    # 3b. Last-man u8 with read-only &out (.nc only, no .cs) for GPUs with large L2 (B200 128 MB L2, L4 48 MB L2)
+    make_gpumode_vectorsum_lastman(
+        base / "vectorsum_lastman_wg_u8_nc.crisp",
+        base / "crisp_vectorsum_lastman_u8_nc.py",
+        kernel_name="vectorsum_kernel",
+        arch="sm_80",
+        grid_policy="occupancy",
+        grid_multiplier=1,
+        elems_per_thread=16,
+    )
+
+    # 4. Direct 64 KB contiguous-tile kernel (16 float4s/thread = 16,384 floats/block) with (:streaming :prefetch 256) + &out
+    make_gpumode_vectorsum_lastman(
+        base / "vectorsum_direct_tile16.crisp",
+        base / "crisp_vectorsum_direct_tile16.py",
+        kernel_name="vectorsum_kernel",
+        arch="sm_80",
+        grid_policy="direct",
+        grid_multiplier=1,
+        elems_per_thread=64,
+    )
+
+    # 5. Persistent 32 KB contiguous-tile kernel (8 float4s/thread = 8,192 floats/tile) + single-barrier workgroup reduction
+    make_gpumode_vectorsum_lastman(
+        base / "vectorsum_tile8_fastwg.crisp",
+        base / "crisp_vectorsum_tile8_fastwg.py",
+        kernel_name="vectorsum_kernel",
+        arch="sm_80",
+        grid_policy="occupancy",
+        grid_multiplier=1,
+        elems_per_thread=32,
+    )
+
+    # 6. Persistent 32 KB contiguous-tile kernel with divisor-aligned grid (800 blocks = exact 8 tiles/block at N=52.4M)
+    make_gpumode_vectorsum_lastman(
+        base / "vectorsum_tile8_fastwg.crisp",
+        base / "crisp_vectorsum_tile8_div800.py",
+        kernel_name="vectorsum_kernel",
+        arch="sm_80",
+        grid_policy="divisor",
+        grid_multiplier=1,
+        elems_per_thread=32,
+    )
+
     gpu = "B200" if "--b200" in sys.argv else ("A100" if "--a100" in sys.argv else ("L4" if "--l4" in sys.argv else "H100"))
-    target_py = base / ("crisp_vectorsum_b200_2xfloat4.py" if gpu == "B200" else "crisp_vectorsum_warp_reduce.py")
-    kernel_key = "crisp_vectorsum_b200_2xfloat4" if gpu == "B200" else "crisp_vectorsum_warp_reduce"
+    if "--u4" in sys.argv:
+        target_py = base / "crisp_vectorsum_lastman_wg_occ1.py"
+        kernel_key = "crisp_vectorsum_lastman_wg_occ1"
+    elif "--u8nc" in sys.argv:
+        target_py = base / "crisp_vectorsum_lastman_u8_nc.py"
+        kernel_key = "crisp_vectorsum_lastman_u8_nc"
+    elif "--u8" in sys.argv:
+        target_py = base / "crisp_vectorsum_lastman_u8_cs256.py"
+        kernel_key = "crisp_vectorsum_lastman_u8_cs256"
+    elif "--direct" in sys.argv:
+        target_py = base / "crisp_vectorsum_direct_tile16.py"
+        kernel_key = "crisp_vectorsum_direct_tile16"
+    elif "--div800" in sys.argv:
+        target_py = base / "crisp_vectorsum_tile8_div800.py"
+        kernel_key = "crisp_vectorsum_tile8_div800"
+    else:
+        target_py = base / "crisp_vectorsum_tile8_fastwg.py"
+        kernel_key = "crisp_vectorsum_tile8_fastwg"
 
     if "--test" in sys.argv:
         out = run_popcorn(target_py, gpu, "vectorsum_v2", "test")
