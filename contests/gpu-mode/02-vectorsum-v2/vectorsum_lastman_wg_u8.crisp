@@ -1,0 +1,59 @@
+;; GPU MODE Challenge: vectorsum_v2 -- FP32 loads/accumulators, FP64 cross-thread sum, last-workgroup write.
+;;
+;; Strategy:
+;;   Phase 1: float4 (128-bit) grid-stride loads (unroll 8) into 4 FP32 accumulators per thread.
+;;   Phase 2: each thread's sum is widened to double ONCE.
+;;   Phase 3: reduce-workgroup in double; thread 0 atomic-adds into a persistent scratch cell (`partial`).
+;;   Phase 4: the last workgroup to arrive (ticket) swaps `partial` back to 0.0d, writes the float
+;;            result, and resets the ticket -- both scratch cells are ready for the next launch, so
+;;            the host does no per-call zeroing or conversion.
+;;
+;; Why FP64 only across threads (contest BUG-002): leaderboard mode re-seeds every timing repetition
+;; (hundreds of offset/scale draws). Thousands of FP32 atomics into one cell fail rtol=1e-5 on ~6% of
+;; draws; per-thread FP32 runs are short and stay >100x inside tolerance once the cross-thread sum is
+;; double (put_temp_files_here/vectorsum_mc.c).
+;;
+;; Hand-rolled last-man because when-is-last-workgroup is not implemented yet, and grid-reduce!'s
+;; return cell must have the reduced value's type (double here; the contest wants float).
+
+(def-type in-vec      (vector float :address-space :global :align :compact))
+(def-type acc-cell    (cell double :address-space :global))
+(def-type ticket-cell (cell uint :address-space :global))
+(def-type out-cell    (cell float :address-space :global))
+
+(def-kernel vectorsum_kernel (input &out partial ticket result)
+  (declare #'(in-vec &out acc-cell ticket-cell out-cell => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n    (length~ input))
+        (n4   (/ n 4ul))
+        (in4  (make-vector input float4 :length n4))
+        (a0   0.0)
+        (a1   0.0)
+        (a2   0.0)
+        (a3   0.0))
+    ;; Phase 1: 128-bit vector grid-stride loop, FP32 accumulators
+    (loop-vector-stride in4 (i)
+      (declare (unroll 8))
+      (let ((v (~ in4 i)))
+        (set! a0 (+ a0 (x~ v)))
+        (set! a1 (+ a1 (y~ v)))
+        (set! a2 (+ a2 (z~ v)))
+        (set! a3 (+ a3 (w~ v)))))
+    ;; Tail: the 0..3 elements float4 cannot cover
+    (let ((t (+ (* n4 4ul) (to-ulong (get-global-id 0)))))
+      (when (< t n)
+        (set! a0 (+ a0 (~ input t)))))
+    ;; Phase 2 + 3: widen once, workgroup reduction in double, ONE atomic per workgroup
+    (let ((acc (to-double (+ (+ a0 a1) (+ a2 a3)))))
+      (reduce-workgroup #'+ acc 0.0d)
+      ;; Phase 4: thread 0 adds, releases, takes a ticket; the last arrival acquires,
+      ;; publishes the float, and resets both scratch cells.
+      (when-thread-in-group-is 0
+        (atomic-add! (~ partial) acc)
+        (mem-fence)
+        (let ((arrived (to-ulong (atomic-inc! (~ ticket)))))
+          (when (= arrived (- (get-num-groups 0) 1ul))
+            (mem-fence)
+            (set! (~ result) (to-float (atomic-xchg! (~ partial) 0.0d)))
+            (atomic-xchg! (~ ticket) 0u)))))))

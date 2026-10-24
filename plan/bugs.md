@@ -4288,3 +4288,13 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         when their own argument count disagrees with the metacrisp (%hk-check-argument-count).
         TEST: tests/api/test_crisp_api.py Aggregates (7 slots, four int FIELD slots) -- it had encoded the
         wrong one-16-byte-slot answer.  Needs the H100 to see the launcher run.
+
+[ ] 134 A RETYPED VIEW OF A READ-ONLY INPUT LOSES ld.global.nc.  Found 2026-10-23 (contest BUG-002 work,
+        vectorsum_lastman_wg_u8.crisp).  (make-vector input float4 :length n4) over a float `input` that is
+        never written: with `&out` on the written cells, the scalar tail load `(~ input t)` is
+        ld.global.nc.b32, but every float4 load through the view is plain ld.global.v4.b32 (9 of them).
+        Without `&out` in the signature NOTHING is .nc -- the contest kernels (AG's and mine) were all
+        written that way, so no contest entry has had read-only loads.  BUG 125 (endeavour 186) fixed .nc
+        through views; this looks like the case where the view changes the element type.  HYPOTHESIS only
+        -- not yet traced in the codegen.  Perf effect unmeasured on its own (being measured together with
+        an L1::no_allocate.L2::256B hint, which Crisp also cannot express today).
