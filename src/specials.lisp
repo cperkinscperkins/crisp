@@ -14,10 +14,6 @@
 (in-package :crisp.compiler)
 
 (declaim (special
-          *%192-ORIG-ANALYZE-LOAD-TILE-AT*
-          *%192-ORIG-ANALYZE-PREFETCH-TILE*
-          *%192-ORIG-ANALYZE-STORE-TILE-AT*
-          *%192-ORIG-ENSURE-OPENCL-KERNEL-METADATA*
           *173-SUBGROUP-PINNED*
           *176-DEPENDENT-FORMS*
           *176-GENERIC-SCRATCH-RANGE*

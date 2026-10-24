@@ -155,11 +155,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp
 - - - - - - - - - - - - - - - (%EXPAND-VECTOR-TYPE-SPECIFIER ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - (%PARSE-CACHE-HINT VALUE SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - (%CACHE-INTENT-KEYWORD X)  types/validation.lisp
 - - - - - - - - - - - - - - - - (%BARE-STORAGE-HANDLE-VALUE-ERROR ITEM SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - (%CHECK-CACHE-HINT-ADDRESS-SPACE HINT ADDR SPEC)  types/validation.lisp
 - - - - - - - - - - - - - - - (%EXPAND-MATRIX-TYPE-SPECIFIER ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - (%PARSE-CACHE-HINT VALUE SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - (%BARE-STORAGE-HANDLE-VALUE-ERROR ITEM SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - (%CHECK-CACHE-HINT-ADDRESS-SPACE HINT ADDR SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - (%EXPAND-TENSOR-TYPE-SPECIFIER BASE ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - (%PARSE-CACHE-HINT VALUE SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - (%CHECK-CACHE-HINT-ADDRESS-SPACE HINT ADDR SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - (%EXPAND-CELL-TYPE-SPECIFIER BASE ELEMENT-TYPE REST-ARGS SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - (%PARSE-CACHE-HINT VALUE SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - (%CHECK-CACHE-HINT-ADDRESS-SPACE HINT ADDR SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [RECURSION]
 - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - (EXTRACT-POSITIONAL-FROM-KEYWORD-ARGS ARGS NUM-PARAMS)  types/validation.lisp
@@ -342,6 +351,20 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - (%CREATE-NEW-FUNCTION FN-NAME FN-TYPE MODULE DI-BUILDER DI-COMPILE-UNIT CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - (ENSURE-OPENCL-KERNEL-METADATA FUNC SEMANTIC-FUNCTION MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%COMPUTE-KERNEL-CACHE-HINTS SEMANTIC-FUNCTION &OPTIONAL MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - (%COLLECT-READONLY-TENSOR-PARAM-SYMS SEMANTIC-FUNCTION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - (%CACHE-HINT-OF-TYPE TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%PARSE-CACHE-HINT VALUE SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%KERNEL-LLVM-NAME SEMANTIC-FUNCTION)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%APPLY-DENORMAL-ATTRIBUTE FUNC MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-DENORM-EXECUTION-MODE FUNC MODULE)  codegen.lisp
@@ -381,15 +404,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
 - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (%COLLECT-READONLY-TENSOR-PARAM-SYMS SEMANTIC-FUNCTION)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%CRISP-FLOAT-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - (%CRISP-INTEGER-TENSOR-TYPE-P TYPE-SPEC)  autodiff.lisp
-- - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%COLLECT-READONLY-TENSOR-PARAM-SYMS SEMANTIC-FUNCTION)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
                                                              SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp
@@ -1313,6 +1328,33 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (%INJECT-CACHE-CONTROL-DECORATIONS LL-PATH)  compiler.lisp
 - - - - - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
 - - - - - - - - - (SPLIT-STRING STRING DELIMITER)  mangling.lisp [See above]
+- - - - - - - - (%APPLY-CACHE-HINTS-TO-LL LL-PATH BACKEND)  compiler.lisp
+- - - - - - - - - (%LL-READ-LINES PATH)  compiler.lisp
+- - - - - - - - - (%LL-KERNELS-WITH-CACHE-ENTRIES LINES)  compiler.lisp
+- - - - - - - - - - (%LL-DEFINE-INFO LINE)  compiler.lisp
+- - - - - - - - - - - (%LL-SPLIT-TOP-LEVEL-COMMAS S)  compiler.lisp
+- - - - - - - - - (%RUN-PASSES-IN-PROCESS INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp [See above]
+- - - - - - - - - (%LL-MAX-METADATA-ID LINES)  compiler.lisp
+- - - - - - - - - (%SPV-CACHE-CONTROLS KIND INTENT)  compiler.lisp
+- - - - - - - - - (%LL-DEFINE-INFO LINE)  compiler.lisp [See above]
+- - - - - - - - - (%LL-POINTER-ROOTS NAME DEFS PARAMS MEMO)  compiler.lisp
+- - - - - - - - - - (%LL-POINTER-ROOTS NAME DEFS PARAMS MEMO)  compiler.lisp [RECURSION]
+- - - - - - - - - (%PTX-HINTED-LOAD-LINES RESULT TYPE PTR INTENT PREFETCH READONLY TAIL COUNTER)  compiler.lisp
+- - - - - - - - - - (%LL-TYPE-SHAPE TYPE)  compiler.lisp
+- - - - - - - - - - (%PTX-ELEM-ASM ELEM)  compiler.lisp
+- - - - - - - - - - (%LL-ALIGN-OF TAIL)  compiler.lisp
+- - - - - - - - - - (%PTX-CACHE-OP KIND INTENT PREFETCH READONLY LANES SUFFIX)  compiler.lisp
+- - - - - - - - - - - (%PTX-TARGET-SM)  compiler.lisp
+- - - - - - - - - - - - (PTX-COMPUTE-CAPABILITY-STRING)  types/registry.lisp
+- - - - - - - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
+- - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - - - - - - - - (%PTX-POLICY-WRAP POLICY-P BODY)  compiler.lisp
+- - - - - - - - - (%PTX-HINTED-STORE-LINES TYPE VALUE PTR INTENT TAIL COUNTER)  compiler.lisp
+- - - - - - - - - - (%LL-TYPE-SHAPE TYPE)  compiler.lisp [See above]
+- - - - - - - - - - (%PTX-ELEM-ASM ELEM)  compiler.lisp [See above]
+- - - - - - - - - - (%LL-ALIGN-OF TAIL)  compiler.lisp [See above]
+- - - - - - - - - - (%PTX-CACHE-OP KIND INTENT PREFETCH READONLY LANES SUFFIX)  compiler.lisp [See above]
+- - - - - - - - - - (%PTX-POLICY-WRAP POLICY-P BODY)  compiler.lisp [See above]
 - - - - - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp
 - - - - - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp
 - - - - - - - - (%LL-USES-FP16-ATOMIC-FADD-P LL-PATH)  compiler.lisp
@@ -1323,16 +1365,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (%MODULE-USES-SPLIT-BARRIER-P MODULE)  compiler.lisp
 - - - - - - - - (%MODULE-USES-BFLOAT-P MODULE)  compiler.lisp
 - - - - - - - - (%CACHE-CONTROL-SPEC)  codegen.lisp [See above]
+- - - - - - - - (%LL-USES-CACHE-CONTROL-DECORATIONS-P LL-PATH)  compiler.lisp
 - - - - - - - (COMPILE-TO-PTX MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)  compiler.lisp
 - - - - - - - - (%PTX-FINALIZE-LIBDEVICE MODULE)  codegen.lisp
 - - - - - - - - - (%SET-NVVM-REFLECT-FTZ MODULE FTZ-P)  codegen.lisp
 - - - - - - - - (%RUN-OPT-O3 INPUT-LL-FILE OUTPUT-LL-FILE)  compiler.lisp
 - - - - - - - - - (%RUN-PASSES-IN-PROCESS INPUT-LL-FILE OUTPUT-LL-FILE PASSES-STRING)  compiler.lisp [See above]
+- - - - - - - - (%APPLY-CACHE-HINTS-TO-LL LL-PATH BACKEND)  compiler.lisp [See above]
 - - - - - - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
 - - - - - - - - (RUN-TOOL-COMMAND ARGS &KEY (LOG-PREFIX ))  compiler.lisp [See above]
-- - - - - - - (PTX-COMPUTE-CAPABILITY-STRING)  types/registry.lisp
-- - - - - - - - (%ARCH-HAS-PREFIX-P ARCH PREFIX)  types/registry.lisp [See above]
-- - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
+- - - - - - - (PTX-COMPUTE-CAPABILITY-STRING)  types/registry.lisp [See above]
 - - - - - - (%API-DIAGNOSTIC SEVERITY MESSAGE &KEY FILE (LINE 0) (COLUMN 0)) :CRISP.MAIN  api.lisp [See above]
 - - - - - - (%API-CONDITION-MESSAGE C) :CRISP.MAIN  api.lisp
 - - - - - - (%GENERATE-FILE-METADATA FILEPATH GENERATED-OUTPUTS CAPTURED-FORMS) :CRISP.MAIN  main.lisp
@@ -2550,6 +2592,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp [See above]
 - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (%REFUSE-PER-OPERATION-CACHE OP-NAME KEY-ARGS LOCATION)  analysis/control.lisp
 - - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp
 - - - (%TLC-CHECK-ELEM-MATCH SRC TILE ENV OP-NAME LOCATION)  analysis/control.lisp
 - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
@@ -2738,6 +2781,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (ANALYZE-PREFETCH-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - (%REFUSE-PER-OPERATION-CACHE OP-NAME KEY-ARGS LOCATION)  analysis/control.lisp [See above]
 - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
@@ -2869,6 +2913,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%TENSOR-TYPE-P TYPE)  analysis/structs.lisp [See above]
 - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
 - - (ANALYZE-STORE-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (%REFUSE-PER-OPERATION-CACHE OP-NAME KEY-ARGS LOCATION)  analysis/control.lisp [See above]
 - - - (%TLC-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
 - - - (%WARP-SPEC-CHECK-BLOCK-ONLY OP-NAME MODE LOCATION)  analysis/control.lisp [See above]
 - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
@@ -3553,12 +3598,29 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%SPV-LINES TXT)  mma.lisp [See above]
 - - - (%SPV-USE-NAME USE)  mma.lisp
 
+- (VALIDATE-SPV-CACHE-COOP-STREAMING SPV-PATH)  mma.lisp
+- - (%SPV-CACHE-CONTROL-CENSUS SPV-PATH)  mma.lisp
+- - - (%SPV-DISASM SPV-PATH)  mma.lisp
+- - - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
+- - - (%SPV-TOKENS S)  mma.lisp [See above]
+- - (%SPV-DECO-IS DECO LEVEL CONTROL)  mma.lisp
+- - (%SPV-CACHE-FAIL FMT &REST ARGS)  mma.lisp
+
+- (VALIDATE-SPV-CACHE-STREAMING-LOADS SPV-PATH)  mma.lisp
+- - (%SPV-CACHE-CONTROL-CENSUS SPV-PATH)  mma.lisp [See above]
+- - (%SPV-CACHE-FAIL FMT &REST ARGS)  mma.lisp [See above]
+- - (%SPV-DECO-IS DECO LEVEL CONTROL)  mma.lisp [See above]
+
+- (VALIDATE-SPV-CACHE-STREAMING-STORES SPV-PATH)  mma.lisp
+- - (%SPV-CACHE-CONTROL-CENSUS SPV-PATH)  mma.lisp [See above]
+- - (%SPV-CACHE-FAIL FMT &REST ARGS)  mma.lisp [See above]
+- - (%SPV-DECO-IS DECO LEVEL CONTROL)  mma.lisp [See above]
+
 - (VALIDATE-SPV-FP16-COOP SPV-PATH)  mma.lisp
 - - (%VALIDATE-COOP-OPERAND-ELEM SPV-PATH WANT-WIDTH LABEL &KEY REQUIRE-EXT INT-COMPONENTS)  codegen.lisp [See above]
 
 - (VALIDATE-SPV-FUSED-BARRIER-UNCHANGED SPV-PATH)  mma.lisp
-- - (%SPV-DISASM SPV-PATH)  mma.lisp
-- - - (RESOLVE-TOOL-EXECUTABLE TOOL-BASE)  compiler.lisp [See above]
+- - (%SPV-DISASM SPV-PATH)  mma.lisp [See above]
 
 - (VALIDATE-SPV-PREFETCH-PARTITIONED SPV-PATH)  mma.lisp
 - - (%SPV-DISASM SPV-PATH)  mma.lisp [See above]

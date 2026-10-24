@@ -1087,11 +1087,29 @@
                               value)
                           env context location))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 192 (cache hints) -- tile operations take their hint from the TYPE; a per-operation :cache is refused
+;;;; See tests/spec/192-cache-hints/cache-hints.md.
+;;;; ----------------------------------------------------------------------
+
+;; src/analysis/control.lisp
+(defun %refuse-per-operation-cache (op-name key-args location)
+  "Endeavour 192.  Signal a crisp-compiler-error when KEY-ARGS (a keyword plist) carries :cache."
+  (loop for (k nil) on key-args by #'cddr
+        when (and k (symbolp k) (string-equal (symbol-name k) "CACHE"))
+          do (error 'crisp-compiler-error
+                    :message (format nil "~a: per-operation :cache is not supported -- declare :cache on the tensor's TYPE (e.g. (vector float :address-space :global ... :cache :streaming)); every tile operation honours the type's hint."
+                                     op-name)
+                    :source-location location)))
+
 (defun analyze-load-tile-at-expression (expr env context location)
   "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
    Rejects placement inside a thread-divergent conditional. If :barrier is provided
    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
-   codegen via %expand-load-tile-at-form."
+   codegen via %expand-load-tile-at-form.
+   Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type)."
+  ;; Endeavour 192: the cache hint comes from the tensor's type; a per-operation :cache is refused.
+  (%refuse-per-operation-cache "load-tile-at" (nthcdr 4 expr) location)
   ;; Endeavor 139: inside a warp-spec block, %warp-spec-check-block-only (after mode resolution)
   ;; governs instead of the thread-divergent check.
   (unless *in-warp-spec-block* (%tlc-check-not-divergent "load-tile-at" location))
@@ -1311,7 +1329,10 @@
 (defun analyze-store-tile-at-expression (expr env context location)
   "Analyzer for (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).
    Rejects placement inside a thread-divergent conditional, then delegates
-   codegen via %expand-store-tile-at-form."
+   codegen via %expand-store-tile-at-form.
+   Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type)."
+  ;; Endeavour 192: the cache hint comes from the tensor's type; a per-operation :cache is refused.
+  (%refuse-per-operation-cache "store-tile-at" (nthcdr 4 expr) location)
   (let ((key-args (nthcdr 4 expr)))
     (when (and (getf key-args :barrier) (getf key-args :transformF))
           (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))

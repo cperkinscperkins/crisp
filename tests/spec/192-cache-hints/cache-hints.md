@@ -312,7 +312,10 @@ Rules:
       - Local after the fixes: 192 default 21/21, 192 `--differentiate` 21/21 (2 KNOWN-FAIL BUG-061).
 - [ ] (superseded) **NVIDIA metal** (spec 13 / 15 TEST-HOIST[CUDA], spec 14 VERIFY-AUTODIFF[CUDA] if pinned):
       needs the pod.  Every spec's PTX already assembles with CUDA 12.4 ptxas for its .target.
-- [ ] Fold the overlays into src/ (Chris).  Take the LAST copy of each re-appended function.
+- [x] **Folded into src/ (2026-10-24)**, live copies only, extracted by script (put_temp_files_here/192-fold/):
+      overlays empty; the folded build is byte-identical to the overlay build on a 39-file PTX/SPIR-V corpus;
+      unit 392/392, E2E 1529/1529, negative 365/365, 192 --differentiate 21/21; reference / call graph /
+      globals / specials regenerated.
 
 ## Bugs found and fixed during the night (all caught by checks beyond the spec validators)
 

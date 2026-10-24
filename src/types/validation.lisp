@@ -71,10 +71,88 @@
 
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 192 (cache hints) -- :cache on storage-handle types (validated, then STRIPPED from the canonical type)
+;;;; See tests/spec/192-cache-hints/cache-hints.md.
+;;;; ----------------------------------------------------------------------
+
+;; src/types/validation.lisp
+(defparameter +cache-intents+ '(:default :streaming :reused :no-l1)
+  "Endeavour 192: the intents a storage-handle type may declare with :cache.")
+
+;; src/types/validation.lisp
+(defun %cache-intent-keyword (x)
+  "Endeavour 192.  X as one of +CACHE-INTENTS+ (compared by name, so the reader package does not
+   matter), or NIL."
+  (and x (symbolp x)
+       (find (symbol-name x) +cache-intents+ :key #'symbol-name :test #'string-equal)))
+
+;; src/types/validation.lisp
+(defun %parse-cache-hint (value spec)
+  "Endeavour 192.  Validate the value of a :cache option in SPEC and return the normalized hint
+   (INTENT PREFETCH): INTENT one of +CACHE-INTENTS+, PREFETCH 64 / 128 / 256 or NIL.
+   Accepts a bare intent (:streaming) or a list (:streaming :prefetch 256).  Refuses anything
+   else with a message naming the legal values."
+  (cond
+    ((consp value)
+     (let ((intent (%cache-intent-keyword (first value)))
+           (prefetch nil))
+       (unless intent
+         (error ":cache list must start with an intent (:default :streaming :reused :no-l1); got ~s in ~s"
+                value spec))
+       (unless (evenp (length (rest value)))
+         (error ":cache list is (INTENT :prefetch N); got ~s in ~s" value spec))
+       (loop for (k v) on (rest value) by #'cddr
+             do (cond ((and k (symbolp k) (string-equal (symbol-name k) "PREFETCH"))
+                       (unless (member v '(64 128 256))
+                         (error ":prefetch must be 64, 128 or 256 (the L2 prefetch size in bytes); got ~s in ~s"
+                                v spec))
+                       (setf prefetch v))
+                      (t (error ":cache list takes only :prefetch after the intent; got ~s in ~s" k spec))))
+       (list intent prefetch)))
+    (t
+     (let ((intent (%cache-intent-keyword value)))
+       (unless intent
+         (error ":cache must be one of :default :streaming :reused :no-l1, or (INTENT :prefetch N); got ~s in ~s"
+                value spec))
+       (list intent nil)))))
+
+;; src/types/validation.lisp
+(defun %check-cache-hint-address-space (hint addr spec)
+  "Endeavour 192.  Refuse a :cache HINT on a storage handle whose address space ADDR is not
+   :global.  :local (shared memory) gets its own message: L1/L2 hints mean nothing there, and a
+   silently dropped hint would be worse than a refusal.  ADDR NIL (incomplete type) is let through."
+  (when hint
+    (cond ((eq addr :local)
+           (error ":cache does not apply to :local memory -- L1/L2 cache hints are for :global storage; in ~s"
+                  spec))
+          ((and addr (not (eq addr :global)))
+           (error ":cache applies only to :address-space :global; got ~s in ~s" addr spec)))))
+
+;; src/types/validation.lisp
+(defun %cache-hint-of-type (type-spec)
+  "Endeavour 192.  The normalized (INTENT PREFETCH) :cache hint carried by a DECLARED type, or NIL.
+   TYPE-SPEC is what a kernel signature declares: an alias symbol, followed through
+   *CRISP-TYPE-ALIASES* (whose values are the RAW specs, :cache included), or a raw storage-handle
+   list.  (:default NIL) -- no intent, no prefetch -- normalizes to NIL, i.e. exactly 'no key'."
+  (let ((spec type-spec))
+    (loop repeat 32
+          while (and spec (symbolp spec))
+          do (let ((next (gethash spec *crisp-type-aliases*)))
+               (if next (setf spec next) (cl:return))))
+    (when (consp spec)
+      (let ((tail (member-if (lambda (x) (and x (symbolp x) (string-equal (symbol-name x) "CACHE")))
+                             spec)))
+        (when (and tail (rest tail))
+          (let ((hint (%parse-cache-hint (second tail) spec)))
+            (unless (and (eq (first hint) :default) (null (second hint)))
+              hint)))))))
+
 (defun %expand-vector-type-specifier (element-type rest-args spec)
   (let* ((addr      nil)   ;; no default: must be supplied
          (aln       nil)   ;; no default: must be supplied
          (ct        :last) ;; the only auto-default
+         (cache-hint nil)   ;; endeavour 192: validated and stripped, never canonical
          (remaining rest-args))
     (when (and remaining (not (keywordp (first remaining))))
       (error "Invalid type option ~s in vector spec ~s. Vector takes no arity argument; use (tensor ~s N) for N > 2."
@@ -104,9 +182,13 @@
                ((member v '(:row-major :col-major))
                 (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec))
                (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last or :first." v spec)))))
+          ((string-equal (string item) "CACHE")
+           (unless remaining (error "Missing value for :CACHE in ~s" spec))
+           (setf cache-hint (%parse-cache-hint (pop remaining) spec)))
           ((string-equal (string item) "DIRECTION")
            (when remaining (pop remaining)))
           (t (%bare-storage-handle-value-error item spec)))))
+    (%check-cache-hint-address-space cache-hint addr spec)
     (list (find-symbol "TENSOR" :crisp.compiler)
           element-type 1 addr aln ct)))
 
@@ -114,6 +196,7 @@
   (let* ((addr      nil)   ;; no default
          (aln       nil)   ;; no default
          (ct        :last) ;; auto-default
+         (cache-hint nil)   ;; endeavour 192: validated and stripped, never canonical
          (remaining rest-args))
     (when (and remaining (not (keywordp (first remaining))))
       (error "Invalid type option ~s in matrix spec ~s. Matrix takes no arity argument; use (tensor ~s N) for arbitrary arity."
@@ -142,9 +225,13 @@
                ((eq v :row-major) (setf ct :last))
                ((eq v :col-major) (setf ct :first))
                (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last, :first, :row-major, or :col-major." v spec)))))
+          ((string-equal (string item) "CACHE")
+           (unless remaining (error "Missing value for :CACHE in ~s" spec))
+           (setf cache-hint (%parse-cache-hint (pop remaining) spec)))
           ((string-equal (string item) "DIRECTION")
            (when remaining (pop remaining)))
           (t (%bare-storage-handle-value-error item spec)))))
+    (%check-cache-hint-address-space cache-hint addr spec)
     (list (find-symbol "TENSOR" :crisp.compiler)
           element-type 2 addr aln ct)))
 
@@ -156,6 +243,7 @@
          (addr         nil)   ;; no default: must be supplied
          (aln          nil)   ;; no default: must be supplied
          (ct           :last) ;; auto-default
+         (cache-hint   nil)   ;; endeavour 192: validated and stripped, never canonical
          (remaining    rest-after-n))
     (unless n-arg
       (error 'crisp-incomplete-type-error :type-spec spec))
@@ -215,15 +303,20 @@
                     (error "Invalid :contiguous-term value ~s in ~s. :row-major and :col-major are only valid for 2D matrix types." v spec)))
                 (setf ct :first))
                (t (error "Invalid :contiguous-term value ~s in ~s. Expected :last, :first, :row-major (2D only), or :col-major (2D only)." v spec)))))
+          ((string-equal (string item) "CACHE")
+           (unless remaining (error "Missing value for :CACHE in ~s" spec))
+           (setf cache-hint (%parse-cache-hint (pop remaining) spec)))
           ((string-equal (string item) "DIRECTION")
            (when remaining (pop remaining)))
           (t (error "Invalid type option: ~s in tensor spec ~s" item spec)))))
+    (%check-cache-hint-address-space cache-hint addr spec)
     (list base element-type n-arg addr aln ct)))
 
 (defun %expand-cell-type-specifier (base element-type rest-args spec)
   (if (null rest-args)
       (list base element-type nil)  ;; addr nil → incomplete
       (let ((addr      nil)         ;; no default
+            (cache-hint nil)   ;; endeavour 192: validated and stripped, never canonical
             (remaining rest-args))
         (loop while remaining do
           (let ((item (pop remaining)))
@@ -249,7 +342,11 @@
                (log:warn "EXPAND-STORAGE-HANDLE: :access is no longer supported in ~s; ignoring." spec))
               ((string-equal (string item) "DIRECTION")
                (when remaining (pop remaining)))
+              ((string-equal (string item) "CACHE")
+               (unless remaining (error "Missing value for :CACHE in ~s" spec))
+               (setf cache-hint (%parse-cache-hint (pop remaining) spec)))
               (t (error "Invalid type option: ~s in spec ~s" item spec)))))
+        (%check-cache-hint-address-space cache-hint addr spec)
         (list base element-type addr))))
 
 (defun expand-storage-handle-type-specifier (spec)

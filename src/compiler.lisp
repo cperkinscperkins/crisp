@@ -720,6 +720,448 @@ from a fixed !100."
               thereis (and (search "atomicrmw" line)
                            (or (search " fmin " line) (search " fmax " line))))))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 192 (cache hints) -- the post-opt pass: walk each addrspace(1) access to its kernel argument and lower the hint
+;;;; See tests/spec/192-cache-hints/cache-hints.md.
+;;;; ----------------------------------------------------------------------
+
+;; src/compiler.lisp
+(defparameter +ll-ssa-name-re+ "%[-a-zA-Z$._0-9]+"
+  "Endeavour 192.  An unquoted LLVM SSA name (named or numbered).")
+
+;; src/compiler.lisp
+(defun %ll-split-top-level-commas (s)
+  "Endeavour 192.  Split S on commas outside () [] {} <> -- LLVM 21 parameter attributes such as
+   captures(ret: address, provenance) contain commas."
+  (let ((out '()) (depth 0) (start 0))
+    (loop for i from 0 below (length s)
+          for c = (cl:char s i)
+          do (case c
+               ((#\( #\[ #\{ #\<) (incf depth))
+               ((#\) #\] #\} #\>) (decf depth))
+               (#\, (when (zerop depth)
+                      (push (subseq s start i) out)
+                      (setf start (1+ i))))))
+    (push (subseq s start) out)
+    (mapcar (lambda (x) (string-trim " " x)) (nreverse out))))
+
+;; src/compiler.lisp
+(defun %ll-define-info (line)
+  "Endeavour 192.  For a `define ... @NAME(PARAMS) ...` line return (values NAME PARAMS), PARAMS a
+   list of (SSA-NAME . POINTER-ADDRSPACE1-P) in order; NIL for any other line."
+  (when (alexandria:starts-with-subseq "define " line)
+    (let ((at (search " @" line)))
+      (when at
+        (let* ((open (position #\( line :start at))
+               (name (and open (string-trim "\"" (subseq line (+ at 2) open)))))
+          (when open
+            (let ((depth 0) (close nil))
+              (loop for i from open below (length line)
+                    for c = (cl:char line i)
+                    do (case c
+                         (#\( (incf depth))
+                         (#\) (decf depth) (when (zerop depth) (setf close i) (cl:return)))))
+              (when close
+                (values name
+                        (loop for chunk in (%ll-split-top-level-commas (subseq line (1+ open) close))
+                              for ssa = (car (last (cl-ppcre:all-matches-as-strings +ll-ssa-name-re+ chunk)))
+                              collect (cons ssa (alexandria:starts-with-subseq "ptr addrspace(1)" chunk))))))))))))
+
+;; src/compiler.lisp
+(defun %ll-pointer-roots (name defs params memo)
+  "Endeavour 192.  The set (list) of addrspace(1) POINTER-parameter indices that the SSA value NAME
+   is derived from, walking getelementptr / bitcast / addrspacecast / inttoptr / phi / select.  DEFS: SSA name
+   -> right-hand side text.  PARAMS: SSA name -> (index . pointer-p).  MEMO guards cycles (a phi
+   reached again contributes nothing)."
+  (multiple-value-bind (cached found) (gethash name memo)
+    (when found (return-from %ll-pointer-roots cached)))
+  (setf (gethash name memo) nil)
+  (let* ((param (gethash name params))
+         (rhs (gethash name defs))
+         (roots
+           (cond
+             (param (list (car param)))   ; PTX passes every handle field as i64, so any root counts
+             ((null rhs) nil)
+             ((or (alexandria:starts-with-subseq "getelementptr" rhs)
+                  (alexandria:starts-with-subseq "bitcast" rhs)
+                  (alexandria:starts-with-subseq "addrspacecast" rhs))
+              (let ((base (cl-ppcre:scan-to-strings
+                           "ptr(?: addrspace\\(\\d+\\))? (%[-a-zA-Z$._0-9]+)" rhs)))
+                (when base
+                  (%ll-pointer-roots (subseq base (position #\% base)) defs params memo))))
+             ;; PTX: the kernel receives pointers as i64 and rebuilds them with inttoptr.
+             ((alexandria:starts-with-subseq "inttoptr" rhs)
+              (let ((op (cl-ppcre:scan-to-strings "^inttoptr i64 (%[-a-zA-Z$._0-9]+)" rhs)))
+                (when op
+                  (%ll-pointer-roots (subseq op (position #\% op)) defs params memo))))
+             ((or (alexandria:starts-with-subseq "phi ptr" rhs)
+                  (alexandria:starts-with-subseq "select" rhs))
+              (let ((ops (if (alexandria:starts-with-subseq "phi" rhs)
+                             (mapcar (lambda (m) (string-trim "[ " (subseq m 0 (position #\, m))))
+                                     (cl-ppcre:all-matches-as-strings "\\[ *[^,\\]]+," rhs))
+                             (mapcar (lambda (m) (subseq m (position #\% m)))
+                                     (cl-ppcre:all-matches-as-strings
+                                      "ptr(?: addrspace\\(\\d+\\))? %[-a-zA-Z$._0-9]+" rhs)))))
+                (remove-duplicates
+                 (loop for op in ops
+                       when (char= (cl:char op 0) #\%)
+                         append (%ll-pointer-roots op defs params memo)))))
+             (t nil))))
+    (setf (gethash name memo) roots)
+    roots))
+
+;; src/compiler.lisp
+(defun %ptx-elem-asm (elem)
+  "Endeavour 192.  (values PTX-SUFFIX ASM-CONSTRAINT) for an LLVM scalar type the hinted ld/st
+   handles, or NIL (that access is left unhinted)."
+  (cond ((string= elem "float")  (values "f32" "f"))
+        ((string= elem "double") (values "f64" "d"))
+        ((string= elem "i32")    (values "b32" "r"))
+        ((string= elem "i64")    (values "b64" "l"))
+        (t nil)))
+
+;; src/compiler.lisp
+(defun %ll-type-shape (type)
+  "Endeavour 192.  For an LLVM type string return (values LANES ELEM): LANES 1 for a scalar,
+   2 or 4 for <N x ELEM>; NIL for anything else."
+  (let ((m (nth-value 1 (cl-ppcre:scan-to-strings "^<(\\d+) x ([a-z0-9]+)>$" type))))
+    (cond (m (let ((n (parse-integer (aref m 0))))
+               (when (member n '(2 4)) (values n (aref m 1)))))
+          ((cl-ppcre:scan "^[a-z0-9]+$" type) (values 1 type))
+          (t nil))))
+
+;; src/compiler.lisp
+(defun %ptx-target-sm ()
+  "Endeavour 192.  The PTX target's SM number (sm_90a -> 90), defaulting to 80."
+  (or (ignore-errors
+       (parse-integer (string-left-trim "smSM_" (ptx-compute-capability-string)) :junk-allowed t))
+      80))
+
+;; src/compiler.lisp
+(defun %ptx-cache-op (kind intent prefetch readonly lanes suffix)
+  "Endeavour 192.  (values OPCODE POLICY-P) for a hinted PTX access.  KIND :load / :store.
+   Qualifier order follows the PTX grammar ld.global{.cop}{.nc}{.L1::evict_last}{.L2::cache_hint}
+   {.L2::NB}{.vN}.type: :streaming -> .cs; :no-l1 -> .cg; :reused -> .L2::cache_hint with an
+   evict_last policy register (POLICY-P true: the caller emits the createpolicy and passes %crp) on
+   sm_80+, else L1::evict_last (loads only); PREFETCH (loads) -> .L2::NB; READONLY (loads) -> .nc.
+   Every combination this produces was assembled by CUDA 12.4 ptxas for sm_80 and sm_90."
+  (let ((parts (list (if (eq kind :load) "ld" "st") "global"))
+        (policy nil))
+    (flet ((add (x) (setf parts (append parts (list x)))))
+      (case intent
+        (:streaming (add "cs"))
+        (:no-l1     (add "cg")))
+      (when (and readonly (eq kind :load)) (add "nc"))
+      (when (eq intent :reused)
+        (cond ((>= (%ptx-target-sm) 80) (add "L2::cache_hint") (setf policy t))
+              ((eq kind :load) (add "L1::evict_last"))))
+      (when (and prefetch (eq kind :load)) (add (format nil "L2::~dB" prefetch)))
+      (when (> lanes 1) (add (format nil "v~d" lanes)))
+      (add suffix))
+    (values (format nil "~{~a~^.~}" parts) policy)))
+
+;; src/compiler.lisp
+(defun %ll-align-of (tail)
+  "Endeavour 192.  The `align N` value in an instruction TAIL, or NIL."
+  (let ((m (nth-value 1 (cl-ppcre:scan-to-strings "align (\\d+)" tail))))
+    (when m (parse-integer (aref m 0)))))
+
+;; src/compiler.lisp
+(defun %ptx-policy-wrap (policy-p body)
+  "Endeavour 192.  BODY (one PTX instruction, ending in ;) wrapped in its own scope with an
+   L2 evict_last access policy in %crp when POLICY-P; BODY unchanged otherwise.  Lines are
+   separated with the LLVM string escapes \\0A\\09 (newline, tab)."
+  (if policy-p
+      (format nil "{\\0A\\09.reg .b64 %crp;\\0A\\09createpolicy.fractional.L2::evict_last.b64 %crp, 1.0;\\0A\\09~a\\0A\\09}"
+              body)
+      body))
+
+;; src/compiler.lisp
+(defun %ptx-hinted-load-lines (result type ptr intent prefetch readonly tail counter)
+  "Endeavour 192.  Replacement lines for `RESULT = load TYPE, ptr addrspace(1) PTR TAIL`, or NIL
+   when the access cannot be hinted (unsupported type, or a vector load not naturally aligned --
+   a .v4 ld needs 16-byte alignment, and LLVM marks a weaker one by splitting it).  COUNTER makes
+   the helper names unique within the file."
+  (multiple-value-bind (lanes elem) (%ll-type-shape type)
+    (when lanes
+      (multiple-value-bind (sfx con) (%ptx-elem-asm elem)
+        (when sfx
+          (let* ((elem-bytes (if (member elem '("double" "i64") :test #'string=) 8 4))
+                 (align (or (%ll-align-of tail) 0)))
+            (when (or (= lanes 1) (>= align (* lanes elem-bytes)))
+              (multiple-value-bind (op policy) (%ptx-cache-op :load intent prefetch readonly lanes sfx)
+                (let ((pol (if policy ", %crp" "")))
+                  (if (= lanes 1)
+                      (list (format nil "  ~a = call ~a asm sideeffect \"~a\", \"=~a,l,~~{memory}\"(ptr addrspace(1) ~a)"
+                                    result type
+                                    (%ptx-policy-wrap policy (format nil "~a $0, [$1]~a;" op pol))
+                                    con ptr))
+                      (let* ((base (format nil "%cr.l~d" counter))
+                             (struct (format nil "{ ~{~a~^, ~} }" (make-list lanes :initial-element elem)))
+                             (outs (format nil "{~{$~d~^, ~}}" (loop for i below lanes collect i)))
+                             (cons-str (format nil "~{=~a,~}l,~~{memory}" (make-list lanes :initial-element con)))
+                             (lines (list (format nil "  ~a = call ~a asm sideeffect \"~a\", \"~a\"(ptr addrspace(1) ~a)"
+                                                  base struct
+                                                  (%ptx-policy-wrap policy (format nil "~a ~a, [$~d]~a;" op outs lanes pol))
+                                                  cons-str ptr))))
+                        (dotimes (i lanes)
+                          (push (format nil "  ~a.e~d = extractvalue ~a ~a, ~d" base i struct base i) lines))
+                        (dotimes (i lanes)
+                          (push (format nil "  ~a = insertelement ~a ~a, ~a ~a.e~d, i32 ~d"
+                                        (if (= i (1- lanes)) result (format nil "~a.v~d" base i))
+                                        type (if (zerop i) "poison" (format nil "~a.v~d" base (1- i)))
+                                        elem base i i)
+                                lines))
+                        (nreverse lines))))))))))))
+
+;; src/compiler.lisp
+(defun %ptx-hinted-store-lines (type value ptr intent tail counter)
+  "Endeavour 192.  Replacement lines for `store TYPE VALUE, ptr addrspace(1) PTR TAIL`, or NIL when
+   the access cannot be hinted (see %ptx-hinted-load-lines; :reused below sm_80 has no store form)."
+  (multiple-value-bind (lanes elem) (%ll-type-shape type)
+    (when lanes
+      (multiple-value-bind (sfx con) (%ptx-elem-asm elem)
+        (when sfx
+          (let* ((elem-bytes (if (member elem '("double" "i64") :test #'string=) 8 4))
+                 (align (or (%ll-align-of tail) 0)))
+            (when (or (= lanes 1) (>= align (* lanes elem-bytes)))
+              (multiple-value-bind (op policy) (%ptx-cache-op :store intent nil nil lanes sfx)
+                (let ((pol (if policy ", %crp" "")))
+                  (when (or policy (not (eq intent :reused)))
+                    (if (= lanes 1)
+                        (list (format nil "  call void asm sideeffect \"~a\", \"l,~a,~~{memory}\"(ptr addrspace(1) ~a, ~a ~a)"
+                                      (%ptx-policy-wrap policy (format nil "~a [$0], $1~a;" op pol))
+                                      con ptr type value))
+                        (let ((base (format nil "%cr.s~d" counter))
+                              (lines '()))
+                          (dotimes (i lanes)
+                            (push (format nil "  ~a.e~d = extractelement ~a ~a, i32 ~d" base i type value i) lines))
+                          (push (format nil "  call void asm sideeffect \"~a\", \"l,~{~a~^,~},~~{memory}\"(ptr addrspace(1) ~a~{, ~a~})"
+                                        (%ptx-policy-wrap policy
+                                                          (format nil "~a [$0], {~{$~d~^, ~}}~a;"
+                                                                  op (loop for i from 1 to lanes collect i) pol))
+                                        (make-list lanes :initial-element con) ptr
+                                        (loop for i below lanes collect (format nil "~a ~a.e~d" elem base i)))
+                                lines)
+                          (nreverse lines)))))))))))))
+
+;; src/compiler.lisp
+(defun %spv-cache-controls (kind intent)
+  "Endeavour 192.  ((LEVEL . CONTROL) ...) for a SPIR-V CacheControl{Load,Store}INTEL decoration,
+   level 0 = L1, 1 = L3.  Load controls: Uncached 0, Cached 1, Streaming 2.  Store controls:
+   Uncached 0, WriteThrough 1, WriteBack 2, Streaming 3.  NIL for :default (no decoration)."
+  (if (eq kind :load)
+      (case intent
+        (:streaming '((0 . 2) (1 . 2)))
+        (:reused    '((0 . 1) (1 . 1)))
+        (:no-l1     '((0 . 0) (1 . 1))))
+      (case intent
+        (:streaming '((0 . 3) (1 . 3)))
+        (:reused    '((0 . 2) (1 . 2)))
+        (:no-l1     '((0 . 0) (1 . 2))))))
+
+;; src/compiler.lisp
+(defun %ll-max-metadata-id (lines)
+  "Endeavour 192.  The largest N of a `!N = ` definition in LINES (0 when none)."
+  (let ((mx 0))
+    (loop for l across lines
+          do (cl-ppcre:register-groups-bind ((#'parse-integer n)) ("^!(\\d+) = " l)
+               (when (> n mx) (setf mx n))))
+    mx))
+
+;; src/compiler.lisp
+(defun %ll-kernels-with-cache-entries (lines)
+  "Endeavour 192.  T when some `define` in LINES names an entry point with a non-empty
+   *KERNEL-CACHE-HINT-TABLE* entry -- so the pass (and the extra vectorizer run) costs nothing for
+   kernels that carry no hint and no read-only argument."
+  (loop for l across lines
+        thereis (let ((name (%ll-define-info l)))
+                  (and name (gethash name *kernel-cache-hint-table*)))))
+
+;; src/compiler.lisp
+(defun %ll-read-lines (path)
+  "Endeavour 192.  The lines of the text file PATH, as a vector."
+  (with-open-file (in path :direction :input)
+    (coerce (loop for l = (read-line in nil nil) while l collect l) 'vector)))
+
+;; src/compiler.lisp
+(defun %apply-cache-hints-to-ll (ll-path backend)
+  "Endeavour 192.  Lower :cache hints in the POST-OPT LLVM IR at LL-PATH, in place, for BACKEND
+   (:ptx or :spirv).  Returns the number of accesses rewritten.
+
+   Every addrspace(1) load / store inside an entry point listed in *KERNEL-CACHE-HINT-TABLE* has its
+   pointer walked back to a kernel argument (%ll-pointer-roots); the argument's entry decides:
+     PTX   -- a :cache hint (intent or prefetch) replaces the access with an `asm sideeffect` ld/st
+              carrying the qualifiers (memory-clobbered for ordering; ptxas still schedules it as
+              an ordinary load).  A read-only argument without a hint gets !invariant.load back,
+              which -O3 drops when it narrows a lane-accessed vector load (BUG 134).  The
+              load/store vectorizer is run FIRST, so hinted accesses are already vector-width.
+     SPIRV -- a :cache intent decorates a fresh zero-offset GEP of the pointer with
+              CacheControl{Load,Store}INTEL !spirv.Decorations (llvm-spirv keeps them; -O3 would not
+              have).  The GEP is typed with the ACCESSED type: an i8 GEP makes llvm-spirv insert a
+              pointer bitcast, and the access then goes through the undecorated bitcast.  Prefetch size and read-only-ness have no SPIR-V mapping here.
+   Accesses whose pointer has no single root, and types the asm path does not handle, are left as
+   they are (a hint is never required for correctness).  An argument the function stores to,
+   updates atomically, or passes to a call is never (re-)marked read-only, whatever its position."
+  (unless (and ll-path (probe-file ll-path))
+    (return-from %apply-cache-hints-to-ll 0))
+  (let ((lines (%ll-read-lines ll-path)))
+    (unless (%ll-kernels-with-cache-entries lines)
+      (return-from %apply-cache-hints-to-ll 0))
+    (when (eq backend :ptx)
+      ;; Vector width first: once an access is inline asm, llc's own vectorizer can no longer merge it.
+      (let ((vec (make-pathname :type "lsv.ll" :defaults ll-path)))
+        (if (%run-passes-in-process ll-path vec "function(load-store-vectorizer)")
+            (progn (setf lines (%ll-read-lines vec)) (ignore-errors (delete-file vec)))
+            (log:warn "192: load-store-vectorizer failed on ~a; hinting the unvectorized IR" ll-path))))
+    (let* ((out '()) (rewritten 0) (counter 0)
+           (next-md (1+ (%ll-max-metadata-id lines)))
+           (invariant-md nil)
+           (deco-mds (make-hash-table :test 'equal))   ; (kind . intent) -> metadata id
+           (extra-md '())
+           (i 0) (n (length lines)))
+      (labels ((emit (l) (push l out))
+               (md-id () (prog1 next-md (incf next-md)))
+               (deco-md (kind intent)
+                 (or (gethash (cons kind intent) deco-mds)
+                     (let* ((outer (md-id))
+                            (pairs (%spv-cache-controls kind intent))
+                            (inner (loop repeat (length pairs) collect (md-id))))
+                       (push (format nil "!~d = !{~{!~d~^, ~}}" outer inner) extra-md)
+                       (loop for p in pairs for id in inner
+                             do (push (format nil "!~d = !{i32 ~d, i32 ~d, i32 ~d}"
+                                              id (if (eq kind :load) 6442 6443) (car p) (cdr p))
+                                      extra-md))
+                       (setf (gethash (cons kind intent) deco-mds) outer)))))
+        (loop while (< i n)
+              do (let ((line (aref lines i)))
+                   (multiple-value-bind (fname fparams) (%ll-define-info line)
+                     (let ((entries (and fname (gethash fname *kernel-cache-hint-table*))))
+                       (if (null entries)
+                           (progn (emit line) (incf i))
+                           ;; ---- an entry point with hints: collect its body, then rewrite.
+                           (let ((body '()) (defs (make-hash-table :test 'equal)) (written (make-hash-table))
+                                 (call-decos (make-hash-table :test 'equal))
+                                 (params (make-hash-table :test 'equal)) (memo (make-hash-table :test 'equal)))
+                             (emit line) (incf i)
+                             (loop for (ssa . ptr-p) in fparams for k from 0
+                                   when ssa do (setf (gethash ssa params) (cons k ptr-p)))
+                             (loop while (and (< i n) (not (string= (aref lines i) "}")))
+                                   do (let ((b (aref lines i)))
+                                        (cl-ppcre:register-groups-bind (lhs rhs)
+                                            ("^\\s*(%[-a-zA-Z$._0-9]+) = (.*)$" b)
+                                          (setf (gethash lhs defs) rhs))
+                                        (push b body) (incf i)))
+                             ;; Arguments this function may WRITE (store / atomicrmw / cmpxchg / a call
+                             ;; that is handed the pointer): never re-mark those read-only.
+                             (setf body (nreverse body))
+                             (dolist (b body)
+                               (when (or (search "store " b) (search "atomicrmw" b)
+                                         (search "cmpxchg" b) (search "call " b))
+                                 (dolist (m (cl-ppcre:all-matches-as-strings
+                                             "ptr addrspace\\(1\\) %[-a-zA-Z$._0-9]+" b))
+                                   (dolist (r (%ll-pointer-roots (subseq m (position #\% m)) defs params memo))
+                                     (setf (gethash r written) t)))))
+                             ;; SPIR-V block / coop-matrix builtins (2D block load / store / prefetch,
+                             ;; CooperativeMatrixLoad/StoreKHR): their global pointer ARGUMENT is decorated
+                             ;; on its DEFINING instruction, the placement the 2026-08-27 probe verified IGC
+                             ;; accepts.  (prefetch-tile lowers to Subgroup2DBlockPrefetchINTEL.)
+                             (when (eq backend :spirv)
+                               (dolist (b body)
+                                 (when (and (search "call " b) (search "@__spirv_" b))
+                                   (let ((kind (cond ((search "Store" b) :store)
+                                                     ((or (search "Load" b) (search "Prefetch" b)) :load))))
+                                     (when kind
+                                       (dolist (m (cl-ppcre:all-matches-as-strings
+                                                   "ptr addrspace\\(1\\) %[-a-zA-Z$._0-9]+" b))
+                                         (let* ((p (subseq m (position #\% m)))
+                                                (roots (%ll-pointer-roots p defs params memo))
+                                                (e (and (= (length roots) 1) (assoc (first roots) entries))))
+                                           (when (and e (second e) (%spv-cache-controls kind (second e))
+                                                      (gethash p defs))
+                                             (setf (gethash p call-decos) (cons kind (second e)))))))))))
+                             (dolist (b body)
+                               (let ((done nil))
+                                 ;; LOAD:  %r = load T, ptr addrspace(1) %p, tail
+                                 (cl-ppcre:register-groups-bind (result type ptr tail)
+                                     ("^\\s*(%[-a-zA-Z$._0-9]+) = load ([^,]+), ptr addrspace\\(1\\) (%[-a-zA-Z$._0-9]+)(.*)$" b)
+                                   (unless (or (search "atomic" type) (search "volatile" type))
+                                     (let* ((roots (%ll-pointer-roots ptr defs params memo))
+                                            (e (and (= (length roots) 1) (assoc (first roots) entries))))
+                                       (when e
+                                         (destructuring-bind (idx intent prefetch ro-declared) e
+                                           (let ((ro (and ro-declared (not (gethash idx written)))))
+                                           (when (and ro-declared (not ro))
+                                             (log:debug "192: ~a writes argument ~d -- not re-marked read-only" fname idx))
+                                           (cond
+                                             ((and (eq backend :ptx) (or intent prefetch))
+                                              (let ((new (%ptx-hinted-load-lines result type ptr intent prefetch ro
+                                                                                 tail (incf counter))))
+                                                (cond (new (mapc #'emit new) (incf rewritten) (setf done t))
+                                                      (t (log:debug "192: unhinted (type/alignment): ~a" b)))))
+                                             ((and (eq backend :spirv) intent (%spv-cache-controls :load intent))
+                                              (let ((g (format nil "%cr.d~d" (incf counter))))
+                                                (emit (format nil "  ~a = getelementptr inbounds ~a, ptr addrspace(1) ~a, i64 0, !spirv.Decorations !~d"
+                                                              g type ptr (deco-md :load intent)))
+                                                (emit (format nil "  ~a = load ~a, ptr addrspace(1) ~a~a" result type g tail))
+                                                (incf rewritten) (setf done t))))
+                                           ;; read-only, PTX, not turned into asm: put !invariant.load back
+                                           (when (and (not done) ro (eq backend :ptx)
+                                                      (not (search "!invariant.load" tail)))
+                                             (unless invariant-md
+                                               (setf invariant-md (md-id))
+                                               (push (format nil "!~d = !{}" invariant-md) extra-md))
+                                             (emit (format nil "  ~a = load ~a, ptr addrspace(1) ~a~a, !invariant.load !~d"
+                                                           result type ptr tail invariant-md))
+                                             (incf rewritten) (setf done t))))))))
+                                 ;; STORE: store T VALUE, ptr addrspace(1) %p, tail
+                                 (unless done
+                                   (cl-ppcre:register-groups-bind (tv ptr tail)
+                                       ("^\\s*store (.+), ptr addrspace\\(1\\) (%[-a-zA-Z$._0-9]+)(.*)$" b)
+                                     (unless (or (search "atomic" tv) (search "volatile" tv))
+                                       (let* ((type (if (char= (cl:char tv 0) #\<)
+                                                        (subseq tv 0 (1+ (position #\> tv)))
+                                                        (subseq tv 0 (position #\Space tv))))
+                                              (value (string-trim " " (subseq tv (length type))))
+                                              (roots (%ll-pointer-roots ptr defs params memo))
+                                              (e (and (= (length roots) 1) (assoc (first roots) entries)))
+                                              (intent (second e)))
+                                         (when intent
+                                           (cond
+                                             ((eq backend :ptx)
+                                              (let ((new (%ptx-hinted-store-lines type value ptr intent tail (incf counter))))
+                                                (cond (new (mapc #'emit new) (incf rewritten) (setf done t))
+                                                      (t (log:debug "192: unhinted store (type/alignment): ~a" b)))))
+                                             ((%spv-cache-controls :store intent)
+                                              (let ((g (format nil "%cr.d~d" (incf counter))))
+                                                (emit (format nil "  ~a = getelementptr inbounds ~a, ptr addrspace(1) ~a, i64 0, !spirv.Decorations !~d"
+                                                              g type ptr (deco-md :store intent)))
+                                                (emit (format nil "  store ~a, ptr addrspace(1) ~a~a" tv g tail))
+                                                (incf rewritten) (setf done t)))))))))
+                                 (unless done
+                                   (let* ((lhs (cl-ppcre:register-groups-bind (l) ("^\\s*(%[-a-zA-Z$._0-9]+) = " b) l))
+                                          (cd (and lhs (gethash lhs call-decos))))
+                                     (cond ((and cd (not (search "!spirv.Decorations" b)))
+                                            (emit (format nil "~a, !spirv.Decorations !~d" b (deco-md (car cd) (cdr cd))))
+                                            (incf rewritten))
+                                           (t (emit b))))))))))))))
+      (with-open-file (o ll-path :direction :output :if-exists :supersede)
+        (dolist (l (nreverse out)) (write-line l o))
+        (dolist (l (nreverse extra-md)) (write-line l o)))
+      (log:info "192: ~d access(es) rewritten for ~a in ~a" rewritten backend (file-namestring ll-path))
+      rewritten)))
+
+;; src/compiler.lisp
+(defun %ll-uses-cache-control-decorations-p (ll-path)
+  "Endeavour 192.  T when the .ll text at LL-PATH carries a CacheControl{Load,Store}INTEL
+   !spirv.Decorations node (6442 / 6443), so llvm-spirv must be given SPV_INTEL_cache_controls."
+  (when (and ll-path (probe-file ll-path))
+    (with-open-file (s ll-path :direction :input :if-does-not-exist nil)
+      (when s
+        (loop for line = (read-line s nil nil)
+              while line
+              thereis (or (search "!{i32 6442," line) (search "!{i32 6443," line)))))))
+
 (defun compile-to-spirv (module output-path &key debug-p)
   "Compiles an LLVM Module to SPIR-V via opt (full -O3) -> llvm-as -> llvm-spirv."
   (let* ((base-path (uiop:pathname-directory-pathname output-path))
@@ -742,6 +1184,8 @@ from a fixed !100."
       ;; ARM A: -O3 has just discarded the decorations codegen attached, so put them back on
       ;; the FINAL address arithmetic.  Inert unless CRISP_CACHE_CONTROL is set.
       (%inject-cache-control-decorations llvm-as-input)
+      ;; Endeavour 192: :cache hints -> CacheControl{Load,Store}INTEL on the post-opt IR.
+      (%apply-cache-hints-to-ll llvm-as-input :spirv)
       (let ((tool (resolve-tool-executable "llvm-as")))
         (run-tool-command
          (list tool (namestring llvm-as-input) "-o" (namestring bc-file))
@@ -769,8 +1213,11 @@ from a fixed !100."
                                 '("--spirv-ext=+SPV_INTEL_split_barrier"))
                               (when (%module-uses-bfloat-p module)
                                 '("--spirv-ext=+SPV_KHR_bfloat16"))
-                              (when (and (%cache-control-spec)
-                                         (%module-uses-coop-matrix-p module))
+                              (when (or (and (%cache-control-spec)
+                                             (%module-uses-coop-matrix-p module))
+                                        ;; Endeavour 192: :cache hints decorated the IR.
+                                        (%ll-uses-cache-control-decorations-p
+                                         (if (probe-file ll-opt-file) ll-opt-file ll-file)))
                                 '("--spirv-ext=+SPV_INTEL_cache_controls"))))
            (flags (append debug-flags ext-flags)))
       (run-tool-command
@@ -853,16 +1300,23 @@ from a fixed !100."
     ;; 2. Try opt -O3 on the IR.  If it succeeds, feed the optimized IR
     ;;    to llc; otherwise fall back to the raw IR.
     (let* ((opt-ok  (%run-opt-O3 ll-file ll-opt-file))
-           (llc-input (if opt-ok ll-opt-file ll-file)))
+           (llc-input (if opt-ok ll-opt-file ll-file))
+           ;; Endeavour 192: lower :cache hints on the FINAL (post-opt) IR -- -O3 drops metadata, so
+           ;; nothing placed in codegen survives -- and re-apply !invariant.load (BUG 134).
+           (hint-count (%apply-cache-hints-to-ll llc-input :ptx)))
 
       ;; 3. llc: IR -> PTX
       (let ((tool (resolve-tool-executable "llc")))
         (run-tool-command
-         (list tool
-               "-march=nvptx64"
-               (format nil "-mcpu=~a" compute-capability)
-               (namestring llc-input)
-               "-o" (namestring ptx-file))
+         (append
+          (list tool
+                "-march=nvptx64"
+                (format nil "-mcpu=~a" compute-capability))
+          ;; Endeavour 192: eviction priorities and L2::NNNB need PTX ISA 7.4.  +ptx74 only ever
+          ;; RAISES the version (sm_80 7.0 -> 7.4; sm_90 stays 7.8, sm_100 8.6).
+          (when (plusp hint-count) (list "-mattr=+ptx74"))
+          (list (namestring llc-input)
+                "-o" (namestring ptx-file)))
          :log-prefix "[PTX] ")))
 
     ;; Cleanup temp files

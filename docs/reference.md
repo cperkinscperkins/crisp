@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-24T07:31:15.852515Z
+Generated on 2026-10-24T16:41:43.774047Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -304,10 +304,17 @@ Generated on 2026-10-24T07:31:15.852515Z
 
 
 ---
+### DEFUN `%REFUSE-PER-OPERATION-CACHE`
+- **Args**: `(OP-NAME KEY-ARGS LOCATION)`
+
+  > Endeavour 192.  Signal a crisp-compiler-error when KEY-ARGS (a keyword plist) carries :cache.
+
+
+---
 ### DEFUN `ANALYZE-LOAD-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.
+  > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.  >    Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).
 
 
 ---
@@ -356,7 +363,7 @@ Generated on 2026-10-24T07:31:15.852515Z
 ### DEFUN `ANALYZE-STORE-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-store-tile-at-form.
+  > Analyzer for (store-tile-at TILE DEST (ORIGIN...) &key transformF transpose).  >    Rejects placement inside a thread-divergent conditional, then delegates  >    codegen via %expand-store-tile-at-form.  >    Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).
 
 
 ---
@@ -5613,10 +5620,30 @@ Generated on 2026-10-24T07:31:15.852515Z
 
 
 ---
+### DEFVAR `*KERNEL-CACHE-HINT-TABLE*`
+
+  > Endeavour 192.  LLVM entry-point name (string) -> list of  >    (PHYSICAL-PARAM-INDEX INTENT PREFETCH READONLY-P), one entry per storage-handle POINTER  >    parameter that carries a :cache hint and/or is read-only (read-only-ness lets the post-opt pass  >    re-apply !invariant.load, which -O3 drops on lane-accessed vector loads -- BUG 134).  >    Written by ensure-opencl-kernel-metadata for every entry point (an empty list overwrites a  >    stale entry); read by %apply-cache-hints-to-ll.
+
+
+---
+### DEFUN `%KERNEL-LLVM-NAME`
+- **Args**: `(SEMANTIC-FUNCTION)`
+
+  > Endeavour 192.  The LLVM function name generate-function-prototype gives an ENTRY POINT.
+
+
+---
+### DEFUN `%COMPUTE-KERNEL-CACHE-HINTS`
+- **Args**: `(SEMANTIC-FUNCTION &OPTIONAL MODULE)`
+
+  > Endeavour 192.  The *KERNEL-CACHE-HINT-TABLE* entries for SEMANTIC-FUNCTION (an entry point).  >   >    Physical parameters are the flattened handle fields (INPUT_PTR INPUT_BYTE_SIZE ...); the  >    POINTER field <NAME>_PTR is matched to the declared parameter NAME in  >    *KERNEL-DECLARED-SIGNATURES*, whose types are the declared (alias or raw) specs.  Each semantic  >    parameter's LLVM width is (length (get-expanded-types TYPE MODULE)) -- the same expansion  >    create-llvm-function-type performs -- so the recorded index is the LLVM parameter's position even  >    when struct-typed nodes (implicit scratch tiles) precede it.  Without MODULE every node counts 1.  >   >    Adjoints inherit nothing: in a *_GRAD kernel a parameter P_GRAD whose P is also declared is a  >    gradient (shadow) buffer -- its access pattern is not the forward pass's, so it gets no hint  >    even though it is declared with the same alias type (decision 2026-10-23).
+
+
+---
 ### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
 - **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
 
-  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records  >    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.  >    Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.
+  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records  >    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.  >    Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.  >    Endeavour 192: also records the entry point's cache-hint table (*KERNEL-CACHE-HINT-TABLE*),  >    indexed by LLVM parameter position, for the post-opt pass (%apply-cache-hints-to-ll).
 
 
 ---
@@ -7299,6 +7326,130 @@ Generated on 2026-10-24T07:31:15.852515Z
 - **Args**: `(LL-PATH)`
 
   > T when the emitted .ll text at LL-PATH contains a floating-point `atomicrmw fmin`/`fmax`,  >    which is what requires SPV_EXT_shader_atomic_float_min_max.  >   >    Deliberately narrow, in the same shape as %ll-uses-fp16-atomic-fadd-p: both `atomicrmw` and  >    the fp opcode must appear on the SAME line, which is how LLVM prints the instruction.  An  >    INTEGER atomic min/max (atomicrmw min / umax / ...) needs no extension and must not raise the  >    flag, which is why only the f-prefixed opcodes are tested.
+
+
+---
+### DEFPARAMETER `+LL-SSA-NAME-RE+`
+
+  > Endeavour 192.  An unquoted LLVM SSA name (named or numbered).
+
+
+---
+### DEFUN `%LL-SPLIT-TOP-LEVEL-COMMAS`
+- **Args**: `(S)`
+
+  > Endeavour 192.  Split S on commas outside () [] {} <> -- LLVM 21 parameter attributes such as  >    captures(ret: address, provenance) contain commas.
+
+
+---
+### DEFUN `%LL-DEFINE-INFO`
+- **Args**: `(LINE)`
+
+  > Endeavour 192.  For a `define ... @NAME(PARAMS) ...` line return (values NAME PARAMS), PARAMS a  >    list of (SSA-NAME . POINTER-ADDRSPACE1-P) in order; NIL for any other line.
+
+
+---
+### DEFUN `%LL-POINTER-ROOTS`
+- **Args**: `(NAME DEFS PARAMS MEMO)`
+
+  > Endeavour 192.  The set (list) of addrspace(1) POINTER-parameter indices that the SSA value NAME  >    is derived from, walking getelementptr / bitcast / addrspacecast / inttoptr / phi / select.  DEFS: SSA name  >    -> right-hand side text.  PARAMS: SSA name -> (index . pointer-p).  MEMO guards cycles (a phi  >    reached again contributes nothing).
+
+
+---
+### DEFUN `%PTX-ELEM-ASM`
+- **Args**: `(ELEM)`
+
+  > Endeavour 192.  (values PTX-SUFFIX ASM-CONSTRAINT) for an LLVM scalar type the hinted ld/st  >    handles, or NIL (that access is left unhinted).
+
+
+---
+### DEFUN `%LL-TYPE-SHAPE`
+- **Args**: `(TYPE)`
+
+  > Endeavour 192.  For an LLVM type string return (values LANES ELEM): LANES 1 for a scalar,  >    2 or 4 for <N x ELEM>; NIL for anything else.
+
+
+---
+### DEFUN `%PTX-TARGET-SM`
+
+  > Endeavour 192.  The PTX target's SM number (sm_90a -> 90), defaulting to 80.
+
+
+---
+### DEFUN `%PTX-CACHE-OP`
+- **Args**: `(KIND INTENT PREFETCH READONLY LANES SUFFIX)`
+
+  > Endeavour 192.  (values OPCODE POLICY-P) for a hinted PTX access.  KIND :load / :store.  >    Qualifier order follows the PTX grammar ld.global{.cop}{.nc}{.L1::evict_last}{.L2::cache_hint}  >    {.L2::NB}{.vN}.type: :streaming -> .cs; :no-l1 -> .cg; :reused -> .L2::cache_hint with an  >    evict_last policy register (POLICY-P true: the caller emits the createpolicy and passes %crp) on  >    sm_80+, else L1::evict_last (loads only); PREFETCH (loads) -> .L2::NB; READONLY (loads) -> .nc.  >    Every combination this produces was assembled by CUDA 12.4 ptxas for sm_80 and sm_90.
+
+
+---
+### DEFUN `%LL-ALIGN-OF`
+- **Args**: `(TAIL)`
+
+  > Endeavour 192.  The `align N` value in an instruction TAIL, or NIL.
+
+
+---
+### DEFUN `%PTX-POLICY-WRAP`
+- **Args**: `(POLICY-P BODY)`
+
+  > Endeavour 192.  BODY (one PTX instruction, ending in ;) wrapped in its own scope with an  >    L2 evict_last access policy in %crp when POLICY-P; BODY unchanged otherwise.  Lines are  >    separated with the LLVM string escapes \0A\09 (newline, tab).
+
+
+---
+### DEFUN `%PTX-HINTED-LOAD-LINES`
+- **Args**: `(RESULT TYPE PTR INTENT PREFETCH READONLY TAIL COUNTER)`
+
+  > Endeavour 192.  Replacement lines for `RESULT = load TYPE, ptr addrspace(1) PTR TAIL`, or NIL  >    when the access cannot be hinted (unsupported type, or a vector load not naturally aligned --  >    a .v4 ld needs 16-byte alignment, and LLVM marks a weaker one by splitting it).  COUNTER makes  >    the helper names unique within the file.
+
+
+---
+### DEFUN `%PTX-HINTED-STORE-LINES`
+- **Args**: `(TYPE VALUE PTR INTENT TAIL COUNTER)`
+
+  > Endeavour 192.  Replacement lines for `store TYPE VALUE, ptr addrspace(1) PTR TAIL`, or NIL when  >    the access cannot be hinted (see %ptx-hinted-load-lines; :reused below sm_80 has no store form).
+
+
+---
+### DEFUN `%SPV-CACHE-CONTROLS`
+- **Args**: `(KIND INTENT)`
+
+  > Endeavour 192.  ((LEVEL . CONTROL) ...) for a SPIR-V CacheControl{Load,Store}INTEL decoration,  >    level 0 = L1, 1 = L3.  Load controls: Uncached 0, Cached 1, Streaming 2.  Store controls:  >    Uncached 0, WriteThrough 1, WriteBack 2, Streaming 3.  NIL for :default (no decoration).
+
+
+---
+### DEFUN `%LL-MAX-METADATA-ID`
+- **Args**: `(LINES)`
+
+  > Endeavour 192.  The largest N of a `!N = ` definition in LINES (0 when none).
+
+
+---
+### DEFUN `%LL-KERNELS-WITH-CACHE-ENTRIES`
+- **Args**: `(LINES)`
+
+  > Endeavour 192.  T when some `define` in LINES names an entry point with a non-empty  >    *KERNEL-CACHE-HINT-TABLE* entry -- so the pass (and the extra vectorizer run) costs nothing for  >    kernels that carry no hint and no read-only argument.
+
+
+---
+### DEFUN `%LL-READ-LINES`
+- **Args**: `(PATH)`
+
+  > Endeavour 192.  The lines of the text file PATH, as a vector.
+
+
+---
+### DEFUN `%APPLY-CACHE-HINTS-TO-LL`
+- **Args**: `(LL-PATH BACKEND)`
+
+  > Endeavour 192.  Lower :cache hints in the POST-OPT LLVM IR at LL-PATH, in place, for BACKEND  >    (:ptx or :spirv).  Returns the number of accesses rewritten.  >   >    Every addrspace(1) load / store inside an entry point listed in *KERNEL-CACHE-HINT-TABLE* has its  >    pointer walked back to a kernel argument (%ll-pointer-roots); the argument's entry decides:  >      PTX   -- a :cache hint (intent or prefetch) replaces the access with an `asm sideeffect` ld/st  >               carrying the qualifiers (memory-clobbered for ordering; ptxas still schedules it as  >               an ordinary load).  A read-only argument without a hint gets !invariant.load back,  >               which -O3 drops when it narrows a lane-accessed vector load (BUG 134).  The  >               load/store vectorizer is run FIRST, so hinted accesses are already vector-width.  >      SPIRV -- a :cache intent decorates a fresh zero-offset GEP of the pointer with  >               CacheControl{Load,Store}INTEL !spirv.Decorations (llvm-spirv keeps them; -O3 would not  >               have).  The GEP is typed with the ACCESSED type: an i8 GEP makes llvm-spirv insert a  >               pointer bitcast, and the access then goes through the undecorated bitcast.  Prefetch size and read-only-ness have no SPIR-V mapping here.  >    Accesses whose pointer has no single root, and types the asm path does not handle, are left as  >    they are (a hint is never required for correctness).  An argument the function stores to,  >    updates atomically, or passes to a call is never (re-)marked read-only, whatever its position.
+
+
+---
+### DEFUN `%LL-USES-CACHE-CONTROL-DECORATIONS-P`
+- **Args**: `(LL-PATH)`
+
+  > Endeavour 192.  T when the .ll text at LL-PATH carries a CacheControl{Load,Store}INTEL  >    !spirv.Decorations node (6442 / 6443), so llvm-spirv must be given SPV_INTEL_cache_controls.
 
 
 ---
@@ -11196,7 +11347,7 @@ Generated on 2026-10-24T07:31:15.852515Z
 ### DEFUN `ANALYZE-PREFETCH-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W) &key warp-partitioned)  >    -> an Intel 2D block cache prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with  >    NO destination -- it warms the LSC so a subsequent register block-load (load-tile -> GRF) hits  >    cache instead of stalling on global memory; it never changes results.  Intel/SPV-only +  >    hardware-profile-required.  Lowered by reusing the coop-op node with a :prefetch kind.  >   >    Endeavour 158: :warp-partitioned distributes the footprint across the workgroup's warps, each  >    warp computing its own block index from warp-id.  See the block comment above.
+  > Endeavor 142 (Phase B): (prefetch-tile SRC (COORD-Y COORD-X) :size (H W) &key warp-partitioned)  >    -> an Intel 2D block cache prefetch (Subgroup2DBlockPrefetchINTEL).  A fire-and-forget hint with  >    NO destination -- it warms the LSC so a subsequent register block-load (load-tile -> GRF) hits  >    cache instead of stalling on global memory; it never changes results.  Intel/SPV-only +  >    hardware-profile-required.  Lowered by reusing the coop-op node with a :prefetch kind.  >   >    Endeavour 158: :warp-partitioned distributes the footprint across the workgroup's warps, each  >    warp computing its own block index from warp-id.  See the block comment above.  >   >    Endeavour 192: a per-operation :cache key is refused (the hint comes from SRC's type).
 
 
 ---
@@ -12003,6 +12154,48 @@ Generated on 2026-10-24T07:31:15.852515Z
 - **Args**: `(SPV-PATH WIDTH)`
 
   > Endeavour 180.  The number of OpLoad instructions in SPV-PATH whose result is the WIDTH-bit  >    float type (32 or 64), read from `llvm-spirv --to-text`; NIL when llvm-spirv is unavailable.  >    Counts only inside functions NOT named *_grad, so a --differentiate module (forward + gradient  >    kernel) counts the forward kernel alone.  In the specs' streaming kernels (B[i] = 2*A[i]) every  >    such load is a load of A: the loads per trip of the unrolled loop plus its remainder loop's one.
+
+
+---
+### DEFUN `%SPV-CACHE-CONTROL-CENSUS`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 192.  Read SPV-PATH (llvm-spirv --to-text) and return, as a plist:  >      :load-deco  hash id -> list of (level control) from `Decorate ID CacheControlLoadINTEL L C`  >      :store-deco hash id -> list of (level control) from `Decorate ID CacheControlStoreINTEL L C`  >      :load-ptrs  pointer ids of every OpLoad   (`N Load TYPE RESULT PTR ...`)  >      :store-ptrs pointer ids of every OpStore  (`N Store PTR VALUE ...`)  >    or NIL when llvm-spirv is unavailable.
+
+
+---
+### DEFUN `%SPV-CACHE-FAIL`
+- **Args**: `(FMT &REST ARGS)`
+
+  > Endeavour 192.  Print a FAIL line (the SPIR-V validators report on stdout, like 180's) and return NIL.
+
+
+---
+### DEFUN `%SPV-DECO-IS`
+- **Args**: `(DECO LEVEL CONTROL)`
+
+  > Endeavour 192.  T when the decoration list DECO contains (LEVEL CONTROL).
+
+
+---
+### DEFUN `VALIDATE-SPV-CACHE-STREAMING-LOADS`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 192 / spec 11: A is :streaming, B is not.  Some load goes through a CacheControlLoadINTEL  >    pointer; every such pointer is L1 Streaming + L3 Streaming (0 2 / 1 2); no pointer is  >    store-decorated.
+
+
+---
+### DEFUN `VALIDATE-SPV-CACHE-STREAMING-STORES`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 192 / spec 12: C is :streaming.  Some store goes through a CacheControlStoreINTEL pointer;  >    every such pointer is L1 Streaming + L3 Streaming (0 3 / 1 3); no pointer is load-decorated.
+
+
+---
+### DEFUN `VALIDATE-SPV-CACHE-COOP-STREAMING`
+- **Args**: `(SPV-PATH)`
+
+  > Endeavour 192 / spec 16: an Intel XMX matmul whose A, B, C are :streaming.  Some id carries  >    CacheControlLoadINTEL L1+L3 Streaming (0 2 / 1 2) and some id CacheControlStoreINTEL L1+L3  >    Streaming (0 3 / 1 3); no decoration names any other control.
 
 
 ---
@@ -13351,6 +13544,40 @@ Generated on 2026-10-24T07:31:15.852515Z
 - **Args**: `(ITEM SPEC)`
 
   > Raises an intelligent error when a bare address-space/access/align value  >    is found in a storage handle type spec, suggesting the correct key-value form.
+
+
+---
+### DEFPARAMETER `+CACHE-INTENTS+`
+
+  > Endeavour 192: the intents a storage-handle type may declare with :cache.
+
+
+---
+### DEFUN `%CACHE-INTENT-KEYWORD`
+- **Args**: `(X)`
+
+  > Endeavour 192.  X as one of +CACHE-INTENTS+ (compared by name, so the reader package does not  >    matter), or NIL.
+
+
+---
+### DEFUN `%PARSE-CACHE-HINT`
+- **Args**: `(VALUE SPEC)`
+
+  > Endeavour 192.  Validate the value of a :cache option in SPEC and return the normalized hint  >    (INTENT PREFETCH): INTENT one of +CACHE-INTENTS+, PREFETCH 64 / 128 / 256 or NIL.  >    Accepts a bare intent (:streaming) or a list (:streaming :prefetch 256).  Refuses anything  >    else with a message naming the legal values.
+
+
+---
+### DEFUN `%CHECK-CACHE-HINT-ADDRESS-SPACE`
+- **Args**: `(HINT ADDR SPEC)`
+
+  > Endeavour 192.  Refuse a :cache HINT on a storage handle whose address space ADDR is not  >    :global.  :local (shared memory) gets its own message: L1/L2 hints mean nothing there, and a  >    silently dropped hint would be worse than a refusal.  ADDR NIL (incomplete type) is let through.
+
+
+---
+### DEFUN `%CACHE-HINT-OF-TYPE`
+- **Args**: `(TYPE-SPEC)`
+
+  > Endeavour 192.  The normalized (INTENT PREFETCH) :cache hint carried by a DECLARED type, or NIL.  >    TYPE-SPEC is what a kernel signature declares: an alias symbol, followed through  >    *CRISP-TYPE-ALIASES* (whose values are the RAW specs, :cache included), or a raw storage-handle  >    list.  (:default NIL) -- no intent, no prefetch -- normalizes to NIL, i.e. exactly 'no key'.
 
 
 ---
