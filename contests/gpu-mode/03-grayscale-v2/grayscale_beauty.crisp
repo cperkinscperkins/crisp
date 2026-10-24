@@ -1,0 +1,22 @@
+;; GPU MODE Challenge 03: grayscale_v2 (Beauty Contestant)
+;; Converts contiguous (H, W, 3) RGB float32 tensor to (H, W) grayscale:
+;;   Y = 0.2989 * R + 0.5870 * G + 0.1140 * B
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
+
+(def-function rgb-to-y (r g b)
+  (declare #'(float float float => float))
+  (op-fma 0.2989 r (op-fma 0.5870 g (* 0.1140 b))))
+
+(def-kernel grayscale_kernel (input &out output)
+  (declare #'(in-vec &out out-vec => nil)
+           (global-size :derive-from output :strategy :strided)
+           (local-size  :set-to 256))
+  (loop-vector-stride output (i)
+    (let ((i3 (* i 3ul)))
+      (set! (~ output i)
+            (rgb-to-y (~ input i3)
+                      (~ input (+ i3 1ul))
+                      (~ input (+ i3 2ul)))))))
+
