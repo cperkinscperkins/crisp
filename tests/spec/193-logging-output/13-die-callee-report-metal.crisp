@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 2 7
+;; HOIST-EXPECT: DIE 13-die-callee-report-metal.crisp:15 group 0 local 2: two
+;;
+;; Endeavour 193 -- the die record reaches a die in a called function: the kernel gets the
+;; implicit argument because a function it calls can die, and the site is the callee's line.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-function give-up-on-two (i)
+  (declare #'(ulong => nil))
+  (when (= i (to-ulong 2))
+    (die "two")))                                    ;; site
+
+(def-kernel die_callee_report (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (give-up-on-two (get-local-id 0))
+  (set! (~ out (get-local-id 0)) 7.0))

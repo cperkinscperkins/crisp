@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+;;
+;; Endeavour 193 -- with neither --runtime-checks nor --logging-output an r-t-assert compiles
+;; away entirely: its test is never evaluated, so thread 2's false test halts nothing.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel assert_gone_by_default (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (r-t-assert (!= (get-local-id 0) (to-ulong 2)) "lane check")                       ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

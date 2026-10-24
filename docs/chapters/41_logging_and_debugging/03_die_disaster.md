@@ -36,7 +36,7 @@ The die record is 16 bytes:
 After the kernel completes, the hoisting code checks `site_id`.  If it is nonzero it reports
 something like:
 ```
-die at stencil.crisp:42  group 3  local 17:  the index is negative? How did that happen?
+DIE stencil.crisp:42 group 3 local 17: the index is negative? How did that happen?
 ```
 
 #### How `die` halts

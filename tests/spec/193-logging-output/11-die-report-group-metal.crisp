@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+;; HOIST-EXPECT: DIE 11-die-report-group-metal.crisp:17 group 1 local 2: six
+;;
+;; Endeavour 193 -- the record names the workgroup.  Two groups of 4; global thread 6 is
+;; local 2 of group 1.  Only threads 0..3 store, so the buffer is untouched by the death.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel die_report_group (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 4))
+  (when (= (get-global-id 0) (to-ulong 6))
+    (die "six"))                                     ;; site
+  (when (< (get-global-id 0) (to-ulong 4))
+    (set! (~ out (get-global-id 0)) 7.0)))

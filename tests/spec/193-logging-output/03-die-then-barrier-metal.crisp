@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 11 11 2 11
+;;
+;; Endeavour 193 -- a dead thread does not hang a later sync-workgroup.  The probes measured
+;; that an exited thread counts as arrived (BMG and H100, put_temp_files_here/logging-probes/).
+;; The survivors still synchronise: each reads s[0], written by thread 0 before the barrier.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel die_then_barrier (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((s (make-scratch-vector float :match-workgroup-size)))
+    (when (= (get-local-id 0) (to-ulong 2))
+      (die "two"))
+    (set! (~ s (get-local-id 0)) 10.0)
+    (sync-workgroup)
+    (set! (~ out (get-local-id 0)) (+ (~ s 0) 1.0))))

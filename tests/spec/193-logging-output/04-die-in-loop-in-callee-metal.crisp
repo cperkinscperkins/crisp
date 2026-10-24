@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 6 6 2 6
+;;
+;; Endeavour 193 -- a die inside a loop inside a value-returning function.  The unwind has to
+;; leave the loop, return from the function (with no meaningful value), and stop the caller
+;; before it stores that value.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-function count-to-six (i)
+  (declare #'(ulong => float))
+  (let ((acc 0.0))
+    (dotimes (k 6)
+      (when (and (= i (to-ulong 2)) (= k 3))
+        (die "mid-loop"))
+      (set! acc (+ acc 1.0)))
+    acc))
+
+(def-kernel die_in_loop_in_callee (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (set! (~ out (get-local-id 0)) (count-to-six (get-local-id 0))))

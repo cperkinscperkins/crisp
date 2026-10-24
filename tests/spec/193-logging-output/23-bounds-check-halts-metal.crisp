@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --runtime-checks
+;; HOIST-EXPECT: BUFFER out: 0 1 2 3
+;; HOIST-EXPECT: DIE 23-bounds-check-halts-metal.crisp:18 group 0
+;;
+;; Endeavour 193 (BUG 136) -- the compiler's own runtime checks go through die too.  A 5-int
+;; view of a 16-byte buffer fails make-vector's size check in every thread, so nothing is stored.
+;; Before 193 this check was a silent no-op on L0.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel bounds_check_halts (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((view (make-vector out int :length 5)))     ;; site
+    (set! (~ out (get-local-id 0)) (+ 7.0 (to-float (~ view 0))))))

@@ -1,0 +1,103 @@
+# Endeavour 193 — logging-output
+
+Make `die`, the runtime asserts and runtime logging real, using the cut-down API agreed on
+2026-10-24. The design is in `docs/ideal_001.md`, "Logging and Debugging" (chapter 41). It
+replaced a 345-line section that had six subdivision flags. This endeavour also fixes BUG 136:
+`die` is a silent no-op on L0.
+
+## Why
+
+Before 193:
+- `die` was `llvm.trap`. On CUDA that halts the kernel but poisons the context. On SPIR-V it
+  became a bare `OpUnreachable`, which IGC deletes (BUG 136).
+- That made `r-t-assert` and every `--runtime-checks` bounds check no-ops on L0 too. 078/21 never
+  noticed, because it only looks for `llvm.trap` in the LLVM-IR.
+- `r-t-assert` ignored its message, and `r-t-assert-0` was a plain alias for it.
+- `r-t-output`, the log, `(is-logging?)` and `--logging-output` did not exist.
+
+## Agreed API (2026-10-24, Chris; Gemini concurred)
+
+| compiled with | `r-t-assert(-0)` | compiler bounds checks | `r-t-output(-0)` | `die` |
+|---|---|---|---|---|
+| (neither) | gone | gone | gone | halts, records its site |
+| `--runtime-checks` | `(unless test (die))`, no message | on | gone | halts, records its site |
+| `--logging-output` (implies `--runtime-checks`) | message goes into the log, then die | on | into the log | halts, records site + message |
+
+- No flag means the `r-t-` form compiles away completely, test and arguments included.
+- One `die`, and no separate halt.
+- **The die record:** any kernel that can reach a `die` gets an implicit 16-byte argument
+  holding `site_id`, `group_id` and `local_id`. "Can reach" includes through a callee or a
+  runtime check. The first death wins, and site ids start at 1.
+- **The log:** a header of `cursor`, `capacity` and `dropped`, then packets in the Runtime
+  Strings format. It is first-N only.
+- Dropped: the subdivision flags, `r-t-workgroup-*`, last-N, and the voting barrier.
+- `--differentiate` ignores both flags.
+
+## The halt mechanics (measured, not assumed)
+
+Probes are in `put_temp_files_here/logging-probes/` (`FINDINGS.md`, plus `h100/`).
+
+- **BMG:** a thread that returns early counts as arrived at later `ControlBarrier`s. This holds
+  for part of a subgroup and for a whole subgroup. A negative control proved the probe could
+  catch a missing barrier.
+- **H100:**
+  - `exit` is safe before `bar.sync 0` and before `bar.red.or`.
+  - A counted named barrier is warp-granular: a whole-warp death hangs it unless the count is
+    lowered. Crisp does not emit counted named barriers today.
+  - An mbarrier wait on a dead producer hangs. A dead-flag check in the spin loop fixes it.
+  - `trap` poisons the context, but a record written first to mapped host memory survives.
+- **Lowering:**
+  - PTX: claim the record with CAS, then `exit`.
+  - SPIR-V: claim the record, then return, and every caller returns after it. SPIR-V compute
+    has no thread-exit instruction.
+
+## Plan
+
+Each phase is red then green.
+
+- **Phase A — die halts (BUG 136).** Specs 01–04. Lower `die` to exit/unwind instead of
+  `llvm.trap`; `die` takes an optional constant string. Specs: thread halt, die in a callee
+  (unwind), die before a barrier, die in a loop in a value-returning callee.
+- **Phase B — the die record.** Specs 10–14. Add the implicit argument (side-channel, propagated
+  up the call graph like scratch), the site table in the metadata, and the launcher report.
+  - Report format: `DIE <file>:<line> group <g> local <l>: <message>`.
+  - Both launchers (L0 and CUDA) read the record after synchronising.
+- **Phase C — `--runtime-checks`.** Specs 20–23. `r-t-assert` compiles away without a flag;
+  under the flag a failed assert becomes `(unless test (die))`. `r-t-assert-0` actually guards on
+  thread 0. Bounds checks halt on metal.
+- **Phase D — `--logging-output`.** Specs 30–35. Add `r-t-output`, `r-t-output-0`, the log side
+  channel, the packet writer (atomic add on `cursor`, and `dropped` on overflow), launcher
+  decoding, `(is-logging?)` and `(is-runtime-checking?)`.
+  - Report format: `LOG <file>:<line> group <g> local <l>: <message>`.
+- **Phase E — warp specialization (later).** Add dead-flag checks to the wait loops Crisp
+  generates in kernels that can die: mbarrier `try_wait`, last-man, CAS retry. The specs need the
+  H100, with a dying producer whose consumer must bail out.
+- **Negative tests:** `errors/01` (a non-constant die message) and `errors/02` (a vector argument
+  to `r-t-output` under `--logging-output`).
+
+## Infrastructure the specs need
+
+- **A `HOIST-FLAGS:` header** (new). The specs in phases C and D need their hoist compile to run
+  with `--runtime-checks` / `--logging-output`. Today `TEST-WITH[--runtime-checks]` only reaches
+  an IR validator (`run-spec-runtime-checks-pass`), and the hoist path has no way to pass a flag.
+- **A launcher that knows the log size.** The hoist picks a default, overridable, for the `dropped`
+  spec that is still to be written.
+- **CI coverage without a GPU.** CI has no GPU, so the metal specs only check that things compile
+  there. A compile-level check for BUG 136 (no `OpUnreachable` on the die path in the `.spv`)
+  belongs in a co-located `.unit.lisp`. Memory: target-pass validators get a `.spv` path, and
+  claims about the LLVM-IR go in unit tests.
+
+## Open questions (for Chris)
+
+1. **`when-thread-is` does not exist.** Only `when-thread-in-group-is` and `when-thread-in-warp-is`
+   do. The doc uses `when-thread-is 0` to define `r-t-assert-0` / `r-t-output-0`, and in the
+   firehose example. Is the meaning global thread 0, or thread 0 of each group? The specs use one
+   workgroup, so they pass either way.
+2. **Should an assert's leading constant string go into the site table under `--runtime-checks`?**
+   It would let the DIE line show "lane check" with no runtime cost. The specs don't depend on it.
+3. **Line numbers in the DIE/LOG expectations** come from `put_temp_files_here/logging-probes/gen_specs.py`
+   (the `;; site` marker). Hand-editing a spec above its site line breaks the expectation.
+
+## Decisions log
+- 2026-10-24 — API agreed; doc spliced and committed; BUG 136 filed; 19 specs + 2 negative
+  written; ci-stop bumped to 193.

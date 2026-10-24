@@ -1,0 +1,14 @@
+;; CHECK-FAIL-FLAGS: --logging-output
+;; CHECK-FAIL: "must be a scalar or a compile-time string"
+;;
+;; Endeavour 193 -- a logged value is one packet word (or two); a whole vector is refused.
+;; Without --logging-output the form compiles away and nothing is checked.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel refused_two (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (r-t-output "whole buffer" out)
+  (set! (~ out (get-local-id 0)) 7.0))
