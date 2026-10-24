@@ -1,0 +1,33 @@
+;; GPU MODE Challenge 03: grayscale_v2 (Direct 128-bit float4 3:1 Vector Packet Kernel, Pure Native .nc)
+;; Each thread processes 4 consecutive RGB pixels (12 floats = 48 bytes = 3x float4 loads)
+;; and writes 4 grayscale pixels (16 bytes = 1x float4 store).
+;; Declaring `input` before `&out` emits native `ld.global.nc.v4.b32` with folded
+;; `[%rd+0]`, `[%rd+16]`, `[%rd+32]` displacements and native `st.global.v4.b32`.
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
+
+(def-function rgb-to-y (r g b)
+  (declare #'(float float float => float))
+  (op-fma 0.2989 r (op-fma 0.5870 g (* 0.1140 b))))
+
+(def-kernel grayscale_kernel (input &out output)
+  (declare #'(in-vec &out out-vec => nil)
+           (global-size :derive-from output :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((gid  (to-ulong (get-global-id 0)))
+        (n    (length~ output))
+        (n4   (/ n 4ul))
+        (in4  (make-vector input  float4 :length (* n4 3ul)))
+        (out4 (make-vector output float4 :length n4)))
+    (when (< gid n4)
+      (let ((i3 (* gid 3ul))
+            (v0 (~ in4 i3))
+            (v1 (~ in4 (+ i3 1ul)))
+            (v2 (~ in4 (+ i3 2ul)))
+            (y0 (rgb-to-y (x~ v0) (y~ v0) (z~ v0)))
+            (y1 (rgb-to-y (w~ v0) (x~ v1) (y~ v1)))
+            (y2 (rgb-to-y (z~ v1) (w~ v1) (x~ v2)))
+            (y3 (rgb-to-y (y~ v2) (z~ v2) (w~ v2))))
+        (set! (~ out4 gid) ##(y0 y1 y2 y3))))))
+
