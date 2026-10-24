@@ -216,6 +216,20 @@
       "block_size": 256,
       "registers": 31,
       "hardware_profile": "b200"
+    },
+    {
+      "step": "✨ Beauty",
+      "key": "beauty",
+      "role": "beauty",
+      "crisp_file": "01-vectoradd-v2/vectoradd_beauty.crisp",
+      "py_file": "01-vectoradd-v2/crisp_vectoradd_beauty.py",
+      "strategy": "Idiomatic Crisp (half4 views, loop-vector-stride, clean scalar tail)",
+      "sloc": 18,
+      "inplace": false,
+      "bytes_per_thread": 32,
+      "block_size": 256,
+      "registers": 38,
+      "hardware_profile": null
     }
   ],
   "runs": [
@@ -484,11 +498,91 @@
       "benchmark_worst_us": 6930.0,
       "public_score_us": 6934.73,
       "secret_score_us": 6926.34
+    },
+    {
+      "timestamp": "2026-10-24T00:22:40Z",
+      "gpu": "B200",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectoradd_beauty.py",
+      "mode": "benchmark",
+      "submission_id": 965740,
+      "benchmark_mean_us": 297.0,
+      "benchmark_std_us": 0.1,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T00:24:45Z",
+      "gpu": "H100",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectoradd_beauty.py",
+      "mode": "benchmark",
+      "submission_id": 965743,
+      "benchmark_mean_us": 557.0,
+      "benchmark_std_us": 0.5,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T00:37:53Z",
+      "gpu": "H100",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectoradd_beauty.py",
+      "mode": "leaderboard",
+      "submission_id": 965756,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "public_score_us": 556.5,
+      "secret_score_us": 556.95
+    },
+    {
+      "timestamp": "2026-10-24T00:40:12Z",
+      "gpu": "B200",
+      "kernel_key": "beauty",
+      "file_name": "crisp_vectoradd_beauty.py",
+      "mode": "leaderboard",
+      "submission_id": 965759,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "public_score_us": 304.2,
+      "secret_score_us": 299.0
     }
   ],
   "ablation_size_label": "size = 16384",
   "takeaways": [
     "**Blackwell (`B200`) vs. Hopper/Ampere/Ada (`H100`, `A100`, `L4`):**\n- On **B200** (`148 SMs`, `128 MB L2`, `8 TB/s HBM3e`), doubling per-thread work to **`2x half4` (`16 B/thread`) + in-place read-modify-write (`A += B`)** cut runtime from `276.08 µs` (#59) to **`233.48 µs` public / `232.89 µs` secret (#20 / 66, `6.90 TB/s`)** — a **15.4% speedup** (`96.6%` of the `#1` entry on the leaderboard).\n- On **H100**, **A100**, and **L4**, the smaller L2 caches (`40–50 MB`) and lower DRAM bandwidth mean `16384×16384` (`1.61 GB`) is strictly DRAM-bandwidth-bound. The minimal **10-register `direct_half4`** kernel (`1x half4` per thread, out-of-place) maximizes warp occupancy and achieves **`526.44 µs` (#24 on H100, `97.4%` of #1)**, **`912.90 µs` (#54 on A100, `96.8%` of #1)**, and **`6,891.89 µs` (#21 on L4, `97.6%` of #1)**.",
     "**Grid-Stride Loops vs. Direct 1-to-1 Indexing on Single-Pass Elementwise Kernels:**\n- Replacing `loop-vector-stride` (`557.86 µs` on H100) with direct global indexing (`526.44 µs` on H100) saved `31.4 µs` by eliminating `cudaOccupancyMaxActiveBlocksPerMultiprocessor` host queries and loop-branch bookkeeping, dropping register pressure from `20` to `10` registers per thread."
-  ]
+  ],
+  "beauty_entry": {
+    "crisp_file": "01-vectoradd-v2/vectoradd_beauty.crisp",
+    "py_file": "01-vectoradd-v2/crisp_vectoradd_beauty.py",
+    "kernel_key": "beauty",
+    "sloc": 18,
+    "title": "Idiomatic Vectorized Loop-Vector-Stride",
+    "description": "Clean, high-level elementwise vector addition using first-class half4 vector views and loop-vector-stride with an automatic scalar remainder tail, without manual pointer arithmetic or inline assembly hacks.",
+    "idioms": [
+      "make-vector half4 view creation",
+      "loop-vector-stride collective streaming",
+      "Automatic LLVM vectorization (ld.global.nc.v2.b32, add.rn.f16x2, st.global.v2.b32)",
+      "global-size :derive-from with :strategy :strided"
+    ],
+    "scores": {
+      "B200": {
+        "score_us": 299.0,
+        "public_score_us": 304.2,
+        "secret_score_us": 299.0,
+        "benchmark_mean_us": 297.0,
+        "mode": "leaderboard",
+        "submission_id": 965759
+      },
+      "H100": {
+        "score_us": 556.5,
+        "public_score_us": 556.5,
+        "secret_score_us": 556.95,
+        "benchmark_mean_us": 557.0,
+        "mode": "leaderboard",
+        "submission_id": 965756
+      }
+    }
+  }
 }

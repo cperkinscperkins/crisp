@@ -1,0 +1,21 @@
+;; GPU MODE Challenge 01: vectoradd_v2 (Beauty Contestant)
+;; Idiomatic Crisp: Vectorized views with loop-vector-stride
+(def-type half-vec (vector half :address-space :global :align :compact))
+
+(def-kernel vector_add_f16 (A B &out C)
+  (declare #'(half-vec half-vec &out half-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n  (length~ A))
+        (n4 (/ n 4ul))
+        (a4 (make-vector A half4 :length n4))
+        (b4 (make-vector B half4 :length n4))
+        (c4 (make-vector C half4 :length n4)))
+    ;; 64-bit vectorized grid-stride loop
+    (loop-vector-stride a4 (i)
+      (set! (~ c4 i) (+ (~ a4 i) (~ b4 i))))
+    ;; Tail for non-multiples of 4
+    (let ((tail (+ (* n4 4ul) (get-global-id 0))))
+      (when (< tail n)
+        (set! (~ C tail) (+ (~ A tail) (~ B tail)))))))
+

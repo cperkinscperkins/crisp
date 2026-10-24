@@ -13,6 +13,55 @@
 | **A100** | Ampere (sm_80) | **#56** / 107 | **912.90 µs** | 914.09 µs | 1.76 TB/s | 96.1% (`877.23 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-21 15:12` |
 | **L4** | Ada Lovelace (sm_89) | **#22** / 38 | **6891.89 µs** | 6916.10 µs | 233.7 GB/s | 88.9% (`6124.20 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-21 15:12` |
 
+## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
+
+> **Philosophy:** High-level, declarative Crisp code utilizing built-in language idioms (`loop-vector-stride`, vectorized types/views, monomorphic collective reductions) without manual pointer chasing, inline PTX hacks, or complex register budgeting.
+
+> **Design:** Clean, high-level elementwise vector addition using first-class half4 vector views and loop-vector-stride with an automatic scalar remainder tail, without manual pointer arithmetic or inline assembly hacks. (`18` SLOC)
+>
+
+> **Crisp Abstractions Showcased:**
+
+> - make-vector half4 view creation
+
+> - loop-vector-stride collective streaming
+
+> - Automatic LLVM vectorization (ld.global.nc.v2.b32, add.rn.f16x2, st.global.v2.b32)
+
+> - global-size :derive-from with :strategy :strided
+
+
+
+| GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
+|---|---|---:|---:|---:|---:|---|---|---:|
+| **B200** | Blackwell (sm_100) | **299.00 µs** | 5.39 TB/s | **75.4%** (`225.45 µs`) | 78.1% (`233.48 µs`) | [`crisp_b200_inplace_2xhalf4.py`](01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py) | `leaderboard` | `#965759` |
+| **H100** | Hopper (sm_90) | **556.50 µs** | 2.89 TB/s | **92.1%** (`512.59 µs`) | 94.6% (`526.44 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) | `leaderboard` | `#965756` |
+
+### Crisp Implementation ([`01-vectoradd-v2/vectoradd_beauty.crisp`](01-vectoradd-v2/vectoradd_beauty.crisp))
+
+```lisp
+;; GPU MODE Challenge 01: vectoradd_v2 (Beauty Contestant)
+;; Idiomatic Crisp: Vectorized views with loop-vector-stride
+(def-type half-vec (vector half :address-space :global :align :compact))
+
+(def-kernel vector_add_f16 (A B &out C)
+  (declare #'(half-vec half-vec &out half-vec => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n  (length~ A))
+        (n4 (/ n 4ul))
+        (a4 (make-vector A half4 :length n4))
+        (b4 (make-vector B half4 :length n4))
+        (c4 (make-vector C half4 :length n4)))
+    ;; 64-bit vectorized grid-stride loop
+    (loop-vector-stride a4 (i)
+      (set! (~ c4 i) (+ (~ a4 i) (~ b4 i))))
+    ;; Tail for non-multiples of 4
+    (let ((tail (+ (* n4 4ul) (get-global-id 0))))
+      (when (< tail n)
+        (set! (~ C tail) (+ (~ A tail) (~ B tail)))))))
+```
+
 ## § 2 — Technique Ladder & Cross-GPU Ablation (`size = 16384`)
 
 Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted to the official leaderboard). The fastest kernel on each GPU is **bold**.
@@ -28,6 +77,7 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | 4 | [`vectoradd_b200_inplace_half4.crisp`](01-vectoradd-v2/vectoradd_b200_inplace_half4.crisp) / [`crisp_b200_inplace_half4.py`](01-vectoradd-v2/crisp_b200_inplace_half4.py) | In-place 1x half4/thread (A += B, 8 B/thread, 262,144 CTAs, b200 profile) | 10 | `b200` | 272.0 | 525.0 (`LB: 527.30`) | 910.0 (`LB: 946.86`) | 6900.0 (`LB: 6934.73`) |
 | 5 | [`vectoradd_b200_inplace_2xhalf4.crisp`](01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp) / [`crisp_b200_inplace_2xhalf4.py`](01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py) | In-place 2x half4/thread (A += B, +256 stride, 16 B/thread, 131,072 CTAs, b200 profile) | 26 | `b200` | **235.0 (`LB: 233.48`)** | 530.0 | 957.0 | 6940.0 |
 | 5b | [`vectoradd_b200_inplace_tile4x_half4.crisp`](01-vectoradd-v2/vectoradd_b200_inplace_tile4x_half4.crisp) / [`crisp_b200_inplace_tile4x_half4.py`](01-vectoradd-v2/crisp_b200_inplace_tile4x_half4.py) | In-place 4x half4/thread (A += B, +256 stride, 32 B/thread, 65,536 CTAs, b200 profile) | 31 | `b200` | 237.0 | — | — | — |
+| ✨ Beauty | [`vectoradd_beauty.crisp`](01-vectoradd-v2/vectoradd_beauty.crisp) / [`crisp_vectoradd_beauty.py`](01-vectoradd-v2/crisp_vectoradd_beauty.py) | Idiomatic Crisp (half4 views, loop-vector-stride, clean scalar tail) | 38 | — | 297.0 (`LB: 304.20`) | 557.0 (`LB: 556.50`) | — | — |
 
 ## § 3 — Key Architectural Takeaways
 
@@ -60,3 +110,7 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-10-19 01:53:20` | `962622` | **A100** | `leaderboard` | `crisp_f16_inplace_half4.py` | 910.0 ± 0.8 | **946.86** | 956.76 |
 | `2026-10-19 01:58:12` | `962628` | **L4** | `benchmark` | `crisp_f16_inplace_2xhalf4.py` | 6940.0 ± 4.0 | — | — |
 | `2026-10-19 01:59:30` | `962631` | **L4** | `leaderboard` | `crisp_f16_inplace_half4.py` | 6900.0 ± 7.0 | **6934.73** | 6926.34 |
+| `2026-10-24 00:22:40` | `965740` | **B200** | `benchmark` | `crisp_vectoradd_beauty.py` | 297.0 ± 0.1 | — | — |
+| `2026-10-24 00:24:45` | `965743` | **H100** | `benchmark` | `crisp_vectoradd_beauty.py` | 557.0 ± 0.5 | — | — |
+| `2026-10-24 00:37:53` | `965756` | **H100** | `leaderboard` | `crisp_vectoradd_beauty.py` | — | **556.50** | 556.95 |
+| `2026-10-24 00:40:12` | `965759` | **B200** | `leaderboard` | `crisp_vectoradd_beauty.py` | — | **304.20** | 299.00 |

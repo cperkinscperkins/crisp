@@ -1,0 +1,28 @@
+;; GPU MODE Challenge 02: vectorsum_v2 (Beauty Contestant)
+;; Idiomatic Crisp: Vectorized float4 loop-vector-stride + reduce-warp + atomic-add!
+(def-type in-vec   (vector float :address-space :global :align :compact))
+(def-type out-cell (cell double :address-space :global))
+
+(def-kernel vectorsum_kernel (input result)
+  (declare #'(in-vec out-cell => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((lane (to-ulong (warp-lane)))
+        (acc  (to-double 0.0))
+        (n    (length~ input))
+        (n4   (/ n 4ul))
+        (in4  (make-vector input float4 :length n4)))
+    ;; 128-bit vectorized grid-stride loop
+    (loop-vector-stride in4 (i)
+      (let ((v (~ in4 i)))
+        (set! acc (+ acc (+ (to-double (x~ v)) (to-double (y~ v)))))
+        (set! acc (+ acc (+ (to-double (z~ v)) (to-double (w~ v)))))))
+    ;; Tail for non-multiples of 4
+    (let ((tail (+ (* n4 4ul) (get-global-id 0))))
+      (when (< tail n)
+        (set! acc (+ acc (to-double (~ input tail))))))
+    ;; Idiomatic Crisp warp reduction and atomic accumulation
+    (reduce-warp #'+ acc (to-double 0.0))
+    (when (= lane 0ul)
+      (atomic-add! (~ result) acc))))
+
