@@ -269,6 +269,146 @@ def parse_and_record_run(
     print(f"Recorded run {sub_id} in {results_file.name}")
 
 
+def make_gpumode_vectorsum_lastman(
+    crisp_path: Path,
+    out_py_path: Path,
+    kernel_name: str = "vectorsum_kernel",
+    arch: str = "sm_80",
+    hardware_profile: str | None = None,
+    grid_policy: str = "occupancy",
+    grid_multiplier: int = 4,
+    elems_per_thread: int = 16,
+) -> None:
+    """
+    Package a last-man vectorsum kernel (input partial ticket result) as a GPU MODE submission.
+
+    The kernel leaves its double `partial` cell and uint `ticket` cell at zero after every launch,
+    so they live in one persistent 16-byte scratch tensor allocated on the first call; the per-call
+    host work is just the kernel launch (no zeros / dtype conversion / copy kernels).
+
+    grid_policy:
+      "occupancy": blocks = occupancy-blocks-per-SM * num_SMs * grid_multiplier (capped by work)
+      "sms":       blocks = num_SMs * grid_multiplier (capped by work)
+    """
+    ptx_path = compile_crisp_with_profile(crisp_path, arch=arch, hardware_profile=hardware_profile)
+    crisp_src = crisp_path.read_text(encoding="utf-8").strip()
+    raw_ptx = ptx_path.read_text(encoding="utf-8")
+
+    # Parameter ABI: vector = (ptr, bytes, offset, stride, extent, length); cell = (ptr, bytes, offset)
+    param_map = {
+        0: ("l", "in_ptr"), 1: ("l", "bytes"), 2: ("l", "zero"), 3: ("l", "one"), 4: ("l", "len"), 5: ("l", "len"),
+        6: ("l", "partial_ptr"), 7: ("l", "eight"), 8: ("l", "zero"),
+        9: ("l", "ticket_ptr"), 10: ("l", "four"), 11: ("l", "zero"),
+        12: ("l", "out_ptr"), 13: ("l", "four"), 14: ("l", "zero"),
+    }
+    inline_asm_code, launch_bounds = ptx_entry_to_inline_asm(raw_ptx, kernel_name, param_map)
+    m_bs = re.search(r"__launch_bounds__\((\d+)", launch_bounds)
+    block_size = int(m_bs.group(1)) if m_bs else 256
+    commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
+
+    if grid_policy == "occupancy":
+        grid_init = f"""        int blocks_per_sm = 0;
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, crisp_vectorsum_kernel, BLOCK_SIZE, 0);
+        max_grid = (blocks_per_sm > 0 && num_sms > 0) ? (blocks_per_sm * num_sms * {grid_multiplier}) : 1024;"""
+    elif grid_policy == "sms":
+        grid_init = f"""        max_grid = (num_sms > 0) ? (num_sms * {grid_multiplier}) : 256;"""
+    else:
+        raise ValueError(f"unknown grid_policy {grid_policy!r}")
+
+    cuda_source = f"""
+#include <cuda_runtime.h>
+#include <torch/extension.h>
+#include <cstdint>
+#include <algorithm>
+
+__global__ {launch_bounds}
+void crisp_vectorsum_kernel(
+    uint64_t in_ptr,
+    uint64_t partial_ptr,
+    uint64_t ticket_ptr,
+    uint64_t out_ptr,
+    uint64_t len
+) {{
+    uint64_t bytes = len * 4ULL;
+    uint64_t zero = 0ULL;
+    uint64_t one = 1ULL;
+    uint64_t four = 4ULL;
+    uint64_t eight = 8ULL;
+{inline_asm_code}
+}}
+
+torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output) {{
+    int64_t N = input.numel();
+    if (!input.is_contiguous()) {{
+        input = input.contiguous();
+    }}
+    // [0] = double partial sum, [1] low 4 bytes = uint ticket. The kernel resets both to zero.
+    static torch::Tensor scratch;
+    if (!scratch.defined()) {{
+        scratch = torch::zeros({{2}}, input.options().dtype(torch::kFloat64));
+    }}
+    if (N <= 0) {{
+        output.zero_();
+        return output.dim() > 0 ? output.squeeze(0) : output;
+    }}
+
+    constexpr int BLOCK_SIZE = {block_size};
+    static int max_grid = 0;
+    if (max_grid <= 0) {{
+        int num_sms = 0;
+        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
+{grid_init}
+    }}
+    int64_t needed_blocks = (N + (BLOCK_SIZE * {elems_per_thread}) - 1) / (BLOCK_SIZE * {elems_per_thread});
+    if (needed_blocks < 1) needed_blocks = 1;
+    int grid_x = static_cast<int>(std::min<int64_t>(needed_blocks, max_grid));
+
+    uint64_t partial = reinterpret_cast<uint64_t>(scratch.data_ptr());
+    crisp_vectorsum_kernel<<<grid_x, BLOCK_SIZE>>>(
+        reinterpret_cast<uint64_t>(input.data_ptr()),
+        partial,
+        partial + 8ULL,
+        reinterpret_cast<uint64_t>(output.data_ptr()),
+        static_cast<uint64_t>(N)
+    );
+    return output.dim() > 0 ? output.squeeze(0) : output;
+}}
+"""
+    cpp_source = "torch::Tensor launch_crisp_vectorsum(torch::Tensor input, torch::Tensor output);"
+    submission_py = f'''# Generated from Crisp (https://github.com/cperkinscperkins/crisp)
+#
+# Crisp Source ({crisp_path.name}):
+# -------------------------------------------------------------------------
+{commented_crisp}
+# -------------------------------------------------------------------------
+
+import torch
+from torch.utils.cpp_extension import load_inline
+from task import input_t, output_t
+
+CUDA_SOURCE = r"""{cuda_source}"""
+CPP_SOURCE = r"""{cpp_source}"""
+
+_crisp_mod = load_inline(
+    name="crisp_vectorsum_lastman_ext",
+    cpp_sources=[CPP_SOURCE],
+    cuda_sources=[CUDA_SOURCE],
+    functions=["launch_crisp_vectorsum"],
+    extra_cuda_cflags=["-O3"],
+    verbose=False,
+)
+
+
+def custom_kernel(data: input_t) -> output_t:
+    inp, out = data
+    return _crisp_mod.launch_crisp_vectorsum(inp, out)
+'''
+    if "stream" in submission_py.lower():
+        raise ValueError(f"Generated {out_py_path.name} contains forbidden substring 'stream'!")
+    out_py_path.write_text(submission_py, encoding="utf-8")
+    print(f"Wrote {out_py_path} ({len(submission_py.splitlines())} lines) with {launch_bounds}, grid {grid_policy}x{grid_multiplier}")
+
+
 if __name__ == "__main__":
     base = Path(__file__).resolve().parent
 
