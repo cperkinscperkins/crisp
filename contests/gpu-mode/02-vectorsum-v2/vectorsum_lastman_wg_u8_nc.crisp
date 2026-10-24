@@ -1,0 +1,64 @@
+;; GPU MODE Challenge: vectorsum_v2 -- FP32 loads/accumulators (.nc only, no .cs), FP64 cross-thread sum, last-workgroup write.
+;;
+;; Strategy:
+;;   - Designed for GPUs with large L2 caches relative to the benchmark sizes (B200: 128 MB L2; L4: 48 MB L2),
+;;     where benchmark cases N = 1.64M..26.2M (6.5 MB..104.9 MB) reside in L2 across timing repetitions.
+;;   - Declares `input` before `&out` without `:cache :streaming` so Crisp emits `ld.global.nc.v4.b32`
+;;     (keeping L2 residency AND allowing LLVM to fold constant offsets into `[%rd+-12]`).
+;;   - Uses single-barrier workgroup reduction (32-lane warp butterfly + 1 `bar.sync 0` + thread-0 8-way sum).
+
+(def-type in-vec      (vector float :address-space :global :align :compact))
+(def-type acc-cell    (cell double :address-space :global))
+(def-type ticket-cell (cell uint :address-space :global))
+(def-type out-cell    (cell float :address-space :global))
+(def-type warp-smem   (vector double :address-space :local :align :compact))
+
+(def-kernel vectorsum_kernel (input &out partial ticket result)
+  (declare #'(in-vec &out acc-cell ticket-cell out-cell => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((tid  (to-ulong (get-local-id 0)))
+        (lane (to-ulong (warp-lane)))
+        (wid  (/ tid 32ul))
+        (ng   (to-ulong (get-num-groups 0)))
+        (n    (length~ input))
+        (n4   (/ n 4ul))
+        (in4  (make-vector input float4 :length n4))
+        (wsums (make-scratch-vector warp-smem 8))
+        (a0   0.0)
+        (a1   0.0)
+        (a2   0.0)
+        (a3   0.0))
+    ;; Phase 1: 128-bit vector grid-stride loop, FP32 accumulators (unroll 8, .nc loads)
+    (loop-vector-stride in4 (i)
+      (declare (unroll 8))
+      (let ((v (~ in4 i)))
+        (set! a0 (+ a0 (x~ v)))
+        (set! a1 (+ a1 (y~ v)))
+        (set! a2 (+ a2 (z~ v)))
+        (set! a3 (+ a3 (w~ v)))))
+    ;; Tail: the 0..3 elements float4 cannot cover
+    (let ((t (+ (* n4 4ul) (to-ulong (get-global-id 0)))))
+      (when (< t n)
+        (set! a0 (+ a0 (~ input t)))))
+    ;; Phase 2 + 3: widen once, warp butterfly in double, single-barrier workgroup sum
+    (let ((acc (to-double (+ (+ a0 a1) (+ a2 a3)))))
+      (dec-times-by-half+ (m 16ul)
+        (set! acc (+ acc (shuffle-xor acc m))))
+      (when (= lane 0ul)
+        (set! (~ wsums wid) acc)))
+    (sync-workgroup)
+    ;; Phase 4: thread 0 sums the 8 warp doubles, atomic-adds, and last workgroup writes float
+    (when (= tid 0ul)
+      (let ((wsum (+ (+ (+ (~ wsums 0ul) (~ wsums 1ul))
+                        (+ (~ wsums 2ul) (~ wsums 3ul)))
+                     (+ (+ (~ wsums 4ul) (~ wsums 5ul))
+                        (+ (~ wsums 6ul) (~ wsums 7ul))))))
+        (atomic-add! (~ partial) wsum)
+        (mem-fence)
+        (let ((arrived (to-ulong (atomic-inc! (~ ticket)))))
+          (when (= arrived (- ng 1ul))
+            (mem-fence)
+            (set! (~ result) (to-float (atomic-xchg! (~ partial) 0.0d)))
+            (atomic-xchg! (~ ticket) 0u)))))))
+

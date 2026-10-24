@@ -1,0 +1,99 @@
+;; GPU MODE Challenge: vectorsum_v2 -- Persistent 32 KB contiguous-tile loop + single-barrier workgroup reduction.
+;;
+;; Strategy:
+;;   Phase 1: Each workgroup of 256 threads loops over contiguous 32 KB tiles (8 float4s/thread = 2,048 float4s
+;;            = 8,192 floats per tile) with 128-bit `ld.global.cs.nc.L2::256B.v4.f32` loads.
+;;            Unlike strided unroll-8 (which needs 8 separate runtime-stride 64-bit registers), all 8 loads in a
+;;            tile use constant immediate offsets (-28672 .. +0) off a single 64-bit pointer register!
+;;   Phase 2: Any remainder float4s (< 2,048) and 0..3 scalar tail elements are accumulated cleanly.
+;;   Phase 3: Each thread widens its FP32 sum (`a0+a1+a2+a3`) to FP64 ONCE, performs a 32-lane warp butterfly
+;;            reduction in registers, and warp leaders write 8 doubles to a 64-byte shared memory array.
+;;   Phase 4: After ONE `sync-workgroup` (`bar.sync 0`), thread 0 pairwise-sums the 8 warp doubles in shared
+;;            memory (zero loop barriers!), performs 1 `atom.global.add.f64`, and the last workgroup writes
+;;            the `float` result and resets both scratch cells.
+
+(def-type in-vec      (vector float :address-space :global :align :compact :cache (:streaming :prefetch 256)))
+(def-type acc-cell    (cell double :address-space :global))
+(def-type ticket-cell (cell uint :address-space :global))
+(def-type out-cell    (cell float :address-space :global))
+(def-type warp-smem   (vector double :address-space :local :align :compact))
+
+(def-kernel vectorsum_kernel (input &out partial ticket result)
+  (declare #'(in-vec &out acc-cell ticket-cell out-cell => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((bid    (to-ulong (get-workgroup-id 0)))
+        (tid    (to-ulong (get-local-id 0)))
+        (ng     (to-ulong (get-num-groups 0)))
+        (lane   (to-ulong (warp-lane)))
+        (wid    (/ tid 32ul))
+        (n      (length~ input))
+        (n4     (/ n 4ul))
+        (ntiles (/ n4 2048ul))
+        (in4    (make-vector input float4 :length n4))
+        (wsums  (make-scratch-vector warp-smem 8))
+        (a0     0.0)
+        (a1     0.0)
+        (a2     0.0)
+        (a3     0.0))
+    ;; Phase 1: Full 32 KB contiguous tiles (2,048 float4s = 8,192 floats per tile)
+    (let ((iters (if (>= bid ntiles) 0ul (+ 1ul (/ (- (- ntiles 1ul) bid) ng))))
+          (base  (+ (* bid 2048ul) tid))
+          (step  (* ng 2048ul)))
+      (dotimes (k iters)
+        (let ((v0 (~ in4 base))
+              (v1 (~ in4 (+ base 256ul)))
+              (v2 (~ in4 (+ base 512ul)))
+              (v3 (~ in4 (+ base 768ul)))
+              (v4 (~ in4 (+ base 1024ul)))
+              (v5 (~ in4 (+ base 1280ul)))
+              (v6 (~ in4 (+ base 1536ul)))
+              (v7 (~ in4 (+ base 1792ul))))
+          (set! a0 (+ a0 (+ (+ (x~ v0) (x~ v1)) (+ (x~ v2) (x~ v3)))))
+          (set! a1 (+ a1 (+ (+ (y~ v0) (y~ v1)) (+ (y~ v2) (y~ v3)))))
+          (set! a2 (+ a2 (+ (+ (z~ v0) (z~ v1)) (+ (z~ v2) (z~ v3)))))
+          (set! a3 (+ a3 (+ (+ (w~ v0) (w~ v1)) (+ (w~ v2) (w~ v3)))))
+          (set! a0 (+ a0 (+ (+ (x~ v4) (x~ v5)) (+ (x~ v6) (x~ v7)))))
+          (set! a1 (+ a1 (+ (+ (y~ v4) (y~ v5)) (+ (y~ v6) (y~ v7)))))
+          (set! a2 (+ a2 (+ (+ (z~ v4) (z~ v5)) (+ (z~ v6) (z~ v7)))))
+          (set! a3 (+ a3 (+ (+ (w~ v4) (w~ v5)) (+ (w~ v6) (w~ v7))))))
+        (set! base (+ base step))))
+    ;; Phase 2: Remainder float4s (when n4 is not a multiple of 2,048) + 0..3 scalar tail
+    (let ((rem_start (* ntiles 2048ul))
+          (gid (+ (* bid 256ul) tid))
+          (gs  (* ng 256ul)))
+      (let ((rem_idx (+ rem_start gid)))
+        (when (< rem_idx n4)
+          (let ((rem_iters (+ 1ul (/ (- (- n4 1ul) rem_idx) gs))))
+            (dotimes (r rem_iters)
+              (declare (unroll nil))
+              (let ((v (~ in4 rem_idx)))
+                (set! a0 (+ a0 (x~ v)))
+                (set! a1 (+ a1 (y~ v)))
+                (set! a2 (+ a2 (z~ v)))
+                (set! a3 (+ a3 (w~ v))))
+              (set! rem_idx (+ rem_idx gs))))))
+      (let ((t (+ (* n4 4ul) gid)))
+        (when (< t n)
+          (set! a0 (+ a0 (~ input t))))))
+    ;; Phase 3: Widen once per thread + warp butterfly in FP64
+    (let ((acc (to-double (+ (+ a0 a1) (+ a2 a3)))))
+      (dec-times-by-half+ (m 16ul)
+        (set! acc (+ acc (shuffle-xor acc m))))
+      (when (= lane 0ul)
+        (set! (~ wsums wid) acc)))
+    (sync-workgroup)
+    ;; Phase 4: Warp 0 reduces the 8 warp sums in shared memory + thread 0 atomic-adds + last-man ticket write
+    (when (= tid 0ul)
+      (let ((wsum (+ (+ (+ (~ wsums 0ul) (~ wsums 1ul))
+                        (+ (~ wsums 2ul) (~ wsums 3ul)))
+                     (+ (+ (~ wsums 4ul) (~ wsums 5ul))
+                        (+ (~ wsums 6ul) (~ wsums 7ul))))))
+        (atomic-add! (~ partial) wsum)
+        (mem-fence)
+        (let ((arrived (to-ulong (atomic-inc! (~ ticket)))))
+          (when (= arrived (- ng 1ul))
+            (mem-fence)
+            (set! (~ result) (to-float (atomic-xchg! (~ partial) 0.0d)))
+            (atomic-xchg! (~ ticket) 0u)))))))
+

@@ -13,14 +13,14 @@
 
 | Contest | GPU | Rank | Public Score | Secret Score | Achieved BW | % of #1 | Winning Crisp Kernel | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|
-| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **B200** | **#21** / 67 | **233.48 µs** | 232.89 µs | 6.90 TB/s | **96.6%** | [`crisp_b200_inplace_2xhalf4.py`](01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp)) | `2026-10-21 15:12` |
-| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **H100** | **#24** / 42 | **526.44 µs** | 526.12 µs | 3.06 TB/s | **97.4%** | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | `2026-10-21 15:12` |
-| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **A100** | **#56** / 107 | **912.90 µs** | 914.09 µs | 1.76 TB/s | **96.1%** | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | `2026-10-21 15:12` |
-| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **L4** | **#22** / 38 | **6891.89 µs** | 6916.10 µs | 233.7 GB/s | **88.9%** | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | `2026-10-21 15:12` |
-| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **B200** | **#73** / 81 | **89.44 µs** | — | 2.34 TB/s | **41.4%** | [`crisp_vectorsum_b200_2xfloat4.py`](02-vectorsum-v2/crisp_vectorsum_b200_2xfloat4.py) ([`.crisp`](02-vectorsum-v2/vectorsum_b200_2xfloat4.crisp)) | `2026-10-21 15:12` |
-| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **H100** | **#55** / 66 | **93.85 µs** | 95.21 µs | 2.23 TB/s | **72.4%** | [`crisp_vectorsum_beauty.py`](02-vectorsum-v2/crisp_vectorsum_beauty.py) ([`.crisp`](02-vectorsum-v2/vectorsum_beauty.crisp)) | `2026-10-21 15:12` |
-| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **A100** | **#102** / 114 | **164.36 µs** | — | 1.28 TB/s | **71.1%** | [`crisp_vectorsum_warp_reduce.py`](02-vectorsum-v2/crisp_vectorsum_warp_reduce.py) ([`.crisp`](02-vectorsum-v2/vectorsum_warp_reduce.crisp)) | `2026-10-21 15:12` |
-| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **L4** | **#37** / 43 | **974.52 µs** | — | 215.2 GB/s | **71.0%** | [`crisp_vectorsum_warp_reduce.py`](02-vectorsum-v2/crisp_vectorsum_warp_reduce.py) ([`.crisp`](02-vectorsum-v2/vectorsum_warp_reduce.crisp)) | `2026-10-21 15:12` |
+| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **B200** | **#21** / 68 | **233.48 µs** | 232.89 µs | 6.90 TB/s | **96.6%** | [`crisp_b200_inplace_2xhalf4.py`](01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp)) | `2026-10-24 20:11` |
+| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **H100** | **#24** / 43 | **526.44 µs** | 526.12 µs | 3.06 TB/s | **97.4%** | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | `2026-10-24 20:11` |
+| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **A100** | **#56** / 107 | **912.90 µs** | 914.09 µs | 1.76 TB/s | **95.1%** | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | `2026-10-24 20:11` |
+| [`vectoradd_v2`](REPORT-vectoradd_v2.md) | **L4** | **#22** / 38 | **6891.89 µs** | 6916.10 µs | 233.7 GB/s | **88.9%** | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | `2026-10-24 20:11` |
+| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **B200** | **#37** / 81 | **49.69 µs** | — | 4.22 TB/s | **74.5%** | [`crisp_vectorsum_lastman_wg_occ1.py`](02-vectorsum-v2/crisp_vectorsum_lastman_wg_occ1.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg.crisp)) | `2026-10-24 20:11` |
+| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **H100** | **#32** / 67 | **82.81 µs** | 82.68 µs | 2.53 TB/s | **82.0%** | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | `2026-10-24 20:11` |
+| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **A100** | **#63** / 114 | **144.77 µs** | 146.15 µs | 1.45 TB/s | **70.1%** | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | `2026-10-24 20:11` |
+| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **L4** | **#11** / 43 | **866.51 µs** | 866.30 µs | 242.0 GB/s | **79.9%** | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | `2026-10-24 20:11` |
 
 ## ✨ Beauty Contestants — Idiomatic Crisp Showcase
 
@@ -29,7 +29,7 @@ For each contest, Crisp provides a **Beauty Contestant**: a clean, readable, hig
 | Contest | Beauty Kernel (`.crisp`) | SLOC | Primary Abstractions | Best GPU | Beauty Score | % of #1 (`top1`) | % of Tuned Crisp |
 |---|---|---:|---|---|---:|---:|---:|
 | [`vectoradd_v2`](REPORT-vectoradd_v2.md) | [`vectoradd_beauty.crisp`](01-vectoradd-v2/vectoradd_beauty.crisp) | 18 | make-vector half4 view creation, loop-vector-stride collective streaming | **H100** | 556.50 µs | **92.1%** | 94.6% |
-| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | [`vectorsum_beauty.crisp`](02-vectorsum-v2/vectorsum_beauty.crisp) | 24 | make-vector float4 128-bit view, loop-vector-stride grid-stride loop | **H100** | 93.85 µs | **72.4%** | 100.0% |
+| [`vectorsum_v2`](REPORT-vectorsum_v2.md) | [`vectorsum_beauty.crisp`](02-vectorsum-v2/vectorsum_beauty.crisp) | 24 | make-vector float4 128-bit view, loop-vector-stride grid-stride loop | **H100** | 93.85 µs | **72.4%** | 88.2% |
 
 ## Regenerating & Refreshing Live Standings
 
