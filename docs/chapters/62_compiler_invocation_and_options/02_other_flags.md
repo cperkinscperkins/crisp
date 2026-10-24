@@ -1,18 +1,19 @@
 # Other Flags ⚠️
 
 
-#### `--runtime-checks` ✅
-This flag enables various runtime checks that Crips is able to generate. Bounds checks, etc. 
-The exact checks are documented in thei relevant sections. <!-- NOTE: gather them up --> 
-In the initial implementation, this flag is useless without also enabling `--logging-output` and the
-compiler will emit an error if that flag is not also elected. 
+#### `--runtime-checks` ⚠️
+Compiles the runtime asserts (`r-t-assert`, `r-t-assert-0`) and the compiler's own runtime checks
+(bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their messages
+are dropped; add `--logging-output` to keep them.  Without this flag they are compiled away entirely.
+See [Logging and Debugging](#logging-and-debugging).
+
+> **Implementation status**: on L0 a failed check does not halt the thread (BUG 136).
 
 #### `--logging-output` 📝
-This enables the debugging output side channel as well as enabling the runtime checks ( `r-t-check` ). When this 
-option is used, the kernel may run significantly slower. Note that the code that actually hoists
-the kernels built with this flag has to be updated as well so that the debug output side channel vector
-is created and added as an argument. It is up to the calling application to decide what to
-do with the debug output once it is retrieved. The hoisting code typically models writing it to a file.
+Adds the log side channel.  `r-t-output` forms are compiled, and asserts and `die` also write their
+messages into the log.  Implies `--runtime-checks`.  Kernels that log may run noticeably slower.
+The hoisting code has to take part: it allocates the log, passes it as an implicit argument, and decodes
+it after the kernel finishes.  See [The Log](#the-log).
 
 
 #### `--debug` or `-g` ✅

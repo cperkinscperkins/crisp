@@ -14,12 +14,13 @@ In reality even `(def-kernel k (someVector) ...)` just expands to
 #### implicit Storage Handle arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
-like `make-scratch-XXXX` , `make-implicit-XXXX` OR if the kernel was/will be compiled with the debug logging option, then these Storage Handles will have
+like `make-scratch-XXXX` , `make-implicit-XXXX`, OR can reach a `die` (directly or through a runtime check), OR if the kernel was/will be compiled with `--logging-output`, then these Storage Handles will have
 to be  explicitly passed by the host and marshalled.  
 
 - `marshall-scratch-XXXX`
 - `marshall-implicit-XXXX`
-- `marshall-debug-logging-vector`
+- `marshall-die-record`
+- `marshall-log-vector`
 
 Note that both the metadata and the example hoisting code that the compiler outputs will have size expressions gathered 
 by the compiler for all of these. Be sure to incorporate them into your own enqueueing/hoisting code.

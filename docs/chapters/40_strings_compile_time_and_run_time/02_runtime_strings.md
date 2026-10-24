@@ -3,8 +3,8 @@
 
 Runtime strings are a completely different animal. 
 
-The only runtime strings Crisp supports are the ones output into the debug logging
-buffer. That buffer is written into by `r-t-output`, `r-t-assert`, `die` and their variants. 
+The only runtime strings Crisp supports are the ones output into the log
+(see [The Log](#the-log)). The log is written into by `r-t-output`, `r-t-assert`, `die` and their variants. 
 
 The buffer is a not a buffer of ASCII characters. It is a buffer of bytes, organized in groups of four ( `uint32_t` ), endianess determined by the host platform.  The buffer has a simple format. 
 It is a series of packets, each like so.

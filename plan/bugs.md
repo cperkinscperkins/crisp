@@ -4312,3 +4312,19 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         on SXM?); the other 154 specs pass.  Also seen in that full run: 122/07, 128/13, 128/14, 170/43
         (libdevice FFI hoists) failed "execution failed (Code 1)" but pass when run singly on both
         builds -- order / environment, not a compiler change.
+
+[ ] 136 die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
+        Found 2026-10-24 (logging-output endeavour probes, put_temp_files_here/logging-probes/FINDINGS.md).
+        OBSERVATION: %handle-die-intrinsic (src/codegen.lisp) emits a call to llvm.trap.  In the .spv the
+        die branch is a bare OpUnreachable -- the trap is gone (whether opt or llvm-spirv dropped it was not
+        determined).  OpUnreachable is undefined behaviour, and IGC treats the branch as impossible: probe
+        p1-die.crisp (4 threads, thread 2 does (die), then every thread stores 7.0) gives
+        BUFFER out: 7 7 7 7 on BMG -- thread 2 did not halt.
+        SCOPE: everything that lowers through die -- user die, r-t-assert / r-t-assert-0 (when compiled),
+        and the --runtime-checks bounds checks in codegen (make-vector / make-cell reinterpretation,
+        tensor index).  CUDA is NOT affected: trap halts there (H100 probe: LAUNCH_FAILED, sticky ctx).
+        WHY NO TEST CAUGHT IT: 078/21-runtime-checks validates only that llvm.trap appears in the LLVM-IR
+        (validate-has-llvm-trap); nothing runs a failing check on metal.
+        LIKELY FIX (hypothesis): the logging-output endeavour redefines die's lowering -- on SPIR-V, return
+        and unwind (early-returned threads count as arrived at later barriers on BMG, measured).  A metal
+        spec that trips a check and observes the halt should come with it.

@@ -39,7 +39,7 @@ through memory, as an OUT cell.
 never reads them back.  `crisp_param_zero_before_launch` marks the ones that must be zeroed before
 EVERY launch: global scratch, where reductions keep counters the kernel leaves non-zero.
 Workgroup-local scratch is bound per runtime -- on Level Zero, its pointer slot gets (size = bytes,
-value = NULL).  The debug log and CUDA tensor-map descriptors are reported (purpose DEBUG_LOG /
+value = NULL).  The log and CUDA tensor-map descriptors are reported (purpose DEBUG_LOG /
 TENSOR_MAP) but not yet supported 📝.
 
 **Launching** ✅.  A kernel's geometry declarations are often rules over launch-time values -- one

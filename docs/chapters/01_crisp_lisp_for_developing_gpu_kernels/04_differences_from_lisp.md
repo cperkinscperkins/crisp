@@ -19,7 +19,7 @@ In only exposes the numeric machine types that are availble on GPU hardware.
 #### no dynamic memory or garbage collection
 
 Scheme and Lisp implementations have implicit memory allocation and collection. Crisp does not.
-It does have "Side Channels" which can be used for intermediate scratch memory and debug logging. To be discussed later.
+It does have "Side Channels" which can be used for intermediate scratch memory and runtime logging. To be discussed later.
 
 #### static typing, not dynamic
 

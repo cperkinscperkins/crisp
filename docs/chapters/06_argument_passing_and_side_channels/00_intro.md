@@ -14,7 +14,7 @@ in your  kernel.   Each invocation of `make-implicit-XXXX` results in an extra a
 hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-XXXX` are collected
 by the compiler and are combined into a single scratch memory pool, which is similarly added as an implicit kernel argument.  These are conveniences.  The compiler calculates the size requirements for these and outputs them to the hoisting example code, but it's ultimately up to your final hoisting code to ensure the memory is sufficient.
 
-Another side channel that adds implicit kernel arguments is the debugging communication channel, which can be enabled during compilation.
+Two more side channels add implicit kernel arguments: the die record, for any kernel that can reach a `die`, and the log, when compiling with `--logging-output`.  See [Logging and Debugging](#logging-and-debugging).
 
 Lastly, if the data is constant and known at compile time then `def-constant-vector` and `use` would be better choices. 
 These are also discussed below.

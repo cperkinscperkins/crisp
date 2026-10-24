@@ -59,7 +59,7 @@ In only exposes the numeric machine types that are availble on GPU hardware.
 #### no dynamic memory or garbage collection
 
 Scheme and Lisp implementations have implicit memory allocation and collection. Crisp does not.
-It does have "Side Channels" which can be used for intermediate scratch memory and debug logging. To be discussed later.
+It does have "Side Channels" which can be used for intermediate scratch memory and runtime logging. To be discussed later.
 
 #### static typing, not dynamic
 
@@ -366,7 +366,7 @@ in your  kernel.   Each invocation of `make-implicit-XXXX` results in an extra a
 hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-XXXX` are collected
 by the compiler and are combined into a single scratch memory pool, which is similarly added as an implicit kernel argument.  These are conveniences.  The compiler calculates the size requirements for these and outputs them to the hoisting example code, but it's ultimately up to your final hoisting code to ensure the memory is sufficient.
 
-Another side channel that adds implicit kernel arguments is the debugging communication channel, which can be enabled during compilation.
+Two more side channels add implicit kernel arguments: the die record, for any kernel that can reach a `die`, and the log, when compiling with `--logging-output`.  See [Logging and Debugging](#logging-and-debugging).
 
 Lastly, if the data is constant and known at compile time then `def-constant-vector` and `use` would be better choices. 
 These are also discussed below.
@@ -812,7 +812,7 @@ Similarly, every invocation of `make-implicit-XXXX` adds at least two implicit a
 But kernels defined with `def-kernel-exact` do NOT support any implicit arguments.  
 Additionally the `&out` argument specifier is not supported in the param list for `def-kernel-exact`
 Instead `def-kernel-exact` supports different marshalling functions to help create Crisp Storage Handles, 
-including the ones required for the Crisp debug logging and scratch memory.
+including the ones required for the Crisp log, the die record, and scratch memory.
 
 `def-kernel-exact` is provided for users who have less control over how their kernel is hoisted and may have to instead adapt to some existing interface.
 
@@ -912,12 +912,13 @@ In reality even `(def-kernel k (someVector) ...)` just expands to
 #### implicit Storage Handle arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
-like `make-scratch-XXXX` , `make-implicit-XXXX` OR if the kernel was/will be compiled with the debug logging option, then these Storage Handles will have
+like `make-scratch-XXXX` , `make-implicit-XXXX`, OR can reach a `die` (directly or through a runtime check), OR if the kernel was/will be compiled with `--logging-output`, then these Storage Handles will have
 to be  explicitly passed by the host and marshalled.  
 
 - `marshall-scratch-XXXX`
 - `marshall-implicit-XXXX`
-- `marshall-debug-logging-vector`
+- `marshall-die-record`
+- `marshall-log-vector`
 
 Note that both the metadata and the example hoisting code that the compiler outputs will have size expressions gathered 
 by the compiler for all of these. Be sure to incorporate them into your own enqueueing/hoisting code.
@@ -2833,7 +2834,7 @@ Possible Implementation
 (make-implicit-tensor <ID> tensorType &key name msg)
 ```
 
-Do you think the Crisp scratch memory or debug logging systems are cool, but you could do better?
+Do you think the Crisp scratch memory or logging systems are cool, but you could do better?
 Knock yourself out, deviant!  The `make-implicit-XXXX` allows you to Side Channel any Storage Handle for any 
 purpose.  The `<vectorType>` et al must be complete, but it doesn't otherwise need to capture any particular
 size requirement.
@@ -10592,8 +10593,8 @@ The final string result is just all those things together, separated by spaces.
 
 Runtime strings are a completely different animal. 
 
-The only runtime strings Crisp supports are the ones output into the debug logging
-buffer. That buffer is written into by `r-t-output`, `r-t-assert`, `die` and their variants. 
+The only runtime strings Crisp supports are the ones output into the log
+(see [The Log](#the-log)). The log is written into by `r-t-output`, `r-t-assert`, `die` and their variants. 
 
 The buffer is a not a buffer of ASCII characters. It is a buffer of bytes, organized in groups of four ( `uint32_t` ), endianess determined by the host platform.  The buffer has a simple format. 
 It is a series of packets, each like so.
@@ -10634,11 +10635,35 @@ formulation.
 > Overengineer much?
 >
 > (asked of Author)
+>
+> Yes.  This section used to be three times longer.
 
-When a kernel is running on a GPU it is often on a different device, with a completely different memory and addressing system and no 
-access to stdout or the file system. This makes debugging and logging challenging. Crisp attempts to assist with two different systems:
- - compile-time messaging, so that the compiler can be directed to output messages and information. 
- - side channel logging at runtime.  This has to be elected when compiling your kernel and the hoisting/enqueue code has to participate as well.
+When a kernel is running on a GPU it is on a different device, with its own memory, and no
+access to stdout or the file system. Crisp offers two kinds of help:
+ - compile-time messaging, so the compiler can be told to print things while it compiles;
+ - runtime asserts, `die`, and a logging side channel.  You opt into these when compiling,
+   and the hoisting code has to take part too.
+
+### Three Levels
+
+The `r-t-` forms are free unless you ask for them. One rule covers all of them: **without a
+flag, every `r-t-` form compiles away completely**. The test is not evaluated, and its
+arguments are not evaluated either. As with C's `assert` under `NDEBUG`, any side effect in
+an `r-t-` form disappears with it.
+
+| compiled with | `r-t-assert`, `r-t-assert-0` | compiler bounds checks | `r-t-output`, `r-t-output-0` | `die` |
+|---|---|---|---|---|
+| (neither flag) | gone | gone | gone | halts, records its site |
+| `--runtime-checks` | `(unless <test> (die))` -- messages dropped | on | gone | halts, records its site |
+| `--logging-output` | as above, plus the message goes into the log | on | written to the log | halts, records its site, and its message goes into the log |
+
+`--logging-output` implies `--runtime-checks`.
+
+`die` is different from the rest: it is a statement you wrote, not an `r-t-` form, so it is
+compiled at every level.
+
+Under `--differentiate` both flags are ignored: the gradient kernels are compiled as if
+neither had been given.
 
 
 ### Compile Time Output and Assert ✅
@@ -10647,151 +10672,109 @@ access to stdout or the file system. This makes debugging and logging challengin
 
 `(c-t-output <expr1> ... <exprN>)`
 "c-t" stands for "compile time".  This variadic macro just takes a series of expressions and it will evaluate them at compile time and output them when compiling.   This can be particularly handy when used with `macroexpand` or `macroexpand-1`. A space character is inserted between each expression. If any of the expressions is
-not evaluable at compile time that will merely be noted. 
+not evaluable at compile time that will merely be noted.
 
 #### `c-t-assert` ⚠️
 
 > **Implementation status**: enforced at top level.  Inside a function body the assertion is currently **not evaluated** (BUG 114), so a false test there compiles silently.
 
-
 `(c-t-assert <testExpression>  <expr1> ... <exprN>)`
 This is akin to `static_assert` from C. The `<testExpression>` will be evaluated by the compiler. If it is true then
-the compilation continues undisturbed.  But if it is false, then the compiler errors and ceases commpilation. The remaining arguments are output along with the error, separated by spaces. If one of the remaining expressions is
-not evaluable at compile time that'll be noted in the output. 
+the compilation continues undisturbed.  But if it is false, then the compiler errors and ceases compilation. The remaining arguments are output along with the error, separated by spaces. If one of the remaining expressions is
+not evaluable at compile time that'll be noted in the output.
 
 If `<testExpression>` is not evaluable at compile time, it will lead to a compilation error.
 
 
+### `(die "disaster")` 📝
 
-### `(die "disaster")` ⚠️
+> **Implementation status**: today `die` lowers to `llvm.trap`.  On CUDA that halts the
+> kernel (and poisons the context).  On L0 it is a **silent no-op** (BUG 136): the trap
+> becomes `OpUnreachable`, and the driver deletes the branch.
 
 ```
-(when (< index 0))
+(when (< index 0)
   (die "the index is negative? How did that happen?"))   ;; desperate times
 ```
 
-`die` is a small but critical component. If `--logging-output` was NOT elected, then 
-`die` simply halts the kernel.  
-But if the kernel is debugging output then its message is recorded into the debug output buffer 
-and then the kernel is halted. 
-Note that the message argument to `die` must be known at compile time.
+The message must be a compile-time string.  It is optional.
 
-Importantly, space is ALWAYS reserved in the output buffer for the `die` message.
+What `die` promises:
+1. **The first death is recorded.** Every kernel that can reach a `die` (directly, through
+   a function it calls, or through a runtime check) gets a small implicit side-channel
+   argument: the *die record*.  The first thread to die claims it, and later deaths
+   leave it alone.
+2. **The dying thread stops.** It performs no further stores.
+3. **Everyone else stops eventually.** Other threads stop at their next safe point or run to
+   completion.  The kernel always finishes; `die` never hangs it.
 
-`die` records a tiny 16 byte record (per workgroup) into global memory
-and then halts the kenrel. It is up to the host side caller to retreive that data and 
-check it. The 16 bytes don't contain any text message like the one above, instead it
-has a numeric identifier which can be looked up in either the metadata or the hoisting code
-to see the original string.  The 16 bytes record 
-- string_id
-- file_id
-- line_no
-- local_id x, y, z
+What `die` does NOT promise: that the kernel stops *immediately*, or that work in other
+workgroups is abandoned.  Results in any `&out` parameter are undefined after a death.
 
+The die record is 16 bytes:
 
+| field | meaning |
+|---|---|
+| `site_id` | which `die` (or assert, or bounds check) fired.  The metadata maps it to file, line and message.  0 = nobody died. |
+| `group_id` | linear workgroup id of the thread that died |
+| `local_id` | linear local id of the thread that died |
+| reserved | |
 
-Possible Implementation
+After the kernel completes, the hoisting code checks `site_id`.  If it is nonzero it reports
+something like:
 ```
-(defmacro (die msg-string)
-  
-  ;; compiler packs all the data at compile-time
-  (let* ((my-string-id (get-compiler-id-for msg-string))
-         (my-file-id (get-compiler-id-for (file)))
-         (my-line-no (line))
-         
-         ;; pack the primary 64-bit "flag"
-         (my-primary-data (pack-u64 my-string-id my-file-id my-line-no))
-        
-         ;; get my workgroup's slot in the global "die" buffer
-         (my-wg-id (get-workgroup-id))
-         (my-die-slot-address (~ die-buffer my-wg-id)) ;; 'die-buffer' captured non-hygenically
-         (primary-field-address (& (~ my-die-slot-address 'primary))))  ;: & 
-        
-    
-    ;; try to claim the slot.
-    ;;    (cas address, expected_value, new_value)
-    (let ((old-val (atomic-cas! primary-field-address 0 my-primary-data))
-          (old-val (atmoic-binop! primary-field-address (ident my-primary-data) 0)))
-      
-      ;; check if I won the race
-      (when (= old-val 0)
-        ;; I WON! I am the first thread to die in this WG.
-        ;; Now I safely write the *secondary* data.
-        (let* ((my-local-x (get-local-id 0))
-               (my-local-y (get-local-id 1))
-               (my-local-z (get-local-id 2))
-               (my-secondary-data (pack-u64 my-local-x my-local-y my-local-z 0))
-               (secondary-field-address (& (~ my-die-slot-address 'secondary))))
-          (set! (~ secondary-field-address) my-secondary-data))))
-        
-    ;; regardless of if I won or not, I must halt.
-    (device-halt!)))
+die at stencil.crisp:42  group 3  local 17:  the index is negative? How did that happen?
 ```
 
-### Runtime Asserts ⚠️
+#### How `die` halts
 
-There are various asserts available at runtime. They are available if the debug output is enabled or not, but their behavior changes slightly.
+There is no instruction on either backend that ends a whole kernel cleanly.  NVIDIA's `trap`
+comes close, but it poisons the CUDA context: the host cannot even read results back
+afterwards.  So `die` ends only the dying thread:
 
-The runtime asserts always evaluation their test expression.  If it is `true`, then
-the kernel continues on unperturbed. If it is false, then `die` is called.
+- **PTX**: claim the record (atomic compare-and-swap), then `exit`.
+- **SPIR-V**: claim the record, then return, and every caller returns too.  SPIR-V compute
+  has no thread-exit instruction.
 
-If logging output is on (via `--logging-output`)
-then these asserts evaluate all their remaining expression arguments and output them into the relevant logging
-buffer subdivision before calling die to terminate the kernel execution.
+A thread that has exited counts as having arrived at later workgroup barriers, so the
+threads that are still alive are not left waiting at a `(sync-workgroup)` the dead thread
+never reaches.  This was measured on Intel BMG and on NVIDIA H100, both for one thread
+exiting and for a whole warp/subgroup.
 
-If debug output is NOT on, the assert still calls `(die)` on failure. 
+**Warp specialization** is the exception.  A consumer waiting on an mbarrier for a producer
+that died would wait forever.  In kernels that can die, the compiler adds a check of the die
+record to the wait loops it generates (mbarrier waits, last-man and CAS loops).  A waiting
+thread that finds a death bails out as well.
 
-These all use `die` underneath, so some amount of thread id and line numbers, etc are recorded.
-
-
-
-#### `r-t-workgroup-assert` 📝
-
-`(r-t-workgroup-assert <testExpression>  <expr1> ... <exprN>)`
-
-Akin to `assert` in C. This macro will result in an evaluation of `<testExpression>`. If true, fine. The
-kernel execution continues normally. But if if false, then it behaves like the assert behavior described above
-and then terminates calling `die`.
+Kernels that cannot reach a `die` pay nothing: no extra argument, no extra checks.
 
 
-Note that `<testExpression>` reduced across ALL the threads in a workgroup. If it is false in ANY of them,
-then the assert behavior is tripped.  So `r-t-workgroup-assert` is protected from "firehose" problems.
+### Runtime Asserts
 
+All runtime asserts go through `die`, so the thread, workgroup and site are always recorded.
+Without `--runtime-checks` or `--logging-output` they compile away (see [Three Levels](#three-levels)).
 
-#### `r-t-assert` ✅
+#### `r-t-assert` ⚠️
 ```
 (r-t-assert <testExpression>  <expr1> ... <exprN>)
 (r-t-assert-0 <testExpression>  <expr1> ... <exprN>)
 ```
 
-Behaves like the asserts described above.  Ultimately, will call `die` if `<testExpression>` is false.
+If `<testExpression>` is false, `die` is called.  Under `--logging-output` the remaining
+expressions are first written to the log as one message (see [The Log](#the-log)).
 
-`r-t-assert` is engaged by EVERY thread.  It is not screened or limited to a single workgroup.
+`r-t-assert` is evaluated by EVERY thread.  `r-t-assert-0` is guarded by `when-thread-is 0`,
+so the test and the message happen in one thread only.  Use it for conditions that are the
+same for every thread: lengths, dispatch geometry.
 
-In contrast, the variant `r-t-assert-0` uses the `when-thread-is 0` guard and so the 
-check and output is only performed in one thread.
+> **Implementation status**: compiled under `--runtime-checks`, but the messages are ignored, and
+> `r-t-assert-0` is not yet guarded (it behaves like `r-t-assert`).
 
-##### WARNING - FIREHOSE
-If `r-t-assert` appears loose in your kernel, it could result in many threads simultaneously
-trying to dump strings into a debug buffer. Use the debugging subdivisions to control it (see [Debugging Implementation](#debugging-implementation)), or consider using `r-t-workgroup-assert` instead, or `r-t-assert-0`, or
-surroud `r-t-assert` in one of the other thread guards.
+Asserts don't suffer from the firehose problem: only the first death is recorded.  Their
+messages, under `--logging-output`, do; see below.
 
-```
-(when-thread-in-group-is 0
-   (r-t-assert (< 0 lives) "no lives left"))
-```
 
 ### Runtime Logging 📝
-
-#### `r-t-workgroup-output-if` 📝
-
-`(r-t-workgroup-output-if <testExpression>  <expr1> ... <exprN>)`
-
-If the kernel is compiled with the `--logging-output` flag then this macro will reduce 
-`<testExpression>` across all the threads in a workgroup. If it is true in any of them,
-then the the logging occurs in just one of them. Afterwards, kernel execution continues normally.
-
-If the compiler flag is not elected, this entire form is compiled away. 
 
 #### `r-t-output` 📝
 
@@ -10799,178 +10782,78 @@ If the compiler flag is not elected, this entire form is compiled away.
 (r-t-output <expr1> ... <exprN>)
 (r-t-output-0 <expr1> ... <exprN>)
 ```
-"r-t" stands for "run time".  If the kernel is compiled with the `--logging-output` flag then this macro will output
-each of its expressions into the debug output memory. Note that this output will have to be retrieved by the hoisting 
-code once the kernel is done executing. 
-If the `--logging-output` flag is NOT present when the kernel is compiled, then this expression and all arguments
-are simply skipped by the compiler. 
+"r-t" stands for "run time".  Under `--logging-output` each call writes one message, made of
+its expressions, into the log.  Without the flag the form and its arguments are compiled away.
 
-`r-t-output` is engaged by EVERY thread.  It is not screened or limited to a single workgroup.
+Strings must be compile-time strings.  Everything else must be a scalar.
 
-In contrast, the variant `r-t-output-0` uses the `when-thread-is 0` guard and so the 
-check and output is only performed in one thread.
+`r-t-output` is engaged by EVERY thread.  `r-t-output-0` is guarded by `when-thread-is 0`.
 
 ##### WARNING - FIREHOSE
-If `r-t-output` appears loose in your kernel, it could result in thousands of threads simultaneously
-trying to dump strings into a debug buffer. Use the debugging subdivisions to control it (see [Debugging Implementation](#debugging-implementation)), or consider using `r-t-workgroup-output-if` instead, or 
-surroud `r-t-output` in one of the thread guards.
+A loose `r-t-output` in a kernel means every thread writes a message, possibly millions of
+them.  The log is first-come-first-served and simply stops accepting messages when it is full
+(see below), so nothing breaks, but the first messages to arrive may not be the ones you
+want.  Choose who logs by putting the call inside a guard:
 
 ```
 (when-thread-is 0
    (r-t-output "reached midpoint" someVal))
+
+(when-thread-in-group-is 0                         ;; one message per workgroup
+   (r-t-output "group total" total))
+
+(when (= (get-workgroup-id 0) 42)                  ;; focus on ONE workgroup
+   (r-t-output "wg 42 sees" (~ in (get-local-id 0))))
 ```
 
+Guards are ordinary Crisp and are decided where you can see them.  Earlier versions of this
+section moved these choices into compiler flags (`--logging-scope`, `--logging-target`,
+`--logging-wg-index`, `--logging-warp-index`, `--logging-by-call-site`, `--logging-mode`); those
+flags have been dropped.  So have `r-t-workgroup-assert` and `r-t-workgroup-output-if` (a guard
+around a workgroup reduction does the same job), and "last-N" circular logging.  Any of them can
+come back if a real need shows up.
 
 
 ### Logging Utilities 📝
 
 - `(line)`  evaluates at compile-time to the line number of the file where it appears.
 - `(file)`  evaluates at compile-time to the name of the .crisp file where it appears.
+- `(is-logging?)` is true at compile time under `--logging-output`.
+- `(is-runtime-checking?)` is true at compile time under `--runtime-checks` (and therefore also
+  under `--logging-output`).
 
-Note that the routines above always include line numbers and file identifiers automatically,
-so the practical use of these logging utilities is rare - mostly reserved for dev macros.
-
-## Debugging Implementation 📝
-
-The perennial challenge of using debug logging on a GPU is that there is just TOO MUCH of it. 
-Thousands of threads all logging identical messages isn't helping anyone, especially if the 
-memory has to be anticipated and allocated in advance, and especially when there is inevitably contention
-between threads to write to that memory. Performance degrades, output buffers fill up, and
-tempers rise.
+Every message and every die record already carries its site, so `(line)` and `(file)` are mostly
+for writing macros.
 
 
-Crisp attempts to ameliorate that by providing SUBDIVIDED logging, as well as "first N" and "last N" 
-message options to address debug buffer overflow. What this means is the debug buffer handed to the kernel
-can be divided in differrent ways, ways to limit who logs, or ways to ensure that certain critical logging is performed and accessible.  Unfortunately, these options have to be
-selected at compile time, rather than when enqueueing the kernel. Perhaps some intrepid user
-can use the [Compile API](#compile-api) to make a handy tool.
+### The Log 📝
 
-### So You Want Debug Logging 
+Under `--logging-output` a kernel that logs gets one more implicit side-channel argument: the
+log, a `(vector ulong :align :compact :address-space :global)` allocated by the host.  Like scratch,
+it is passed down to every function that logs, and the metadata says where it sits in the
+kernel's argument list.  Kernels that never log don't get it.
 
-#### `--logging-output`  Master Switch. 📝
+The log is a small header followed by messages:
 
-The `--logging-output` flag turns ON debug logging when it is present, or off when it is not.
+| header field | meaning |
+|---|---|
+| `cursor` | next free word.  Advanced atomically by each message. |
+| `capacity` | words available for messages |
+| `dropped` | messages that did not fit |
 
-When the `--logging-output` flag is set then the compiler alters the compilation in several ways:
-- an additional `debug-vector-type` argument is added to the Kernel in the first argument position
-- every `r-t-assert` and `r-t-output` variant is actually enabled and compiled, rather than being
-  stripped out
-- `maybe` `Err:` string expressions are compiled to output as well
-- those function call paths to those outputting forms ALSO have their params modified such that
-the debug vector is now in the first param position
-- `(is-logging?)` expression evaluates to T at compile time.
+Each message is a packet in the [Runtime Strings](#runtime-strings) format,
+`[IDENTIFIER][LENGTH][x1]..[xN]`, plus the group and local id of the thread that wrote it.  The
+writer claims the whole packet with one atomic add on `cursor`.  If the packet would go past
+`capacity`, the writer bumps `dropped` instead and writes nothing.  The log is therefore always
+the first N messages to arrive, and the host knows how many were lost.
 
-The debug output vector base type is a `(vector ulong :align :compact :address-space :global)` and it must
-be setup by the host. In this part of the document we refer to this vector as "the debug buffer" or 
-just "the buffer". 
+The host side (the hoisting code):
+1. allocates the log and zeroes it;
+2. passes it in the position the metadata gives;
+3. after the kernel finishes, decodes the messages using the metadata's string table, prints the
+   die record first if there is one, and then the `dropped` count.
 
-### Subdivide Subdivide Subdivide - the "other" debug flags 
-
-Three debug flags govern subdivision by scope, target, and call site. Two more flags
-let you select which workgroups or warps are participating in the logging, and the
-logging mode.  That's a lot of terms, but the whole system is pretty straightforward.
-
-#### --logging-scope 📝
-
-`--logging-scope=spread|dedicated`
-
-If the scope is "dedicated" then the entirety of the logging buffer will be available
-to one "target" which is either a workgroup or a warp (selected by target and index flags).  
-But if the scope is "spread", then the buffer is evenly split by the number of workgroups.
-
-Default is `spread`.
-
-#### --logging-target 📝
-
-`--logging-target=workgroup|warp`
-
-If the scope was `dedicated` then this simply specifies workgroup vs warp.
-If the scope was `spread` and `warp` is chosen, that means only one warp per workgroup
-will be enabled for logging, and each takes the full share set aside for its parent workgroup.
-If scope was `spread` and the target is `workgroup` then each workgroup gets an equal share 
-of the buffer.
-
-Default is `workgroup`
-
-#### --logging-by-call-site 📝
-
-`--logging-by-call-site`
-
-This option is ONLY available with dedicated debug logging scope ( `--logging-log-scope=dedicated` ).
-With this option all the possible debug "call sites" (ie the lines that use `(maybe)` constructs
-or call `r-t-assert` etc ) up and down the call chain of the kernel are identified and counted.
-Then the debug output buffer is subdivided by call sites.  Thus each one get a little reserved
-output area for itself.
-
-#### --logging-mode 📝
-
-`--logging-mode=first-n|last-n`
-
-When set to `first-n` then the messages are output into the buffer subdivision until it is full, then
-they stop. When set to `last-n`, then the buffer subdivision is treated as a circular buffer and the
-later entries overwrite the earlier ones. 
-IMPORTANT NOTE: `last-n` mode requires the debug log target be warp (`--logging-target=warp`).
-
-Defaults to `first-n`
-
-#### --logging-wg-index 📝
-
-`--logging-wg-index=0-N`
-
-This flag is only relevant if the scope is set to dedicated (`--logging-scope=dedicated`).
-
-When using dedicated scope Crisp needs to know which workgroup. This flag can be given
-a group number (from 0 up to the number of workgroups).
-
-#### --logging-warp-index 📝
-
-`--logging-warp-index=0-N`
-
-This flag is relevant whenever the debug target has been set to `warp` (in BOTH `spread` and `dedicated` scopes).
-
-Select which warp in a workgroup should perform debug logging to the buffer. It can be the warp number (from 0 to the max number of warps, ie 32) 
-
-### Common Debug Flag Configurations 📝
-
-#### Default (Low Overhead):
-- --logging-scope=spread
-- --logging-target=workgroup
-
-Result: The buffer is split evenly, giving every workgroup a small "first-N" log slot.
-
-#### Focus on ONE Workgroup:
-- --logging-scope=dedicated
-- --logging-target=workgroup
-- --logging-wg-index=42
-
-Result: The entire buffer is given to workgroup 42 for a large "first-N" log.
-
-#### Focus on ONE Warp:
-- --logging-scope=dedicated
-- --logging-target=warp
-- --logging-wg-index=42
-- --logging-warp-index=0
-
-Result: The entire buffer is given to warp 0 of workgroup 42 for a "first-N" log.
-
-#### "Last-N" (The Champagne Case):
-- --logging-scope=dedicated
-- --logging-target=warp
-- --logging-wg-index="last"
-- --logging-warp-index=0
-- --logging-mode=last-n
-
-Result: The entire buffer is given to warp 0 of the "last standing" workgroup, operating in "Last-N" (rolling) mode. This is safe because target=warp.
-
-#### Call Sites
-- --logging-scope=dedicated
-- --logging-target=workgroup (or warp)
-- --logging-wg-index=42
-- --logging-subdivide-by-site
-
-Result: The buffer for the dedicated target (WG 42) is subdivided, giving each log site its own "reserved" tile (running in "first-N" mode).
-
-
+The hoist chooses the log size, with a default that can be overridden.
 
 
 
@@ -13938,18 +13821,19 @@ Also note that at this time `--differentiate` and `--hoist` are mutually exclusi
 
 ### Other Flags ⚠️
 
-#### `--runtime-checks` ✅
-This flag enables various runtime checks that Crips is able to generate. Bounds checks, etc. 
-The exact checks are documented in thei relevant sections. <!-- NOTE: gather them up --> 
-In the initial implementation, this flag is useless without also enabling `--logging-output` and the
-compiler will emit an error if that flag is not also elected. 
+#### `--runtime-checks` ⚠️
+Compiles the runtime asserts (`r-t-assert`, `r-t-assert-0`) and the compiler's own runtime checks
+(bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their messages
+are dropped; add `--logging-output` to keep them.  Without this flag they are compiled away entirely.
+See [Logging and Debugging](#logging-and-debugging).
+
+> **Implementation status**: on L0 a failed check does not halt the thread (BUG 136).
 
 #### `--logging-output` 📝
-This enables the debugging output side channel as well as enabling the runtime checks ( `r-t-check` ). When this 
-option is used, the kernel may run significantly slower. Note that the code that actually hoists
-the kernels built with this flag has to be updated as well so that the debug output side channel vector
-is created and added as an argument. It is up to the calling application to decide what to
-do with the debug output once it is retrieved. The hoisting code typically models writing it to a file.
+Adds the log side channel.  `r-t-output` forms are compiled, and asserts and `die` also write their
+messages into the log.  Implies `--runtime-checks`.  Kernels that log may run noticeably slower.
+The hoisting code has to take part: it allocates the log, passes it as an implicit argument, and decodes
+it after the kernel finishes.  See [The Log](#the-log).
 
 
 #### `--debug` or `-g` ✅
@@ -14172,7 +14056,7 @@ through memory, as an OUT cell.
 never reads them back.  `crisp_param_zero_before_launch` marks the ones that must be zeroed before
 EVERY launch: global scratch, where reductions keep counters the kernel leaves non-zero.
 Workgroup-local scratch is bound per runtime -- on Level Zero, its pointer slot gets (size = bytes,
-value = NULL).  The debug log and CUDA tensor-map descriptors are reported (purpose DEBUG_LOG /
+value = NULL).  The log and CUDA tensor-map descriptors are reported (purpose DEBUG_LOG /
 TENSOR_MAP) but not yet supported 📝.
 
 **Launching** ✅.  A kernel's geometry declarations are often rules over launch-time values -- one
@@ -14734,7 +14618,8 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - marshall-vector
 - marshall-scratch-vector
 - marshall-implicit-vector
-- marshall-debug-logging-vector
+- marshall-die-record
+- marshall-log-vector
 - voidp
 - #(1 2 3)
 - use                   [DP]
@@ -14810,14 +14695,14 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - c-t-output
 - c-t-assert
 - die
-- r-t-workgroup-output-if
-- r-t-workgroup-assert
 - r-t-output
 - r-t-output-0
 - r-t-assert
 - r-t-assert-0
 - line
 - file
+- is-logging?
+- is-runtime-checking?
 
 ### static analysis
 - declaim
