@@ -1400,3 +1400,132 @@
                 (llvm-position-builder-at-end builder cont)
                 complete)
               (crisp.llvm-bindings::llvm-build-or builder complete (llvm-build-zext builder dead i32 "died_i32") "done_or_died"))))))
+
+;;;; =====================================================================================
+;;;; ENDEAVOUR 193 -- site lines through body-rewriting macros (found on the H100, spec 40).
+;;;; tile-stride / with-warp-specialization rebuild their bodies, so the die that is analysed is a
+;;;; COPY of the one read from the file: it has no *193-form-sites* entry, and the innermost form
+;;;; that does was the kernel's `let` (line 25, not 36).  Fix: remember the innermost enclosing READ
+;;;; form too, and when a form has no line of its own, look for an EQUAL subform inside it -- every
+;;;; subform of a read form has its line.  Only when none matches (a form a macro BUILT, like
+;;;; r-t-assert's die) fall back to the enclosing form's line.
+;;;; =====================================================================================
+
+;; src/analysis/core.lisp (endeavour 193)
+(defvar *193-enclosing-form* nil
+  "Endeavour 193.  The innermost form being analysed that came from a file (has a *193-form-sites* entry).")
+
+;; src/analysis/core.lisp (endeavour 193)
+(defun %193-site-of (expr)
+  "Endeavour 193.  (FILE . LINE) for EXPR: its own entry; else that of an EQUAL subform of the
+   innermost enclosing read form (EXPR was copied by a body-rewriting macro); else the enclosing
+   form's line (EXPR was built by a macro)."
+  (or (and (consp expr) (gethash expr *193-form-sites*))
+      (and (consp expr) *193-enclosing-form*
+           (labels ((walk (f depth)
+                      (when (and (consp f) (< depth 400))
+                        (if (and (equal f expr) (gethash f *193-form-sites*))
+                            (gethash f *193-form-sites*)
+                            (loop for tail on f
+                                  thereis (and (consp tail) (walk (car tail) (1+ depth))))))))
+             (walk *193-enclosing-form* 0)))
+      *193-enclosing-site*))
+
+;; src/analysis/core.lisp (endeavour 193) -- supersedes the copies above: also *193-enclosing-form*.
+(defun analyze-expression (expr env context location)
+  "Recursively analyzes a *single* expression.
+   Endeavour 193 wrapper: tracks the innermost form that came from a file (*193-enclosing-site*,
+   *193-enclosing-form*); under --runtime-checks also records it per location (*193-location-sites*)."
+  (let* ((own (and (consp expr) (gethash expr *193-form-sites*)))
+         (*193-enclosing-site* (or own *193-enclosing-site*))
+         (*193-enclosing-form* (if own expr *193-enclosing-form*)))
+    (when (and *runtime-checks-enabled* *193-enclosing-site* (consp expr))
+      (setf (gethash location *193-location-sites*) *193-enclosing-site*))
+    (funcall *193-orig-analyze-expression* expr env context location)))
+
+;; src/analysis/ops.lisp (endeavour 193) -- supersedes the copies above: the site is %193-site-of.
+(defun analyze-die-expression (expr env context location)
+  "Endeavour 193.  (die) or (die \"message\").  The message must be a compile-time string: the
+   die record carries only a site id, which the metadata maps back to file, line and message.
+   Marks the function being compiled as may-die (this is what --single-pass relies on, and what
+   catches a die produced by a user macro).  Phase B: records the site's file and line, and
+   carries the group/local id expressions as the call's argument nodes."
+  (let ((args (rest expr)))
+    (when (> (length args) 1)
+      (error 'crisp-compiler-error
+        :message (format nil "die takes at most one argument, a message, but was given ~d." (length args))
+        :source-location location))
+    (when (and args (not (stringp (first args))))
+      (error 'crisp-compiler-error
+        :message (format nil "die's message must be a compile-time string, not ~s.  The die record carries only a site id; the message is looked up in the metadata." (first args))
+        :source-location location))
+    (let ((fn (%193-current-function context))
+          (site (%193-site-of expr)))
+      (log:debug "193: analyzing die ~s in ~a at ~s (source ~s)" (first args) fn location site)
+      (if fn
+          (setf (gethash fn *may-die-functions*) t)
+          (log:warn "193: die at ~s analysed outside any function" location))
+      (setf (gethash location *die-messages*) (list (first args) (car site) (cdr site))))
+    (make-semantic-call :name 'die
+                        :type '(nil)
+                        :args (let ((*in-dispatch-context* t))
+                                (loop for f in +193-die-id-forms+
+                                      for i from 1
+                                      collect (analyze-expression f env context (append location (list i)))))
+                        :signature (first (gethash 'die *function-table*))
+                        :source-location location)))
+
+;; src/analysis/ops.lisp (endeavour 193) -- supersedes the copy above: the site is %193-site-of.
+(defun analyze-log-message-expression (expr env context location)
+  "Endeavour 193.  (%193-log-message arg ...) -- what r-t-output expands to under --logging-output.
+   Compile-time strings stay in the site table; every other argument must be a scalar, and is
+   carried as an argument node after the two id nodes (the writer's group and local ids)."
+  (let ((pieces '()) (value-nodes '())
+        (site (%193-site-of expr)))
+    (loop for a in (rest expr)
+          for i from 1
+          do (if (stringp a)
+                 (push a pieces)
+                 (let* ((node (analyze-expression a env context (append location (list i))))
+                        (type (get-single-value-type node))
+                        (kind (%193-log-kind type)))
+                   (unless kind
+                     (error 'crisp-compiler-error
+                       :message (format nil "r-t-output: ~s has type ~s.  Each argument must be a scalar or a compile-time string." a type)
+                       :source-location location))
+                   (push kind pieces)
+                   (push node value-nodes))))
+    (setf (gethash location *193-log-messages*) (list (nreverse pieces) (car site) (cdr site)))
+    (log:debug "193: log message at ~s (~a): ~s" location site (gethash location *193-log-messages*))
+    (make-semantic-call :name '%193-log-message
+                        :type '(nil)
+                        :args (append (let ((*in-dispatch-context* t))
+                                        (loop for f in +193-die-id-forms+
+                                              for i from 1
+                                              collect (analyze-expression f env context (append location (list :id i)))))
+                                      (nreverse value-nodes))
+                        :signature (first (gethash '%193-log-message *function-table*))
+                        :source-location location)))
+
+;; src/analysis/core.lisp (endeavour 193) -- supersedes the copies above.  A logging form (die,
+;; r-t-assert(-0), r-t-output(-0)) that a body-rewriting macro copied gets its line by the equal-
+;; subform search, so it -- not the kernel's outer `let` -- is the enclosing site of what it expands
+;; into (r-t-assert's die, r-t-output's %193-log-message).  Only those operators are searched.
+(defun analyze-expression (expr env context location)
+  "Recursively analyzes a *single* expression.
+   Endeavour 193 wrapper: tracks the innermost form that came from a file (*193-enclosing-site*,
+   *193-enclosing-form*); under --runtime-checks also records it per location (*193-location-sites*)."
+  (let* ((own (and (consp expr)
+                   (or (gethash expr *193-form-sites*)
+                       (and (symbolp (car expr))
+                            (member (symbol-name (car expr))
+                                    '("DIE" "R-T-ASSERT" "R-T-ASSERT-0" "R-T-OUTPUT" "R-T-OUTPUT-0")
+                                    :test #'string=)
+                            *193-enclosing-form*
+                            (let ((s (%193-site-of expr)))
+                              (and (not (eq s *193-enclosing-site*)) s))))))
+         (*193-enclosing-site* (or own *193-enclosing-site*))
+         (*193-enclosing-form* (if (and own (gethash expr *193-form-sites*)) expr *193-enclosing-form*)))
+    (when (and *runtime-checks-enabled* *193-enclosing-site* (consp expr))
+      (setf (gethash location *193-location-sites*) *193-enclosing-site*))
+    (funcall *193-orig-analyze-expression* expr env context location)))

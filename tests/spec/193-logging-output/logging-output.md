@@ -189,3 +189,13 @@ Each phase is red then green.
   - Every DIE/LOG line matches BMG.
   - Spec 36 kept 50 messages, in thread order, and printed LOG FULL with the 2K suggestion.
   - Phases A–D are verified on both backends.
+- 2026-10-25 — **Phase E built** (`put_temp_files_here/193/phase-e.lisp`, plus a validator in the
+  spec-runner overlay):
+  - The only unbounded waits Crisp generates are the mbarrier try_wait spins of `await`. The CAS
+    retry loops are bounded, and last-man does not spin.
+  - In a module that can die, `%gen-nvvm-mbarrier-try-wait-parity` (wrapped) also does a relaxed
+    load of the die record's site word. A may-die waiter unwinds (flag + return); any other waiter
+    leaves the wait.
+  - Spec 40: 139/06 with a dying producer. The PTX check passes locally, and its `--mma-test`
+    CUDA harness builds in Docker. Awaiting the H100 to show it finishes instead of hanging.
+  - Suites: unit 392/392, E2E 1553/1553, negative 367/367.

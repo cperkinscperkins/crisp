@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --logging-output
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+;; HOIST-EXPECT: LOG 37-log-in-stride-body-metal.crisp:22 group 0 local 1: stride lane 1
+;;
+;; Endeavour 193 -- a log site inside a body-rewriting macro.  workgroup-stride (like tile-stride and
+;; with-warp-specialization) rebuilds its body, so the forms analysed are COPIES of the ones read
+;; from the file.  The site must still be the r-t-output's own line, not the enclosing let's
+;; (the H100 run of spec 40 found the die variant of this).
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel log_in_stride (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector float 4)))
+    (workgroup-stride tile (lx)
+      (when (= lx (to-ulong 1))
+        (r-t-output "stride lane" lx))                  ;; site
+      (set! (~ tile lx) 7.0))
+    (sync-workgroup)
+    (set! (~ out (get-local-id 0)) (~ tile (get-local-id 0)))))
