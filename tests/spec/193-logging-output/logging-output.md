@@ -156,3 +156,8 @@ Each phase is red then green.
   - The full E2E process exited 139 AFTER printing its summary. Filtered runs exit normally, and
     `%run-launcher-with-bin-on-path`'s docstring mentions an older "unexplained crash late in a
     full pass". Watch CI.
+- 2026-10-25 — **H100 NVL** (driver 595.91.07, branch `debug-logging`, `run-on-pod.sh ... 193-logging-output`):
+  - All 14 CUDA specs of Phases A–C ran and passed, with the same buffers and DIE lines as BMG.
+  - Spec Summary 16/22: only 30–35 fail (Phase D).
+  - Note: `run-on-pod.sh` relays only BUFFER lines to the local log. The DIE lines are in
+    `/tmp/crisp-specs__binary_.log` on the pod.

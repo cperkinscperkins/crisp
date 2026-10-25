@@ -992,3 +992,92 @@
   (let ((*193-check-site* (cons (semantic-struct-member-update-source-location node)
                                 "bounds check: storage handle offset or length out of range")))
     (call-next-method)))
+
+;;;; =====================================================================================
+;;;; ENDEAVOUR 193 -- PHASE D (part 1): the --logging-output switch.
+;;;;   * --logging-output implies --runtime-checks; --differentiate ignores both (doc: Three Levels).
+;;;;   * (is-logging?) / (is-runtime-checking?) -- plain functions, so if+ can eval them.
+;;;;   * r-t-output / r-t-output-0 compile away without the flag.
+;;;; =====================================================================================
+
+;; src/compiler.lisp (endeavour 193)
+(defvar *logging-output-enabled* nil
+  "Endeavour 193.  T when compiling with --logging-output (r-t-output and assert messages go to the
+   log).  Set by initialize-compiler; implies *runtime-checks-enabled*.")
+
+;; src/main.lisp (endeavour 193)
+(defvar *193-cli-logging* nil
+  "Endeavour 193.  T while crisp.main::parse-cli-args handles a command line with --logging-output.")
+
+;; src/compiler.lisp (endeavour 193)
+(defun %193-plist-remove (plist key)
+  "Endeavour 193.  PLIST without KEY and its value."
+  (loop for (k v) on plist by #'cddr
+        unless (eq k key) append (list k v)))
+
+;; src/compiler.lisp (endeavour 193) -- supersedes the copies above.  FOLD: a :logging-output key on
+;; initialize-compiler; --logging-output implies :runtime-checks; --differentiate clears both.
+(defun initialize-compiler (&rest args)
+  "Endeavour 193 wrapper: accepts :LOGGING-OUTPUT (also taken from the command line), which
+   implies :RUNTIME-CHECKS.  Under :DIFFERENTIATE both are off -- the gradient kernels are compiled
+   as if neither flag had been given.  Also resets the die tables."
+  (let* ((differentiate (getf args :differentiate))
+         (logging (and (or (getf args :logging-output) *193-cli-logging*) (not differentiate)))
+         (args (%193-plist-remove args :logging-output))
+         (args (cond (differentiate (list* :runtime-checks nil (%193-plist-remove args :runtime-checks)))
+                     (logging (list* :runtime-checks t (%193-plist-remove args :runtime-checks)))
+                     (t args))))
+    (prog1 (apply *193-orig-initialize-compiler* args)
+      (setf *logging-output-enabled* logging)
+      (when logging (log:info "193: --logging-output (implies --runtime-checks)"))
+      (clrhash *may-die-functions*)
+      (clrhash *die-messages*)
+      (clrhash *193-location-sites*)
+      (setf *die-sites* nil))))
+
+;; src/main.lisp (endeavour 193) -- FOLD: a logging-output-p binding beside runtime-checks-p in
+;; parse-cli-args, passed as :logging-output.
+(defvar *193-orig-parse-cli-args* (fdefinition 'crisp.main::parse-cli-args))
+(defun crisp.main::parse-cli-args (args)
+  "Endeavour 193 wrapper: --logging-output reaches initialize-compiler."
+  (let ((*193-cli-logging* (and (member "--logging-output" args :test #'string=) t)))
+    (funcall *193-orig-parse-cli-args* args)))
+
+;; src/macros.lisp (endeavour 193) -- FOLD: export from :crisp.compiler, import into :crisp-language.
+(defun crisp-language::is-logging? ()
+  "True at compile time when compiling with --logging-output.  Use with if+ / when+."
+  *logging-output-enabled*)
+
+;; src/macros.lisp (endeavour 193) -- FOLD: export from :crisp.compiler, import into :crisp-language.
+(defun crisp-language::is-runtime-checking? ()
+  "True at compile time when compiling with --runtime-checks (and so also under --logging-output)."
+  *runtime-checks-enabled*)
+
+;; src/macros.lisp (endeavour 193) -- FOLD: export from :crisp.compiler, import into :crisp-language.
+(defmacro crisp-language::r-t-output (&rest args)
+  "Writes one message, made of ARGS (compile-time strings and scalar values), into the log.  Only
+   under --logging-output; otherwise it disappears along with its arguments.  Engaged by EVERY
+   thread -- choose who logs with a guard (when-thread-is, when-thread-in-group-is, ...)."
+  (if *logging-output-enabled*
+      `(%193-log-message ,@args)
+      nil))
+
+;; src/macros.lisp (endeavour 193) -- FOLD: export from :crisp.compiler, import into :crisp-language.
+(defmacro crisp-language::r-t-output-0 (&rest args)
+  "r-t-output from GLOBAL thread 0 only (when-thread-is 0): one message per launch."
+  (if *logging-output-enabled*
+      `(crisp-language::when-thread-is 0 (crisp-language::r-t-output ,@args))
+      nil))
+
+;; src/macros.lisp (endeavour 193) -- supersedes the two DEFUNs above: if+ ANALYSES its condition as
+;; Crisp and constant-folds it, so the predicates must expand to a foldable comparison (as the
+;; existing if+ specs write (> 10 5)), not be host functions.  FOLD: defmacros only.
+(fmakunbound 'crisp-language::is-logging?)
+(defmacro crisp-language::is-logging? ()
+  "True at compile time when compiling with --logging-output.  Use with if+ / when+."
+  (if *logging-output-enabled* '(> 1 0) '(< 1 0)))
+
+(fmakunbound 'crisp-language::is-runtime-checking?)
+(defmacro crisp-language::is-runtime-checking? ()
+  "True at compile time when compiling with --runtime-checks (and so also under --logging-output)."
+  (if *runtime-checks-enabled* '(> 1 0) '(< 1 0)))
