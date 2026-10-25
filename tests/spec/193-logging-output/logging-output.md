@@ -184,3 +184,8 @@ Each phase is red then green.
   - `errors/02` gained `TEST-EXPECT: PASS`. The E2E runner compiles it without the flag, where
     `r-t-output` compiles away; the negative runner uses `CHECK-FAIL-FLAGS`.
   - Suites: unit 392/392; E2E 1551/1552 → 1552/1552 after the `errors/02` fix; negative 367/367.
+- 2026-10-25 — **H100** (80GB HBM3, driver 595.91.07, branch `debug-logging` with Phase D):
+  - 23/23 and all 21 CUDA launchers passed.
+  - Every DIE/LOG line matches BMG.
+  - Spec 36 kept 50 messages, in thread order, and printed LOG FULL with the 2K suggestion.
+  - Phases A–D are verified on both backends.

@@ -33,6 +33,20 @@
          (format t "FAIL: no die-record CAS in IR (expected from a runtime check under --runtime-checks)~%")
          nil)))
 
+;; tests/run-specs.lisp (endeavour 193)
+(defun validate-ptx-wait-checks-die-record (file ptx-string)
+  "Endeavour 193 Phase E: in a kernel that can die, the mbarrier try_wait spin also loads the die
+   record, so a consumer whose producer died stops waiting instead of hanging."
+  (declare (ignore file))
+  (let ((has-wait (search "mbarrier.try_wait" ptx-string))
+        (loads (count-if (lambda (line) (and (search "ld." line) (search "__crisp_die_record" line)))
+                         (uiop:split-string ptx-string :separator '(#\Newline)))))
+    (cond ((not has-wait)
+           (format t "FAIL: no mbarrier.try_wait in the PTX~%") nil)
+          ((zerop loads)
+           (format t "FAIL: the try_wait spin does not load __crisp_die_record (a dead producer would hang it)~%") nil)
+          (t (format t "PASS (try_wait present; ~d die-record load~:p)~%" loads) t))))
+
 ;; tests/run-specs.lisp (endeavour 193) -- FOLD: the one parse-hoist-flags clause in the args list.
 (defun run-spec-with-hoist (file backend &optional bc-files)
   "Compiles .crisp file with --hoist=backend flag and returns list of generated output files.

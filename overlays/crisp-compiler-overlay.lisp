@@ -1341,3 +1341,62 @@
                   :source source :output-targets output-targets)
     (%193-serialize-die-sites output-stream)
     (%193-serialize-log-sites output-stream)))
+
+;;;; =====================================================================================
+;;;; ENDEAVOUR 193 -- PHASE E: a dead producer must not hang its consumers.
+;;;; The only unbounded waits Crisp generates are the mbarrier try_wait spins of (await ...)
+;;;; (semantic-nvvm-tma-wait, both paths); the CAS retry loops are bounded and last-man does not
+;;;; spin.  H100 probe (FINDINGS.md): an mbarrier wait on a producer that died hangs; a die-record
+;;;; check in the spin fixes it.  So, in a module that can die, every try_wait spin also loads the
+;;;; record's site word (relaxed):
+;;;;   * the waiting function may die  -> set its die flag and unwind, as if it had died itself;
+;;;;   * otherwise                     -> leave the wait (results are undefined after a death).
+;;;; =====================================================================================
+
+;; src/llvm-bindings.lisp (endeavour 193) -- defined in crisp.compiler so no export is needed
+(cffi:defcfun ("LLVMSetOrdering" llvm-set-ordering) :void
+  (inst     :pointer)
+  (ordering :int))
+(cffi:defcfun ("LLVMGetGlobalParent" llvm-get-global-parent) :pointer
+  (global :pointer))
+
+;; src/codegen.lisp (endeavour 193)
+(defun %193-module-can-die-p ()
+  "Endeavour 193.  T when anything in the module may reach a die."
+  (or *runtime-checks-enabled* (plusp (hash-table-count *may-die-functions*))))
+
+;; src/codegen.lisp (endeavour 193)
+(defun %193-load-die-site-relaxed (builder module)
+  "Endeavour 193.  A relaxed atomic load of the die record's site word (non-zero once anyone died)."
+  (let ((ld (llvm-build-load2 builder (llvm-int32-type) (%193-die-record-global module) "die_site_seen")))
+    (llvm-set-ordering ld 2)                       ; monotonic
+    (crisp.llvm-bindings::llvm-set-alignment ld 4)
+    ld))
+
+;; src/codegen.lisp (endeavour 193) -- FOLD: the die check inside the two try_wait spins of
+;; generate-node-ir (semantic-nvvm-tma-wait), right after %gen-nvvm-mbarrier-try-wait-parity.
+(defvar *193-orig-mbarrier-try-wait-parity* (fdefinition '%gen-nvvm-mbarrier-try-wait-parity))
+(defun %gen-nvvm-mbarrier-try-wait-parity (builder mbar-addr-i32 phase-i32)
+  "Inline PTX: try_wait.parity -> i32 (1 if the barrier's phase flipped, else 0).  Wrapped so
+   the caller can spin in an LLVM loop (no label in the asm).
+   Endeavour 193 wrapper: in a module that can die, each spin also checks the die record.  A
+   may-die waiter unwinds (flag + return); any other waiter leaves the wait (returns 1)."
+  (let ((complete (funcall *193-orig-mbarrier-try-wait-parity* builder mbar-addr-i32 phase-i32)))
+    (if (not (%193-module-can-die-p))
+        complete
+        (let* ((fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+               (module (llvm-get-global-parent fn))
+               (i32 (llvm-int32-type))
+               (site (%193-load-die-site-relaxed builder module))
+               (dead (llvm-build-icmp builder +llvm-int-ne+ site (llvm-const-int i32 0 0) "someone_died")))
+          (log:info "193: die check in an mbarrier wait (~a)" (if *die-flag-ptr* "unwind" "leave the wait"))
+          (if *die-flag-ptr*
+              (let ((bail (llvm-append-basic-block fn "wait_die_bail"))
+                    (cont (llvm-append-basic-block fn "wait_die_cont")))
+                (llvm-build-cond-br builder dead bail cont)
+                (llvm-position-builder-at-end builder bail)
+                (llvm-build-store builder (llvm-const-int i32 1 0) *die-flag-ptr*)
+                (%193-build-bail-return builder)
+                (llvm-position-builder-at-end builder cont)
+                complete)
+              (crisp.llvm-bindings::llvm-build-or builder complete (llvm-build-zext builder dead i32 "died_i32") "done_or_died"))))))
