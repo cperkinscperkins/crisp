@@ -1,0 +1,70 @@
+;; GPU MODE Challenge 05: prefixsum_v2
+;; Hierarchical Prefix Sum (Float32 in, Float32 out)
+;;
+;; Pass 1: Local block-scan + write block totals
+;; Block size = 256 threads. Each thread loads and scans 4 elements (1 float4 = 1024 elements per CTA).
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
+(def-type sum-vec (vector float :address-space :global :align :compact))
+(def-type smem-vec (vector float :address-space :local :align :compact))
+
+;; Intra-warp inclusive scan using Kogge-Stone with shuffle-up
+(def-function warp-scan (x lane)
+  (declare #'(float ulong => float))
+  (let ((s x))
+    (do-power-step+ (off 32ul)
+      (let ((t (shuffle-up s off)))
+        (set! s (+ s (if (>= lane off) t 0.0)))))
+    (return s)))
+
+(def-kernel prefixsum_pass1 (input &out output block-sums)
+  (declare #'(in-vec &out out-vec sum-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid   (to-ulong (get-local-id 0)))
+        (bid   (to-ulong (get-workgroup-id 0)))
+        (lane  (to-ulong (warp-lane)))
+        (wid   (/ tid 32ul))
+        (n     (length~ input))
+        (warp-totals (make-scratch-vector smem-vec 8))
+        (base-idx (+ (* bid 1024ul) (* tid 4ul))))
+    ;; 1. Load 4 elements per thread
+    (let ((x0 (if (< base-idx n) (~ input base-idx) 0.0))
+          (x1 (if (< (+ base-idx 1ul) n) (~ input (+ base-idx 1ul)) 0.0))
+          (x2 (if (< (+ base-idx 2ul) n) (~ input (+ base-idx 2ul)) 0.0))
+          (x3 (if (< (+ base-idx 3ul) n) (~ input (+ base-idx 3ul)) 0.0)))
+      ;; Serial intra-thread inclusive scan
+      (let ((s0 x0)
+            (s1 (+ x0 x1))
+            (s2 (+ (+ x0 x1) x2))
+            (s3 (+ (+ (+ x0 x1) x2) x3)))
+        ;; Warp scan on thread sums (s3)
+        (let ((ws (warp-scan s3 lane)))
+          ;; Exclusive warp prefix is (ws - s3)
+          (let ((w-excl (- ws s3)))
+            (when (= lane 31ul)
+              (set! (~ warp-totals wid) ws))
+            (sync-workgroup)
+            ;; Warp 0 scans the 8 warp totals (all 32 lanes participate to satisfy warp-uniform shfl mask)
+            (when (= wid 0ul)
+              (let ((wt (if (< lane 8ul) (~ warp-totals lane) 0.0)))
+                (let ((scanned-wt (warp-scan wt lane)))
+                  (when (< lane 8ul)
+                    (set! (~ warp-totals lane) (- scanned-wt wt))))))
+            (sync-workgroup)
+            ;; Total CTA prefix for this thread = block-warp-exclusive + thread-warp-exclusive
+            (let ((cta-excl (+ (~ warp-totals wid) w-excl)))
+              ;; Write out scanned values to output
+              (when (< base-idx n)
+                (set! (~ output base-idx) (+ s0 cta-excl)))
+              (when (< (+ base-idx 1ul) n)
+                (set! (~ output (+ base-idx 1ul)) (+ s1 cta-excl)))
+              (when (< (+ base-idx 2ul) n)
+                (set! (~ output (+ base-idx 2ul)) (+ s2 cta-excl)))
+              (when (< (+ base-idx 3ul) n)
+                (set! (~ output (+ base-idx 3ul)) (+ s3 cta-excl)))
+              ;; Thread 255 writes the total block sum
+              (when (= tid 255ul)
+                (set! (~ block-sums bid) (+ s3 cta-excl))))))))
+    (return)))
+

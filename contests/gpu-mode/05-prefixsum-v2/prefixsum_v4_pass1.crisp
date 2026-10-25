@@ -1,0 +1,67 @@
+;; GPU MODE Challenge 05: prefixsum_v2 -- 128-bit Vectorized (4 elements/thread, 1024/CTA)
+;; Pass 1: Local block-scan with 128-bit vector load and store + write block totals
+;; Block size = 256 threads. Each thread processes one float4 (1024 elements per CTA).
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact :cache :streaming))
+(def-type sum-vec (vector float :address-space :global :align :compact))
+(def-type smem-vec (vector float :address-space :local :align :compact))
+
+;; Intra-warp inclusive scan using Kogge-Stone with shuffle-up
+(def-function warp-scan (x lane)
+  (declare #'(float ulong => float))
+  (let ((s x))
+    (do-power-step+ (off 32ul)
+      (let ((t (shuffle-up s off)))
+        (set! s (+ s (if (>= lane off) t 0.0)))))
+    (return s)))
+
+(def-kernel prefixsum_pass1_v4 (input &out output block-sums)
+  (declare #'(in-vec &out out-vec sum-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid   (to-ulong (get-local-id 0)))
+        (bid   (to-ulong (get-workgroup-id 0)))
+        (lane  (to-ulong (warp-lane)))
+        (wid   (/ tid 32ul))
+        (n     (length~ input))
+        (n4    (/ n 4ul))
+        (in4   (make-vector input float4 :length n4))
+        (out4  (make-vector output float4 :length n4))
+        (warp-totals (make-scratch-vector smem-vec 8))
+        (v-idx (+ (* bid 256ul) tid)))
+    ;; 128-bit vector load
+    (let ((v (if (< v-idx n4) (~ in4 v-idx) ##(0.0 0.0 0.0 0.0))))
+      (let ((x0 (x~ v))
+            (x1 (y~ v))
+            (x2 (z~ v))
+            (x3 (w~ v)))
+        ;; Serial intra-thread scan
+        (let ((s0 x0)
+              (s1 (+ x0 x1))
+              (s2 (+ (+ x0 x1) x2))
+              (s3 (+ (+ (+ x0 x1) x2) x3)))
+          ;; Intra-warp Kogge-Stone scan
+          (let ((ws (warp-scan s3 lane)))
+            (let ((w-excl (- ws s3)))
+              (when (= lane 31ul)
+                (set! (~ warp-totals wid) ws))
+              (sync-workgroup)
+              ;; Warp 0 scans the 8 warp totals
+              (when (= wid 0ul)
+                (let ((wt (if (< lane 8ul) (~ warp-totals lane) 0.0)))
+                  (let ((scanned-wt (warp-scan wt lane)))
+                    (when (< lane 8ul)
+                      (set! (~ warp-totals lane) (- scanned-wt wt))))))
+              (sync-workgroup)
+              ;; Total CTA exclusive prefix
+              (let ((cta-excl (+ (~ warp-totals wid) w-excl)))
+                ;; 128-bit streaming vector store
+                (when (< v-idx n4)
+                  (set! (~ out4 v-idx) ##((+ s0 cta-excl)
+                                          (+ s1 cta-excl)
+                                          (+ s2 cta-excl)
+                                          (+ s3 cta-excl))))
+                ;; Thread 255 writes block total
+                (when (= tid 255ul)
+                  (set! (~ block-sums bid) (+ s3 cta-excl)))))))))))
+
