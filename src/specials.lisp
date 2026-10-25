@@ -24,6 +24,14 @@
           *185-BIT-OP-NAMES*
           *185-DIVMOD-OPS*
           *185-MATH-OP-NAMES*
+          *193-CHECK-SITE*
+          *193-ENCLOSING-FORM*
+          *193-ENCLOSING-SITE*
+          *193-FORM-SITES*
+          *193-LOCATION-SITES*
+          *193-LOG-MESSAGES*
+          *193-ORIG-PAREN-READER*
+          *193-READ-FILE*
           *AD-ANY-OUTPUT-DOUBLE*
           *AD-BARRIER-RING-SYMS*
           *AD-INLINING-FNS*
@@ -74,6 +82,9 @@
           *DEFAULT-MAX-REGISTERS-PER-THREAD*
           *DEFER-STRUCT-VALIDATION*
           *DENORMAL-HANDLING*
+          *DIE-FLAG-PTR*
+          *DIE-MESSAGES*
+          *DIE-SITES*
           *DIFFERENTIABLE-FUNCTIONS*
           *DIFFERENTIABLE-HOF-STORE*
           *DIFFERENTIATE-P*
@@ -117,10 +128,14 @@
           *KERNEL-READONLY-TENSOR-SYMS*
           *KERNEL-REGISTER-MODE*
           *KNOWN-MMA-LOWERINGS*
+          *LOG-SITES*
+          *LOGGING-OUTPUT-ENABLED*
+          *LOGGING-SIZE-BYTES*
           *LOOP-EXIT-CONTEXT*
           *LOOP-EXIT-TARGETS*
           *LOOP-VARIANT-SPECS*
           *MATH-PRECISION*
+          *MAY-DIE-FUNCTIONS*
           *MMA-LOWERING*
           *MMA-SCRATCH-TILE-DIMS*
           *MMTS-SECTIONS*
@@ -183,6 +198,7 @@
           *WGMMA-ACC-OCCUPANCY-WARN-FRACTION*
           *WGMMA-NODE-SWIZZLE*
           *XE-NATIVE-OPERAND-ELEM*
+          +193-DIE-ID-FORMS+
           +CACHE-INTENTS+
           +LL-SSA-NAME-RE+
           +NARY-CHAIN-OPS+

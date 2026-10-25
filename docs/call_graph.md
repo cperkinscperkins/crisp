@@ -81,6 +81,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (%CUDA-EMIT-LAUNCH-LAMBDA STREAM BLOCK-X BLOCK-Y SHARED-BYTES)  hoist-cuda/main.lisp
 - - - - - - (%CUDA-CLUSTER-GRID-FIXUP-STRING DISPATCH-INFO)  hoist-cuda/main.lisp
 - - - - - (EMIT-READBACK STREAM ALLOCATIONS)  hoist-cuda/main.lisp
+- - - - - - (%193-CUDA-EMIT-LOG-REPORT STREAM)  hoist-cuda/main.lisp
+- - - - - - (%193-CUDA-EMIT-DIE-REPORT STREAM)  hoist-cuda/main.lisp
 - - - - - - (%CUDA-EMIT-MMA-REFERENCE STREAM ALLOCATIONS)  hoist-cuda/main.lisp
 - - - (%CUDA-HK-REWRITE TEXT DISPATCH-INFO)  hoist-cuda/main.lisp
 - - - - (%CUDA-HK-LAUNCH-CHECK-BLOCK N-PARAMS BLOCK SHARED-BYTES)  hoist-cuda/main.lisp
@@ -108,7 +110,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                                   IEEE) (FORCE-MATH-PRECISION
                                                                                          NIL) (DENORMAL-HANDLING
                                                                                                PRESERVE) (HARDWARE-PROFILE
-                                                                                                          NIL))  compiler.lisp
+                                                                                                          NIL) (LOGGING-OUTPUT
+                                                                                                                NIL) (LOGGING-SIZE
+                                                                                                                      NIL))  compiler.lisp
 - - - - - - - (%DROP-TERMINAL-IO-LOG-APPENDER)  compiler.lisp
 - - - - - - - (%RESET-GENSYM-COUNTER)  compiler.lisp
 - - - - - - - (INITIALIZE-CRISP-TYPES)  types/registry.lisp
@@ -345,6 +349,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - (%VERIFY-PTX-ENTRY-EXPANDED-TYPES EXPANDED-TYPES FN-NAME)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (LLVM-TYPE-KIND-IS-POINTER? TY) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%PTX-ENTRY-ILLEGAL-ADDRSPACE-P AS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - (%193-MAY-DIE-P NAME)  compiler.lisp
+- - - - - - - - - - - - - - - - - - - - (%193-APPEND-FLAG-PARAM FN-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - (%CHECK-EXISTING-FUNCTION EXISTING FN-NAME DI-BUILDER DI-COMPILE-UNIT FUNC CRISP-RETURN-TYPE PARAM-NODES LOCATION-MAP FN-LOC MODULE FN-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (GENERATE-DEBUG-INFO DI-BUILDER DI-COMPILE-UNIT FUNC FN-NAME FN-LOC RETURN-TYPE PARAM-NODES LOCATION-MAP)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (GET-OR-CREATE-DI-TYPE CRISP-TYPE DI-BUILDER DI-TYPE-CACHE)  codegen.lisp
@@ -404,6 +410,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp
 - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (%193-MAY-DIE-P NAME)  compiler.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - (LLVM-BUILD-ALLOCA BUILDER TYPE NAME) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%COLLECT-READONLY-TENSOR-PARAM-SYMS SEMANTIC-FUNCTION)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (GENERATE-EXPRESSION-IR BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
@@ -540,11 +548,27 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (%185-FMOD-BODY BUILDER MODULE X Y TYPE-NAME)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%HW-FLOAT-CONST BUILDER MODULE TYPE-NAME VALUE)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%193-EMIT-DIE BUILDER MODULE LOCATION &OPTIONAL NODE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP INFO)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%193-DIE-RECORD-GLOBAL MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-BUILD-BAIL-RETURN BUILDER)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%193-EMIT-LOG-MESSAGE NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%193-LOG-CAPACITY-WORDS)  compiler.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%193-LOG-GLOBAL MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%193-LOG-CAPACITY-WORDS)  compiler.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-LOG-SLOT BUILDER VALUE KIND)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (EXTRACT-PRIMARY-VALUE BUILDER VALUE TYPE-SPEC)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%BUILD-LLVM-FUNCTION-TYPE MODULE RETURN-TYPE-NAMES PARAM-TYPES)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (GET-LLVM-RETURN-TYPE MODULE RETURN-TYPE-NAMES)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (GET-EXPANDED-TYPES TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%BUILD-FUNCTION-CALL BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP NODE SIG CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT RETURN-TYPE-NAMES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%193-CALL-PASSES-FLAG-P CALLEE-SYM CALLEE-NAME MODULE PARAM-COUNT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%193-MAY-DIE-P NAME)  compiler.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-APPEND-FLAG-PARAM FN-TYPE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (PREPARE-CALL-ARGUMENTS BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP ARG-NODES PARAM-TYPES PARAM-COUNT)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
                                                                    SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
@@ -556,8 +580,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - (EXPLODE-VALUE BUILDER AGG-VAL TYPE-SPEC)  codegen/abi.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-CALL-FLAG-ARG CALLEE CALLER-FN)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%ATTACH-DEBUG-LOC INST NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (%PROPAGATE-CALLEE-CC-TO-CALL CALL-INST CALLEE-FN-VAL)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-BUILD-BAIL-RETURN BUILDER)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GENERATE-LET-BINDING BINDING BUILDER MODULE LET-ENV DI-BUILDER DI-SCOPE LOCATION-MAP MEMOIZED-AGGREGATES)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -587,6 +613,106 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (%DVEC-TYPE-LOOKUP TYPE-SYM)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%HANDLE-DIE-INTRINSIC BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%193-CHECK-ID-NODES LOCATION)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%193-SITE-OF EXPR)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%193-MAY-DIE-P NAME)  compiler.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%193-CURRENT-FUNCTION CONTEXT)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (MULTI-PASS-MODE-P)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES CONTEXT)  type-checker.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (INSTANTIATE-GENERIC-FUNCTION GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-ARGUMENT-BINDINGS GENERIC-DEF EXPLICIT-ARG-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%BIND-DEFAULTS-TO-DEFAULT-SCRATCH FN-NAME INJECTED-BINDINGS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-NAME BASE-NAME ACTIVE-ENV)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-ALREADY-GENERATED VARIANT-NAME PARAM-TYPES &OPTIONAL (LLVM-PARAM-TYPES
+                                                                                                                             PARAM-TYPES))  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-LLVM-NAME VARIANT-NAME PARAM-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%VALIDATE-GRID-FUNCTION-RETURN-TYPE RETURN-TYPES)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%PARSE-MMA-LOWERING-DECL DECL KERNEL-NAME PROFILE)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HP-MMA-LOWERINGS PROFILE)  hardware-profile.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%PARSE-CLUSTER-SIZE-DECL DECL KERNEL-NAME DECLARATIONS)  analysis/control.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%PARSE-OCCUPANCY-TARGET-DECL NAME DECLARATIONS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HP-CHECK-WORKGROUP-BOUNDS KERNEL-NAME LOCAL-SIZE-DECL PROFILE)  hardware-profile.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%GENERATE-LAZY-VARIANT-IR AST-NODE VARIANT-NAME &OPTIONAL BASE-NAME)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%CHECK-STRUCT-MUTATING-CALL OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-OF-ALL NODES ENV)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-JOIN STATES)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%VALIDATE-DERIVED-TYPE-REGISTRATION NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%UPDATE-DERIVED-TYPE-RELATIONSHIPS NEW-NODE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%REGISTER-DERIVED-IN-CRISP-TYPES NEW-TYPE-NAME BASE-TYPE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-EMIT-DIE BUILDER MODULE LOCATION &OPTIONAL NODE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP INFO)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%AREF-CELL-SPEC ARRAY-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
@@ -763,6 +889,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-SREG AXIS)  analysis/control.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-TRY-WAIT-PARITY BUILDER MBAR-ADDR-I32 PHASE-I32)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-MODULE-CAN-DIE-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%193-LOAD-DIE-SITE-RELAXED BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%193-DIE-RECORD-GLOBAL MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%193-BUILD-BAIL-RETURN BUILDER)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MAPA-SHARED-CLUSTER BUILDER ADDR-I32 RANK-I32)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-CLUSTER BUILDER PEER-ADDR-I32)  codegen.lisp
@@ -1065,100 +1195,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                                                                                    T) TENSOR-INPUTS-HT SCRATCH-TILE-SYMS)  autodiff.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - (%EMIT-SUB-FN-BACKWARD FN ARGS BKWD-FN T-ADJ-FORMS N-FP PKG EMIT-FN LOCAL-ADJ-FN &OPTIONAL (SYM-PREFIX
                                                                                                                                     BW))  autodiff.lisp [See above]
-- - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp
-- - - - - - - - - - - - - - - - - - - - (REGISTER-FUNCTION-SIGNATURE FORM LOCATION)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - (INTERNAL-DEF-FUNCTION NAME PARAMS DECLARATIONS BODY LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - (PARSE-FUNCTION-DECLARATIONS PARAMS DECLARATIONS)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%VALIDATE-GRID-FUNCTION-RETURN-TYPE RETURN-TYPES)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - (%PARSE-MMA-LOWERING-DECL DECL KERNEL-NAME PROFILE)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%HP-MMA-LOWERINGS PROFILE)  hardware-profile.lisp
-- - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%PARSE-CLUSTER-SIZE-DECL DECL KERNEL-NAME DECLARATIONS)  analysis/control.lisp
-- - - - - - - - - - - - - - - - - - - - - (%PARSE-OCCUPANCY-TARGET-DECL NAME DECLARATIONS)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (%HP-CHECK-WORKGROUP-BOUNDS KERNEL-NAME LOCAL-SIZE-DECL PROFILE)  hardware-profile.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (DETECT-AND-REGISTER-IMPLICIT-TEMPLATE NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (INCOMPLETE-TYPE-P TYPE-SPEC)  types/validation.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (GET-TEMPLATE-ARITY NAME)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (FIND-STRUCT-DEFINITION-BY-NAME NAME-OR-SYMBOL)  structs.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (REGISTER-TEMPLATE NAME PARAMS CONSTRAINTS BODY SIGNATURE)  templates.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (SCAN-FOR-CARRIERS NAME BODY)  environment.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (INJECT-IMPLICIT-ARGUMENTS NAME EXPLICIT-ENV)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - (VALIDATE-RETURN-TYPES NAME BODY ENV CONTEXT DECLARED-RETURN-TYPES LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-BODY-EXPRESSIONS BODY-LIST ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (%TRY-PARSE-TYPED-LITERAL EXPR LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-INCOMPLETE-TYPE-ACCESSOR OP EXPR ENV CONTEXT LOCATION)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-FUNCTION-CALL OP EXPR ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (MULTI-PASS-MODE-P)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - (SINGLE-PASS-MODE-P)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BEST-SIGNATURE OP EXPLICIT-ARG-TYPES CONTEXT)  type-checker.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (INSTANTIATE-GENERIC-FUNCTION GENERIC-DEF EXPLICIT-ARG-TYPES CONTEXT LOCATION)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-ARGUMENT-BINDINGS GENERIC-DEF EXPLICIT-ARG-TYPES)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (BIND-KEYWORD-ARGS FULL-ENV EXPLICIT-ARGS KEY-IDX NAME)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (INJECT-DEFAULTS REMAINDER-ENV DEFAULTS)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%BIND-DEFAULTS-TO-DEFAULT-SCRATCH FN-NAME INJECTED-BINDINGS)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%DEFAULT-SCRATCH-IMPLICIT-NAME FN-NAME PARAM-NAME)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-NAME BASE-NAME ACTIVE-ENV)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (MANGLE-PARAM-TYPE-NAME TYPE)  mangling.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-ALREADY-GENERATED VARIANT-NAME PARAM-TYPES &OPTIONAL (LLVM-PARAM-TYPES
-                                                                                                                             PARAM-TYPES))  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%LAZY-VARIANT-LLVM-NAME VARIANT-NAME PARAM-TYPES)  environment.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (INTERNAL-COMPILE-FUNCTION NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION CONTEXT)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%GENERATE-LAZY-VARIANT-IR AST-NODE VARIANT-NAME &OPTIONAL BASE-NAME)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-LLVM-IR SEMANTIC-FUNCTION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (%CHECK-STRUCT-MUTATING-CALL OP EXPLICIT-ARG-NODES ENV CONTEXT LOCATION)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (%BOUNDARY-STRUCT-TYPE-P TYPE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-OF-ALL NODES ENV)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%UNIFORMITY-JOIN STATES)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (BRAND-ACTIVE-P BRAND-DEF)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (%FIND-BRAND-OWNER-VAR BRAND-NAME SIG-PARAMS ARG-NODES)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-BRAND-FOR-OWNER BRAND-NAME OWNER-TYPE)  types/brand.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-BRAND-TYPE BRAND-NAME VAR-REF &OPTIONAL BASE-TYPE)  types/brand.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (REGISTER-DERIVED-TYPE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%VALIDATE-DERIVED-TYPE-REGISTRATION NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (COMPUTE-BASE-TYPE ORIGINAL-TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%UPDATE-DERIVED-TYPE-RELATIONSHIPS NEW-NODE NEW-TYPE-NAME ORIGINAL-TYPE-NAME SUBST-MODE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%REGISTER-DERIVED-IN-CRISP-TYPES NEW-TYPE-NAME BASE-TYPE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - (HAS-ANCESTOR-PATH? FROM-TYPE TO-TYPE VISITED)  types/hierarchy.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [RECURSION]
-- - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - - - - - - - - - - - - - - - - - - (DEF-FUNCTION NAME PARAMS &REST BODY-AND-LOCATION)  macros.lisp [See above]
 - - - - - - - - - - - - - - - - - (COMPILE-DEF-FUNCTION FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - - - (%PRE-REGISTER-HOF-TEMPLATES)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - (%EXTRACT-FN-BODY-AND-DECLARATIONS BODY-AND-LOC)  analysis/core.lisp
@@ -1189,8 +1226,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - (%HP-3-POS-INTS-P X)  hardware-profile.lisp
 - - - - - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp
 - - - - - - (%COMPILE-FILES-SINGLE-PASS FILES MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT) :CRISP.MAIN  main.lisp
+- - - - - - - (%193-WITH-READ-FILE (PATH) &BODY BODY)  reader.lisp
+- - - - - - - - (%193-NEWLINE-OFFSETS PATH)  reader.lisp
 - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 - - - - - - (%READ-CRISP-FORMS FILES) :CRISP.MAIN  main.lisp
+- - - - - - - (%193-WITH-READ-FILE (PATH) &BODY BODY)  reader.lisp [See above]
 - - - - - - (GENERATE-LOCATION-MAP FORMS)  analysis/core.lisp
 - - - - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp
 - - - - - - - - (WALK-AND-MAP-LOCATIONS EXPR LOCATION MAP COUNTER)  analysis/core.lisp [RECURSION]
@@ -1253,6 +1293,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (REGISTER-STRUCT-DEFINITION NAME MEMBERS &OPTIONAL (CATEGORY
                                                                     STRUCT))  structs.lisp [See above]
 - - - - - - - (PROPAGATE-IMPLICIT-ARGUMENTS)  analysis/core.lisp
+- - - - - - - - (%193-COMPUTE-MAY-DIE-FUNCTIONS)  analysis/core.lisp
+- - - - - - - - - (%193-BODY-DIES-DIRECTLY-P BODY)  compiler.lisp
+- - - - - - - - - - (%193-DIE-SYMBOL-P SYM)  compiler.lisp
 - - - - - - - (COMPILE-FORMS-PASS FORMS MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp
 - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 - - - - - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp [See above]
@@ -1425,6 +1468,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (PRINT-WITHOUT-PACKAGES OBJ STREAM)  metadata.lisp [See above]
 - - - - - - - - - (%MODULE-USES-CLUSTER-REACH-P)  metadata.lisp
 - - - - - - - - - (%EFFECTIVE-CLUSTER-DIMS DISPATCH DECLARED)  analysis/control.lisp
+- - - - - - - - - (%193-SERIALIZE-DIE-SITES STREAM)  metadata.lisp
+- - - - - - - - - (%193-SERIALIZE-LOG-SITES STREAM)  metadata.lisp
+- - - - - - - - - - (%193-LOG-CAPACITY-WORDS)  compiler.lisp [See above]
 - - - - - - (%API-DIFFERENTIATE-KERNELS FILEPATH OUTPUT CAPTURED-FORMS GRAD-META-PATHS) :CRISP.MAIN  api.lisp
 - - - - - - - (EXTRACT-DEFINED-KERNELS FORMS)  metadata.lisp [See above]
 - - - - - - - (%ONLY-FORWARD-KERNELS NAMES)  metadata.lisp [See above]
@@ -1474,7 +1520,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                             IEEE) (FORCE-MATH-PRECISION
                                                                                    NIL) (DENORMAL-HANDLING
                                                                                          PRESERVE) (HARDWARE-PROFILE
-                                                                                                    NIL))  compiler.lisp [See above]
+                                                                                                    NIL) (LOGGING-OUTPUT
+                                                                                                          NIL) (LOGGING-SIZE
+                                                                                                                NIL))  compiler.lisp [See above]
+- - - (%193-PARSE-SIZE TEXT)  compiler.lisp
 - - - (%RECONCILE-HOIST-TARGET TARGETS HOIST-NAME TARGET-NAME TARGET-KW) :CRISP.MAIN  main.lisp
 - - (COMPILE-FILES FILES OUTPUT-FILE DEBUG-P SINGLE-PASS-P TARGETS METADATA-P HOIST-TARGETS &OPTIONAL BC-FILES) :CRISP.MAIN  main.lisp
 - - - (INITIALIZE-DEBUG-CONTEXT MODULE DI-BUILDER FILEPATH) :CRISP.MAIN  main.lisp [See above]
@@ -1545,6 +1594,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%181-STRIDED-SWEEP-FORM LID NG LS FOLD-AT)  analysis/ops.lisp
 
+- (%193-ASSERT-MESSAGE ARGS)  macros.lisp
+
+- (%193-PAREN-READER STREAM CHAR)  reader.lisp
+- - (%193-LINE-OF OFFSET NEWLINES)  reader.lisp
+
 - (%AD-REPLAY-READ-SYMS FORM)  autodiff.lisp
 
 - (%AD-REPLAY-SCALAR-WRITE-TARGETS FORM)  autodiff.lisp
@@ -1555,6 +1609,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ATOMIC-BINOP-EXPAND EXPR)  analysis/ops.lisp
 - - - (%ATOMIC-BINOP-PARTS EXPR)  analysis/ops.lisp [See above]
 - - - (R-T-ASSERT-0 TEST &REST ARGS)  macros.lisp
+- - - - (WHEN-THREAD-IS &REST IDS-AND-BODY)  macros.lisp
 - - - - (R-T-ASSERT TEST &REST ARGS)  macros.lisp
 
 - (%ANALYZE-ATOMIC-CAS-OK!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
@@ -2369,6 +2424,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%DECLARATION-SPEC-NAMED-P SPEC NAME)  analysis/control.lisp
 - - (%REFUSE-MISPLACED-UNROLL LOCATION)  analysis/control.lisp
 
+- (ANALYZE-DIE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%193-CURRENT-FUNCTION CONTEXT)  analysis/core.lisp [See above]
+- - (%193-SITE-OF EXPR)  analysis/core.lisp [See above]
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+
 - (ANALYZE-DOTIMES+-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [See above]
@@ -2633,6 +2693,12 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%MULTICAST-MASK-PATTERN DIMS GROUP-AXES)  analysis/control.lisp
 - - - - - (%CLUSTER-AXIS-STRIDES DIMS)  analysis/control.lisp [See above]
 - - (ANALYZE-LOAD-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
+
+- (ANALYZE-LOG-MESSAGE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%193-SITE-OF EXPR)  analysis/core.lisp [See above]
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%193-LOG-KIND TYPE)  analysis/ops.lisp
 
 - (ANALYZE-LOOP-VARIANT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (%ANALYZE-LOOP-WITH-UNROLL ANALYZER EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
@@ -3300,6 +3366,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (IS-ADDRESS-SPACE? X)  enums.lisp
 
+- (IS-LOGGING?)  macros.lisp
+
+- (IS-RUNTIME-CHECKING?)  macros.lisp
+
 - (LOAD-TILE SRC TILE GRID-LIST &REST KEY-ARGS)  macros.lisp
 
 - (MAKE-ARRIVAL-SYNC COUNT)  macros.lisp
@@ -3346,6 +3416,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (POSITION-TILE-AT TILE PARENT GRID-LIST)  macros.lisp
 
 - (PRINT-OBJECT (OBJ PARAMETER-DEF) STREAM) :COMMON-LISP  parameters.lisp
+
+- (R-T-OUTPUT-0 &REST ARGS)  macros.lisp
+- - (WHEN-THREAD-IS &REST IDS-AND-BODY)  macros.lisp [See above]
+- - (R-T-OUTPUT &REST ARGS)  macros.lisp
 
 - (REDUCE-VEC &WHOLE FORM &REST ARGS)  analysis/ops.lisp
 - - (%REDUCE-VEC-EXPAND FORM)  analysis/ops.lisp [See above]

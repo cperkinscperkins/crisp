@@ -1,7 +1,7 @@
-# Runtime Logging 📝
+# Runtime Logging ✅
 
 
-#### `r-t-output` 📝
+#### `r-t-output` ✅
 
 ```
 (r-t-output <expr1> ... <exprN>)

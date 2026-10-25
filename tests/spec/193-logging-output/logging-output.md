@@ -222,3 +222,26 @@ Each phase is red then green.
      `await` on `empty` is checked too).
   - All four pass locally under `--differentiate --use-binary`.
   - Default suites: unit 392/392, E2E 1554/1554, negative 367/367.
+- 2026-10-25 — **FOLDED.** All four overlays went into `src/` and `tests/run-specs.lisp`, and the
+  overlays are empty again (scripts in `put_temp_files_here/193/fold/`; the overlays are backed up there).
+  - **Method:** `inventory.py` lists every overlay form and marks the LAST copy of each of 19
+    duplicated definitions. `fold_a.py` / `fold_a2.py` / `fold_b.py` copy those forms verbatim; wrappers
+    are folded into their originals and their `*193-orig-*` scaffolding is dropped.
+  - **Design changes at fold:**
+    - `*193-cli-logging*` is gone: `parse-cli-args` passes `:logging-output` / `:logging-size`.
+    - The die flag is set up in `generate-function-body` (no `*193-flag-pending*`).
+    - `analyze-function-call` marks the caller up front. A lazy variant marks itself when its own
+      body is analysed.
+    - The `crisp-language::` macros now live on `crisp.compiler` symbols, exported and imported in
+      `src/package.lisp`.
+    - The hoist report helpers live once, in `src/hoist/common.lisp`.
+  - **One test bug surfaced:** `logging-output.unit.lisp` bound the overlay-only `*193-cli-logging*`.
+    The runner now has `*compile-logging-output*` (beside `*compile-runtime-checks*`).
+  - **Definition of done:**
+    - gen-specials proclaims the 16 new specials;
+    - reference.md, call_graph.md and the globals matrices are regenerated;
+    - status emojis are updated (die / r-t-assert / r-t-output / the Log / flags ✅; Logging and
+      Debugging, Logging Utilities and when-thread-is ⚠️ because `(line)`, `(file)` and
+      `abs-when-thread-is` are not built);
+    - BUG 136 is marked FIXED;
+    - `docs/writing-crisp.md` §15, whose example was run on BMG.

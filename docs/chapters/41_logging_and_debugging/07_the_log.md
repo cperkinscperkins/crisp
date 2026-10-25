@@ -1,4 +1,4 @@
-# The Log 📝
+# The Log ✅
 
 
 Under `--logging-output` the log is a module-scope global, `__crisp_log`, just like the die

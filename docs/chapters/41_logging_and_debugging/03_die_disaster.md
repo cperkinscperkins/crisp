@@ -1,9 +1,5 @@
-# `(die "disaster")` 📝
+# `(die "disaster")` ✅
 
-
-> **Implementation status**: today `die` lowers to `llvm.trap`.  On CUDA that halts the
-> kernel (and poisons the context).  On L0 it is a **silent no-op** (BUG 136): the trap
-> becomes `OpUnreachable`, and the driver deletes the branch.
 
 ```
 (when (< index 0)

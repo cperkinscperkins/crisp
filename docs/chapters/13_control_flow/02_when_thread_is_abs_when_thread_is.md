@@ -1,5 +1,7 @@
-# when-thread-is / abs-when-thread-is 📝
+# when-thread-is / abs-when-thread-is ⚠️
 
+
+> **Implementation status**: `when-thread-is` is built (endeavour 193; one id compares the global linear id, two or three compare each dimension's global id less its offset).  `abs-when-thread-is` is not built yet.
 
 The `single-task` declaration above is a convenience, but it signals its limitation to the compiler
 for the entire kernel. Oftentimes you will have kernels that are employing some parallel strategy 

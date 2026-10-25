@@ -4130,7 +4130,9 @@ is generated will set the global work size (thread count) to be 1.
 ```
 <!-- NOTE: what might be a better "real" example for single-task? -->
 
-### when-thread-is / abs-when-thread-is 📝
+### when-thread-is / abs-when-thread-is ⚠️
+
+> **Implementation status**: `when-thread-is` is built (endeavour 193; one id compares the global linear id, two or three compare each dimension's global id less its offset).  `abs-when-thread-is` is not built yet.
 
 The `single-task` declaration above is a convenience, but it signals its limitation to the compiler
 for the entire kernel. Oftentimes you will have kernels that are employing some parallel strategy 
@@ -10587,7 +10589,7 @@ The are mostly output into the hoisting example code.
 be a different "printable" type, which is either a numeric type or a string.
 The final string result is just all those things together, separated by spaces.
 
-### Runtime Strings 📝
+### Runtime Strings ✅
 
 Runtime strings are a completely different animal. 
 
@@ -10616,7 +10618,7 @@ formulation.
 
 
 
-## Logging and Debugging 📝
+## Logging and Debugging ⚠️
 
 > Overengineer much?
 >
@@ -10673,11 +10675,7 @@ not evaluable at compile time that'll be noted in the output.
 If `<testExpression>` is not evaluable at compile time, it will lead to a compilation error.
 
 
-### `(die "disaster")` 📝
-
-> **Implementation status**: today `die` lowers to `llvm.trap`.  On CUDA that halts the
-> kernel (and poisons the context).  On L0 it is a **silent no-op** (BUG 136): the trap
-> becomes `OpUnreachable`, and the driver deletes the branch.
+### `(die "disaster")` ✅
 
 ```
 (when (< index 0)
@@ -10743,7 +10741,7 @@ Kernels that cannot reach a `die` pay nothing: no extra argument, no extra check
 All runtime asserts go through `die`, so the thread, workgroup and site are always recorded.
 Without `--runtime-checks` or `--logging-output` they compile away (see [Three Levels](#three-levels)).
 
-#### `r-t-assert` ⚠️
+#### `r-t-assert` ✅
 ```
 (r-t-assert <testExpression>  <expr1> ... <exprN>)
 (r-t-assert-0 <testExpression>  <expr1> ... <exprN>)
@@ -10756,16 +10754,13 @@ expressions are first written to the log as one message (see [The Log](#the-log)
 so the test and the message happen in one thread only.  Use it for conditions that are the
 same for every thread: lengths, dispatch geometry.
 
-> **Implementation status**: compiled under `--runtime-checks`, but the messages are ignored, and
-> `r-t-assert-0` is not yet guarded (it behaves like `r-t-assert`).
-
 Asserts don't suffer from the firehose problem: only the first death is recorded.  Their
 messages, under `--logging-output`, do; see below.
 
 
-### Runtime Logging 📝
+### Runtime Logging ✅
 
-#### `r-t-output` 📝
+#### `r-t-output` ✅
 
 ```
 (r-t-output <expr1> ... <exprN>)
@@ -10805,7 +10800,9 @@ around a workgroup reduction does the same job), and "last-N" circular logging. 
 come back if a real need shows up.
 
 
-### Logging Utilities 📝
+### Logging Utilities ⚠️
+
+> **Implementation status**: `(is-logging?)` and `(is-runtime-checking?)` work; `(line)` and `(file)` are not built yet.
 
 - `(line)`  evaluates at compile-time to the line number of the file where it appears.
 - `(file)`  evaluates at compile-time to the name of the .crisp file where it appears.
@@ -10817,7 +10814,7 @@ Every message and every die record already carries its site, so `(line)` and `(f
 for writing macros.
 
 
-### The Log 📝
+### The Log ✅
 
 Under `--logging-output` the log is a module-scope global, `__crisp_log`, just like the die
 record: no kernel argument, no host allocation, nothing passed down the call chain.  A launcher
@@ -11045,13 +11042,13 @@ Returns the context at the place where the macro is called. Useful if you need t
 that alter behavior based on context in order to provide a predictable experience for the caller.
 
 
-#### `is-logging?` 📝
+#### `is-logging?` ✅
 
 `(is-logging?) => T or nil`
 
 Returns true if the file is being compiled with the `--logging-output` flag 
 
-#### `is-runtime-checking?` 📝
+#### `is-runtime-checking?` ✅
 `(is-runtime-checking?) => T or nil`
 
 Returns true if the file is being compiled with the `--runtime-checks` flag
@@ -13819,23 +13816,21 @@ Also note that at this time `--differentiate` and `--hoist` are mutually exclusi
 
 ### Other Flags ⚠️
 
-#### `--runtime-checks` ⚠️
+#### `--runtime-checks` ✅
 Compiles the runtime asserts (`r-t-assert`, `r-t-assert-0`) and the compiler's own runtime checks
 (bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their compile-time strings
 still reach the die report (they live in the site table); their runtime values are dropped.
 Add `--logging-output` to keep those too.  Without this flag they are compiled away entirely.
 See [Logging and Debugging](#logging-and-debugging).
 
-> **Implementation status**: on L0 a failed check does not halt the thread (BUG 136).
-
-#### `--logging-output` 📝
+#### `--logging-output` ✅
 Compiles the log in.  `r-t-output` forms are compiled, and a failed assert writes its message,
 runtime values included, into the log before it dies.  Implies `--runtime-checks`.  Kernels that log
 may run noticeably slower.  The log is a module-scope global, so the host code that launches the
 kernel does not change; the generated launchers read it back and print it.
 See [The Log](#the-log).
 
-#### `--logging-size=<bytes>` 📝
+#### `--logging-size=<bytes>` ✅
 The size of the log under `--logging-output`: a number of bytes, with an optional `K`, `M` or `G`
 suffix.  Default `4M`.  When a launch overflows the log, the launcher reports the size it would
 have needed.

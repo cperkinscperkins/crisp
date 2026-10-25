@@ -103,13 +103,13 @@ Returns the context at the place where the macro is called. Useful if you need t
 that alter behavior based on context in order to provide a predictable experience for the caller.
 
 
-#### `is-logging?` 📝
+#### `is-logging?` ✅
 
 `(is-logging?) => T or nil`
 
 Returns true if the file is being compiled with the `--logging-output` flag 
 
-#### `is-runtime-checking?` 📝
+#### `is-runtime-checking?` ✅
 `(is-runtime-checking?) => T or nil`
 
 Returns true if the file is being compiled with the `--runtime-checks` flag

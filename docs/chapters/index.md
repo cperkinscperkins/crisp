@@ -92,7 +92,7 @@
 
 ## Control Flow ✅
 - [Single Task 📝](13_control_flow/01_single_task.md)
-- [when-thread-is / abs-when-thread-is 📝](13_control_flow/02_when_thread_is_abs_when_thread_is.md)
+- [when-thread-is / abs-when-thread-is ⚠️](13_control_flow/02_when_thread_is_abs_when_thread_is.md)
 - [when-thread-in-group-is / when-group-is 📝](13_control_flow/03_when_thread_in_group_is_when_group_is.md)
 - [when-global-linear-id-is / when-local-linear-id-is 📝](13_control_flow/04_when_global_linear_id_is_when_local_linear_id_is.md)
 - [when-is-last-workgroup 📝](13_control_flow/05_when_is_last_workgroup.md)
@@ -238,16 +238,16 @@
 
 ## Strings - Compile Time and Run Time 📝
 - [Compile Time Strings 📝](40_strings_compile_time_and_run_time/01_compile_time_strings.md)
-- [Runtime Strings 📝](40_strings_compile_time_and_run_time/02_runtime_strings.md)
+- [Runtime Strings ✅](40_strings_compile_time_and_run_time/02_runtime_strings.md)
 
-## Logging and Debugging 📝
+## Logging and Debugging ⚠️
 - [Three Levels](41_logging_and_debugging/01_three_levels.md)
 - [Compile Time Output and Assert ✅](41_logging_and_debugging/02_compile_time_output_and_assert.md)
-- [`(die "disaster")` 📝](41_logging_and_debugging/03_die_disaster.md)
+- [`(die "disaster")` ✅](41_logging_and_debugging/03_die_disaster.md)
 - [Runtime Asserts](41_logging_and_debugging/04_runtime_asserts.md)
-- [Runtime Logging 📝](41_logging_and_debugging/05_runtime_logging.md)
-- [Logging Utilities 📝](41_logging_and_debugging/06_logging_utilities.md)
-- [The Log 📝](41_logging_and_debugging/07_the_log.md)
+- [Runtime Logging ✅](41_logging_and_debugging/05_runtime_logging.md)
+- [Logging Utilities ⚠️](41_logging_and_debugging/06_logging_utilities.md)
+- [The Log ✅](41_logging_and_debugging/07_the_log.md)
 
 ## Conditional Compilation ✅
 - [defmacro ✅](42_conditional_compilation/01_defmacro.md)

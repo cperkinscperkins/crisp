@@ -4313,7 +4313,12 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (libdevice FFI hoists) failed "execution failed (Code 1)" but pass when run singly on both
         builds -- order / environment, not a compiler change.
 
-[ ] 136 die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
+[x] 136 FIXED (endeavour 193, 2026-10-25) -- die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
+        FIX: die no longer lowers to llvm.trap.  It claims the module-scope @__crisp_die_record (CAS) and
+        returns; every caller of a function that may die checks the thread's die flag and returns too
+        (src/codegen.lisp, %193-emit-die).  The bounds checks go through the same lowering
+        (%handle-die-intrinsic).  Verified on BMG and H100 (tests/spec/193-logging-output/01-04, 23); CI
+        pins it with tests/spec/193-logging-output/logging-output.unit.lisp and validate-has-die-check.
         Found 2026-10-24 (logging-output endeavour probes, put_temp_files_here/logging-probes/FINDINGS.md).
         OBSERVATION: %handle-die-intrinsic (src/codegen.lisp) emits a call to llvm.trap.  In the .spv the
         die branch is a bare OpUnreachable -- the trap is gone (whether opt or llvm-spirv dropped it was not
