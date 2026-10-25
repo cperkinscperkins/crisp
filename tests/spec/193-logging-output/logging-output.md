@@ -135,3 +135,24 @@ Each phase is red then green.
     in the nvidia/cuda:12.4.1 image. Not yet run on metal.
   - Suites: unit 392/392; E2E 1541/1551 (the failures are 21–24 and 30–35); negative 366/367
     (`errors/02`).
+- 2026-10-24 — **Phase C green** (`put_temp_files_here/193/phase-c*.lisp`; spec-runner overlay):
+  - Specs 20–24 pass on BMG, and their CUDA launchers/PTX build and pass `ptxas` in Docker.
+  - `HOIST-FLAGS:` header (`parse-hoist-flags`, plus a script-extracted `run-spec-with-hoist` copy
+    with one clause).
+  - `when-thread-is` built: one id compares the global linear id, 2–3 ids compare per dimension
+    against global-id minus offset. It is defined on the `crisp-language` symbol; FOLD it into the
+    package exports.
+  - `r-t-assert` / `r-t-assert-0` are overlay macros. They compile away without a flag. Under
+    `--runtime-checks` they become `(unless test (die "joined strings"))`; the `-0` form is guarded
+    by `(when-thread-is 0 ...)`.
+  - The bounds checks lower through die: `%handle-die-intrinsic` replaced, and `:around` methods
+    name the make-view / struct-update site. Under `--runtime-checks` every function gets the die
+    flag, and a call passes it only when the callee's real LLVM signature has the parameter.
+  - 078/21 and 079/06 pinned the BUG 136 lowering (`validate-has-llvm-trap`). They now use
+    `validate-has-die-check`: the die-record CAS present, no `llvm.trap`. The old validator is
+    unused; delete it at fold.
+  - Suites: unit 392/392; E2E 1543/1551 → with the two respecified, 1545/1551 (only 30–35 left);
+    negative 366/367 (`errors/02`).
+  - The full E2E process exited 139 AFTER printing its summary. Filtered runs exit normally, and
+    `%run-launcher-with-bin-on-path`'s docstring mentions an older "unexplained crash late in a
+    full pass". Watch CI.

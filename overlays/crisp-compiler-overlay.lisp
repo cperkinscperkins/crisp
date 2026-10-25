@@ -751,3 +751,244 @@
                         :signature (first (gethash 'die *function-table*))
                         :source-location location)))
 
+
+;;;; =====================================================================================
+;;;; ENDEAVOUR 193 -- PHASE C: --runtime-checks.
+;;;;   * when-thread-is (ideal_001 "when-thread-is / abs-when-thread-is", never built): global
+;;;;     thread election, relative to the global offset.
+;;;;   * r-t-assert: nothing without a flag; under --runtime-checks (unless test (die "strings")) --
+;;;;     the compile-time strings reach the die report, runtime values are dropped.
+;;;;   * r-t-assert-0: the same, guarded by (when-thread-is 0 ...) -- GLOBAL thread 0.
+;;;;   * the codegen bounds checks (make-view, storage struct updates) lower through die too, so
+;;;;     they halt on L0 (BUG 136) and report a site.  Under --runtime-checks every function gets
+;;;;     the die flag: the checks are placed at codegen, after prototypes are fixed.
+;;;; =====================================================================================
+
+;; src/macros.lisp (endeavour 193) -- FOLD: beside when-thread-in-group-is, and export it from
+;; :crisp.compiler / import it into :crisp-language like the other two (src/package.lisp).
+(defmacro crisp-language::when-thread-is (&rest ids-and-body)
+  "Runs BODY only in the thread whose global id (relative to the global offset) is the given one --
+   a per-LAUNCH election.  (when-thread-is id body...) compares the linear global id;
+   (when-thread-is x y body...) and (when-thread-is x y z body...) compare each dimension.
+   The ids must be literal integers.  sync-workgroup in BODY is refused (divergent)."
+  (let* ((n-ids (loop for x in ids-and-body while (integerp x) count t))
+         (ids (subseq ids-and-body 0 n-ids))
+         (body (nthcdr n-ids ids-and-body)))
+    (unless (<= 1 n-ids 3)
+      (error "when-thread-is takes 1 to 3 literal integer ids before its body, got ~s" ids-and-body))
+    (if (= n-ids 1)
+        `(when (= (get-global-linear-id) (to-ulong ,(first ids)))
+           ,@body)
+        `(when (and ,@(loop for id in ids
+                            for d from 0
+                            collect `(= (- (get-global-id ,d) (get-global-offset ,d)) (to-ulong ,id))))
+           ,@body))))
+
+;; src/macros.lisp (endeavour 193)
+(defun %193-assert-message (args)
+  "Endeavour 193.  The compile-time strings among an assert's ARGS, joined by spaces, or NIL."
+  (let ((strings (remove-if-not #'stringp args)))
+    (when strings (format nil "~{~a~^ ~}" strings))))
+
+;; src/macros.lisp (endeavour 193) -- replaces r-t-assert.
+(defmacro r-t-assert (test &rest args)
+  "Asserts that TEST is true at runtime; if not, the thread dies (see die).  Compiled ONLY under
+   --runtime-checks (or --logging-output); otherwise it disappears, test and all.  Its compile-time
+   string arguments become the die site's message; runtime values need --logging-output."
+  (if *runtime-checks-enabled*
+      `(unless ,test (die ,@(let ((m (%193-assert-message args))) (when m (list m)))))
+      nil))
+
+;; src/macros.lisp (endeavour 193) -- replaces r-t-assert-0.
+(defmacro r-t-assert-0 (test &rest args)
+  "r-t-assert evaluated by GLOBAL thread 0 only (when-thread-is 0).  For conditions every thread
+   sees the same way -- lengths, dispatch geometry.  Compiled only under --runtime-checks."
+  (if *runtime-checks-enabled*
+      `(crisp-language::when-thread-is 0 (r-t-assert ,test ,@args))
+      nil))
+
+;; src/compiler.lisp (endeavour 193)
+(defvar *193-location-sites* (make-hash-table :test 'equal)
+  "Endeavour 193.  Under --runtime-checks: analysis location -> (FILE . LINE) of the innermost
+   enclosing source form, so a check placed at codegen can name its line.")
+
+;; src/codegen.lisp (endeavour 193)
+(defvar *193-check-site* nil
+  "Endeavour 193.  While a node that may emit a bounds check is generated: (LOCATION . MESSAGE).")
+
+;; src/compiler.lisp (endeavour 193) -- supersedes the copy above.
+(defun %193-may-die-p (name)
+  "Endeavour 193.  T when the function NAME may reach a die (see *may-die-functions*).  Under
+   --runtime-checks every function may: bounds checks are placed at codegen, after prototypes."
+  (and name (or *runtime-checks-enabled* (gethash name *may-die-functions*)) t))
+
+;; src/compiler.lisp (endeavour 193) -- supersedes the copy above.
+(defun initialize-compiler (&rest args)
+  "Endeavour 193 wrapper: also resets the die tables (single-pass compiles have no Pass 1 to do it)."
+  (prog1 (apply *193-orig-initialize-compiler* args)
+    (clrhash *may-die-functions*)
+    (clrhash *die-messages*)
+    (clrhash *193-location-sites*)
+    (setf *die-sites* nil)))
+
+;; src/analysis/core.lisp (endeavour 193) -- supersedes the copy above.
+(defun analyze-expression (expr env context location)
+  "Recursively analyzes a *single* expression.
+   Endeavour 193 wrapper: tracks the innermost form that came from a file (*193-enclosing-site*);
+   under --runtime-checks also records it per location (*193-location-sites*)."
+  (let ((*193-enclosing-site* (or (and (consp expr) (gethash expr *193-form-sites*))
+                                  *193-enclosing-site*)))
+    (when (and *runtime-checks-enabled* *193-enclosing-site* (consp expr))
+      (setf (gethash location *193-location-sites*) *193-enclosing-site*))
+    (funcall *193-orig-analyze-expression* expr env context location)))
+
+;; src/codegen.lisp (endeavour 193)
+(defun %193-call-passes-flag-p (callee-sym callee-name module param-count)
+  "Endeavour 193.  Does this call pass the die flag?  The callee must be may-die and not foreign,
+   and if it is already in the module its LLVM signature must have the extra parameter -- a
+   function created some other way never gets a mismatched call."
+  (and (%193-may-die-p callee-sym)
+       (not (gethash callee-sym *foreign-functions*))
+       (let ((f (llvm-get-named-function module callee-name)))
+         (or (cffi:null-pointer-p f)
+             (= (llvm-count-params f) (1+ param-count))))))
+;; src/codegen.lisp (endeavour 193) -- FOLD: the may-die branches into %build-function-call.
+;; Supersedes the copy above: whether to pass the flag is %193-call-passes-flag-p.
+(defun %build-function-call (builder module var-env di-builder di-scope location-map node sig callee-name llvm-fn-type param-nodes param-count return-type-names)
+  "Helper: Builds the actual function call instruction.
+
+   Overlay change: propagate the callee's calling convention onto the
+   resulting call instruction.  Required on SPV builds — see overlay
+   header for the InstCombine UB bug this fix addresses.
+   Endeavour 193: a call to a may-die function passes the die flag as a trailing argument, then
+   loads it and returns from the caller if the callee died."
+  (declare (ignore sig))
+  (let* ((callee-sym (semantic-call-name node))
+         (dies-p (%193-call-passes-flag-p callee-sym callee-name module param-count))
+         (fn-type (if dies-p (%193-append-flag-param llvm-fn-type) llvm-fn-type))
+         (arg-nodes (semantic-call-args node))
+         (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
+                                             arg-nodes param-nodes param-count))
+         (caller-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (n-args (if dies-p (1+ param-count) param-count))
+         (final-args (if dies-p
+                         (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count n-args)))
+                           (dotimes (i param-count)
+                             (setf (cffi:mem-aref arr 'llvm-value-ref i) (cffi:mem-aref args-array 'llvm-value-ref i)))
+                           (setf (cffi:mem-aref arr 'llvm-value-ref param-count) (%193-call-flag-arg callee-sym caller-fn))
+                           arr)
+                         args-array))
+         (callee-fn (let ((f (llvm-get-named-function module callee-name)))
+                      (if (cffi:null-pointer-p f)
+                          (llvm-add-function module callee-name fn-type)
+                          f)))
+         (call-inst (llvm-build-call2 builder
+                                      fn-type
+                                      callee-fn
+                                      final-args
+                                      n-args
+                                      (if (or (null return-type-names)
+                                              (equal return-type-names '(nil))
+                                              (and (consp return-type-names) (eq (first return-type-names) 'void)))
+                                          ""
+                                          "call_tmp")))
+         (di-location (%attach-debug-loc call-inst node module di-builder di-scope location-map)))
+    (%propagate-callee-cc-to-call call-inst callee-fn)
+    (when dies-p
+      (log:debug "193: call to may-die ~a -- checking the die flag after it" callee-name)
+      (let* ((flag (llvm-build-load2 builder (llvm-int32-type) *die-flag-ptr* "die_flag_val"))
+             (dead (llvm-build-icmp builder +llvm-int-ne+ flag (llvm-const-int (llvm-int32-type) 0 0) "died"))
+             (bail (llvm-append-basic-block caller-fn "die_bail"))
+             (cont (llvm-append-basic-block caller-fn "die_cont")))
+        (llvm-build-cond-br builder dead bail cont)
+        (llvm-position-builder-at-end builder bail)
+        (%193-build-bail-return builder)
+        (llvm-position-builder-at-end builder cont)))
+    (values call-inst di-location)))
+
+;; src/codegen.lisp (endeavour 193) -- supersedes the copies above: INFO (message file line) may be
+;; given directly, for a check placed at codegen.  Without NODE (a bounds check) nobody computes the
+;; ids, so the winner's group/local words stay 0.
+(defun %193-emit-die (builder module location &optional node var-env di-builder di-scope location-map info)
+  "Endeavour 193.  The die lowering: claim the die record (CAS site id over 0, relaxed); the winner
+   writes its linear group id and local id into words 1 and 2.  Then set this thread's die flag and
+   return.  Code after it goes into a fresh block with no predecessors, as return-from-loop does.
+   INFO, when given, is the site's (MESSAGE FILE LINE); otherwise analysis recorded it."
+  (unless *die-flag-ptr*
+    (error "Compiler bug (endeavour 193): die reached codegen in a function that was not marked may-die (location ~s)." location))
+  (let* ((info (or info (gethash location *die-messages*)))
+         ;; One id per source location: a two-target compile (spv + ptx) generates the module
+         ;; twice, and a template body may be instantiated more than once.
+         (existing (find location *die-sites* :key #'fifth :test #'equal))
+         (site-id (if existing (first existing) (1+ (length *die-sites*))))
+         (rec (%193-die-record-global module))
+         (rec-ty (llvm-array-type (llvm-int32-type) 4))
+         (i32 (llvm-int32-type))
+         (fn (llvm-get-basic-block-parent (llvm-get-insert-block builder))))
+    (unless existing
+      (push (list site-id (second info) (third info) (first info) location) *die-sites*))
+    (log:info "193: die site ~d: ~a:~a ~s" site-id (second info) (third info) (first info))
+    (let* ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg
+                  builder rec (llvm-const-int i32 0 0) (llvm-const-int i32 site-id 0) 2 2 0))
+           (won (llvm-build-extract-value builder pair 1 "die_won"))
+           (fill (llvm-append-basic-block fn "die_fill"))
+           (done (llvm-append-basic-block fn "die_done")))
+      (llvm-build-cond-br builder won fill done)
+      (llvm-position-builder-at-end builder fill)
+      (when node
+        (loop for arg in (semantic-call-args node)
+              for word from 1
+              do (let* ((v (generate-node-ir arg builder module var-env di-builder di-scope location-map))
+                        (idx (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                   (setf (cffi:mem-aref idx 'llvm-value-ref 0) (llvm-const-int i32 0 0)
+                         (cffi:mem-aref idx 'llvm-value-ref 1) (llvm-const-int i32 word 0))
+                   (llvm-build-store builder v
+                                     (llvm-build-in-bounds-gep2 builder rec-ty rec idx 2 "die_word")))))
+      (llvm-build-br builder done)
+      (llvm-position-builder-at-end builder done))
+    (llvm-build-store builder (llvm-const-int i32 1 0) *die-flag-ptr*)
+    (%193-build-bail-return builder)
+    (llvm-position-builder-at-end builder (llvm-append-basic-block fn "after_die"))
+    (values nil nil)))
+
+;; src/codegen.lisp (endeavour 193)
+(defun %193-check-id-nodes (location)
+  "Endeavour 193.  The die record's id expressions for a check placed at CODEGEN: analysed on the
+   spot (the builtin analyzers need no environment), as if in a dispatch context."
+  (let ((*in-dispatch-context* t))
+    (loop for f in +193-die-id-forms+
+          for i from 1
+          collect (analyze-expression f nil (or *compiler-context* (make-compiler-context))
+                                      (append location (list :check i))))))
+
+;; src/codegen.lisp (endeavour 193) -- replaces %handle-die-intrinsic: the --runtime-checks bounds
+;; checks (make-view, storage struct updates) lower through die, not llvm.trap (BUG 136).
+(defun %handle-die-intrinsic (builder module)
+  "Endeavour 193.  A failed codegen-placed runtime check: die at the check's site
+   (*193-check-site*, bound by the node being generated).  Was llvm.trap -- a silent no-op on L0."
+  (let* ((site (or *193-check-site* (cons '(:unknown-check) "runtime check failed")))
+         (location (car site))
+         (file-line (gethash location *193-location-sites*))
+         (info (list (cdr site) (car file-line) (cdr file-line)))
+         (node (make-semantic-call :name 'die :type '(nil)
+                                   :args (%193-check-id-nodes location)
+                                   :signature (first (gethash 'die *function-table*))
+                                   :source-location location)))
+    (log:info "193: runtime check site at ~s: ~a (~a)" location (cdr site) file-line)
+    (%193-emit-die builder module (list :check location) node (make-hash-table) nil nil nil info)))
+
+;; src/codegen.lisp (endeavour 193)
+(defmethod generate-node-ir :around ((node semantic-make-view) builder module var-env di-builder di-scope location-map)
+  "Endeavour 193: names the site of make-view's --runtime-checks bounds check."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*193-check-site* (cons (semantic-make-view-source-location node)
+                                "bounds check: the view does not fit its source")))
+    (call-next-method)))
+
+;; src/codegen.lisp (endeavour 193)
+(defmethod generate-node-ir :around ((node semantic-struct-member-update) builder module var-env di-builder di-scope location-map)
+  "Endeavour 193: names the site of a storage handle update's --runtime-checks bounds check."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*193-check-site* (cons (semantic-struct-member-update-source-location node)
+                                "bounds check: storage handle offset or length out of range")))
+    (call-next-method)))

@@ -41,6 +41,15 @@
           "After the call the caller tests the flag.")
     (true (search "die_bail:" ir) "... and has a bail-out block.")))
 
+(define-test (logging-output bounds-checks-die-not-trap)
+  "Under --runtime-checks the codegen bounds checks (make-view here) lower through die -- they were
+   llvm.trap, a silent no-op on L0 (BUG 136)."
+  (let ((ir (let ((crisp.spec-runner::*compile-runtime-checks* t))
+              (%ir "23-bounds-check-halts-metal"))))
+    (false (search "llvm.trap" ir) "A bounds check must not lower to llvm.trap.")
+    (true (search "cmpxchg ptr addrspace(1) @__crisp_die_record" ir)
+          "A failed bounds check claims the die record.")))
+
 (define-test (logging-output no-die-no-machinery)
   "A kernel that cannot die gets no record, no flag and no checks (here: an r-t-assert compiled
    without --runtime-checks, which compiles away)."

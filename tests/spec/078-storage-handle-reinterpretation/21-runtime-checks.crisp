@@ -1,14 +1,14 @@
-;; TEST-WITH[--runtime-checks] : validate-has-llvm-trap
+;; TEST-WITH[--runtime-checks] : validate-has-die-check
 ;;
-;; Verify that make-vector and make-cell emit runtime bounds assertions
+;; Verify that make-vector and make-cell emit runtime bounds checks
 ;; when --runtime-checks is active.
 ;;
-;; Under --runtime-checks the compiler wraps each reinterpretation with:
-;;   (r-t-assert (>= (bytes~ source) required-bytes))
-;; which expands to (unless <test> (die)) -> llvm.trap in the IR.
+;; Under --runtime-checks each reinterpretation checks that the view fits its source; a failed
+;; check dies (endeavour 193): a CAS on the module-scope die record, then the thread returns.
+;; (It was llvm.trap, which SPIR-V turns into OpUnreachable and IGC deletes -- BUG 136.)
 ;;
-;; DEFAULT pass: compiles cleanly, no llvm.trap emitted (asserts elided).
-;; TEST-WITH pass: llvm.trap must appear in the IR.
+;; DEFAULT pass: compiles cleanly, no check emitted.
+;; TEST-WITH pass: the die-record CAS must appear in the IR, and llvm.trap must not.
 
 (def-type int-vec-t (vector int :align :compact :address-space :global))
 
