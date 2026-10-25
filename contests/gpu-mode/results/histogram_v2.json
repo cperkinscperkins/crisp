@@ -1,0 +1,458 @@
+{
+  "problem": "histogram_v2",
+  "title": "GPU MODE Challenge 04: Histogram (uint8 -> 256 int64 bins under 10%/40%/90% Contention)",
+  "leaderboard_id": 539,
+  "leaderboard_url": "https://www.gpumode.com/leaderboard/539?tab=rankings",
+  "crisp_commit": "2bbe44fa",
+  "workload": {
+    "description": "256-bin histogram of 1D uint8 tensor across 6 benchmarks (sizes 1.31M to 10.49M bytes; contention 10%, 40%, 90%; geomean size ~3.13 MB)",
+    "total_traffic_bytes": 3133995
+  },
+  "gpu_specs": {
+    "B200": {
+      "arch": "Blackwell (sm_100)",
+      "sm_count": 148,
+      "hbm_peak_gbps": 8000.0
+    },
+    "H100": {
+      "arch": "Hopper (sm_90)",
+      "sm_count": 132,
+      "hbm_peak_gbps": 3350.0
+    },
+    "A100": {
+      "arch": "Ampere (sm_80)",
+      "sm_count": 108,
+      "hbm_peak_gbps": 2039.0
+    },
+    "L4": {
+      "arch": "Ada Lovelace (sm_89)",
+      "sm_count": 58,
+      "hbm_peak_gbps": 300.0
+    }
+  },
+  "standings": {
+    "B200": {
+      "captured_at": "2026-10-24T23:04:29Z",
+      "user_name": "cperkinscperkins",
+      "rank": 29,
+      "total_entrants": 35,
+      "file_name": "crisp_histogram_lastman_4rep_cs256_direct64.py",
+      "crisp_file": "04-histogram-v2/histogram_lastman_4rep_cs256.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_4rep_cs256_direct64.py",
+      "hardware_profile": null,
+      "public_score_us": 17.09,
+      "secret_score_us": 17.12,
+      "submission_id": 966703,
+      "top1_score_us": 9.45,
+      "top1_user": "uno03270@gmail.com",
+      "median_score_us": 12.05
+    },
+    "H100": {
+      "captured_at": "2026-10-24T23:04:29Z",
+      "user_name": "cperkinscperkins",
+      "rank": 16,
+      "total_entrants": 29,
+      "file_name": "crisp_histogram_lastman_u4_cs256.py",
+      "crisp_file": "04-histogram-v2/histogram_lastman_u4_cs256.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_u4_cs256.py",
+      "hardware_profile": null,
+      "public_score_us": 14.9,
+      "secret_score_us": 16.87,
+      "submission_id": 966697,
+      "top1_score_us": 8.89,
+      "top1_user": "zjsxply",
+      "median_score_us": 14.13
+    },
+    "A100": {
+      "captured_at": "2026-10-24T23:04:29Z",
+      "user_name": "cperkinscperkins",
+      "rank": 20,
+      "total_entrants": 28,
+      "file_name": "crisp_histogram_lastman_u4_direct64.py",
+      "crisp_file": "04-histogram-v2/histogram_lastman_u4.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_u4_direct64.py",
+      "hardware_profile": null,
+      "public_score_us": 23.55,
+      "secret_score_us": 23.07,
+      "submission_id": 966708,
+      "top1_score_us": 13.95,
+      "top1_user": "zjsxply",
+      "median_score_us": 21.5
+    },
+    "L4": {
+      "captured_at": "2026-10-24T23:04:29Z",
+      "user_name": "cperkinscperkins",
+      "rank": 6,
+      "total_entrants": 20,
+      "file_name": "crisp_histogram_lastman_u4_cs256.py",
+      "crisp_file": "04-histogram-v2/histogram_lastman_u4_cs256.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_u4_cs256.py",
+      "hardware_profile": null,
+      "public_score_us": 63.44,
+      "secret_score_us": 64.12,
+      "submission_id": 966702,
+      "top1_score_us": 61.43,
+      "top1_user": "salad",
+      "median_score_us": 64.49
+    }
+  },
+  "kernels": [
+    {
+      "step": "0",
+      "key": "crisp_histogram_beauty",
+      "crisp_file": "04-histogram-v2/histogram_beauty.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_beauty.py",
+      "strategy": "Idiomatic 256-bin workgroup-privatized shared-memory histogram + loop-vector-stride + atomic-inc! + output.zero_()",
+      "registers": 24,
+      "hardware_profile": null,
+      "scores_us": {
+        "H100": {
+          "benchmark_mean_us": 22.5,
+          "benchmark_std_us": 0.06,
+          "benchmark_best_us": 21.4,
+          "submission_id": 966692
+        }
+      }
+    },
+    {
+      "step": "1",
+      "key": "crisp_histogram_lastman_u4",
+      "crisp_file": "04-histogram-v2/histogram_lastman_u4.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_u4.py",
+      "strategy": "Single-launch Last-Man + 8x warp-privatized shared-memory histogram (8 KB) + 128-bit uint4 loads + Run-of-4 collapse (+4u)",
+      "registers": 36,
+      "hardware_profile": null,
+      "scores_us": {
+        "H100": {
+          "benchmark_mean_us": 16.8,
+          "benchmark_std_us": 0.03,
+          "benchmark_best_us": 16.1,
+          "submission_id": 966684
+        }
+      }
+    },
+    {
+      "step": "1b",
+      "key": "crisp_histogram_lastman_u4_direct64",
+      "crisp_file": "04-histogram-v2/histogram_lastman_u4.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_u4_direct64.py",
+      "strategy": "Single-launch Last-Man + 8x warp-privatized shared-memory histogram (8 KB) + uint4 Run-of-4 + fine-grained 64B/thread grid (full SM saturation on 1.31M/2.62M)",
+      "registers": 36,
+      "hardware_profile": null,
+      "scores_us": {
+        "A100": {
+          "public_score_us": 23.55,
+          "secret_score_us": 23.07,
+          "submission_id": 966708
+        }
+      }
+    },
+    {
+      "step": "2",
+      "key": "crisp_histogram_lastman_u4_cs256",
+      "crisp_file": "04-histogram-v2/histogram_lastman_u4_cs256.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_u4_cs256.py",
+      "strategy": "Single-launch Last-Man + 8x warp-privatized shared-memory histogram + uint4 Run-of-4 + :cache (:streaming :prefetch 256)",
+      "registers": 36,
+      "hardware_profile": null,
+      "scores_us": {
+        "B200": {
+          "public_score_us": 19.97,
+          "secret_score_us": 20.47,
+          "submission_id": 966700
+        },
+        "H100": {
+          "benchmark_mean_us": 16.7,
+          "benchmark_std_us": 0.03,
+          "benchmark_best_us": 16.1,
+          "public_score_us": 14.9,
+          "secret_score_us": 16.87,
+          "submission_id": 966697
+        },
+        "A100": {
+          "public_score_us": 28.9,
+          "secret_score_us": 28.67,
+          "submission_id": 966701
+        },
+        "L4": {
+          "public_score_us": 63.44,
+          "secret_score_us": 64.12,
+          "submission_id": 966702
+        }
+      }
+    },
+    {
+      "step": "3",
+      "key": "crisp_histogram_lastman_4rep_cs256_direct64",
+      "crisp_file": "04-histogram-v2/histogram_lastman_4rep_cs256.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_4rep_cs256_direct64.py",
+      "strategy": "Single-launch Last-Man + 4x warp-pair shared-memory histogram (4 KB) + uint4 Run-of-4 + :cache (:streaming :prefetch 256) + 64B/thread grid",
+      "registers": 34,
+      "hardware_profile": null,
+      "scores_us": {
+        "B200": {
+          "public_score_us": 17.09,
+          "secret_score_us": 17.12,
+          "submission_id": 966703
+        }
+      }
+    },
+    {
+      "step": "4",
+      "key": "crisp_histogram_lastman_16rep",
+      "crisp_file": "04-histogram-v2/histogram_lastman_16rep.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_16rep.py",
+      "strategy": "Single-launch Last-Man + 16x sub-warp-privatized shared-memory histogram (16 KB) + uint4 Run-of-4 (+4u) collapse",
+      "registers": 36,
+      "hardware_profile": null,
+      "scores_us": {
+        "H100": {
+          "benchmark_mean_us": 18.5,
+          "benchmark_std_us": 0.03,
+          "benchmark_best_us": 18.0,
+          "submission_id": 966689
+        }
+      }
+    },
+    {
+      "step": "5",
+      "key": "crisp_histogram_lastman_16rep_run16",
+      "crisp_file": "04-histogram-v2/histogram_lastman_16rep_run16.crisp",
+      "py_file": "04-histogram-v2/crisp_histogram_lastman_16rep_run16.py",
+      "strategy": "Single-launch Last-Man + 16x sub-warp-privatized shared-memory histogram (16 KB) + Two-level Run-of-16 (+16u) & Run-of-4 (+4u) collapse",
+      "registers": 38,
+      "hardware_profile": null,
+      "scores_us": {
+        "H100": {
+          "benchmark_mean_us": 20.0,
+          "benchmark_std_us": 0.04,
+          "benchmark_best_us": 19.5,
+          "submission_id": 966690
+        }
+      }
+    }
+  ],
+  "runs": [
+    {
+      "timestamp": "2026-10-24T22:37:23Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_histogram_lastman_u4",
+      "file_name": "crisp_histogram_lastman_u4.py",
+      "mode": "test",
+      "submission_id": 966682,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T22:39:19Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_histogram_lastman_u4",
+      "file_name": "crisp_histogram_lastman_u4.py",
+      "mode": "benchmark",
+      "submission_id": 966684,
+      "benchmark_mean_us": 16.8,
+      "benchmark_std_us": 0.03,
+      "benchmark_best_us": 16.1,
+      "benchmark_worst_us": 17.7,
+      "per_case_us": [
+        16.8
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T22:40:55Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_histogram_lastman_u4_cs256",
+      "file_name": "crisp_histogram_lastman_u4_cs256.py",
+      "mode": "benchmark",
+      "submission_id": 966686,
+      "benchmark_mean_us": 16.7,
+      "benchmark_std_us": 0.03,
+      "benchmark_best_us": 16.1,
+      "benchmark_worst_us": 17.7,
+      "per_case_us": [
+        16.7
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T22:42:15Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_histogram_lastman_16rep",
+      "file_name": "crisp_histogram_lastman_16rep.py",
+      "mode": "benchmark",
+      "submission_id": 966689,
+      "benchmark_mean_us": 18.5,
+      "benchmark_std_us": 0.03,
+      "benchmark_best_us": 18.0,
+      "benchmark_worst_us": 19.5,
+      "per_case_us": [
+        18.5
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T22:43:58Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_histogram_lastman_16rep_run16",
+      "file_name": "crisp_histogram_lastman_16rep_run16.py",
+      "mode": "benchmark",
+      "submission_id": 966690,
+      "benchmark_mean_us": 20.0,
+      "benchmark_std_us": 0.04,
+      "benchmark_best_us": 19.5,
+      "benchmark_worst_us": 21.8,
+      "per_case_us": [
+        20.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T22:45:43Z",
+      "gpu": "H100",
+      "kernel_key": "beauty",
+      "file_name": "crisp_histogram_beauty.py",
+      "mode": "benchmark",
+      "submission_id": 966692,
+      "benchmark_mean_us": 22.5,
+      "benchmark_std_us": 0.06,
+      "benchmark_best_us": 21.4,
+      "benchmark_worst_us": 23.6,
+      "per_case_us": [
+        22.5
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-24T22:49:38Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_histogram_lastman_u4_cs256",
+      "file_name": "crisp_histogram_lastman_u4_cs256.py",
+      "mode": "leaderboard",
+      "submission_id": 966697,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 14.9,
+      "secret_score_us": 16.87
+    },
+    {
+      "timestamp": "2026-10-24T22:51:40Z",
+      "gpu": "B200",
+      "kernel_key": "crisp_histogram_lastman_u4_cs256",
+      "file_name": "crisp_histogram_lastman_u4_cs256.py",
+      "mode": "leaderboard",
+      "submission_id": 966700,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 19.97,
+      "secret_score_us": 20.47
+    },
+    {
+      "timestamp": "2026-10-24T22:53:54Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_histogram_lastman_u4_cs256",
+      "file_name": "crisp_histogram_lastman_u4_cs256.py",
+      "mode": "leaderboard",
+      "submission_id": 966701,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 28.9,
+      "secret_score_us": 28.67
+    },
+    {
+      "timestamp": "2026-10-24T22:56:18Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_histogram_lastman_u4_cs256",
+      "file_name": "crisp_histogram_lastman_u4_cs256.py",
+      "mode": "leaderboard",
+      "submission_id": 966702,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 63.44,
+      "secret_score_us": 64.12
+    },
+    {
+      "timestamp": "2026-10-24T22:59:13Z",
+      "gpu": "B200",
+      "kernel_key": "crisp_histogram_lastman_4rep_cs256_direct64",
+      "file_name": "crisp_histogram_lastman_4rep_cs256_direct64.py",
+      "mode": "leaderboard",
+      "submission_id": 966703,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 17.09,
+      "secret_score_us": 17.12
+    },
+    {
+      "timestamp": "2026-10-24T23:01:16Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_histogram_lastman_u4_direct64",
+      "file_name": "crisp_histogram_lastman_u4_direct64.py",
+      "mode": "leaderboard",
+      "submission_id": 966708,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 23.55,
+      "secret_score_us": 23.07
+    }
+  ],
+  "ablation_size_label": "6-case geomean (sizes 1.31M..10.49M bytes; contention 10%, 40%, 90%)",
+  "takeaways": [
+    "**Single-Launch Last-Man Global Bin Reduction + 128-Bit `uint4` Run-of-4 Collapse (`histogram_lastman_u4_cs256.crisp`):** Replacing the two-launch `output.zero_()` + scalar `uchar` shared-memory baseline (`22.5 µs` on H100) with a single-launch Last-Man pattern (`partials[0..255]` + `ticket` reset to 0 by the last CTA via `atomic-xchg!`), 128-bit `uint4` (16 bytes/load) vectorization, and a per-word Run-of-4 check (`(= w (* (logand w 255u) 16843009u))` -> single `atomic-add! +4u`) cut H100 10 MB runtime by **5.8 µs (−25.8%)** down to **16.7 ± 0.03 µs** (**14.90 µs public geomean**).",
+    "**Shared-Memory Replication Tradeoff (4x / 8x vs. 16x Sub-Tables) & Small-Case SM Saturation:** Giving each warp (`wid = tid / 32`, `0..7`) its own 256-bin shared-memory sub-table (8 KB total) eliminates cross-warp shared-memory atomic collisions while keeping per-CTA zeroing and reduction overhead to just 8 `st.shared.b32` / `ld.shared.b32` instructions per thread (`16.7 µs` on H100; **Rank #6 / 20 on L4 at 63.44 µs = 96.8% of #1 genuine**). Doubling to 16 sub-tables (16 KB) increased shared-memory init/reduce overhead to `18.5 µs` on H100, while halving to 4 sub-tables (4 KB) paired with 64B/thread CTA sizing improved B200 from `19.97 µs` down to **17.09 µs** and A100 from `28.90 µs` down to **23.55 µs**.",
+    "**Hardware Bit-Field Extraction (`bfe.u32`) via Power-of-2 Division:** Writing byte extraction in Crisp as `(logand (/ w 256u) 255u)` and `(logand (/ w 65536u) 255u)` lowers directly through LLVM NVPTX to single-instruction hardware bit-field extracts (`bfe.u32 %r, %w, 8, 8` and `bfe.u32 %r, %w, 16, 8`), whereas `(ash w -8)` invokes the variable-shift helper `__crisp_ash_uint`.",
+    "**Compiler Codegen Bug Identified (`def-function` Returning `=> nil` With Trailing `atomic-add!` inside `if`):** In `histogram_lastman_run16.crisp`, a `def-function` declared `=> nil` whose body contains an `if` expression where one branch ends in `(atomic-add! ...)` and the other ends in a `progn` calling a `=> nil` helper caused an LLVM IR type mismatch in `llc` (`phi` / branch mismatch between `i32` from `atomic-add!` and `void` from `progn`), resolved cleanly by declaring the helper `=> uint` so both branches yield `uint`."
+  ],
+  "beauty_entry": {
+    "crisp_file": "04-histogram-v2/histogram_beauty.crisp",
+    "py_file": "04-histogram-v2/crisp_histogram_beauty.py",
+    "kernel_key": "beauty",
+    "sloc": 18,
+    "title": "Idiomatic Workgroup-Privatized Shared-Memory Histogram",
+    "description": "18-line Crisp kernel expressing a 256-bin shared-memory privatized histogram via `make-scratch-vector`, `loop-vector-stride`, `atomic-inc!`, and `atomic-add!`.",
+    "idioms": [
+      "make-scratch-vector shared-memory privatization",
+      "loop-vector-stride grid-stride loop",
+      "atomic-inc! shared-memory bin increment",
+      "atomic-add! global bin flush"
+    ],
+    "scores": {
+      "H100": {
+        "score_us": 22.5,
+        "public_score_us": null,
+        "secret_score_us": null,
+        "benchmark_mean_us": 22.5,
+        "mode": "benchmark",
+        "submission_id": 966692
+      }
+    }
+  }
+}

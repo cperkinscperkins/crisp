@@ -74,8 +74,16 @@ def refresh_live_standings(problem_data: Dict[str, Any], user_name: str = "cperk
         total_bytes = problem_data.get("workload", {}).get("total_traffic_bytes", 0)
         peak_gbps = problem_data.get("gpu_specs", {}).get(gpu, {}).get("hbm_peak_gbps")
         if total_bytes and peak_gbps:
-            min_possible_sec = total_bytes / (peak_gbps * 2.0 * 1e9)
-            top1 = next((r for r in rows if r.get("score", 0) >= min_possible_sec), rows[0])
+            min_possible_sec = total_bytes / (peak_gbps * 1.15 * 1e9)
+            top1 = next(
+                (
+                    r
+                    for i, r in enumerate(rows)
+                    if r.get("score", 0) >= min_possible_sec
+                    and (i + 1 >= len(rows) or rows[i + 1].get("score", 0) <= r.get("score", 0) * 3.0)
+                ),
+                rows[0],
+            )
         else:
             top1 = rows[0]
         median_row = rows[len(rows) // 2]
