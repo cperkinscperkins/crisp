@@ -1,0 +1,26 @@
+;; GPU MODE Challenge 05: prefixsum_v2
+;; Pass 2: Add scanned block totals to elements of block
+;; Each thread adds `block_sums[bid]` to its 4 elements in `output`.
+
+(def-type out-vec (vector float :address-space :global :align :compact))
+(def-type sum-vec (vector float :address-space :global :align :compact))
+
+(def-kernel prefixsum_pass2 (&out output block-sums)
+  (declare #'(out-vec sum-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid   (to-ulong (get-local-id 0)))
+        (bid   (to-ulong (get-workgroup-id 0)))
+        (n     (length~ output))
+        (base-idx (+ (* bid 1024ul) (* tid 4ul))))
+    (when (> bid 0ul)
+      (let ((block-prefix (~ block-sums (- bid 1ul))))
+        (when (< base-idx n)
+          (set! (~ output base-idx) (+ (~ output base-idx) block-prefix)))
+        (when (< (+ base-idx 1ul) n)
+          (set! (~ output (+ base-idx 1ul)) (+ (~ output (+ base-idx 1ul)) block-prefix)))
+        (when (< (+ base-idx 2ul) n)
+          (set! (~ output (+ base-idx 2ul)) (+ (~ output (+ base-idx 2ul)) block-prefix)))
+        (when (< (+ base-idx 3ul) n)
+          (set! (~ output (+ base-idx 3ul)) (+ (~ output (+ base-idx 3ul)) block-prefix))))))
+  (return))
+

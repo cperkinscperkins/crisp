@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 04: Histogram (uint8 -> 256 int64 bins under 10%/40%/90% Contention)",
   "leaderboard_id": 539,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/539?tab=rankings",
-  "crisp_commit": "2bbe44fa",
+  "crisp_commit": "476df9eb",
   "workload": {
     "description": "256-bin histogram of 1D uint8 tensor across 6 benchmarks (sizes 1.31M to 10.49M bytes; contention 10%, 40%, 90%; geomean size ~3.13 MB)",
     "total_traffic_bytes": 3133995
@@ -32,7 +32,7 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-24T23:04:29Z",
+      "captured_at": "2026-10-25T07:40:22Z",
       "user_name": "cperkinscperkins",
       "rank": 29,
       "total_entrants": 35,
@@ -48,7 +48,7 @@
       "median_score_us": 12.05
     },
     "H100": {
-      "captured_at": "2026-10-24T23:04:29Z",
+      "captured_at": "2026-10-25T07:40:22Z",
       "user_name": "cperkinscperkins",
       "rank": 16,
       "total_entrants": 29,
@@ -64,7 +64,7 @@
       "median_score_us": 14.13
     },
     "A100": {
-      "captured_at": "2026-10-24T23:04:29Z",
+      "captured_at": "2026-10-25T07:40:22Z",
       "user_name": "cperkinscperkins",
       "rank": 20,
       "total_entrants": 28,
@@ -80,7 +80,7 @@
       "median_score_us": 21.5
     },
     "L4": {
-      "captured_at": "2026-10-24T23:04:29Z",
+      "captured_at": "2026-10-25T07:40:22Z",
       "user_name": "cperkinscperkins",
       "rank": 6,
       "total_entrants": 20,
