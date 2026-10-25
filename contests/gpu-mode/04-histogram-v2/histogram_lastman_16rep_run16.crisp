@@ -1,0 +1,101 @@
+;; GPU MODE Challenge 04: histogram_v2 -- Single-Launch Last-Man + 16x Replicated Shared Histogram + Run-16 & Run-4 Collapse
+;;
+;; Strategy:
+;;   Combines 16x shared-memory replication (16 * 256 = 4,096 uint32 bins = 16 KB, indexed by
+;;   `(logand tid 15ul)` so every pair of lanes in a warp has its own private 256-bin table)
+;;   with two-level run-length collapsing:
+;;   - Level 1 (Run-of-16): If all 4 32-bit words of a `uint4` load (`wx == wy == wz == ww == b0 * 0x01010101`)
+;;     are identical, performs a SINGLE `atomic-add! (+16u)` for all 16 bytes!
+;;   - Level 2 (Run-of-4): For each remaining 32-bit word `w`, if all 4 bytes are identical
+;;     (`w == b0 * 0x01010101`), performs a SINGLE `atomic-add! (+4u)` instead of 4 `atomic-inc!`s.
+
+(def-type in-vec      (vector uchar :address-space :global :align :compact))
+(def-type in-vec4     (vector uint4 :address-space :global :align :compact))
+(def-type partial-vec (vector ulong :address-space :global :align :compact))
+(def-type ticket-cell (cell   uint  :address-space :global))
+(def-type out-vec     (vector ulong :address-space :global :align :compact :cache :streaming))
+(def-type smem-vec    (vector uint  :address-space :local  :align :compact))
+
+(def-function accum-word (w base &out shist)
+  (declare #'(uint ulong &out smem-vec => uint))
+  (let ((b0 (logand w 255u)))
+    (if (= w (* b0 16843009u))
+        (atomic-add! (~ shist (+ base (to-ulong b0))) 4u)
+        (let ((b1 (logand (/ w 256u)   255u))
+              (b2 (logand (/ w 65536u) 255u))
+              (b3 (/ w 16777216u)))
+          (atomic-inc! (~ shist (+ base (to-ulong b0))))
+          (atomic-inc! (~ shist (+ base (to-ulong b1))))
+          (atomic-inc! (~ shist (+ base (to-ulong b2))))
+          (atomic-inc! (~ shist (+ base (to-ulong b3))))))))
+
+(def-function accum-vec4 (wx wy wz ww base &out shist)
+  (declare #'(uint uint uint uint ulong &out smem-vec => uint))
+  (let ((b0 (logand wx 255u)))
+    (if (= wx (* b0 16843009u))
+        (if (= wx wy)
+            (if (= wz ww)
+                (if (= wx wz)
+                    (atomic-add! (~ shist (+ base (to-ulong b0))) 16u)
+                    (progn
+                      (atomic-add! (~ shist (+ base (to-ulong b0))) 8u)
+                      (accum-word wz base shist)
+                      (accum-word ww base shist)))
+                (progn
+                  (atomic-add! (~ shist (+ base (to-ulong b0))) 8u)
+                  (accum-word wz base shist)
+                  (accum-word ww base shist)))
+            (progn
+              (atomic-add! (~ shist (+ base (to-ulong b0))) 4u)
+              (accum-word wy base shist)
+              (accum-word wz base shist)
+              (accum-word ww base shist)))
+        (progn
+          (accum-word wx base shist)
+          (accum-word wy base shist)
+          (accum-word wz base shist)
+          (accum-word ww base shist)))))
+
+(def-kernel histogram_kernel (input &out partials ticket output)
+  (declare #'(in-vec &out partial-vec ticket-cell out-vec => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((shist   (make-scratch-vector smem-vec 4096))
+        (is-last (make-scratch-cell uint))
+        (tid     (to-ulong (get-local-id 0)))
+        (sub     (logand tid 15ul))
+        (ng      (to-ulong (get-num-groups 0)))
+        (n16     (/ (length~ input) 16ul))
+        (in4     (make-vector input uint4 :length n16))
+        (base    (* sub 256ul)))
+    (dotimes+ (k 16ul)
+      (set! (~ shist (+ (* k 256ul) tid)) 0u))
+    (sync-workgroup)
+
+    (loop-vector-stride in4 (i)
+      (declare (unroll 4))
+      (let ((v (~ in4 i)))
+        (accum-vec4 (x~ v) (y~ v) (z~ v) (w~ v) base shist)))
+    (sync-workgroup)
+
+    (let ((sum 0u))
+      (dotimes+ (k 16ul)
+        (set! sum (+ sum (~ shist (+ (* k 256ul) tid)))))
+      (let ((total (to-ulong sum)))
+        (when (= ng 1ul)
+          (set! (~ output tid) total))
+        (when (> ng 1ul)
+          (when (> total 0ul)
+            (atomic-add! (~ partials tid) total))
+          (mem-fence)
+          (when (= tid 0ul)
+            (let ((arrived (to-ulong (atomic-inc! (~ ticket)))))
+              (set! (~ is-last) (if (= arrived (- ng 1ul)) 1u 0u))))
+          (sync-workgroup)
+          (when (= (~ is-last) 1u)
+            (mem-fence)
+            (set! (~ output tid) (atomic-xchg! (~ partials tid) 0ul))
+            (when (= tid 0ul)
+              (atomic-xchg! (~ ticket) 0u))))))
+    (return)))
+

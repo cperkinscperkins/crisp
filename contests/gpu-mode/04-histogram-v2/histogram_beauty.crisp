@@ -1,0 +1,25 @@
+;; GPU MODE Challenge 04: histogram_v2 (Beauty Contestant)
+;; Counts occurrences of uint8 values [0..255] into 256 int64 bins.
+;; Uses a 256-bin workgroup-privatized shared-memory histogram to absorb
+;; atomic contention before flushing to global memory.
+
+(def-type in-vec   (vector uchar :address-space :global :align :compact))
+(def-type out-vec  (vector ulong :address-space :global :align :compact))
+(def-type smem-vec (vector uint  :address-space :local  :align :compact))
+
+(def-kernel histogram_kernel (input &out output)
+  (declare #'(in-vec &out out-vec => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((shist (make-scratch-vector smem-vec 256))
+        (tid   (to-ulong (get-local-id 0))))
+    (set! (~ shist tid) 0u)
+    (sync-workgroup)
+    (loop-vector-stride input (i)
+      (atomic-inc! (~ shist (to-ulong (~ input i)))))
+    (sync-workgroup)
+    (let ((cnt (~ shist tid)))
+      (when (> cnt 0u)
+        (atomic-add! (~ output tid) (to-ulong cnt))))
+    (return)))
+
