@@ -210,3 +210,15 @@ Each phase is red then green.
   - Next: CI (--single-pass, --debug, --differentiate), then the fold, plus a writing-crisp.md
     section. Follow-ups: a COMPILE_API=1 pod run for source-mode launchers; a C-API surface for
     the die record and the log (and CRISP_PURPOSE_DEBUG_LOG).
+- 2026-10-25 — **CI --differentiate fixes** (`put_temp_files_here/193/ci-fix.lisp`; agreed with Chris):
+  1. `--differentiate` drops `--logging-output` ONLY; `--runtime-checks` is honoured. This fixes
+     078/21 and 079/06, and the doc sentence is corrected.
+  2. `die` / `r-t-assert(-0)` / `r-t-output(-0)` / `%193-log-message` are inactive in
+     `%active-scalar-vars` (193/32). The underlying fragility -- a failed `_GRAD` companion leaving a
+     malformed function in the module -- is filed as BUG 137, which predates this endeavour and is
+     left alone by decision.
+  3. Spec 40's producer now streams the first K-step and dies at the second, so AD has load-tile
+     provenance. Its site is line 41, and its PTX has 2 die-record loads (the producer's own
+     `await` on `empty` is checked too).
+  - All four pass locally under `--differentiate --use-binary`.
+  - Default suites: unit 392/392, E2E 1554/1554, negative 367/367.

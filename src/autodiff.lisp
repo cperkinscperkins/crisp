@@ -4025,6 +4025,10 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
         ;; tensor/cell read: no SCALAR activity (the index does not propagate; the
         ;; tensor/cell itself flows grad via its own &out grad-handle).
         ((string-equal name "~") nil)
+        ;; Endeavour 193: die, the asserts and the log forms produce no value -- nothing propagates.
+        ((member name '("DIE" "R-T-ASSERT" "R-T-ASSERT-0" "R-T-OUTPUT" "R-T-OUTPUT-0" "%193-LOG-MESSAGE")
+                 :test #'string=)
+          nil)
         ;; comparisons: 0 gradient — nothing propagates.
         ((member name '("<" ">" "<=" ">=" "=" "/=") :test #'string-equal) nil)
         ;; conditionals: the branches propagate, the CONDITION does not.

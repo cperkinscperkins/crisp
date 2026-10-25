@@ -651,6 +651,24 @@
 
 ;; src/metadata.lisp  (REPLACES serialize-kernels -- 156: record the kernel's CHOSEN mma
 ;; lowering in the metacrisp, so a benchmark number can be attributed to a code path)
+(defun %193-serialize-die-sites (stream)
+  "Endeavour 193.  The (:die-sites ...) section: the record's global name and every site, oldest
+   first, as (ID \"FILE\" LINE \"MESSAGE\"-or-NIL).  Nothing when the module cannot die."
+  (when *die-sites*
+    (format stream "(:die-sites :record \"__crisp_die_record\"~%  :sites (")
+    (dolist (s (reverse *die-sites*))
+      (format stream "~%    (~d ~s ~s ~s)" (first s) (or (second s) "?") (or (third s) 0) (fourth s)))
+    (format stream "))~%")))
+
+(defun %193-serialize-log-sites (stream)
+  "Endeavour 193.  The (:log-sites ...) section: the log's global name, its data capacity in words,
+   and every site, oldest first, as (ID \"FILE\" LINE PIECES).  Nothing when the module never logs."
+  (when *log-sites*
+    (format stream "(:log-sites :record \"__crisp_log\" :capacity-words ~d~%  :sites (" (%193-log-capacity-words))
+    (dolist (s (reverse *log-sites*))
+      (format stream "~%    (~d ~s ~s ~s)" (first s) (or (second s) "?") (or (third s) 0) (fourth s)))
+    (format stream "))~%")))
+
 (defun serialize-kernels (output-stream kernel-names &key source output-targets)
   "Emits the (:kernels ...) section of the metacrisp file.
    Extended to include :global-size, :local-size, :num-groups dispatch declarations.
@@ -751,7 +769,10 @@
                       (print-without-packages (getf blk :impl) output-stream)
                       (format output-stream "~%"))
                 (format output-stream "  )~%"))))
-        (format output-stream "  )~%"))))
+        (format output-stream "  )~%")))
+  ;; Endeavour 193: the die and log site tables (top-level sections; nothing when unused).
+  (%193-serialize-die-sites output-stream)
+  (%193-serialize-log-sites output-stream))
 
 
 ;;; =========================================================

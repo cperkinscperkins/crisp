@@ -1167,6 +1167,90 @@ set!  analyzer's behavior in analysis/structs.lisp."
                                      r)
                                env context location)))))))
 
+;;;; Endeavour 193: die and the log message.
+
+(defparameter +193-die-id-forms+
+  '((to-int (+ (get-workgroup-id 0)
+               (* (get-num-groups 0)
+                  (+ (get-workgroup-id 1)
+                     (* (get-num-groups 1) (get-workgroup-id 2))))))
+    (to-int (get-local-linear-id)))
+  "Endeavour 193.  What the CAS winner writes into words 1 and 2 of the die record: the linear
+   workgroup id and the linear local id.")
+
+(defun analyze-die-expression (expr env context location)
+  "Endeavour 193.  (die) or (die \"message\").  The message must be a compile-time string: the
+   die record carries only a site id, which the metadata maps back to file, line and message.
+   Marks the function being compiled as may-die (this is what --single-pass relies on, and what
+   catches a die produced by a user macro).  Phase B: records the site's file and line, and
+   carries the group/local id expressions as the call's argument nodes."
+  (let ((args (rest expr)))
+    (when (> (length args) 1)
+      (error 'crisp-compiler-error
+        :message (format nil "die takes at most one argument, a message, but was given ~d." (length args))
+        :source-location location))
+    (when (and args (not (stringp (first args))))
+      (error 'crisp-compiler-error
+        :message (format nil "die's message must be a compile-time string, not ~s.  The die record carries only a site id; the message is looked up in the metadata." (first args))
+        :source-location location))
+    (let ((fn (%193-current-function context))
+          (site (%193-site-of expr)))
+      (log:debug "193: analyzing die ~s in ~a at ~s (source ~s)" (first args) fn location site)
+      (if fn
+          (setf (gethash fn *may-die-functions*) t)
+          (log:warn "193: die at ~s analysed outside any function" location))
+      (setf (gethash location *die-messages*) (list (first args) (car site) (cdr site))))
+    (make-semantic-call :name 'die
+                        :type '(nil)
+                        :args (let ((*in-dispatch-context* t))
+                                (loop for f in +193-die-id-forms+
+                                      for i from 1
+                                      collect (analyze-expression f env context (append location (list i)))))
+                        :signature (first (gethash 'die *function-table*))
+                        :source-location location)))
+
+(defun %193-log-kind (type)
+  "Endeavour 193.  The log's decoding kind for a scalar Crisp TYPE, or NIL (not loggable)."
+  (when (and type (symbolp type))
+    (let ((n (symbol-name type)))
+      (cond ((member n '("INT" "SHORT" "CHAR") :test #'string-equal) :int)
+            ((member n '("UINT" "USHORT" "UCHAR" "BOOL" "BOOLEAN") :test #'string-equal) :uint)
+            ((string-equal n "LONG") :long)
+            ((string-equal n "ULONG") :ulong)
+            ((string-equal n "FLOAT") :float)
+            ((string-equal n "DOUBLE") :double)))))
+
+(defun analyze-log-message-expression (expr env context location)
+  "Endeavour 193.  (%193-log-message arg ...) -- what r-t-output expands to under --logging-output.
+   Compile-time strings stay in the site table; every other argument must be a scalar, and is
+   carried as an argument node after the two id nodes (the writer's group and local ids)."
+  (let ((pieces '()) (value-nodes '())
+        (site (%193-site-of expr)))
+    (loop for a in (rest expr)
+          for i from 1
+          do (if (stringp a)
+                 (push a pieces)
+                 (let* ((node (analyze-expression a env context (append location (list i))))
+                        (type (get-single-value-type node))
+                        (kind (%193-log-kind type)))
+                   (unless kind
+                     (error 'crisp-compiler-error
+                       :message (format nil "r-t-output: ~s has type ~s.  Each argument must be a scalar or a compile-time string." a type)
+                       :source-location location))
+                   (push kind pieces)
+                   (push node value-nodes))))
+    (setf (gethash location *193-log-messages*) (list (nreverse pieces) (car site) (cdr site)))
+    (log:debug "193: log message at ~s (~a): ~s" location site (gethash location *193-log-messages*))
+    (make-semantic-call :name '%193-log-message
+                        :type '(nil)
+                        :args (append (let ((*in-dispatch-context* t))
+                                        (loop for f in +193-die-id-forms+
+                                              for i from 1
+                                              collect (analyze-expression f env context (append location (list :id i)))))
+                                      (nreverse value-nodes))
+                        :signature (first (gethash '%193-log-message *function-table*))
+                        :source-location location)))
+
 (defun register-ops-analyzers ()
   "Registers all expression analyzer functions.
 Redefined for 082-atomics to add atomic RMW op analyzers.
@@ -1312,7 +1396,10 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                         ;; 178: the rank / element-type check a reduce-vec expansion carries.
                         ("%CHECK-REDUCE-VEC-ELEMENT" %analyze-check-reduce-vec-element)))
           (setf (gethash (intern (first pair) pkg) *expression-analyzers*)
-                (second pair)))))))
+                (second pair))))))
+  ;; Endeavour 193: die and the log message (what r-t-output expands to under --logging-output).
+  (setf (gethash 'die *expression-analyzers*) #'analyze-die-expression)
+  (setf (gethash '%193-log-message *expression-analyzers*) #'analyze-log-message-expression))
 
 
 ;;;; ===========================================================================

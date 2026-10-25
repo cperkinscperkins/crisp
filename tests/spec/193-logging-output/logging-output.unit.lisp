@@ -54,7 +54,7 @@
   "Under --logging-output, r-t-output claims its packet with one relaxed 64-bit atomic add on the
    cursor of the module-scope @__crisp_log, and writes only if the packet fits.  Without the flag
    there is no log at all."
-  (let ((ir (let ((crisp.compiler::*193-cli-logging* t))
+  (let ((ir (let ((crisp.spec-runner::*compile-logging-output* t))
               (%ir "31-output-values-metal"))))
     (true (search "@__crisp_log = addrspace(1) global [" ir) "The log is an addrspace(1) module global.")
     (true (search "atomicrmw add ptr addrspace(1) @__crisp_log, i64 7 monotonic" ir)

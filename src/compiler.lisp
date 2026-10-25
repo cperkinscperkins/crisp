@@ -1666,13 +1666,110 @@ from a fixed !100."
   (log:debug "%reset-gensym-counter: ~a -> ~a" *gensym-counter* *gensym-counter-base*)
   (setf *gensym-counter* *gensym-counter-base*))
 
+;;;; Endeavour 193 (logging-output): die, the die record, runtime checks, the log.
+
+(defvar *may-die-functions* (make-hash-table)
+  "Endeavour 193.  Function name -> T for every function that may reach a die: directly, or by
+   calling one that may.  Filled by the Pass-1 scan (%193-compute-may-die-functions, multi-pass)
+   and by analysis (analyze-die-expression / analyze-function-call, both modes).  Such a function
+   gets the trailing die-flag parameter.")
+
+(defvar *die-messages* (make-hash-table :test 'equal)
+  "Endeavour 193.  Source location of a die -> its compile-time message string (or NIL).
+   Phase B turns these into the site table.")
+
+(defvar *die-sites* nil
+  "Endeavour 193.  Per-module list of (site-id location message), newest first.  Site ids start
+   at 1; 0 in the die record means nobody died.")
+
+(defvar *die-flag-ptr* nil
+  "Endeavour 193.  While a may-die function's body is generated: the LLVM pointer to the thread's
+   i32 die flag (the kernel's entry alloca, or the function's trailing parameter).  NIL otherwise.")
+
+(defvar *193-form-sites* (make-hash-table :test 'eq :weakness :key)
+  "Endeavour 193.  A list read from a .crisp file -> (FILE-NAMESTRING . LINE).  Weak, so it never
+   holds a form alive; filled only while *193-read-file* is bound.")
+
+(defvar *193-enclosing-site* nil
+  "Endeavour 193.  (FILE . LINE) of the innermost form being analysed that came from a file.")
+
+(defvar *193-enclosing-form* nil
+  "Endeavour 193.  The innermost form being analysed that came from a file (has a *193-form-sites* entry).")
+
+(defvar *193-location-sites* (make-hash-table :test 'equal)
+  "Endeavour 193.  Under --runtime-checks: analysis location -> (FILE . LINE) of the innermost
+   enclosing source form, so a check placed at codegen can name its line.")
+
+(defvar *193-check-site* nil
+  "Endeavour 193.  While a node that may emit a bounds check is generated: (LOCATION . MESSAGE).")
+
+(defvar *logging-output-enabled* nil
+  "Endeavour 193.  T when compiling with --logging-output (r-t-output and assert messages go to the
+   log).  Set by initialize-compiler; implies *runtime-checks-enabled*.")
+
+(defvar *logging-size-bytes* (* 4 1024 1024)
+  "Endeavour 193.  --logging-size: the bytes reserved for @__crisp_log (header included).")
+
+(defvar *log-sites* nil
+  "Endeavour 193.  Per-module list of (site-id file line pieces location), newest first.  PIECES is
+   the message in order: compile-time strings, and a type keyword (:int :uint :long :ulong :float
+   :double) for each runtime value.")
+
+(defvar *193-log-messages* (make-hash-table :test 'equal)
+  "Endeavour 193.  Analysis location of a log message -> (PIECES FILE LINE).")
+
+(defun %193-die-symbol-p (sym)
+  "Endeavour 193.  T when SYM names die (by name: user code is read in :crisp-language)."
+  (and (symbolp sym) (string= (symbol-name sym) "DIE")))
+
+(defun %193-may-die-p (name)
+  "Endeavour 193.  T when the function NAME may reach a die (see *may-die-functions*).  Under
+   --runtime-checks every function may: bounds checks are placed at codegen, after prototypes."
+  (and name (or *runtime-checks-enabled* (gethash name *may-die-functions*)) t))
+
+(defun %193-body-dies-directly-p (body)
+  "Endeavour 193.  T when the SURFACE forms BODY contain (die ...) -- or, under --runtime-checks,
+   an r-t-assert / r-t-assert-0, which then expand to (unless test (die)).  A raw walk: no macro
+   expansion, because expanding Crisp macros in Pass 1 has side effects (scratch counters).  A die
+   that only a user macro produces is caught at analysis instead (analyze-die-expression), which
+   covers every case except a caller compiled BEFORE such a callee -- and that one fails loudly in
+   %193-call-flag-arg rather than miscompiling."
+  (labels ((walk (f depth)
+             (cond ((or (atom f) (> depth 400)) nil)
+                   ((%193-die-symbol-p (car f)) t)
+                   ((and *runtime-checks-enabled* (symbolp (car f))
+                         (member (symbol-name (car f)) '("R-T-ASSERT" "R-T-ASSERT-0") :test #'string=))
+                    t)
+                   (t (loop for tail on f
+                            thereis (and (consp tail) (walk (car tail) (1+ depth))))))))
+    (walk body 0)))
+
+(defun %193-parse-size (text)
+  "Endeavour 193.  \"4M\" / \"512K\" / \"1G\" / \"65536\" -> bytes."
+  (let* ((s (string-trim " " text))
+         (last (char-upcase (cl:char s (1- (length s)))))
+         (mult (case last (#\K 1024) (#\M (* 1024 1024)) (#\G (* 1024 1024 1024)) (t 1)))
+         (digits (if (= mult 1) s (subseq s 0 (1- (length s))))))
+    (* mult (parse-integer digits))))
+
+(defun %193-log-capacity-words ()
+  "Endeavour 193.  Data words in the log: the size, less the 4-word header (at least 64)."
+  (max 64 (- (cl:floor *logging-size-bytes* 4) 4)))
+
 (defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
                                  (math-precision :ieee) (force-math-precision nil)
                                  (denormal-handling :preserve)
-                                 (hardware-profile nil))
+                                 (hardware-profile nil)
+                                 (logging-output nil) (logging-size nil))
   "Initializes the compiler state.
-   Extended to clear *grid-functions* for def-grid-function support."
-  (setf *runtime-checks-enabled* runtime-checks)
+   Extended to clear *grid-functions* for def-grid-function support.
+   Endeavour 193: LOGGING-OUTPUT (--logging-output) implies RUNTIME-CHECKS; under DIFFERENTIATE the
+   log is off (the gradient kernels are compiled without it) but RUNTIME-CHECKS is honoured.
+   LOGGING-SIZE is the log's size in bytes (--logging-size, default 4M)."
+  (let ((logging (and logging-output (not differentiate))))
+    (setf *logging-output-enabled* logging
+          *logging-size-bytes* (or logging-size (* 4 1024 1024))
+          *runtime-checks-enabled* (or runtime-checks logging)))
   (setf *differentiate-p* differentiate)
   ;; Endeavor 130: record the requested hardware profile (a name string) and clear
   ;; the profile registry (the current file's def-hardware-profile forms re-register).
@@ -1717,6 +1814,15 @@ from a fixed !100."
 
   (setf (gethash 'die *function-table*)
         (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+  ;; Endeavour 193: r-t-output's message node, and the per-compile die / log tables.
+  (setf (gethash '%193-log-message *function-table*)
+        (list (make-function-signature :name '%193-log-message :parameters nil :return-types '(nil))))
+  (clrhash *may-die-functions*)
+  (clrhash *die-messages*)
+  (clrhash *193-location-sites*)
+  (clrhash *193-log-messages*)
+  (setf *die-sites* nil
+        *log-sites* nil)
 
   (setf (symbol-function 'truncate) #'cl:truncate)
   (setf (symbol-function 'floor) #'cl:floor)

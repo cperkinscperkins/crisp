@@ -238,11 +238,18 @@
          (ignore-profile (%l0-latch-hardware-profile data))
          (kernels (metacrisp-kernels data))
          (aliases (metacrisp-aliases data))
-         (base-name (pathname-name metacrisp-path)))
+         (base-name (pathname-name metacrisp-path))
+         ;; Endeavour 193: the die and log site tables, for the reports after the launch.
+         (*193-die-sites* (%193-read-metacrisp-section metacrisp-path :die-sites))
+         (*193-log-sites* (%193-read-metacrisp-section metacrisp-path :log-sites)))
     (declare (ignore ignore-profile))
 
     (format t "Processing ~a~%" metacrisp-path)
     (format t "  Kernels: ~a~%" (length kernels))
+    (when *193-die-sites*
+      (format t "  Die sites: ~d~%" (length (getf *193-die-sites* :sites))))
+    (when *193-log-sites*
+      (format t "  Log sites: ~d~%" (length (getf *193-log-sites* :sites))))
 
     (when (null kernels)
           (format t "WARNING: No kernels found in ~a. Nothing to hoist.~%" metacrisp-path))
@@ -1147,7 +1154,79 @@
     (format stream "    std::cout << \"Kernel executed successfully\" << std::endl;~%~%")
 
 
+    ;; Endeavour 193: the log (if the module logs), then the die report (if it can die).
+    (when *193-log-sites*
+      (%193-l0-emit-log-report stream))
+    (when *193-die-sites*
+      (%193-l0-emit-die-report stream))
+
     allocations))
+
+(defun %193-l0-emit-die-report (stream)
+  "Endeavour 193.  C++ that reads the die record and prints the DIE line from the site table."
+  (let ((record (getf *193-die-sites* :record))
+        (sites (getf *193-die-sites* :sites)))
+    (format stream "    {   // Endeavour 193: the die record (~d site~:p)~%" (length sites))
+    (format stream "        void* _dieRecDev = nullptr; size_t _dieRecSize = 0;~%")
+    (format stream "        if (zeModuleGetGlobalPointer(module, \"~a\", &_dieRecSize, &_dieRecDev) == ZE_RESULT_SUCCESS && _dieRecSize >= 16) {~%" record)
+    (format stream "            uint32_t* _dieRec = nullptr;~%")
+    (format stream "            ze_host_mem_alloc_desc_t _dieHostDesc = { ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC };~%")
+    (format stream "            zeMemAllocHost(context, &_dieHostDesc, 16, 16, (void**)&_dieRec);~%")
+    (format stream "            ze_command_list_handle_t _dieList;~%")
+    (format stream "            zeCommandListCreate(context, device, &cmdListDesc, &_dieList);~%")
+    (format stream "            zeCommandListAppendMemoryCopy(_dieList, _dieRec, _dieRecDev, 16, nullptr, 0, nullptr);~%")
+    (format stream "            zeCommandListClose(_dieList);~%")
+    (format stream "            zeCommandQueueExecuteCommandLists(cmdQueue, 1, &_dieList, nullptr);~%")
+    (format stream "            zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
+    (format stream "            zeCommandListDestroy(_dieList);~%")
+    (format stream "            if (_dieRec[0] != 0) {~%")
+    (format stream "                std::cout << \"DIE \";~%")
+    (format stream "                switch (_dieRec[0]) {~%")
+    (dolist (s sites)
+      (destructuring-bind (id file line message) s
+        (declare (ignore message))
+        (format stream "                    case ~d: std::cout << \"~a:~d\"; break;~%" id (%193-c-string file) line)))
+    (format stream "                    default: std::cout << \"<unknown site \" << _dieRec[0] << \">\"; break;~%")
+    (format stream "                }~%")
+    (format stream "                std::cout << \" group \" << _dieRec[1] << \" local \" << _dieRec[2];~%")
+    (format stream "                switch (_dieRec[0]) {~%")
+    (dolist (s sites)
+      (destructuring-bind (id file line message) s
+        (declare (ignore file line))
+        (when message
+          (format stream "                    case ~d: std::cout << \": ~a\"; break;~%" id (%193-c-string message)))))
+    (format stream "                    default: break;~%")
+    (format stream "                }~%")
+    (format stream "                std::cout << std::endl;~%")
+    (format stream "            }~%")
+    (format stream "            zeMemFree(context, _dieRec);~%")
+    (format stream "        } else {~%")
+    (format stream "            std::cerr << \"WARNING: die record ~a not found in the module\" << std::endl;~%" record)
+    (format stream "        }~%")
+    (format stream "    }~%~%")))
+
+(defun %193-l0-emit-log-report (stream)
+  "Endeavour 193.  C++ that reads @__crisp_log by name (zeModuleGetGlobalPointer) and prints it."
+  (let ((record (getf *193-log-sites* :record)))
+    (format stream "    {   // Endeavour 193: the log (~d site~:p)~%" (length (getf *193-log-sites* :sites)))
+    (format stream "        void* _logDev = nullptr; size_t _logSize = 0;~%")
+    (format stream "        if (zeModuleGetGlobalPointer(module, \"~a\", &_logSize, &_logDev) == ZE_RESULT_SUCCESS && _logSize >= 16) {~%" record)
+    (format stream "            uint32_t* _log = nullptr;~%")
+    (format stream "            ze_host_mem_alloc_desc_t _logHostDesc = { ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC };~%")
+    (format stream "            zeMemAllocHost(context, &_logHostDesc, _logSize, 16, (void**)&_log);~%")
+    (format stream "            ze_command_list_handle_t _logList;~%")
+    (format stream "            zeCommandListCreate(context, device, &cmdListDesc, &_logList);~%")
+    (format stream "            zeCommandListAppendMemoryCopy(_logList, _log, _logDev, _logSize, nullptr, 0, nullptr);~%")
+    (format stream "            zeCommandListClose(_logList);~%")
+    (format stream "            zeCommandQueueExecuteCommandLists(cmdQueue, 1, &_logList, nullptr);~%")
+    (format stream "            zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
+    (format stream "            zeCommandListDestroy(_logList);~%")
+    (%193-emit-log-decode stream)
+    (format stream "            zeMemFree(context, _log);~%")
+    (format stream "        } else {~%")
+    (format stream "            std::cerr << \"WARNING: log ~a not found in the module\" << std::endl;~%" record)
+    (format stream "        }~%")
+    (format stream "    }~%~%")))
 
 
 

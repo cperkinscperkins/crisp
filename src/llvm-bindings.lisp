@@ -1155,3 +1155,21 @@
   (context     :pointer)
   (name        :string)
   (name-length :size))
+
+;; Endeavour 193: function-type surgery (the die flag parameter), relaxed atomic loads, a value's module.
+(cffi:defcfun ("LLVMCountParamTypes" llvm-count-param-types) :unsigned-int
+  (fn-type :pointer))
+
+(cffi:defcfun ("LLVMGetParamTypes" llvm-get-param-types) :void
+  (fn-type :pointer)
+  (dest    :pointer))
+
+(cffi:defcfun ("LLVMCountParams" llvm-count-params) :unsigned-int
+  (fn :pointer))
+
+(cffi:defcfun ("LLVMSetOrdering" llvm-set-ordering) :void
+  (inst     :pointer)
+  (ordering :int))
+
+(cffi:defcfun ("LLVMGetGlobalParent" llvm-get-global-parent) :pointer
+  (global :pointer))
