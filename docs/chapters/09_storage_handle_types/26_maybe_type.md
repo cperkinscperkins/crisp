@@ -24,9 +24,9 @@ But this is an implementation detail.
 the keyword :OK or :Err.  When :OK, then the subsequent args match the type
 of the maybe expression and are the return value(s).  
 When :Err then you can pass a message string as second argument and that may appear
-in the log if the side-channel logging has been elected. Otherwise it will
+in the log if compiled with `--logging-output`. Otherwise it will
 be compiled away. There is no performance penalty for any :Err message
-or message handling if the side-channel logging is not active.
+or message handling without `--logging-output`.
 
 
 In the example below, we have a function divides numbers safely. 

@@ -1,8 +1,10 @@
 ;; CHECK-FAIL-FLAGS: --logging-output
 ;; CHECK-FAIL: "must be a scalar or a compile-time string"
+;; TEST-EXPECT: PASS
 ;;
-;; Endeavour 193 -- a logged value is one packet word (or two); a whole vector is refused.
-;; Without --logging-output the form compiles away and nothing is checked.
+;; Endeavour 193 -- a logged value is one 64-bit packet slot; a whole vector is refused.
+;; Without --logging-output the form compiles away and nothing is checked -- so the E2E runner,
+;; which compiles without the flag, expects this file to compile.
 
 (def-type out-v (vector float :align :compact :address-space :global))
 

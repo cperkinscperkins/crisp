@@ -161,3 +161,26 @@ Each phase is red then green.
   - Spec Summary 16/22: only 30–35 fail (Phase D).
   - Note: `run-on-pod.sh` relays only BUFFER lines to the local log. The DIE lines are in
     `/tmp/crisp-specs__binary_.log` on the pod.
+- 2026-10-25 — **Decided with Chris: the log is option G**, a module-scope global `@__crisp_log`
+  sized by `--logging-size=<bytes>` (K/M/G, default 4M), not an implicit argument. Adding logging
+  needs no host-code change, and an undersized log needs a recompile under either option. Doc
+  updated: The Log, Runtime Strings, the flags, the side-channel and marshall references, and the
+  C API note. `CRISP_PURPOSE_DEBUG_LOG` in `c-api/include/crisp.h` is now unused; it was left alone
+  because it is ABI.
+- 2026-10-25 — **Phase D green** (`put_temp_files_here/193/phase-d*.lisp`; hoist overlays
+  `hoist-log-common.lisp`, `hoist-{l0,cuda}-d.lisp`, `decode2.lisp`):
+  - Specs 30–36 pass on BMG; their CUDA launchers/PTX build and pass `ptxas` in Docker.
+  - `--logging-output` implies `--runtime-checks`; `--differentiate` clears both.
+  - `is-logging?` / `is-runtime-checking?` are MACROS expanding to `(> 1 0)` / `(< 1 0)`, because
+    `if+` analyses and folds its condition.
+  - `r-t-output(-0)` expand to `%193-log-message`: an analyzer plus the codegen above. Under the
+    flag, `r-t-assert` logs its message, values included, before it dies.
+  - Packet: `[SITE][GROUP][LOCAL][lo][hi]...`, claimed with one relaxed 64-bit `atomicrmw add`; the
+    cursor counts past the end, so the launcher prints `LOG FULL ... wanted N (recompile with
+    --logging-size=...)`.
+  - The `.metacrisp` gains `(:log-sites :record "__crisp_log" :capacity-words C :sites ((id file
+    line pieces) ...))`.
+  - New spec 36 (1K log, 64 loggers) keeps exactly 50 messages and prints the LOG FULL line.
+  - `errors/02` gained `TEST-EXPECT: PASS`. The E2E runner compiles it without the flag, where
+    `r-t-output` compiles away; the negative runner uses `CHECK-FAIL-FLAGS`.
+  - Suites: unit 392/392; E2E 1551/1552 → 1552/1552 after the `errors/02` fix; negative 367/367.

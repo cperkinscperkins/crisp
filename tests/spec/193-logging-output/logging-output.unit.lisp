@@ -50,6 +50,20 @@
     (true (search "cmpxchg ptr addrspace(1) @__crisp_die_record" ir)
           "A failed bounds check claims the die record.")))
 
+(define-test (logging-output log-is-a-module-global)
+  "Under --logging-output, r-t-output claims its packet with one relaxed 64-bit atomic add on the
+   cursor of the module-scope @__crisp_log, and writes only if the packet fits.  Without the flag
+   there is no log at all."
+  (let ((ir (let ((crisp.compiler::*193-cli-logging* t))
+              (%ir "31-output-values-metal"))))
+    (true (search "@__crisp_log = addrspace(1) global [" ir) "The log is an addrspace(1) module global.")
+    (true (search "atomicrmw add ptr addrspace(1) @__crisp_log, i64 7 monotonic" ir)
+          "A 7-word message (3 header words + 2 values) is claimed with one relaxed atomic add.")
+    (true (search "br i1 %log_fits, label %log_write, label %log_done" ir)
+          "The packet is written only if it fits."))
+  (false (search "__crisp_log" (%ir "31-output-values-metal"))
+         "Without --logging-output, r-t-output compiles away and there is no log."))
+
 (define-test (logging-output no-die-no-machinery)
   "A kernel that cannot die gets no record, no flag and no checks (here: an r-t-assert compiled
    without --runtime-checks, which compiles away)."

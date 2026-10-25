@@ -6,27 +6,15 @@ Runtime strings are a completely different animal.
 The only runtime strings Crisp supports are the ones output into the log
 (see [The Log](#the-log)). The log is written into by `r-t-output`, `r-t-assert`, `die` and their variants. 
 
-The buffer is a not a buffer of ASCII characters. It is a buffer of bytes, organized in groups of four ( `uint32_t` ), endianess determined by the host platform.  The buffer has a simple format. 
-It is a series of packets, each like so.
-`[IDENTIFIER][LENGTH][ x1 ][ x2] ..[xN]`   
-Where `N` is the value in `LENGTH`.  
-
-`IDENTIFIER` is a number, and in the accompanying metadata there is a table with 
-each identifier and its matching format string and params, from which the final string
-can be constructed.
+The log is not a buffer of characters.  It is a sequence of packets of 32-bit words (see
+[The Log](#the-log)): a site id, the writer's group and local ids, and the message's runtime
+values.  Everything known at compile time -- the file, the line, the strings, and the type of each
+value -- is in the metadata's site table, and the host rebuilds the text from it:
 ```
-{
-  "id": 123,
-  "format_string": "hello: % % % there",
-  "params": [
-    {"name": "i", "type": "int32"},
-    {"name": "j", "type": "float32"},
-    {"name": "k", "type": "uint64"}
-  ]
-}
-``` 
-
-Crisp comes with scripts that can recombine these, and a small standalone tool as well.
+(:log-sites :record "__crisp_log" :capacity-words 1048572
+  :sites ((1 "stencil.crisp" 42 ("reached midpoint" :int))))
+```
+The generated launchers do this and print the result.
 
 This formulation for string handling is analagous to the OSL "Journal Buffer" system. The
 hope is that their performance penalty is minimal which will encourage use.

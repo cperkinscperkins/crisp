@@ -366,7 +366,7 @@ in your  kernel.   Each invocation of `make-implicit-XXXX` results in an extra a
 hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-XXXX` are collected
 by the compiler and are combined into a single scratch memory pool, which is similarly added as an implicit kernel argument.  These are conveniences.  The compiler calculates the size requirements for these and outputs them to the hoisting example code, but it's ultimately up to your final hoisting code to ensure the memory is sufficient.
 
-One more side channel adds an implicit kernel argument: the log, when compiling with `--logging-output`.  (The die record is NOT an argument; it is a module-scope global the host reads by name.)  See [Logging and Debugging](#logging-and-debugging).
+The die record and the log (`--logging-output`) are NOT side-channel arguments: both are module-scope globals that the host reads by name after the kernel, so neither changes a kernel's signature.  See [Logging and Debugging](#logging-and-debugging).
 
 Lastly, if the data is constant and known at compile time then `def-constant-vector` and `use` would be better choices. 
 These are also discussed below.
@@ -912,12 +912,11 @@ In reality even `(def-kernel k (someVector) ...)` just expands to
 #### implicit Storage Handle arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
-like `make-scratch-XXXX` , `make-implicit-XXXX`, OR if the kernel was/will be compiled with `--logging-output`, then these Storage Handles will have
+like `make-scratch-XXXX` or `make-implicit-XXXX`, then these Storage Handles will have
 to be  explicitly passed by the host and marshalled.  
 
 - `marshall-scratch-XXXX`
 - `marshall-implicit-XXXX`
-- `marshall-log-vector`
 
 Note that both the metadata and the example hoisting code that the compiler outputs will have size expressions gathered 
 by the compiler for all of these. Be sure to incorporate them into your own enqueueing/hoisting code.
@@ -3739,9 +3738,9 @@ But this is an implementation detail.
 the keyword :OK or :Err.  When :OK, then the subsequent args match the type
 of the maybe expression and are the return value(s).  
 When :Err then you can pass a message string as second argument and that may appear
-in the log if the side-channel logging has been elected. Otherwise it will
+in the log if compiled with `--logging-output`. Otherwise it will
 be compiled away. There is no performance penalty for any :Err message
-or message handling if the side-channel logging is not active.
+or message handling without `--logging-output`.
 
 
 In the example below, we have a function divides numbers safely. 
@@ -10595,27 +10594,15 @@ Runtime strings are a completely different animal.
 The only runtime strings Crisp supports are the ones output into the log
 (see [The Log](#the-log)). The log is written into by `r-t-output`, `r-t-assert`, `die` and their variants. 
 
-The buffer is a not a buffer of ASCII characters. It is a buffer of bytes, organized in groups of four ( `uint32_t` ), endianess determined by the host platform.  The buffer has a simple format. 
-It is a series of packets, each like so.
-`[IDENTIFIER][LENGTH][ x1 ][ x2] ..[xN]`   
-Where `N` is the value in `LENGTH`.  
-
-`IDENTIFIER` is a number, and in the accompanying metadata there is a table with 
-each identifier and its matching format string and params, from which the final string
-can be constructed.
+The log is not a buffer of characters.  It is a sequence of packets of 32-bit words (see
+[The Log](#the-log)): a site id, the writer's group and local ids, and the message's runtime
+values.  Everything known at compile time -- the file, the line, the strings, and the type of each
+value -- is in the metadata's site table, and the host rebuilds the text from it:
 ```
-{
-  "id": 123,
-  "format_string": "hello: % % % there",
-  "params": [
-    {"name": "i", "type": "int32"},
-    {"name": "j", "type": "float32"},
-    {"name": "k", "type": "uint64"}
-  ]
-}
-``` 
-
-Crisp comes with scripts that can recombine these, and a small standalone tool as well.
+(:log-sites :record "__crisp_log" :capacity-words 1048572
+  :sites ((1 "stencil.crisp" 42 ("reached midpoint" :int))))
+```
+The generated launchers do this and print the result.
 
 This formulation for string handling is analagous to the OSL "Journal Buffer" system. The
 hope is that their performance penalty is minimal which will encourage use.
@@ -10640,8 +10627,9 @@ formulation.
 When a kernel is running on a GPU it is on a different device, with its own memory, and no
 access to stdout or the file system. Crisp offers two kinds of help:
  - compile-time messaging, so the compiler can be told to print things while it compiles;
- - runtime asserts, `die`, and a logging side channel.  You opt into these when compiling,
-   and the hoisting code has to take part too.
+ - runtime asserts, `die`, and runtime logging.  You opt into these when compiling.  Nothing
+   changes in the host code that launches the kernel: the results are read back afterwards, and
+   the generated launchers do that for you.
 
 ### Three Levels
 
@@ -10831,32 +10819,39 @@ for writing macros.
 
 ### The Log 📝
 
-Under `--logging-output` a kernel that logs gets one more implicit side-channel argument: the
-log, a `(vector ulong :align :compact :address-space :global)` allocated by the host.  Like scratch,
-it is passed down to every function that logs, and the metadata says where it sits in the
-kernel's argument list.  Kernels that never log don't get it.
+Under `--logging-output` the log is a module-scope global, `__crisp_log`, just like the die
+record: no kernel argument, no host allocation, nothing passed down the call chain.  A launcher
+finds it by name after the kernel finishes (`zeModuleGetGlobalPointer` / `cuModuleGetGlobal`).
+Adding logging to a kernel needs no change to the host code that launches it.
 
-The log is a small header followed by messages:
+Its size is fixed at compile time by `--logging-size=<bytes>` (K, M and G suffixes; default `4M`).
+It is zero at module load, and reserved only in modules compiled with `--logging-output`.  It is per
+module: kernels of one module running at once share it, and a host that launches more than once
+zeroes it in between (the generated launchers launch once).
 
-| header field | meaning |
+The log is a 16-byte header followed by messages:
+
+| header | meaning |
 |---|---|
-| `cursor` | next free word.  Advanced atomically by each message. |
-| `capacity` | words available for messages |
-| `dropped` | messages that did not fit |
+| `cursor` (64 bits) | words claimed so far.  Every message adds its length atomically -- even one that does not fit. |
+| reserved | |
 
-Each message is a packet in the [Runtime Strings](#runtime-strings) format,
-`[IDENTIFIER][LENGTH][x1]..[xN]`, plus the group and local id of the thread that wrote it.  The
-writer claims the whole packet with one atomic add on `cursor`.  If the packet would go past
-`capacity`, the writer bumps `dropped` instead and writes nothing.  The log is therefore always
-the first N messages to arrive, and the host knows how many were lost.
+Each message is a packet of 32-bit words,
+`[SITE][GROUP][LOCAL][v1 lo][v1 hi] ... [vN lo][vN hi]`: the site id, the writer's linear
+workgroup and local ids, then each runtime value in a 64-bit slot.  Compile-time strings never
+travel through the log; the site table in the metadata holds them (see
+[Runtime Strings](#runtime-strings)).
 
-The host side (the hoisting code):
-1. allocates the log and zeroes it;
-2. passes it in the position the metadata gives;
-3. after the kernel finishes, decodes the messages using the metadata's string table, prints the
-   die record first if there is one, and then the `dropped` count.
+A writer claims its whole packet with one atomic add on `cursor`.  If the packet does not fit, it
+writes nothing.  The log therefore holds the first messages to arrive, complete, in claim order.
+Because `cursor` keeps counting past the end, its final value is exactly how many words the launch
+wanted, and the launcher says so:
+```
+LOG FULL: kept 4194304 bytes; the launch wanted 38797312 (recompile with --logging-size=37M)
+```
 
-The hoist chooses the log size, with a default that can be overridden.
+The launcher prints each message as `LOG <file>:<line> group <g> local <l>: <message>`, then the
+die report, if there is one.
 
 
 
@@ -13834,10 +13829,16 @@ See [Logging and Debugging](#logging-and-debugging).
 > **Implementation status**: on L0 a failed check does not halt the thread (BUG 136).
 
 #### `--logging-output` 📝
-Adds the log side channel.  `r-t-output` forms are compiled, and asserts and `die` also write their
-messages into the log.  Implies `--runtime-checks`.  Kernels that log may run noticeably slower.
-The hoisting code has to take part: it allocates the log, passes it as an implicit argument, and decodes
-it after the kernel finishes.  See [The Log](#the-log).
+Compiles the log in.  `r-t-output` forms are compiled, and a failed assert writes its message,
+runtime values included, into the log before it dies.  Implies `--runtime-checks`.  Kernels that log
+may run noticeably slower.  The log is a module-scope global, so the host code that launches the
+kernel does not change; the generated launchers read it back and print it.
+See [The Log](#the-log).
+
+#### `--logging-size=<bytes>` 📝
+The size of the log under `--logging-output`: a number of bytes, with an optional `K`, `M` or `G`
+suffix.  Default `4M`.  When a launch overflows the log, the launcher reports the size it would
+have needed.
 
 
 #### `--debug` or `-g` ✅
@@ -14060,8 +14061,8 @@ through memory, as an OUT cell.
 never reads them back.  `crisp_param_zero_before_launch` marks the ones that must be zeroed before
 EVERY launch: global scratch, where reductions keep counters the kernel leaves non-zero.
 Workgroup-local scratch is bound per runtime -- on Level Zero, its pointer slot gets (size = bytes,
-value = NULL).  The log and CUDA tensor-map descriptors are reported (purpose DEBUG_LOG /
-TENSOR_MAP) but not yet supported 📝.
+value = NULL).  CUDA tensor-map descriptors are reported (purpose TENSOR_MAP) but not yet
+supported 📝.  (DEBUG_LOG is never reported: the log is a module-scope global, not a parameter.)
 
 **Launching** ✅.  A kernel's geometry declarations are often rules over launch-time values -- one
 thread per element of tensor `x`, in groups of 64.  A launch object does that arithmetic: the caller
@@ -14622,7 +14623,6 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - marshall-vector
 - marshall-scratch-vector
 - marshall-implicit-vector
-- marshall-log-vector
 - voidp
 - #(1 2 3)
 - use                   [DP]

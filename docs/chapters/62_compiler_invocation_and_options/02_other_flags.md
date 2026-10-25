@@ -11,10 +11,16 @@ See [Logging and Debugging](#logging-and-debugging).
 > **Implementation status**: on L0 a failed check does not halt the thread (BUG 136).
 
 #### `--logging-output` 📝
-Adds the log side channel.  `r-t-output` forms are compiled, and asserts and `die` also write their
-messages into the log.  Implies `--runtime-checks`.  Kernels that log may run noticeably slower.
-The hoisting code has to take part: it allocates the log, passes it as an implicit argument, and decodes
-it after the kernel finishes.  See [The Log](#the-log).
+Compiles the log in.  `r-t-output` forms are compiled, and a failed assert writes its message,
+runtime values included, into the log before it dies.  Implies `--runtime-checks`.  Kernels that log
+may run noticeably slower.  The log is a module-scope global, so the host code that launches the
+kernel does not change; the generated launchers read it back and print it.
+See [The Log](#the-log).
+
+#### `--logging-size=<bytes>` 📝
+The size of the log under `--logging-output`: a number of bytes, with an optional `K`, `M` or `G`
+suffix.  Default `4M`.  When a launch overflows the log, the launcher reports the size it would
+have needed.
 
 
 #### `--debug` or `-g` ✅

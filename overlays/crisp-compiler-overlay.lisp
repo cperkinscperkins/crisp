@@ -1081,3 +1081,263 @@
 (defmacro crisp-language::is-runtime-checking? ()
   "True at compile time when compiling with --runtime-checks (and so also under --logging-output)."
   (if *runtime-checks-enabled* '(> 1 0) '(< 1 0)))
+
+;;;; =====================================================================================
+;;;; ENDEAVOUR 193 -- PHASE D (part 2): the log -- a module-scope global (option G, 2026-10-25).
+;;;;   @__crisp_log : [4 + C x i32] addrspace(1), align 16, zero.  Words 0-1 = the 64-bit cursor
+;;;;   (words claimed, counting past the end), 2-3 reserved, then C data words.
+;;;;   A message = [SITE][GROUP][LOCAL][v1 lo][v1 hi]...: claimed with one atomicrmw add on the
+;;;;   cursor; written only if it fits.  Strings and value types live in the site table:
+;;;;   (:log-sites :record "__crisp_log" :capacity-words C :sites ((id "file" line pieces) ...)).
+;;;; =====================================================================================
+
+;; src/compiler.lisp (endeavour 193)
+(defvar *logging-size-bytes* (* 4 1024 1024)
+  "Endeavour 193.  --logging-size: the bytes reserved for @__crisp_log (header included).")
+
+;; src/main.lisp (endeavour 193)
+(defvar *193-cli-logging-size* nil
+  "Endeavour 193.  The --logging-size= value of the command line being handled, or NIL.")
+
+;; src/compiler.lisp (endeavour 193)
+(defvar *log-sites* nil
+  "Endeavour 193.  Per-module list of (site-id file line pieces location), newest first.  PIECES is
+   the message in order: compile-time strings, and a type keyword (:int :uint :long :ulong :float
+   :double) for each runtime value.")
+
+;; src/compiler.lisp (endeavour 193)
+(defvar *193-log-messages* (make-hash-table :test 'equal)
+  "Endeavour 193.  Analysis location of a log message -> (PIECES FILE LINE).")
+
+;; src/main.lisp (endeavour 193)
+(defun %193-parse-size (text)
+  "Endeavour 193.  \"4M\" / \"512K\" / \"1G\" / \"65536\" -> bytes."
+  (let* ((s (string-trim " " text))
+         (last (char-upcase (cl:char s (1- (length s)))))
+         (mult (case last (#\K 1024) (#\M (* 1024 1024)) (#\G (* 1024 1024 1024)) (t 1)))
+         (digits (if (= mult 1) s (subseq s 0 (1- (length s))))))
+    (* mult (parse-integer digits))))
+
+;; src/compiler.lisp (endeavour 193)
+(defun %193-log-capacity-words ()
+  "Endeavour 193.  Data words in the log: the size, less the 4-word header (at least 64)."
+  (max 64 (- (cl:floor *logging-size-bytes* 4) 4)))
+
+;; src/main.lisp (endeavour 193) -- supersedes the copy above: also --logging-size=.
+(defun crisp.main::parse-cli-args (args)
+  "Endeavour 193 wrapper: --logging-output and --logging-size= reach initialize-compiler."
+  (let* ((*193-cli-logging* (and (member "--logging-output" args :test #'string=) t))
+         (size-arg (find-if (lambda (a) (alexandria:starts-with-subseq "--logging-size=" a)) args))
+         (*193-cli-logging-size* (when size-arg (%193-parse-size (subseq size-arg (length "--logging-size="))))))
+    (funcall *193-orig-parse-cli-args* args)))
+
+;; src/compiler.lisp (endeavour 193) -- supersedes the copies above: the log tables, the log size,
+;; and the %193-log-message function-table entry (beside die's).
+(defun initialize-compiler (&rest args)
+  "Endeavour 193 wrapper: accepts :LOGGING-OUTPUT (also taken from the command line), which
+   implies :RUNTIME-CHECKS, and :LOGGING-SIZE (bytes).  Under :DIFFERENTIATE both flags are off --
+   the gradient kernels are compiled as if neither had been given.  Also resets the die and log tables."
+  (let* ((differentiate (getf args :differentiate))
+         (logging (and (or (getf args :logging-output) *193-cli-logging*) (not differentiate)))
+         (size (or (getf args :logging-size) *193-cli-logging-size*))
+         (args (%193-plist-remove (%193-plist-remove args :logging-output) :logging-size))
+         (args (cond (differentiate (list* :runtime-checks nil (%193-plist-remove args :runtime-checks)))
+                     (logging (list* :runtime-checks t (%193-plist-remove args :runtime-checks)))
+                     (t args))))
+    (prog1 (apply *193-orig-initialize-compiler* args)
+      (setf *logging-output-enabled* logging
+            *logging-size-bytes* (or size (* 4 1024 1024)))
+      (when logging (log:info "193: --logging-output (implies --runtime-checks), log ~d bytes" *logging-size-bytes*))
+      (setf (gethash '%193-log-message *function-table*)
+            (list (make-function-signature :name '%193-log-message :parameters nil :return-types '(nil))))
+      (clrhash *may-die-functions*)
+      (clrhash *die-messages*)
+      (clrhash *193-location-sites*)
+      (clrhash *193-log-messages*)
+      (setf *die-sites* nil
+            *log-sites* nil))))
+
+;; src/analysis/ops.lisp (endeavour 193)
+(defun %193-log-kind (type)
+  "Endeavour 193.  The log's decoding kind for a scalar Crisp TYPE, or NIL (not loggable)."
+  (when (and type (symbolp type))
+    (let ((n (symbol-name type)))
+      (cond ((member n '("INT" "SHORT" "CHAR") :test #'string-equal) :int)
+            ((member n '("UINT" "USHORT" "UCHAR" "BOOL" "BOOLEAN") :test #'string-equal) :uint)
+            ((string-equal n "LONG") :long)
+            ((string-equal n "ULONG") :ulong)
+            ((string-equal n "FLOAT") :float)
+            ((string-equal n "DOUBLE") :double)))))
+
+;; src/analysis/ops.lisp (endeavour 193)
+(defun analyze-log-message-expression (expr env context location)
+  "Endeavour 193.  (%193-log-message arg ...) -- what r-t-output expands to under --logging-output.
+   Compile-time strings stay in the site table; every other argument must be a scalar, and is
+   carried as an argument node after the two id nodes (the writer's group and local ids)."
+  (let ((pieces '()) (value-nodes '())
+        (site (or (gethash expr *193-form-sites*) *193-enclosing-site*)))
+    (loop for a in (rest expr)
+          for i from 1
+          do (if (stringp a)
+                 (push a pieces)
+                 (let* ((node (analyze-expression a env context (append location (list i))))
+                        (type (get-single-value-type node))
+                        (kind (%193-log-kind type)))
+                   (unless kind
+                     (error 'crisp-compiler-error
+                       :message (format nil "r-t-output: ~s has type ~s.  Each argument must be a scalar or a compile-time string." a type)
+                       :source-location location))
+                   (push kind pieces)
+                   (push node value-nodes))))
+    (setf (gethash location *193-log-messages*) (list (nreverse pieces) (car site) (cdr site)))
+    (log:debug "193: log message at ~s (~a): ~s" location site (gethash location *193-log-messages*))
+    (make-semantic-call :name '%193-log-message
+                        :type '(nil)
+                        :args (append (let ((*in-dispatch-context* t))
+                                        (loop for f in +193-die-id-forms+
+                                              for i from 1
+                                              collect (analyze-expression f env context (append location (list :id i)))))
+                                      (nreverse value-nodes))
+                        :signature (first (gethash '%193-log-message *function-table*))
+                        :source-location location)))
+
+;; src/analysis/ops.lisp (endeavour 193) -- supersedes the copy above: also the log message analyzer.
+(defun register-ops-analyzers ()
+  "Endeavour 193 wrapper: also registers the die and log-message analyzers."
+  (funcall *193-orig-register-ops-analyzers*)
+  (setf (gethash 'die *expression-analyzers*) #'analyze-die-expression)
+  (setf (gethash '%193-log-message *expression-analyzers*) #'analyze-log-message-expression)
+  (let ((lang-die (find-symbol "DIE" :crisp-language)))
+    (when (and lang-die (not (eq lang-die 'die)))
+      (setf (gethash lang-die *expression-analyzers*) #'analyze-die-expression))))
+
+;; src/macros.lisp (endeavour 193) -- supersedes the copy above: under --logging-output a failed
+;; assert first writes its message, runtime values included, into the log.
+(defmacro r-t-assert (test &rest args)
+  "Asserts that TEST is true at runtime; if not, the thread dies (see die).  Compiled ONLY under
+   --runtime-checks (or --logging-output); otherwise it disappears, test and all.  Its compile-time
+   string arguments become the die site's message; under --logging-output the whole message,
+   runtime values included, is written to the log first."
+  (if *runtime-checks-enabled*
+      `(unless ,test
+         ,@(when (and *logging-output-enabled* args) `((%193-log-message ,@args)))
+         (die ,@(let ((m (%193-assert-message args))) (when m (list m)))))
+      nil))
+
+;; src/codegen.lisp (endeavour 193)
+(defun %193-log-global (module)
+  "Endeavour 193.  @__crisp_log: [4 + C x i32] in addrspace(1), align 16, zero-initialised, Export
+   linkage (the host reads it by name).  Words 0-1 are the 64-bit cursor."
+  (let ((g (llvm-get-named-global module "__crisp_log")))
+    (if (and g (not (cffi:null-pointer-p g)))
+        g
+        (let* ((ty (llvm-array-type (llvm-int32-type) (+ 4 (%193-log-capacity-words))))
+               (g (llvm-add-global-in-addrspace module ty "__crisp_log" 1)))
+          (llvm-set-initializer g (llvm-const-null ty))
+          (crisp.llvm-bindings::llvm-set-alignment g 16)
+          (log:info "193: created @__crisp_log (~d data words)" (%193-log-capacity-words))
+          g))))
+
+;; src/codegen.lisp (endeavour 193)
+(defun %193-log-slot (builder value kind)
+  "Endeavour 193.  VALUE (of decoding KIND) as an i64 log slot: integers sign- or zero-extended,
+   floats by their bits."
+  (let* ((i64 (llvm-int64-type))
+         (ty (llvm-type-of value))
+         (int-p (= (llvm-get-type-kind ty) 8)))          ; LLVMIntegerTypeKind
+    (ecase kind
+      ((:int :uint :long :ulong)
+       (unless int-p
+         (error "Compiler bug (endeavour 193): a ~a log value is not an LLVM integer" kind))
+       (if (= (crisp.llvm-bindings::llvm-get-int-type-width ty) 64)
+           value
+           (if (eq kind :int)
+               (llvm-build-sext builder value i64 "log_sext")
+               (llvm-build-zext builder value i64 "log_zext"))))
+      (:float
+       (llvm-build-zext builder
+                        (crisp.llvm-bindings::llvm-build-bit-cast builder value (llvm-int32-type) "log_fbits")
+                        i64 "log_fslot"))
+      (:double
+       (crisp.llvm-bindings::llvm-build-bit-cast builder value i64 "log_dbits")))))
+
+;; src/codegen.lisp (endeavour 193)
+(defun %193-emit-log-message (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 193.  Writes one log message: claim 3 + 2N words with an atomic add on the cursor
+   (relaxed; the cursor keeps counting past the end), and write the packet only if it fits."
+  (let* ((location (semantic-call-source-location node))
+         (info (gethash location *193-log-messages*))
+         (pieces (first info))
+         (kinds (remove-if #'stringp pieces))
+         (existing (find location *log-sites* :key #'fifth :test #'equal))
+         (site-id (if existing (first existing) (1+ (length *log-sites*))))
+         (cap (%193-log-capacity-words))
+         (nwords (+ 3 (* 2 (length kinds))))
+         (i32 (llvm-int32-type))
+         (i64 (llvm-int64-type))
+         (log-ty (llvm-array-type i32 (+ 4 cap)))
+         (g (%193-log-global module))
+         (fn (llvm-get-basic-block-parent (llvm-get-insert-block builder))))
+    (unless existing
+      (push (list site-id (second info) (third info) pieces location) *log-sites*))
+    (log:info "193: log site ~d: ~a:~a ~s" site-id (second info) (third info) pieces)
+    ;; values first (in the current block), then claim, then write
+    (let* ((args (semantic-call-args node))
+           (gid (generate-node-ir (first args) builder module var-env di-builder di-scope location-map))
+           (lid (generate-node-ir (second args) builder module var-env di-builder di-scope location-map))
+           (slots (loop for arg in (cddr args)
+                        for kind in kinds
+                        collect (let ((v (generate-node-ir arg builder module var-env di-builder di-scope location-map)))
+                                  (%193-log-slot builder (extract-primary-value builder v (semantic-node-type arg)) kind))))
+           (off (crisp.llvm-bindings::llvm-build-atomic-rmw builder 1 g (llvm-const-int i64 nwords 0) 2 0)) ; add, monotonic
+           (end (llvm-build-add builder off (llvm-const-int i64 nwords 0) "log_end"))
+           (fits (llvm-build-icmp builder +llvm-int-ule+ end (llvm-const-int i64 cap 0) "log_fits"))
+           (write (llvm-append-basic-block fn "log_write"))
+           (done (llvm-append-basic-block fn "log_done")))
+      (llvm-build-cond-br builder fits write done)
+      (llvm-position-builder-at-end builder write)
+      (let ((words (append (list (llvm-const-int i32 site-id 0) gid lid)
+                           (loop for s in slots
+                                 append (list (llvm-build-trunc builder s i32 "log_lo")
+                                              (llvm-build-trunc builder
+                                                                (crisp.llvm-bindings::llvm-build-l-shr builder s (llvm-const-int i64 32 0) "log_hi64")
+                                                                i32 "log_hi"))))))
+        (loop for w in words
+              for k from 0
+              do (let ((idx (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                   (setf (cffi:mem-aref idx 'llvm-value-ref 0) (llvm-const-int i64 0 0)
+                         (cffi:mem-aref idx 'llvm-value-ref 1)
+                         (llvm-build-add builder off (llvm-const-int i64 (+ 4 k) 0) "log_idx"))
+                   (llvm-build-store builder w (llvm-build-in-bounds-gep2 builder log-ty g idx 2 "log_word")))))
+      (llvm-build-br builder done)
+      (llvm-position-builder-at-end builder done))
+    (values nil nil)))
+
+;; src/codegen.lisp (endeavour 193) -- supersedes the method above: die AND the log message.
+(defmethod generate-node-ir :around ((node semantic-call) builder module var-env di-builder di-scope location-map)
+  "Endeavour 193: die lowers to %193-emit-die (not llvm.trap); a log message to %193-emit-log-message."
+  (cond ((eq (semantic-call-name node) 'die)
+         (%193-emit-die builder module (semantic-call-source-location node)
+                        node var-env di-builder di-scope location-map))
+        ((eq (semantic-call-name node) '%193-log-message)
+         (%193-emit-log-message node builder module var-env di-builder di-scope location-map))
+        (t (call-next-method))))
+
+;; src/metadata.lisp (endeavour 193)
+(defun %193-serialize-log-sites (stream)
+  "Endeavour 193.  The (:log-sites ...) section: the log's global name, its data capacity in words,
+   and every site, oldest first, as (ID \"FILE\" LINE PIECES).  Nothing when the module never logs."
+  (when *log-sites*
+    (format stream "(:log-sites :record \"__crisp_log\" :capacity-words ~d~%  :sites (" (%193-log-capacity-words))
+    (dolist (s (reverse *log-sites*))
+      (format stream "~%    (~d ~s ~s ~s)" (first s) (or (second s) "?") (or (third s) 0) (fourth s)))
+    (format stream "))~%")))
+
+;; src/metadata.lisp (endeavour 193) -- supersedes the copy above: also the log sites.
+(defun serialize-kernels (output-stream kernel-names &key source output-targets)
+  "Emits the (:kernels ...) section of the metacrisp file.
+   Endeavour 193 wrapper: then the (:die-sites ...) and (:log-sites ...) sections."
+  (prog1 (funcall *193-orig-serialize-kernels* output-stream kernel-names
+                  :source source :output-targets output-targets)
+    (%193-serialize-die-sites output-stream)
+    (%193-serialize-log-sites output-stream)))
