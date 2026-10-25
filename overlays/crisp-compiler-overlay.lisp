@@ -1529,3 +1529,52 @@
     (when (and *runtime-checks-enabled* *193-enclosing-site* (consp expr))
       (setf (gethash location *193-location-sites*) *193-enclosing-site*))
     (funcall *193-orig-analyze-expression* expr env context location)))
+
+;;;; =====================================================================================
+;;;; ENDEAVOUR 193 -- fixes for the CI --differentiate pass (2026-10-25).
+;;;;   1. --differentiate drops --logging-output ONLY.  --runtime-checks still applies (078/21 and
+;;;;      079/06 check the die-record CAS under --differentiate; forcing checks off removed it).
+;;;;   2. die / r-t-assert(-0) / r-t-output(-0) / %193-log-message produce no value, so AD's activity
+;;;;      analysis must not count their arguments as active (193/32: r-t-output's ulong argument made
+;;;;      a void callee "differentiable", whose _GRAD companion then failed -- BUG 137).
+;;;; =====================================================================================
+
+;; src/compiler.lisp (endeavour 193) -- supersedes the copies above: --differentiate drops only the log.
+(defun initialize-compiler (&rest args)
+  "Endeavour 193 wrapper: accepts :LOGGING-OUTPUT (also taken from the command line), which
+   implies :RUNTIME-CHECKS, and :LOGGING-SIZE (bytes).  Under :DIFFERENTIATE the log is off --
+   the gradient kernels are compiled without it -- but :RUNTIME-CHECKS is honoured as given.
+   Also resets the die and log tables."
+  (let* ((differentiate (getf args :differentiate))
+         (logging (and (or (getf args :logging-output) *193-cli-logging*) (not differentiate)))
+         (size (or (getf args :logging-size) *193-cli-logging-size*))
+         (args (%193-plist-remove (%193-plist-remove args :logging-output) :logging-size))
+         (args (if logging
+                   (list* :runtime-checks t (%193-plist-remove args :runtime-checks))
+                   args)))
+    (prog1 (apply *193-orig-initialize-compiler* args)
+      (setf *logging-output-enabled* logging
+            *logging-size-bytes* (or size (* 4 1024 1024)))
+      (when logging (log:info "193: --logging-output (implies --runtime-checks), log ~d bytes" *logging-size-bytes*))
+      (setf (gethash '%193-log-message *function-table*)
+            (list (make-function-signature :name '%193-log-message :parameters nil :return-types '(nil))))
+      (clrhash *may-die-functions*)
+      (clrhash *die-messages*)
+      (clrhash *193-location-sites*)
+      (clrhash *193-log-messages*)
+      (setf *die-sites* nil
+            *log-sites* nil))))
+
+;; src/autodiff.lisp (endeavour 193) -- FOLD: one clause in %active-scalar-vars, beside the comparisons.
+(defvar *193-orig-active-scalar-vars* (fdefinition '%active-scalar-vars))
+(defun %active-scalar-vars (expr env)
+  "Set (list) of scalar symbols that DIFFERENTIABLY affect EXPR's value. ENV is an
+   alist mapping a let-bound symbol to its own active-scalar-var set.
+   Endeavour 193 wrapper: die, the asserts and the log forms produce no value -- like the
+   comparisons, nothing propagates through them."
+  (if (and (consp expr) (symbolp (car expr))
+           (member (symbol-name (car expr))
+                   '("DIE" "R-T-ASSERT" "R-T-ASSERT-0" "R-T-OUTPUT" "R-T-OUTPUT-0" "%193-LOG-MESSAGE")
+                   :test #'string=))
+      nil
+      (funcall *193-orig-active-scalar-vars* expr env)))

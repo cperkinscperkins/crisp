@@ -4,15 +4,17 @@
 ;; MMA-DIMS: 32 16 32
 ;; HOIST-ARCH: sm_90
 ;; TEST-HOIST[CUDA]: validate-cuda-mma-run
-;; HOIST-EXPECT: DIE 40-dead-producer-does-not-hang-metal.crisp:36 group 0 local
+;; HOIST-EXPECT: DIE 40-dead-producer-does-not-hang-metal.crisp:41 group 0 local
 ;; HOIST-EXPECT: MMA_WRONG
 ;;
 ;; Endeavour 193 Phase E -- a dead producer must not hang its consumers.  This is 139/06 (the
-;; distributed warp-spec :block matmul) with the producer dying before it loads anything.  The two
-;; consumer warps then wait on `full` for a phase flip that never comes: on the H100 that wait hung
-;; (logging-probes/FINDINGS.md).  In a kernel that can die, each try_wait spin also loads the die
-;; record, so the consumers see the death and unwind.  The kernel finishes, the launcher reports the
-;; death, and C was never computed -- so the host reference check reports a wrong result.
+;; distributed warp-spec :block matmul) with the producer dying at its SECOND K-step: the first is
+;; streamed normally, so the consumers complete one lap, then wait on `full` for a phase flip that
+;; never comes.  On the H100 that wait hung (logging-probes/FINDINGS.md).  In a kernel that can die,
+;; each try_wait spin also loads the die record, so the consumers see the death and unwind.  The kernel
+;; finishes, the launcher reports the death, and C is incomplete -- so the host reference check reports
+;; a wrong result.  (The first K-step's loads also give --differentiate the load-tile provenance its
+;; tile-multiply backward needs.)
 
 (def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
@@ -31,9 +33,15 @@
     (tile-stride C (32 16) (grid-y grid-x)
       (with-warp-specialization (:producer 1 :consumer 2)
 
-        ;; PRODUCER -- dies before streaming a single K-step.
+        ;; PRODUCER -- streams the first K-step, then dies at the second.
         (:producer
-          (die "producer gives up"))                                   ;; site
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 8)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (when (= grid-k (to-ulong 1))
+                (die "producer gives up"))                             ;; site
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
 
         ;; CONSUMER (x2) -- waits on `full`, which the producer never fills.
         (:consumer

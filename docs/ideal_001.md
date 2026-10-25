@@ -10649,8 +10649,8 @@ an `r-t-` form disappears with it.
 `die` is different from the rest: it is a statement you wrote, not an `r-t-` form, so it is
 compiled at every level.
 
-Under `--differentiate` both flags are ignored: the gradient kernels are compiled as if
-neither had been given.
+Under `--differentiate`, `--logging-output` is ignored: the gradient kernels are compiled without
+the log.  `--runtime-checks` still applies.
 
 
 ### Compile Time Output and Assert ✅

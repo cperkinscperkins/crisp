@@ -4328,3 +4328,19 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX (hypothesis): the logging-output endeavour redefines die's lowering -- on SPIR-V, return
         and unwind (early-returned threads count as arrived at later barriers on BMG, measured).  A metal
         spec that trips a check and observes the halt should come with it.
+
+[ ] 137 UNDER --differentiate A FAILED _GRAD COMPANION LEAVES A MALFORMED FUNCTION IN THE MODULE (invalid IR).
+        Found 2026-10-25 (endeavour 193, CI --differentiate pass of 193/32).  No logging needed to reproduce:
+        put_temp_files_here/193/p-empty/void-call.crisp -- a void def-function (ulong => nil) whose body is
+        (when (= i 3) (sink i)), where SINK is another void function.
+        OBSERVATION: %active-scalar-vars' default clause (an unknown call: every argument is active) makes the
+        ulong I active, so n-fp=1 and a _GRAD companion is generated for a function with no return.  Its
+        compile fails ("Cannot resolve type to LLVM: NIL"), the log says "Unregistering; will error if called
+        from a differentiable kernel" -- but the partly built LLVM function (PASS-ON_GRAD, returning double, its
+        last block without a terminator) stays in the module, so the whole _grad module is invalid IR
+        (llvm-as: "expected instruction opcode").
+        The default clause's own comment says a spuriously active int "just gets a 0-gradient slot"; for a
+        VOID function that slot has no type, and the failure is not contained.
+        LIKELY FIX (hypothesis): on a failed companion compile, delete the half-built LLVM function
+        (LLVMDeleteFunction) as well as unregistering it; and/or skip the companion for a void function whose
+        only active params are integers.

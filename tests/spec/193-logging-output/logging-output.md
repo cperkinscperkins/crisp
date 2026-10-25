@@ -199,3 +199,14 @@ Each phase is red then green.
   - Spec 40: 139/06 with a dying producer. The PTX check passes locally, and its `--mma-test`
     CUDA harness builds in Docker. Awaiting the H100 to show it finishes instead of hanging.
   - Suites: unit 392/392, E2E 1553/1553, negative 367/367.
+- 2026-10-25 — **Phase E verified on the H100**:
+  - Spec 40's kernel FINISHED: the consumers unwound on the dead producer, and the launcher
+    printed the DIE line and `MMA_WRONG`. The other 21 CUDA specs stayed green.
+  - It exposed a site-line bug: body-rewriting macros (tile-stride, with-warp-specialization) COPY
+    their bodies, so the die had no line and took the outer `let`'s (25, not 36).
+  - Fixed with `%193-site-of`: search the innermost enclosing read form for an EQUAL subform, and
+    site copied logging forms that way. New spec 37 (r-t-output inside workgroup-stride) passes.
+  - Suites after the fix: unit 392/392, E2E 1554/1554, negative 367/367.
+  - Next: CI (--single-pass, --debug, --differentiate), then the fold, plus a writing-crisp.md
+    section. Follow-ups: a COMPILE_API=1 pod run for source-mode launchers; a C-API surface for
+    the die record and the log (and CRISP_PURPOSE_DEBUG_LOG).
