@@ -503,3 +503,251 @@
           (log:info "193: ~a may die (analysis: calls ~a)" caller op)
           (setf (gethash caller *may-die-functions*) t))))
     node))
+
+;;;; =====================================================================================
+;;;; ENDEAVOUR 193 -- PHASE B: the die record report.
+;;;;   * real source lines: while crisp.main reads a .crisp file, the `(` reader records every
+;;;;     list it reads (cons -> (file . line)) in a weak table.  analyze-expression tracks the
+;;;;     innermost enclosing form with a line, so a die that a macro builds (r-t-assert) takes
+;;;;     the macro call's line.  (The --debug location-map holds VIRTUAL lines, so it can't be used.)
+;;;;   * die carries two argument nodes -- (to-int group-linear-id) and (to-int local-linear-id) --
+;;;;     generated only by the CAS winner, into words 1 and 2 of @__crisp_die_record.
+;;;;   * the .metacrisp gains a top-level (:die-sites :record "__crisp_die_record" :sites
+;;;;     ((id "file" line "message-or-nil") ...)) section; the launchers print the DIE line.
+;;;; =====================================================================================
+
+;; src/reader.lisp (endeavour 193)
+(defvar *193-form-sites* (make-hash-table :test 'eq :weakness :key)
+  "Endeavour 193.  A list read from a .crisp file -> (FILE-NAMESTRING . LINE).  Weak, so it never
+   holds a form alive; filled only while *193-read-file* is bound.")
+
+;; src/reader.lisp (endeavour 193)
+(defvar *193-read-file* nil
+  "Endeavour 193.  While crisp.main reads a .crisp file: (FILE-NAMESTRING . NEWLINE-OCTET-OFFSETS).
+   NIL otherwise, and the `(` reader then does nothing extra.")
+
+;; src/analysis/core.lisp (endeavour 193)
+(defvar *193-enclosing-site* nil
+  "Endeavour 193.  (FILE . LINE) of the innermost form being analysed that came from a file.")
+
+;; src/reader.lisp (endeavour 193)
+(defun %193-newline-offsets (path)
+  "Endeavour 193.  A vector of the octet offsets of every LF in the file at PATH."
+  (with-open-file (s path :element-type '(unsigned-byte 8))
+    (let ((buf (make-array (file-length s) :element-type '(unsigned-byte 8)))
+          (out (make-array 64 :adjustable t :fill-pointer 0)))
+      (read-sequence buf s)
+      (loop for i from 0 below (length buf)
+            when (= (aref buf i) 10) do (vector-push-extend i out))
+      out)))
+
+;; src/reader.lisp (endeavour 193)
+(defun %193-line-of (offset newlines)
+  "Endeavour 193.  1-based line of octet OFFSET, given the LF offsets NEWLINES (sorted)."
+  (1+ (or (position-if (lambda (nl) (>= nl offset)) newlines) (length newlines))))
+
+;; src/reader.lisp (endeavour 193)
+(defvar *193-orig-paren-reader* (get-macro-character #\())
+
+;; src/reader.lisp (endeavour 193)
+(defun %193-paren-reader (stream char)
+  "Endeavour 193.  The `(` reader macro, recording where each list came from while a .crisp file is
+   read (*193-read-file*).  FILE-POSITION is just past the `(`."
+  (if *193-read-file*
+      (let* ((pos (ignore-errors (file-position stream)))
+             (form (funcall *193-orig-paren-reader* stream char)))
+        (when (and pos (consp form))
+          (setf (gethash form *193-form-sites*)
+                (cons (car *193-read-file*) (%193-line-of (1- pos) (cdr *193-read-file*)))))
+        form)
+      (funcall *193-orig-paren-reader* stream char)))
+
+(set-macro-character #\( #'%193-paren-reader)
+
+;; src/reader.lisp (endeavour 193)
+(defmacro %193-with-read-file ((path) &body body)
+  "Endeavour 193.  Runs BODY with *193-read-file* bound for the .crisp file at PATH."
+  `(let ((*193-read-file* (cons (file-namestring ,path) (%193-newline-offsets ,path))))
+     ,@body))
+
+;; src/main.lisp (endeavour 193) -- FOLD: the %193-with-read-file around each file's read.
+(defun crisp.main::%read-crisp-forms (files)
+  "Every top-level form of FILES, in order, read in :crisp-language.
+   Endeavour 193: records each list's file and line (*193-form-sites*) for the die report."
+  (let ((*package* (find-package :crisp-language)))
+    (loop for f in files
+          appending (%193-with-read-file (f)
+                      (with-open-file (stream f)
+                        (loop for form = (read stream nil :eof)
+                              until (eq form :eof)
+                              collect form))))))
+
+;; src/main.lisp (endeavour 193) -- FOLD: the %193-with-read-file around each file's read.
+(defun crisp.main::%compile-files-single-pass (files module builder di-builder di-compile-unit)
+  "--single-pass: compile each file's forms as they are read, with one shared toplevel index so that
+   location indices are unique across the entire compilation unit.
+   Endeavour 193: records each list's file and line (*193-form-sites*) for the die report."
+  (let ((toplevel-index 0)
+        (*package* (find-package :crisp-language)))
+    (dolist (f files)
+      (%193-with-read-file (f)
+        (with-open-file (stream f)
+          (loop for form = (read stream nil :eof)
+                until (eq form :eof)
+                do (let ((location (list toplevel-index)))
+                     (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
+                     (incf toplevel-index))))))))
+
+;; src/analysis/core.lisp (endeavour 193) -- FOLD: bind *193-enclosing-site* at the top of analyze-expression.
+(defvar *193-orig-analyze-expression* (fdefinition 'analyze-expression))
+(defun analyze-expression (expr env context location)
+  "Recursively analyzes a *single* expression.
+   Endeavour 193 wrapper: tracks the innermost form that came from a file (*193-enclosing-site*)."
+  (let ((*193-enclosing-site* (or (and (consp expr) (gethash expr *193-form-sites*))
+                                  *193-enclosing-site*)))
+    (funcall *193-orig-analyze-expression* expr env context location)))
+
+;; src/analysis/ops.lisp (endeavour 193)
+(defparameter +193-die-id-forms+
+  '((to-int (+ (get-workgroup-id 0)
+               (* (get-num-groups 0)
+                  (+ (get-workgroup-id 1)
+                     (* (get-num-groups 1) (get-workgroup-id 2))))))
+    (to-int (get-local-linear-id)))
+  "Endeavour 193.  What the CAS winner writes into words 1 and 2 of the die record: the linear
+   workgroup id and the linear local id.")
+
+;; src/analysis/ops.lisp (endeavour 193) -- supersedes both copies above.
+(defun analyze-die-expression (expr env context location)
+  "Endeavour 193.  (die) or (die \"message\").  The message must be a compile-time string: the
+   die record carries only a site id, which the metadata maps back to file, line and message.
+   Marks the function being compiled as may-die (this is what --single-pass relies on, and what
+   catches a die produced by a user macro).  Phase B: records the site's file and line, and
+   carries the group/local id expressions as the call's argument nodes."
+  (let ((args (rest expr)))
+    (when (> (length args) 1)
+      (error 'crisp-compiler-error
+        :message (format nil "die takes at most one argument, a message, but was given ~d." (length args))
+        :source-location location))
+    (when (and args (not (stringp (first args))))
+      (error 'crisp-compiler-error
+        :message (format nil "die's message must be a compile-time string, not ~s.  The die record carries only a site id; the message is looked up in the metadata." (first args))
+        :source-location location))
+    (let ((fn (%193-current-function context))
+          (site (or (gethash expr *193-form-sites*) *193-enclosing-site*)))
+      (log:debug "193: analyzing die ~s in ~a at ~s (source ~s)" (first args) fn location site)
+      (if fn
+          (setf (gethash fn *may-die-functions*) t)
+          (log:warn "193: die at ~s analysed outside any function" location))
+      (setf (gethash location *die-messages*) (list (first args) (car site) (cdr site))))
+    (make-semantic-call :name 'die
+                        :type '(nil)
+                        :args (loop for f in +193-die-id-forms+
+                                    for i from 1
+                                    collect (analyze-expression f env context (append location (list i))))
+                        :signature (first (gethash 'die *function-table*))
+                        :source-location location)))
+
+;; src/codegen.lisp (endeavour 193) -- supersedes the copy above.
+(defun %193-emit-die (builder module location &optional node var-env di-builder di-scope location-map)
+  "Endeavour 193.  The die lowering: claim the die record (CAS site id over 0, relaxed); the winner
+   writes its linear group id and local id into words 1 and 2.  Then set this thread's die flag and
+   return.  Code after it goes into a fresh block with no predecessors, as return-from-loop does."
+  (unless *die-flag-ptr*
+    (error "Compiler bug (endeavour 193): die reached codegen in a function that was not marked may-die (location ~s)." location))
+  (let* ((info (gethash location *die-messages*))
+         ;; One id per source location: a two-target compile (spv + ptx) generates the module
+         ;; twice, and a template body may be instantiated more than once.
+         (existing (find location *die-sites* :key #'fifth :test #'equal))
+         (site-id (if existing (first existing) (1+ (length *die-sites*))))
+         (rec (%193-die-record-global module))
+         (rec-ty (llvm-array-type (llvm-int32-type) 4))
+         (i32 (llvm-int32-type))
+         (fn (llvm-get-basic-block-parent (llvm-get-insert-block builder))))
+    (unless existing
+      (push (list site-id (second info) (third info) (first info) location) *die-sites*))
+    (log:info "193: die site ~d: ~a:~a ~s" site-id (second info) (third info) (first info))
+    (let* ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg
+                  builder rec (llvm-const-int i32 0 0) (llvm-const-int i32 site-id 0) 2 2 0))
+           (won (llvm-build-extract-value builder pair 1 "die_won"))
+           (fill (llvm-append-basic-block fn "die_fill"))
+           (done (llvm-append-basic-block fn "die_done")))
+      (llvm-build-cond-br builder won fill done)
+      (llvm-position-builder-at-end builder fill)
+      (when node
+        (loop for arg in (semantic-call-args node)
+              for word from 1
+              do (let* ((v (generate-node-ir arg builder module var-env di-builder di-scope location-map))
+                        (idx (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                   (setf (cffi:mem-aref idx 'llvm-value-ref 0) (llvm-const-int i32 0 0)
+                         (cffi:mem-aref idx 'llvm-value-ref 1) (llvm-const-int i32 word 0))
+                   (llvm-build-store builder v
+                                     (llvm-build-in-bounds-gep2 builder rec-ty rec idx 2 "die_word")))))
+      (llvm-build-br builder done)
+      (llvm-position-builder-at-end builder done))
+    (llvm-build-store builder (llvm-const-int i32 1 0) *die-flag-ptr*)
+    (%193-build-bail-return builder)
+    (llvm-position-builder-at-end builder (llvm-append-basic-block fn "after_die"))
+    (values nil nil)))
+
+;; src/codegen.lisp (endeavour 193) -- supersedes the method above.
+(defmethod generate-node-ir :around ((node semantic-call) builder module var-env di-builder di-scope location-map)
+  "Endeavour 193: die lowers to %193-emit-die, not llvm.trap."
+  (if (eq (semantic-call-name node) 'die)
+      (%193-emit-die builder module (semantic-call-source-location node)
+                     node var-env di-builder di-scope location-map)
+      (call-next-method)))
+
+;; src/metadata.lisp (endeavour 193)
+(defun %193-serialize-die-sites (stream)
+  "Endeavour 193.  The (:die-sites ...) section: the record's global name and every site, oldest
+   first, as (ID \"FILE\" LINE \"MESSAGE\"-or-NIL).  Nothing when the module cannot die."
+  (when *die-sites*
+    (format stream "(:die-sites :record \"__crisp_die_record\"~%  :sites (")
+    (dolist (s (reverse *die-sites*))
+      (format stream "~%    (~d ~s ~s ~s)" (first s) (or (second s) "?") (or (third s) 0) (fourth s)))
+    (format stream "))~%")))
+
+;; src/metadata.lisp (endeavour 193) -- FOLD: call %193-serialize-die-sites after the kernels section.
+(defvar *193-orig-serialize-kernels* (fdefinition 'serialize-kernels))
+(defun serialize-kernels (output-stream kernel-names &key source output-targets)
+  "Emits the (:kernels ...) section of the metacrisp file.
+   Endeavour 193 wrapper: then the (:die-sites ...) section."
+  (prog1 (funcall *193-orig-serialize-kernels* output-stream kernel-names
+                  :source source :output-targets output-targets)
+    (%193-serialize-die-sites output-stream)))
+
+;; src/analysis/ops.lisp (endeavour 193) -- supersedes the copies above: the id expressions are analysed
+;; as if in a dispatch context -- the record is the compiler's own bookkeeping, and a die in a
+;; def-function (spec 13) must still name its thread; GPU builtins are refused there for USER code.
+(defun analyze-die-expression (expr env context location)
+  "Endeavour 193.  (die) or (die \"message\").  The message must be a compile-time string: the
+   die record carries only a site id, which the metadata maps back to file, line and message.
+   Marks the function being compiled as may-die (this is what --single-pass relies on, and what
+   catches a die produced by a user macro).  Phase B: records the site's file and line, and
+   carries the group/local id expressions as the call's argument nodes."
+  (let ((args (rest expr)))
+    (when (> (length args) 1)
+      (error 'crisp-compiler-error
+        :message (format nil "die takes at most one argument, a message, but was given ~d." (length args))
+        :source-location location))
+    (when (and args (not (stringp (first args))))
+      (error 'crisp-compiler-error
+        :message (format nil "die's message must be a compile-time string, not ~s.  The die record carries only a site id; the message is looked up in the metadata." (first args))
+        :source-location location))
+    (let ((fn (%193-current-function context))
+          (site (or (gethash expr *193-form-sites*) *193-enclosing-site*)))
+      (log:debug "193: analyzing die ~s in ~a at ~s (source ~s)" (first args) fn location site)
+      (if fn
+          (setf (gethash fn *may-die-functions*) t)
+          (log:warn "193: die at ~s analysed outside any function" location))
+      (setf (gethash location *die-messages*) (list (first args) (car site) (cdr site))))
+    (make-semantic-call :name 'die
+                        :type '(nil)
+                        :args (let ((*in-dispatch-context* t))
+                                (loop for f in +193-die-id-forms+
+                                      for i from 1
+                                      collect (analyze-expression f env context (append location (list i)))))
+                        :signature (first (gethash 'die *function-table*))
+                        :source-location location)))
+

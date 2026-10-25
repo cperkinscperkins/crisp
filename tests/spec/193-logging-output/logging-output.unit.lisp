@@ -24,7 +24,11 @@
           "The die record is a zero-initialised addrspace(1) module global.")
     (true (search "cmpxchg ptr addrspace(1) @__crisp_die_record, i32 0, i32 1 monotonic" ir)
           "The first die site claims the record with a relaxed CAS of site id 1 over 0.")
-    (true (search "%die_flag = alloca i32" ir) "A kernel that may die allocates its die flag.")))
+    (true (search "%die_flag = alloca i32" ir) "A kernel that may die allocates its die flag.")
+    (true (search "br i1 %die_won, label %die_fill, label %die_done" ir)
+          "Only the CAS winner fills in the record.")
+    (true (search "getelementptr inbounds ([4 x i32], ptr addrspace(1) @__crisp_die_record, i32 0, i32 2)" ir)
+          "The winner writes its local id into word 2.")))
 
 (define-test (logging-output callee-takes-and-caller-checks-the-flag)
   "A may-die function takes the flag as a trailing ptr; its caller passes it and bails if it is set."
