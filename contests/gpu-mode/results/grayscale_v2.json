@@ -4,7 +4,7 @@
   "leaderboard_id": 538,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/538?tab=rankings",
   "directory": "03-grayscale-v2",
-  "crisp_commit": "476df9eb",
+  "crisp_commit": "5c17153c",
   "workload": {
     "dtype": "float32",
     "shape": [
@@ -44,7 +44,7 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-25T07:40:20Z",
+      "captured_at": "2026-10-25T16:38:54Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 48,
@@ -60,7 +60,7 @@
       "median_score_us": 601.52
     },
     "H100": {
-      "captured_at": "2026-10-25T07:40:20Z",
+      "captured_at": "2026-10-25T16:38:54Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 36,
@@ -76,10 +76,10 @@
       "median_score_us": 1371.36
     },
     "A100": {
-      "captured_at": "2026-10-25T07:40:20Z",
+      "captured_at": "2026-10-25T16:38:54Z",
       "user_name": "cperkinscperkins",
-      "rank": 25,
-      "total_entrants": 127,
+      "rank": 29,
+      "total_entrants": 131,
       "file_name": "crisp_grayscale_direct_vec4_nc.py",
       "crisp_file": "03-grayscale-v2/grayscale_direct_vec4_nc.crisp",
       "py_file": "03-grayscale-v2/crisp_grayscale_direct_vec4_nc.py",
@@ -89,10 +89,10 @@
       "submission_id": 966645,
       "top1_score_us": 2345.08,
       "top1_user": "HariCharanK",
-      "median_score_us": 10401.18
+      "median_score_us": 10399.38
     },
     "L4": {
-      "captured_at": "2026-10-25T07:40:20Z",
+      "captured_at": "2026-10-25T16:38:54Z",
       "user_name": "cperkinscperkins",
       "rank": 19,
       "total_entrants": 30,

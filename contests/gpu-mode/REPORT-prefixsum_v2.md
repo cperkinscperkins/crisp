@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `prefixsum_v2`
 
-> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `476df9eb`).
+> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `5c17153c`).
 
 **Workload:** Inclusive prefix sum (cumsum) of 1D float32 tensor across 11 benchmark sizes from 262,144 to 268,435,456 elements.
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#28** / 33 | **1033.70 µs** | 1032.77 µs | 2.08 TB/s | 22.9% (`236.70 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) ([`.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp)) | — | `2026-10-25 07:40` |
-| **H100** | Hopper (sm_90) | **#28** / 30 | **2164.62 µs** | 2163.47 µs | 992.1 GB/s | 32.4% (`702.23 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) ([`.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp)) | — | `2026-10-25 07:40` |
-| **A100** | Ampere (sm_80) | **#26** / 29 | **3455.25 µs** | 3463.81 µs | 621.5 GB/s | 26.7% (`922.11 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) ([`.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp)) | — | `2026-10-25 07:40` |
-| **L4** | Ada Lovelace (sm_89) | **#21** / 24 | **17969.41 µs** | 17978.71 µs | 119.5 GB/s | 35.9% (`6454.27 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) ([`.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp)) | — | `2026-10-25 07:40` |
+| **B200** | Blackwell (sm_100) | **#26** / 33 | **739.65 µs** | 737.29 µs | 2.90 TB/s | 32.0% (`236.70 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
+| **H100** | Hopper (sm_90) | **#25** / 30 | **1435.45 µs** | 1436.05 µs | 1.50 TB/s | 48.9% (`702.23 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
+| **A100** | Ampere (sm_80) | **#23** / 29 | **2649.53 µs** | 2529.72 µs | 810.5 GB/s | 34.8% (`922.11 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
+| **L4** | Ada Lovelace (sm_89) | **#21** / 24 | **17885.18 µs** | 17860.58 µs | 120.1 GB/s | 36.1% (`6454.27 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -32,10 +32,10 @@
 
 | GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
 |---|---|---:|---:|---:|---:|---|---|---:|
-| **B200** | Blackwell (sm_100) | **1033.70 µs** | 2.08 TB/s | **22.9%** (`236.70 µs`) | 100.0% (`1033.70 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) | `leaderboard` | `#967074` |
-| **H100** | Hopper (sm_90) | **2164.62 µs** | 992.1 GB/s | **32.4%** (`702.23 µs`) | 100.0% (`2164.62 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) | `leaderboard` | `#967070` |
-| **A100** | Ampere (sm_80) | **3455.25 µs** | 621.5 GB/s | **26.7%** (`922.11 µs`) | 100.0% (`3455.25 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) | `leaderboard` | `#967075` |
-| **L4** | Ada Lovelace (sm_89) | **17969.41 µs** | 119.5 GB/s | **35.9%** (`6454.27 µs`) | 100.0% (`17969.41 µs`) | [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) | `leaderboard` | `#967073` |
+| **B200** | Blackwell (sm_100) | **1033.70 µs** | 2.08 TB/s | **22.9%** (`236.70 µs`) | 71.6% (`739.65 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) | `leaderboard` | `#967074` |
+| **H100** | Hopper (sm_90) | **2164.62 µs** | 992.1 GB/s | **32.4%** (`702.23 µs`) | 66.3% (`1435.45 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) | `leaderboard` | `#967070` |
+| **A100** | Ampere (sm_80) | **3455.25 µs** | 621.5 GB/s | **26.7%** (`922.11 µs`) | 76.7% (`2649.53 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) | `leaderboard` | `#967075` |
+| **L4** | Ada Lovelace (sm_89) | **17969.41 µs** | 119.5 GB/s | **35.9%** (`6454.27 µs`) | 99.5% (`17885.18 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) | `leaderboard` | `#967073` |
 
 ### Crisp Implementation ([`05-prefixsum-v2/prefixsum_beauty.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp))
 
@@ -108,9 +108,11 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 
 | Step | Kernel (`.crisp` / `.py`) | Strategy | Regs | Profile | **B200** | **H100** | **A100** | **L4** |
 |---|---|---|---:|---|---:|---:|---:|---:|
-| 1 | [`prefixsum_beauty.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp) / [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) | Hierarchical prefix sum: 256-thread block scan with Kogge-Stone warp scan and shared scratch warp totals + block-sum scan + add-base pass | 32 | — | **`LB: 1033.70`** | **2160.0 (`LB: 2164.62`)** | **`LB: 3455.25`** | **`LB: 17969.41`** |
+| 1 | [`prefixsum_beauty.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp) / [`crisp_prefixsum_beauty.py`](05-prefixsum-v2/crisp_prefixsum_beauty.py) | Hierarchical prefix sum: 256-thread block scan with Kogge-Stone warp scan and shared scratch warp totals + block-sum scan + add-base pass | 32 | — | `LB: 1033.70` | 2160.0 (`LB: 2164.62`) | `LB: 3455.25` | `LB: 17969.41` |
 | 2 | [`prefixsum_pass1.crisp`](05-prefixsum-v2/prefixsum_pass1.crisp) / [`crisp_prefixsum_hierarchical.py`](05-prefixsum-v2/crisp_prefixsum_hierarchical.py) | Hierarchical prefix sum: Pass 1 block scan (4 elements/thread) + Pass 2 block prefix accumulation | 32 | — | — | — | — | — |
 | 3 | [`prefixsum_pass1_tile8.crisp`](05-prefixsum-v2/prefixsum_pass1_tile8.crisp) / [`crisp_prefixsum_tile8.py`](05-prefixsum-v2/crisp_prefixsum_tile8.py) | Hierarchical prefix sum: 8 elements per thread (2048 elements/CTA), halving block count and block-sum memory footprint | 32 | — | — | 4830.0 | — | — |
+| 4 | [`prefixsum_v4_pass1.crisp`](05-prefixsum-v2/prefixsum_v4_pass1.crisp) / [`crisp_prefixsum_v4.py`](05-prefixsum-v2/crisp_prefixsum_v4.py) | 128-bit vectorized prefix sum (float4): ld.global.nc 128-bit loads, st.global.cs 128-bit streaming stores | 32 | — | — | **1435.0** | — | — |
+| 5 | [`prefixsum_v4_b512_pass1.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp) / [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) | 128-bit vectorized prefix sum (512 threads, 2048/CTA): halves blocks to 131k, 512 KB L2-resident block-sums buffer | 32 | — | **`LB: 739.65`** | 1434.0 (`LB: 1435.45`) | **`LB: 2649.53`** | **`LB: 17885.18`** |
 
 ## § 3 — Key Architectural Takeaways
 
@@ -133,3 +135,10 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-10-25 07:34:56` | `967073` | **L4** | `leaderboard` | `crisp_prefixsum_beauty.py` | — | **17969.41** | 17978.71 |
 | `2026-10-25 07:36:58` | `967074` | **B200** | `leaderboard` | `crisp_prefixsum_beauty.py` | — | **1033.70** | 1032.77 |
 | `2026-10-25 07:39:23` | `967075` | **A100** | `leaderboard` | `crisp_prefixsum_beauty.py` | — | **3455.25** | 3463.81 |
+| `2026-10-25 16:24:01` | `967377` | **H100** | `benchmark` | `crisp_prefixsum_v4.py` | 1435.0 ± 0.6 | — | — |
+| `2026-10-25 16:25:29` | `967378` | **H100** | `benchmark` | `crisp_prefixsum_v4_b512.py` | — | — | — |
+| `2026-10-25 16:29:15` | `967380` | **H100** | `benchmark` | `crisp_prefixsum_v4_b512.py` | 1434.0 ± 0.5 | — | — |
+| `2026-10-25 16:31:33` | `967384` | **H100** | `leaderboard` | `crisp_prefixsum_v4_b512.py` | — | **1435.45** | 1436.05 |
+| `2026-10-25 16:33:55` | `967387` | **B200** | `leaderboard` | `crisp_prefixsum_v4_b512.py` | — | **739.65** | 737.29 |
+| `2026-10-25 16:36:11` | `967389` | **A100** | `leaderboard` | `crisp_prefixsum_v4_b512.py` | — | **2649.53** | 2529.72 |
+| `2026-10-25 16:38:44` | `967392` | **L4** | `leaderboard` | `crisp_prefixsum_v4_b512.py` | — | **17885.18** | 17860.58 |

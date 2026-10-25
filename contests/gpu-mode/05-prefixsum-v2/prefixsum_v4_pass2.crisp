@@ -1,0 +1,24 @@
+;; GPU MODE Challenge 05: prefixsum_v2 -- 128-bit Vectorized (4 elements/thread, 1024/CTA)
+;; Pass 2: Add scanned block totals to elements of block using 128-bit vector load/store
+;; Each thread adds `block_sums[bid - 1]` to its float4 in `output`.
+
+(def-type out-vec (vector float :address-space :global :align :compact :cache :streaming))
+(def-type sum-vec (vector float :address-space :global :align :compact))
+
+(def-kernel prefixsum_pass2_v4 (&out output block-sums)
+  (declare #'(out-vec sum-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid   (to-ulong (get-local-id 0)))
+        (bid   (to-ulong (get-workgroup-id 0)))
+        (n     (length~ output))
+        (n4    (/ n 4ul))
+        (out4  (make-vector output float4 :length n4))
+        (v-idx (+ (* bid 256ul) tid)))
+    (when (and (> bid 0ul) (< v-idx n4))
+      (let ((block-prefix (~ block-sums (- bid 1ul)))
+            (v (~ out4 v-idx)))
+        (set! (~ out4 v-idx) ##((+ (x~ v) block-prefix)
+                                (+ (y~ v) block-prefix)
+                                (+ (z~ v) block-prefix)
+                                (+ (w~ v) block-prefix)))))))
+

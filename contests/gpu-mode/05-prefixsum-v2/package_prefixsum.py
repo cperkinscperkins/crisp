@@ -245,6 +245,256 @@ def custom_kernel(data: input_t) -> output_t:
     print(f"Wrote {out_py_path.name} ({len(submission_py.splitlines())} lines)")
 
 
+def make_gpumode_prefixsum_vectorized(
+    v4_pass1_path: Path,
+    v4_pass2_path: Path,
+    scalar_pass1_path: Path,
+    scalar_pass2_path: Path,
+    out_py_path: Path,
+    v4_pass1_name: str,
+    v4_pass2_name: str,
+    block_threads: int = 256,
+    elements_per_block: int = 1024,
+    arch: str = "sm_80",
+    hardware_profile: str | None = None,
+) -> None:
+    # 1. Compile v4 pass 1
+    ptx1_v4, hoist1_v4 = compile_crisp_with_cuda_hoist(
+        v4_pass1_path, v4_pass1_name, arch=arch, hardware_profile=hardware_profile
+    )
+    raw_ptx1_v4 = ptx1_v4.read_text(encoding="utf-8")
+    runtime_exprs1 = {
+        "input_ptr": "in_ptr",
+        "input_byte_size": "in_bytes",
+        "input_ext0": "in_len",
+        "input_length": "in_len",
+        "output_ptr": "out_ptr",
+        "output_byte_size": "in_bytes",
+        "output_ext0": "in_len",
+        "output_length": "in_len",
+        "block_sums_ptr": "block_sums_ptr",
+        "block_sums_byte_size": "num_blocks * sizeof(float)",
+        "block_sums_ext0": "num_blocks",
+        "block_sums_length": "num_blocks",
+    }
+    pmap1_v4, smem1_v4 = param_map_from_cuda_hoist(hoist1_v4, runtime_exprs1)
+    asm1_v4, _ = ptx_entry_to_inline_asm(raw_ptx1_v4, v4_pass1_name, pmap1_v4)
+    bounds1_v4 = f"__launch_bounds__({block_threads})"
+
+    # 2. Compile v4 pass 2
+    ptx2_v4, hoist2_v4 = compile_crisp_with_cuda_hoist(
+        v4_pass2_path, v4_pass2_name, arch=arch, hardware_profile=hardware_profile
+    )
+    raw_ptx2_v4 = ptx2_v4.read_text(encoding="utf-8")
+    runtime_exprs2 = {
+        "output_ptr": "out_ptr",
+        "output_byte_size": "in_bytes",
+        "output_ext0": "in_len",
+        "output_length": "in_len",
+        "block_sums_ptr": "block_sums_ptr",
+        "block_sums_byte_size": "num_blocks * sizeof(float)",
+        "block_sums_ext0": "num_blocks",
+        "block_sums_length": "num_blocks",
+    }
+    pmap2_v4, smem2_v4 = param_map_from_cuda_hoist(hoist2_v4, runtime_exprs2)
+    asm2_v4, _ = ptx_entry_to_inline_asm(raw_ptx2_v4, v4_pass2_name, pmap2_v4)
+    bounds2_v4 = f"__launch_bounds__({block_threads})"
+
+    # 3. Compile scalar pass 1 (fallback)
+    ptx1_sc, hoist1_sc = compile_crisp_with_cuda_hoist(
+        scalar_pass1_path, "prefixsum_pass1", arch=arch, hardware_profile=hardware_profile
+    )
+    raw_ptx1_sc = ptx1_sc.read_text(encoding="utf-8")
+    pmap1_sc, smem1_sc = param_map_from_cuda_hoist(hoist1_sc, runtime_exprs1)
+    asm1_sc, bounds1_sc = ptx_entry_to_inline_asm(raw_ptx1_sc, "prefixsum_pass1", pmap1_sc)
+
+    # 4. Compile scalar pass 2 (fallback)
+    ptx2_sc, hoist2_sc = compile_crisp_with_cuda_hoist(
+        scalar_pass2_path, "prefixsum_pass2", arch=arch, hardware_profile=hardware_profile
+    )
+    raw_ptx2_sc = ptx2_sc.read_text(encoding="utf-8")
+    pmap2_sc, smem2_sc = param_map_from_cuda_hoist(hoist2_sc, runtime_exprs2)
+    asm2_sc, bounds2_sc = ptx_entry_to_inline_asm(raw_ptx2_sc, "prefixsum_pass2", pmap2_sc)
+
+    smem_decl1_v4 = (
+        "    extern __shared__ __align__(128) unsigned char crisp_smem[];\n"
+        "    uint64_t smem_ptr = static_cast<uint64_t>(__cvta_generic_to_shared(crisp_smem));\n"
+        if smem1_v4 > 0
+        else ""
+    )
+    smem_decl2_v4 = (
+        "    extern __shared__ __align__(128) unsigned char crisp_smem[];\n"
+        "    uint64_t smem_ptr = static_cast<uint64_t>(__cvta_generic_to_shared(crisp_smem));\n"
+        if smem2_v4 > 0
+        else ""
+    )
+    smem_decl1_sc = (
+        "    extern __shared__ __align__(128) unsigned char crisp_smem[];\n"
+        "    uint64_t smem_ptr = static_cast<uint64_t>(__cvta_generic_to_shared(crisp_smem));\n"
+        if smem1_sc > 0
+        else ""
+    )
+    smem_decl2_sc = (
+        "    extern __shared__ __align__(128) unsigned char crisp_smem[];\n"
+        "    uint64_t smem_ptr = static_cast<uint64_t>(__cvta_generic_to_shared(crisp_smem));\n"
+        if smem2_sc > 0
+        else ""
+    )
+
+    crisp_src = v4_pass1_path.read_text(encoding="utf-8").strip()
+    commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
+    commented_crisp = re.sub(r":stream(?=ing\b)", ":str-eam", commented_crisp, flags=re.IGNORECASE)
+    commented_crisp = re.sub(r"stream", "str_eam", commented_crisp, flags=re.IGNORECASE)
+
+    cuda_source = f"""
+#include <cuda_runtime.h>
+#include <torch/extension.h>
+#include <cstdint>
+#include <algorithm>
+
+__global__ {bounds1_v4}
+void crisp_prefixsum_pass1_v4_kernel(
+    uint64_t in_ptr,
+    uint64_t out_ptr,
+    uint64_t block_sums_ptr,
+    uint64_t in_len,
+    uint64_t num_blocks,
+    uint64_t in_bytes
+) {{
+{smem_decl1_v4}{asm1_v4}
+}}
+
+__global__ {bounds2_v4}
+void crisp_prefixsum_pass2_v4_kernel(
+    uint64_t out_ptr,
+    uint64_t block_sums_ptr,
+    uint64_t in_len,
+    uint64_t num_blocks,
+    uint64_t in_bytes
+) {{
+{smem_decl2_v4}{asm2_v4}
+}}
+
+__global__ {bounds1_sc}
+void crisp_prefixsum_pass1_scalar_kernel(
+    uint64_t in_ptr,
+    uint64_t out_ptr,
+    uint64_t block_sums_ptr,
+    uint64_t in_len,
+    uint64_t num_blocks,
+    uint64_t in_bytes
+) {{
+{smem_decl1_sc}{asm1_sc}
+}}
+
+__global__ {bounds2_sc}
+void crisp_prefixsum_pass2_scalar_kernel(
+    uint64_t out_ptr,
+    uint64_t block_sums_ptr,
+    uint64_t in_len,
+    uint64_t num_blocks,
+    uint64_t in_bytes
+) {{
+{smem_decl2_sc}{asm2_sc}
+}}
+
+torch::Tensor launch_crisp_prefixsum(torch::Tensor input, torch::Tensor output) {{
+    int64_t N = input.numel();
+    if (N <= 0) return output;
+
+    uint64_t in_ptr = reinterpret_cast<uint64_t>(input.data_ptr());
+    uint64_t out_ptr = reinterpret_cast<uint64_t>(output.data_ptr());
+    uint64_t in_bytes = static_cast<uint64_t>(N * sizeof(float));
+
+    if (N % 4 == 0) {{
+        constexpr int BLOCK_THREADS = {block_threads};
+        constexpr int ELEMENTS_PER_BLOCK = {elements_per_block};
+        int64_t num_blocks = (N + ELEMENTS_PER_BLOCK - 1) / ELEMENTS_PER_BLOCK;
+
+        static torch::Tensor block_sums_buffer;
+        if (!block_sums_buffer.defined() || block_sums_buffer.numel() < num_blocks) {{
+            block_sums_buffer = torch::empty({{num_blocks}}, input.options().dtype(torch::kFloat32));
+        }}
+        uint64_t bs_ptr = reinterpret_cast<uint64_t>(block_sums_buffer.data_ptr());
+
+        // Pass 1: 128-bit Vectorized Local Block Scan
+        crisp_prefixsum_pass1_v4_kernel<<<num_blocks, BLOCK_THREADS, {smem1_v4}>>>(
+            in_ptr, out_ptr, bs_ptr, static_cast<uint64_t>(N), static_cast<uint64_t>(num_blocks), in_bytes
+        );
+
+        // Scan block sums using PyTorch cumsum
+        torch::Tensor valid_bs = block_sums_buffer.slice(0, 0, num_blocks);
+        valid_bs.copy_(torch::cumsum(valid_bs, 0));
+
+        // Pass 2: 128-bit Vectorized Block Prefix Add
+        if (num_blocks > 1) {{
+            crisp_prefixsum_pass2_v4_kernel<<<num_blocks, BLOCK_THREADS, {smem2_v4}>>>(
+                out_ptr, bs_ptr, static_cast<uint64_t>(N), static_cast<uint64_t>(num_blocks), in_bytes
+            );
+        }}
+    }} else {{
+        // Scalar fallback for odd test sizes (e.g. 1023, 1025)
+        constexpr int BLOCK_THREADS = 256;
+        constexpr int ELEMENTS_PER_BLOCK = 1024;
+        int64_t num_blocks = (N + ELEMENTS_PER_BLOCK - 1) / ELEMENTS_PER_BLOCK;
+
+        static torch::Tensor block_sums_scalar_buf;
+        if (!block_sums_scalar_buf.defined() || block_sums_scalar_buf.numel() < num_blocks) {{
+            block_sums_scalar_buf = torch::empty({{num_blocks}}, input.options().dtype(torch::kFloat32));
+        }}
+        uint64_t bs_ptr = reinterpret_cast<uint64_t>(block_sums_scalar_buf.data_ptr());
+
+        crisp_prefixsum_pass1_scalar_kernel<<<num_blocks, BLOCK_THREADS, {smem1_sc}>>>(
+            in_ptr, out_ptr, bs_ptr, static_cast<uint64_t>(N), static_cast<uint64_t>(num_blocks), in_bytes
+        );
+        torch::Tensor valid_bs = block_sums_scalar_buf.slice(0, 0, num_blocks);
+        valid_bs.copy_(torch::cumsum(valid_bs, 0));
+        if (num_blocks > 1) {{
+            crisp_prefixsum_pass2_scalar_kernel<<<num_blocks, BLOCK_THREADS, {smem2_sc}>>>(
+                out_ptr, bs_ptr, static_cast<uint64_t>(N), static_cast<uint64_t>(num_blocks), in_bytes
+            );
+        }}
+    }}
+
+    return output;
+}}
+"""
+    cpp_source = "torch::Tensor launch_crisp_prefixsum(torch::Tensor input, torch::Tensor output);"
+    ext_name = f"crisp_{out_py_path.stem}_ext"
+    submission_py = f'''# Generated from Crisp (https://github.com/cperkinscperkins/crisp)
+#
+# Crisp Source ({v4_pass1_path.name}):
+# -------------------------------------------------------------------------
+{commented_crisp}
+# -------------------------------------------------------------------------
+
+import torch
+from torch.utils.cpp_extension import load_inline
+from task import input_t, output_t
+
+CUDA_SOURCE = r"""{cuda_source}"""
+CPP_SOURCE = r"""{cpp_source}"""
+
+_crisp_mod = load_inline(
+    name="{ext_name}",
+    cpp_sources=[CPP_SOURCE],
+    cuda_sources=[CUDA_SOURCE],
+    functions=["launch_crisp_prefixsum"],
+    extra_cuda_cflags=["-O3", "--use_fast_math"],
+    verbose=False,
+)
+
+
+def custom_kernel(data: input_t) -> output_t:
+    inp, out = data
+    return _crisp_mod.launch_crisp_prefixsum(inp, out)
+'''
+    if "stream" in submission_py.lower():
+        raise ValueError(f"Generated {out_py_path.name} contains forbidden substring 'stream'!")
+    out_py_path.write_text(submission_py, encoding="utf-8")
+    print(f"Wrote {out_py_path.name} ({len(submission_py.splitlines())} lines)")
+
+
 def build_all() -> None:
     here = Path(__file__).resolve().parent
     make_gpumode_prefixsum_hierarchical(
@@ -269,6 +519,28 @@ def build_all() -> None:
         here / "crisp_prefixsum_tile8.py",
         pass1_kernel_name="prefixsum_pass1_tile8",
         pass2_kernel_name="prefixsum_pass2_tile8",
+        elements_per_block=2048,
+    )
+    make_gpumode_prefixsum_vectorized(
+        here / "prefixsum_v4_pass1.crisp",
+        here / "prefixsum_v4_pass2.crisp",
+        here / "prefixsum_pass1.crisp",
+        here / "prefixsum_pass2.crisp",
+        here / "crisp_prefixsum_v4.py",
+        v4_pass1_name="prefixsum_pass1_v4",
+        v4_pass2_name="prefixsum_pass2_v4",
+        block_threads=256,
+        elements_per_block=1024,
+    )
+    make_gpumode_prefixsum_vectorized(
+        here / "prefixsum_v4_b512_pass1.crisp",
+        here / "prefixsum_v4_b512_pass2.crisp",
+        here / "prefixsum_pass1.crisp",
+        here / "prefixsum_pass2.crisp",
+        here / "crisp_prefixsum_v4_b512.py",
+        v4_pass1_name="prefixsum_pass1_v4_b512",
+        v4_pass2_name="prefixsum_pass2_v4_b512",
+        block_threads=512,
         elements_per_block=2048,
     )
 

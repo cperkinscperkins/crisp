@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `grayscale_v2`
 
-> Generated from [`results/grayscale_v2.json`](results/grayscale_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/538?tab=rankings](https://www.gpumode.com/leaderboard/538?tab=rankings) (Crisp commit `476df9eb`).
+> Generated from [`results/grayscale_v2.json`](results/grayscale_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/538?tab=rankings](https://www.gpumode.com/leaderboard/538?tab=rankings) (Crisp commit `5c17153c`).
 
 **Workload:** Y = 0.2989 R + 0.5870 G + 0.1140 B across 6 square image sizes from 512x512 to 16384x16384 (at 16384x16384: 3.221 GB RGB input read + 1.074 GB grayscale output write = 4.295 GB = 4.00 GiB total DRAM traffic).
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#25** / 48 | **601.52 µs** | 605.34 µs | 7.14 TB/s | 98.1% (`590.12 µs`) | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | — | `2026-10-25 07:40` |
-| **H100** | Hopper (sm_90) | **#25** / 36 | **1379.23 µs** | 1379.64 µs | 3.11 TB/s | 84.5% (`1164.98 µs`) | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | — | `2026-10-25 07:40` |
-| **A100** | Ampere (sm_80) | **#25** / 127 | **2394.84 µs** | 2392.06 µs | 1.79 TB/s | 97.9% (`2345.08 µs`) | [`crisp_grayscale_direct_vec4_nc.py`](03-grayscale-v2/crisp_grayscale_direct_vec4_nc.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4_nc.crisp)) | — | `2026-10-25 07:40` |
-| **L4** | Ada Lovelace (sm_89) | **#19** / 30 | **17181.70 µs** | 17181.01 µs | 250.0 GB/s | 92.9% (`15962.79 µs`) | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | — | `2026-10-25 07:40` |
+| **B200** | Blackwell (sm_100) | **#25** / 48 | **601.52 µs** | 605.34 µs | 7.14 TB/s | 98.1% (`590.12 µs`) | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | — | `2026-10-25 16:38` |
+| **H100** | Hopper (sm_90) | **#25** / 36 | **1379.23 µs** | 1379.64 µs | 3.11 TB/s | 84.5% (`1164.98 µs`) | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | — | `2026-10-25 16:38` |
+| **A100** | Ampere (sm_80) | **#29** / 131 | **2394.84 µs** | 2392.06 µs | 1.79 TB/s | 97.9% (`2345.08 µs`) | [`crisp_grayscale_direct_vec4_nc.py`](03-grayscale-v2/crisp_grayscale_direct_vec4_nc.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4_nc.crisp)) | — | `2026-10-25 16:38` |
+| **L4** | Ada Lovelace (sm_89) | **#19** / 30 | **17181.70 µs** | 17181.01 µs | 250.0 GB/s | 92.9% (`15962.79 µs`) | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | — | `2026-10-25 16:38` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
