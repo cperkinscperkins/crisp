@@ -3,10 +3,11 @@
 ;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-FLAGS: --runtime-checks
 ;; HOIST-EXPECT: BUFFER out: 7 7 2 7
-;; HOIST-EXPECT: DIE 21-assert-halts-with-runtime-checks-metal.crisp:17 group 0 local 2
+;; HOIST-EXPECT: DIE 21-assert-halts-with-runtime-checks-metal.crisp:18 group 0 local 2: lane check
 ;;
-;; Endeavour 193 -- under --runtime-checks a failed r-t-assert is (unless test (die)).  Its
-;; message arguments are dropped; the record still names the assert's site.
+;; Endeavour 193 -- under --runtime-checks a failed r-t-assert is (unless test (die)).  Its runtime
+;; values are dropped, but its compile-time strings live in the site table, so the report still
+;; shows them at no runtime cost.
 
 (def-type out-v (vector float :align :compact :address-space :global))
 

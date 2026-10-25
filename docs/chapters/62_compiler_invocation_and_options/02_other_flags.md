@@ -3,8 +3,9 @@
 
 #### `--runtime-checks` ⚠️
 Compiles the runtime asserts (`r-t-assert`, `r-t-assert-0`) and the compiler's own runtime checks
-(bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their messages
-are dropped; add `--logging-output` to keep them.  Without this flag they are compiled away entirely.
+(bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their compile-time strings
+still reach the die report (they live in the site table); their runtime values are dropped.
+Add `--logging-output` to keep those too.  Without this flag they are compiled away entirely.
 See [Logging and Debugging](#logging-and-debugging).
 
 > **Implementation status**: on L0 a failed check does not halt the thread (BUG 136).

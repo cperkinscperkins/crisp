@@ -62,9 +62,11 @@ Each phase is red then green.
   up the call graph like scratch), the site table in the metadata, and the launcher report.
   - Report format: `DIE <file>:<line> group <g> local <l>: <message>`.
   - Both launchers (L0 and CUDA) read the record after synchronising.
-- **Phase C — `--runtime-checks`.** Specs 20–23. `r-t-assert` compiles away without a flag;
-  under the flag a failed assert becomes `(unless test (die))`. `r-t-assert-0` actually guards on
-  thread 0. Bounds checks halt on metal.
+- **Phase C — `--runtime-checks`.** Specs 20–24. `r-t-assert` compiles away without a flag;
+  under the flag a failed assert becomes `(unless test (die))`. Implement `when-thread-is`
+  (documented at ideal_001 "when-thread-is / abs-when-thread-is", never built). The `-0` forms
+  guard on it, meaning global thread 0; spec 24 tells that apart from thread 0 of each group.
+  Bounds checks halt on metal.
 - **Phase D — `--logging-output`.** Specs 30–35. Add `r-t-output`, `r-t-output-0`, the log side
   channel, the packet writer (atomic add on `cursor`, and `dropped` on overflow), launcher
   decoding, `(is-logging?)` and `(is-runtime-checking?)`.
@@ -89,15 +91,16 @@ Each phase is red then green.
 
 ## Open questions (for Chris)
 
-1. **`when-thread-is` does not exist.** Only `when-thread-in-group-is` and `when-thread-in-warp-is`
-   do. The doc uses `when-thread-is 0` to define `r-t-assert-0` / `r-t-output-0`, and in the
-   firehose example. Is the meaning global thread 0, or thread 0 of each group? The specs use one
-   workgroup, so they pass either way.
-2. **Should an assert's leading constant string go into the site table under `--runtime-checks`?**
-   It would let the DIE line show "lane check" with no runtime cost. The specs don't depend on it.
+1. ~~What does `-0` mean?~~ **DECIDED 2026-10-24: global thread 0**, through `when-thread-is 0`.
+   That matches the ~29 `r-t-assert-0` uses in the ideal_001 examples. There is no `-wg0` variant:
+   write `(when-thread-in-group-is 0 (r-t-assert ...))` instead.
+2. ~~Should an assert's constant strings go into the site table under `--runtime-checks`?~~
+   **DECIDED 2026-10-24: yes, that was always the intent.** Under `--runtime-checks` the DIE line
+   shows the compile-time strings; only runtime values need `--logging-output`. Specs 21 and 22
+   expect `: lane check`.
 3. **Line numbers in the DIE/LOG expectations** come from `put_temp_files_here/logging-probes/gen_specs.py`
    (the `;; site` marker). Hand-editing a spec above its site line breaks the expectation.
 
 ## Decisions log
-- 2026-10-24 — API agreed; doc spliced and committed; BUG 136 filed; 19 specs + 2 negative
+- 2026-10-24 — API agreed; doc spliced and committed; BUG 136 filed; 20 specs + 2 negative
   written; ci-stop bumped to 193.

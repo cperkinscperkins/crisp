@@ -12,7 +12,9 @@ its expressions, into the log.  Without the flag the form and its arguments are 
 
 Strings must be compile-time strings.  Everything else must be a scalar.
 
-`r-t-output` is engaged by EVERY thread.  `r-t-output-0` is guarded by `when-thread-is 0`.
+`r-t-output` is engaged by EVERY thread.  `r-t-output-0` is guarded by [`when-thread-is 0`](#when-thread-is--abs-when-thread-is), so it writes
+one message per launch, from global thread 0.  For one message per workgroup, write
+`(when-thread-in-group-is 0 (r-t-output ...))`.
 
 ##### WARNING - FIREHOSE
 A loose `r-t-output` in a kernel means every thread writes a message, possibly millions of

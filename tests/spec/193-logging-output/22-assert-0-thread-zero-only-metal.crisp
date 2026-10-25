@@ -3,7 +3,7 @@
 ;; TEST-HOIST[CUDA]: validate-cuda-host-run
 ;; HOIST-FLAGS: --runtime-checks
 ;; HOIST-EXPECT: BUFFER out: 0 7 7 7
-;; HOIST-EXPECT: DIE 22-assert-0-thread-zero-only-metal.crisp:18 group 0 local 0
+;; HOIST-EXPECT: DIE 22-assert-0-thread-zero-only-metal.crisp:18 group 0 local 0: lane check
 ;;
 ;; Endeavour 193 -- r-t-assert-0 is evaluated by thread 0 only.  The test is true only in
 ;; thread 1, so plain r-t-assert would kill threads 0, 2 and 3 (0 7 2 3).  The -0 form kills only

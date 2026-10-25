@@ -10654,7 +10654,7 @@ an `r-t-` form disappears with it.
 | compiled with | `r-t-assert`, `r-t-assert-0` | compiler bounds checks | `r-t-output`, `r-t-output-0` | `die` |
 |---|---|---|---|---|
 | (neither flag) | gone | gone | gone | halts, records its site |
-| `--runtime-checks` | `(unless <test> (die))` -- messages dropped | on | gone | halts, records its site |
+| `--runtime-checks` | `(unless <test> (die))` -- runtime values dropped, strings kept | on | gone | halts, records its site |
 | `--logging-output` | as above, plus the message goes into the log | on | written to the log | halts, records its site, and its message goes into the log |
 
 `--logging-output` implies `--runtime-checks`.
@@ -10763,7 +10763,7 @@ Without `--runtime-checks` or `--logging-output` they compile away (see [Three L
 If `<testExpression>` is false, `die` is called.  Under `--logging-output` the remaining
 expressions are first written to the log as one message (see [The Log](#the-log)).
 
-`r-t-assert` is evaluated by EVERY thread.  `r-t-assert-0` is guarded by `when-thread-is 0`,
+`r-t-assert` is evaluated by EVERY thread.  `r-t-assert-0` is guarded by [`when-thread-is 0`](#when-thread-is--abs-when-thread-is) (global thread 0),
 so the test and the message happen in one thread only.  Use it for conditions that are the
 same for every thread: lengths, dispatch geometry.
 
@@ -10787,7 +10787,9 @@ its expressions, into the log.  Without the flag the form and its arguments are 
 
 Strings must be compile-time strings.  Everything else must be a scalar.
 
-`r-t-output` is engaged by EVERY thread.  `r-t-output-0` is guarded by `when-thread-is 0`.
+`r-t-output` is engaged by EVERY thread.  `r-t-output-0` is guarded by [`when-thread-is 0`](#when-thread-is--abs-when-thread-is), so it writes
+one message per launch, from global thread 0.  For one message per workgroup, write
+`(when-thread-in-group-is 0 (r-t-output ...))`.
 
 ##### WARNING - FIREHOSE
 A loose `r-t-output` in a kernel means every thread writes a message, possibly millions of
@@ -13823,8 +13825,9 @@ Also note that at this time `--differentiate` and `--hoist` are mutually exclusi
 
 #### `--runtime-checks` ⚠️
 Compiles the runtime asserts (`r-t-assert`, `r-t-assert-0`) and the compiler's own runtime checks
-(bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their messages
-are dropped; add `--logging-output` to keep them.  Without this flag they are compiled away entirely.
+(bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their compile-time strings
+still reach the die report (they live in the site table); their runtime values are dropped.
+Add `--logging-output` to keep those too.  Without this flag they are compiled away entirely.
 See [Logging and Debugging](#logging-and-debugging).
 
 > **Implementation status**: on L0 a failed check does not halt the thread (BUG 136).
