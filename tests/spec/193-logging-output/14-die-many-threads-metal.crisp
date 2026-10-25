@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 0 7 2 7
+;; HOIST-EXPECT: DIE 14-die-many-threads-metal.crisp:17 group 0
+;;
+;; Endeavour 193 -- several threads die at once.  The first to claim the record wins and the
+;; rest leave it alone; which one wins is not specified, so only the site is checked.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel die_many_threads (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (logand (get-local-id 0) (to-ulong 1)) (to-ulong 0))
+    (die "even"))                                    ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

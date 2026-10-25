@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --logging-output
+;; HOIST-EXPECT: BUFFER out: 7 7 2 7
+;; HOIST-EXPECT: LOG 33-assert-message-metal.crisp:18 group 0 local 2: bad lane 2
+;; HOIST-EXPECT: DIE 33-assert-message-metal.crisp:18 group 0 local 2
+;;
+;; Endeavour 193 -- under --logging-output a failed assert writes its message to the log first,
+;; and then dies.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel assert_message (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (r-t-assert (!= (get-local-id 0) (to-ulong 2)) "bad lane" (get-local-id 0))   ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

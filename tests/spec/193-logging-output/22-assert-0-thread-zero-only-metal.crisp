@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --runtime-checks
+;; HOIST-EXPECT: BUFFER out: 0 7 7 7
+;; HOIST-EXPECT: DIE 22-assert-0-thread-zero-only-metal.crisp:18 group 0 local 0: lane check
+;;
+;; Endeavour 193 -- r-t-assert-0 is evaluated by thread 0 only.  The test is true only in
+;; thread 1, so plain r-t-assert would kill threads 0, 2 and 3 (0 7 2 3).  The -0 form kills only
+;; thread 0.  Before 193, r-t-assert-0 was a plain alias of r-t-assert.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel assert_zero_only (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (r-t-assert-0 (= (get-local-id 0) (to-ulong 1)) "lane check")                       ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 2 7
+;; HOIST-EXPECT: DIE 12-die-no-message-metal.crisp:16 group 0 local 2
+;;
+;; Endeavour 193 -- die's message is optional; the report still names the site.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel die_no_message (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 2))
+    (die))                                           ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

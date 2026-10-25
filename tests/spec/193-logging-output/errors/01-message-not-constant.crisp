@@ -1,0 +1,15 @@
+;; CHECK-FAIL: "must be a compile-time string"
+;;
+;; Endeavour 193 -- die's message is looked up by site in the metadata, so it must be known at
+;; compile time.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel refused_one (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((m 3))
+    (when (= (get-local-id 0) (to-ulong 2))
+      (die m)))
+  (set! (~ out (get-local-id 0)) 7.0))

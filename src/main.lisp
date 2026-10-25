@@ -132,6 +132,9 @@ Supports one or more .crisp source files: the last file is treated as the primar
          (debug-p (or (member "-g" flags :test #'string=)
                       (member "--debug" flags :test #'string=)))
          (runtime-checks-p (member "--runtime-checks" flags :test #'string=))
+         ;; Endeavour 193: --logging-output (implies --runtime-checks) and the log's size.
+         (logging-output-p (member "--logging-output" flags :test #'string=))
+         (logging-size-value (%flag-value flags "--logging-size="))
          (differentiate-p (member "--differentiate" flags :test #'string=))
 
          ;; Endeavor 126: precision axis. --force-math-precision overrides
@@ -187,6 +190,9 @@ Supports one or more .crisp source files: the last file is treated as the primar
     ;; Initialize the compiler system.
     (crisp.compiler:initialize-compiler :log-level log-level
                                         :runtime-checks runtime-checks-p
+                                        :logging-output (and logging-output-p t)
+                                        :logging-size (when logging-size-value
+                                                        (crisp.compiler::%193-parse-size logging-size-value))
                                         :differentiate differentiate-p
                                         :math-precision math-precision-mode
                                         :force-math-precision force-precision-mode
@@ -314,26 +320,30 @@ Supports one or more .crisp source files: the last file is treated as the primar
       (pathname-name filepath)))
 
 (defun %read-crisp-forms (files)
-  "Every top-level form of FILES, in order, read in :crisp-language."
+  "Every top-level form of FILES, in order, read in :crisp-language.
+   Endeavour 193: records each list's file and line (*193-form-sites*) for the die report."
   (let ((*package* (find-package :crisp-language)))
     (loop for f in files
-          appending (with-open-file (stream f)
-                      (loop for form = (read stream nil :eof)
-                            until (eq form :eof)
-                            collect form)))))
+          appending (crisp.compiler::%193-with-read-file (f)
+                      (with-open-file (stream f)
+                        (loop for form = (read stream nil :eof)
+                              until (eq form :eof)
+                              collect form))))))
 
 (defun %compile-files-single-pass (files module builder di-builder di-compile-unit)
   "--single-pass: compile each file's forms as they are read, with one shared toplevel index so that
-   location indices are unique across the entire compilation unit."
+   location indices are unique across the entire compilation unit.
+   Endeavour 193: records each list's file and line (*193-form-sites*) for the die report."
   (let ((toplevel-index 0)
         (*package* (find-package :crisp-language)))
     (dolist (f files)
-      (with-open-file (stream f)
-        (loop for form = (read stream nil :eof)
-              until (eq form :eof)
-              do (let ((location (list toplevel-index)))
-                   (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
-                   (incf toplevel-index)))))))
+      (crisp.compiler::%193-with-read-file (f)
+        (with-open-file (stream f)
+          (loop for form = (read stream nil :eof)
+                until (eq form :eof)
+                do (let ((location (list toplevel-index)))
+                     (crisp.compiler:compile-toplevel-form form location module builder di-builder di-compile-unit nil)
+                     (incf toplevel-index))))))))
 
 (defun %emit-target-output (target-backend module filepath debug-p)
   "Writes MODULE for TARGET-BACKEND next to FILEPATH -- .spv, .ptx or .ll -- and returns (KIND PATH);

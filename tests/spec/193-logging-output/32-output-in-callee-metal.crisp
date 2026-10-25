@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --logging-output
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+;; HOIST-EXPECT: LOG 32-output-in-callee-metal.crisp:16 group 0 local 3: callee saw 3
+;;
+;; Endeavour 193 -- the log is a side channel: a kernel whose callee logs gets the implicit
+;; argument, and the callee writes through it.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-function note-lane (i)
+  (declare #'(ulong => nil))
+  (when (= i (to-ulong 3))
+    (r-t-output "callee saw" i)))                    ;; site
+
+(def-kernel output_in_callee (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (note-lane (get-local-id 0))
+  (set! (~ out (get-local-id 0)) 7.0))

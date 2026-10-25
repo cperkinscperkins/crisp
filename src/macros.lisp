@@ -1853,12 +1853,20 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                  `(,setter-name ,@args ,value)))))
        (t (error "Invalid place for setf: ~a" place)))))
 
+(defun %193-assert-message (args)
+  "Endeavour 193.  The compile-time strings among an assert's ARGS, joined by spaces, or NIL."
+  (let ((strings (remove-if-not #'stringp args)))
+    (when strings (format nil "~{~a~^ ~}" strings))))
+
 (defmacro r-t-assert (test &rest args)
-  "Asserts that TEST is true at runtime. If not, terminates kernel.
-   Args (message strings etc) are currently ignored."
-  (declare (ignore args))
+  "Asserts that TEST is true at runtime; if not, the thread dies (see die).  Compiled ONLY under
+   --runtime-checks (or --logging-output); otherwise it disappears, test and all.  Its compile-time
+   string arguments become the die site's message; under --logging-output the whole message,
+   runtime values included, is written to the log first."
   (if *runtime-checks-enabled*
-      `(unless ,test (die))
+      `(unless ,test
+         ,@(when (and *logging-output-enabled* args) `((%193-log-message ,@args)))
+         (die ,@(let ((m (%193-assert-message args))) (when m (list m)))))
       nil))
 
 (defmacro c-t-assert (condition message)
@@ -1868,8 +1876,33 @@ processes float inputs — integer tensor inputs contribute zero gradient."
        (error "Compile-Time Assertion Failed: ~a" ,message))))
 
 (defmacro r-t-assert-0 (test &rest args)
-  "Asserts that TEST is true at runtime (placeholder for thread-0 check)."
-  `(r-t-assert ,test ,@args))
+  "r-t-assert evaluated by GLOBAL thread 0 only (when-thread-is 0).  For conditions every thread
+   sees the same way -- lengths, dispatch geometry.  Compiled only under --runtime-checks."
+  (if *runtime-checks-enabled*
+      `(when-thread-is 0 (r-t-assert ,test ,@args))
+      nil))
+
+(defmacro r-t-output (&rest args)
+  "Writes one message, made of ARGS (compile-time strings and scalar values), into the log.  Only
+   under --logging-output; otherwise it disappears along with its arguments.  Engaged by EVERY
+   thread -- choose who logs with a guard (when-thread-is, when-thread-in-group-is, ...)."
+  (if *logging-output-enabled*
+      `(%193-log-message ,@args)
+      nil))
+
+(defmacro r-t-output-0 (&rest args)
+  "r-t-output from GLOBAL thread 0 only (when-thread-is 0): one message per launch."
+  (if *logging-output-enabled*
+      `(when-thread-is 0 (r-t-output ,@args))
+      nil))
+
+(defmacro is-logging? ()
+  "True at compile time when compiling with --logging-output.  Use with if+ / when+."
+  (if *logging-output-enabled* '(> 1 0) '(< 1 0)))
+
+(defmacro is-runtime-checking? ()
+  "True at compile time when compiling with --runtime-checks (and so also under --logging-output)."
+  (if *runtime-checks-enabled* '(> 1 0) '(< 1 0)))
 
 (defmacro marshall-cell (type-alias byte-size ptr offset)
   "Marshals raw kernel arguments into a Cell struct.
@@ -2309,3 +2342,22 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   ;; is unambiguous whatever the workgroup's dimensionality.
   `(when (= (to-int (get-local-linear-id)) ,id)
      ,@body))
+
+;; Endeavour 193: the per-LAUNCH election (ideal_001 "when-thread-is / abs-when-thread-is").
+(defmacro when-thread-is (&rest ids-and-body)
+  "Runs BODY only in the thread whose global id (relative to the global offset) is the given one --
+   a per-LAUNCH election.  (when-thread-is id body...) compares the linear global id;
+   (when-thread-is x y body...) and (when-thread-is x y z body...) compare each dimension.
+   The ids must be literal integers.  sync-workgroup in BODY is refused (divergent)."
+  (let* ((n-ids (loop for x in ids-and-body while (integerp x) count t))
+         (ids (subseq ids-and-body 0 n-ids))
+         (body (nthcdr n-ids ids-and-body)))
+    (unless (<= 1 n-ids 3)
+      (error "when-thread-is takes 1 to 3 literal integer ids before its body, got ~s" ids-and-body))
+    (if (= n-ids 1)
+        `(when (= (get-global-linear-id) (to-ulong ,(first ids)))
+           ,@body)
+        `(when (and ,@(loop for id in ids
+                            for d from 0
+                            collect `(= (- (get-global-id ,d) (get-global-offset ,d)) (to-ulong ,id))))
+           ,@body))))

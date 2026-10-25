@@ -32,6 +32,9 @@
    #:llvm-int32-type #:llvm-int8-type #:llvm-int8-type-in-context #:llvm-int16-type #:llvm-int64-type #:llvm-int1-type
    #:llvm-type-kind-is-pointer?
    #:llvm-get-type-kind
+   ;; Endeavour 193: function-type surgery, relaxed atomic loads, a value's module
+   #:llvm-count-param-types #:llvm-get-param-types #:llvm-count-params
+   #:llvm-set-ordering #:llvm-get-global-parent
    #:llvm-get-type-by-name
    #:llvm-print-type-to-string
    #:llvm-pointer-type
@@ -402,6 +405,7 @@
    #:c-t-assert #:c-t-output #:compiler-no-op
    #:!= #:is-set?
    #:die #:r-t-assert #:r-t-assert-0
+   #:r-t-output #:r-t-output-0 #:is-logging? #:is-runtime-checking?
    
    ;; MMA operations (endeavor 132)
    #:make-register-fragment #:store-fragment #:load-fragment-a #:load-fragment-b #:mma-accumulate
@@ -427,7 +431,7 @@
    ;; defmacro in src/macros.lisp serve both.  (The overlay could not do this: mutating a
    ;; package export list at overlay-load time makes build.lisp's later targets fail with a
    ;; package-variance error, so it copied MACRO-FUNCTION between two distinct symbols instead.)
-   #:when-thread-in-warp-is #:when-thread-in-group-is
+   #:when-thread-in-warp-is #:when-thread-in-group-is #:when-thread-is
    ;; Endeavour 176: grid-reduce! is a macro, shared the same way.
    #:grid-reduce!
    ;; Endeavour 178: reduce-vec is a macro over grid-reduce!, shared the same way.
@@ -544,7 +548,7 @@
                 #:warp-size #:shuffle #:shuffle-up #:shuffle-down #:shuffle-xor
 
                 ;; Endeavour 175: thread-selection sugar (see the export side above).
-                #:when-thread-in-warp-is #:when-thread-in-group-is
+                #:when-thread-in-warp-is #:when-thread-in-group-is #:when-thread-is
                 ;; Endeavour 176: grid-reduce! (see the export side above).
                 #:grid-reduce!
                 ;; Endeavour 178: reduce-vec (see the export side above).
@@ -596,7 +600,8 @@
                 ;; NEW: Branching Macros
                 #:when #:unless #:cond #:if+ #:else
                 #:!=
-                #:die #:r-t-assert #:r-t-assert-0)
+                #:die #:r-t-assert #:r-t-assert-0
+                #:r-t-output #:r-t-output-0 #:is-logging? #:is-runtime-checking?)
 
   ;; --- 2. Import *only* the "safe" CL data symbols ---
   (:import-from :common-lisp
@@ -657,6 +662,7 @@
    #:to-workgroup-uniform #:to-warp-uniform
    #:c-t-assert #:c-t-output
    #:die #:r-t-assert #:r-t-assert-0
+   #:r-t-output #:r-t-output-0 #:is-logging? #:is-runtime-checking?
    #:type-equal-p
    #:+ #:- #:* #:/ #:= #:!= #:< #:> #:<= #:>= #:equal
 

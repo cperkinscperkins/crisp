@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --runtime-checks
+;; HOIST-EXPECT: BUFFER out: 0 7 2 3
+;; HOIST-EXPECT: DIE 24-assert-0-is-global-thread-zero-metal.crisp:19 group 0 local 0: lane check
+;;
+;; Endeavour 193 -- the -0 forms mean GLOBAL thread 0 (when-thread-is 0), not thread 0 of each
+;; workgroup.  Two groups of 4; the test is false in local thread 0 of BOTH groups, and each
+;; group's thread 0 stores into out[group].  Only global thread 0 evaluates the test, so only
+;; group 0's store is lost: 0 7 2 3.  Thread 0 of every group would give 0 1 2 3.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel assert_zero_global (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 4))
+  (r-t-assert-0 (!= (get-local-id 0) (to-ulong 0)) "lane check")      ;; site
+  (when-thread-in-group-is 0
+    (set! (~ out (get-workgroup-id 0)) 7.0)))

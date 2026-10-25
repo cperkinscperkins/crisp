@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --logging-output --logging-size=1K
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+;; HOIST-EXPECT: LOG 36-log-full-metal.crisp:20 group 0 local
+;; HOIST-EXPECT: LOG FULL: kept 1024 bytes; the launch wanted 1296 (recompile with --logging-size=2K)
+;;
+;; Endeavour 193 -- the firehose.  64 threads each log a 5-word message (320 words) into a 1K log
+;; (252 data words after the 16-byte header).  The log keeps the first complete messages; the cursor
+;; keeps counting past the end, so the launcher can say exactly what the launch needed:
+;; 16 + 320 * 4 = 1296 bytes.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel log_full (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (r-t-output "lane" (get-local-id 0))               ;; site
+  (when (< (get-local-id 0) (to-ulong 4))
+    (set! (~ out (get-local-id 0)) 7.0)))

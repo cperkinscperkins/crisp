@@ -4312,3 +4312,40 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         on SXM?); the other 154 specs pass.  Also seen in that full run: 122/07, 128/13, 128/14, 170/43
         (libdevice FFI hoists) failed "execution failed (Code 1)" but pass when run singly on both
         builds -- order / environment, not a compiler change.
+
+[x] 136 FIXED (endeavour 193, 2026-10-25) -- die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
+        FIX: die no longer lowers to llvm.trap.  It claims the module-scope @__crisp_die_record (CAS) and
+        returns; every caller of a function that may die checks the thread's die flag and returns too
+        (src/codegen.lisp, %193-emit-die).  The bounds checks go through the same lowering
+        (%handle-die-intrinsic).  Verified on BMG and H100 (tests/spec/193-logging-output/01-04, 23); CI
+        pins it with tests/spec/193-logging-output/logging-output.unit.lisp and validate-has-die-check.
+        Found 2026-10-24 (logging-output endeavour probes, put_temp_files_here/logging-probes/FINDINGS.md).
+        OBSERVATION: %handle-die-intrinsic (src/codegen.lisp) emits a call to llvm.trap.  In the .spv the
+        die branch is a bare OpUnreachable -- the trap is gone (whether opt or llvm-spirv dropped it was not
+        determined).  OpUnreachable is undefined behaviour, and IGC treats the branch as impossible: probe
+        p1-die.crisp (4 threads, thread 2 does (die), then every thread stores 7.0) gives
+        BUFFER out: 7 7 7 7 on BMG -- thread 2 did not halt.
+        SCOPE: everything that lowers through die -- user die, r-t-assert / r-t-assert-0 (when compiled),
+        and the --runtime-checks bounds checks in codegen (make-vector / make-cell reinterpretation,
+        tensor index).  CUDA is NOT affected: trap halts there (H100 probe: LAUNCH_FAILED, sticky ctx).
+        WHY NO TEST CAUGHT IT: 078/21-runtime-checks validates only that llvm.trap appears in the LLVM-IR
+        (validate-has-llvm-trap); nothing runs a failing check on metal.
+        LIKELY FIX (hypothesis): the logging-output endeavour redefines die's lowering -- on SPIR-V, return
+        and unwind (early-returned threads count as arrived at later barriers on BMG, measured).  A metal
+        spec that trips a check and observes the halt should come with it.
+
+[ ] 137 UNDER --differentiate A FAILED _GRAD COMPANION LEAVES A MALFORMED FUNCTION IN THE MODULE (invalid IR).
+        Found 2026-10-25 (endeavour 193, CI --differentiate pass of 193/32).  No logging needed to reproduce:
+        put_temp_files_here/193/p-empty/void-call.crisp -- a void def-function (ulong => nil) whose body is
+        (when (= i 3) (sink i)), where SINK is another void function.
+        OBSERVATION: %active-scalar-vars' default clause (an unknown call: every argument is active) makes the
+        ulong I active, so n-fp=1 and a _GRAD companion is generated for a function with no return.  Its
+        compile fails ("Cannot resolve type to LLVM: NIL"), the log says "Unregistering; will error if called
+        from a differentiable kernel" -- but the partly built LLVM function (PASS-ON_GRAD, returning double, its
+        last block without a terminator) stays in the module, so the whole _grad module is invalid IR
+        (llvm-as: "expected instruction opcode").
+        The default clause's own comment says a spuriously active int "just gets a 0-gradient slot"; for a
+        VOID function that slot has no type, and the failure is not contained.
+        LIKELY FIX (hypothesis): on a failed companion compile, delete the half-built LLVM function
+        (LLVMDeleteFunction) as well as unregistering it; and/or skip the companion for a void function whose
+        only active params are integers.

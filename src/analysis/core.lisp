@@ -535,6 +535,50 @@
       (%hp-check-all-shared-memory))))
 
 
+;;;; Endeavour 193: which functions may die, and the source site of a form.
+
+(defun %193-compute-may-die-functions ()
+  "Endeavour 193, Pass 1.5 (multi-pass only).  Seeds *may-die-functions* from every function body
+   Pass 1 captured in *fn-normalized-info* that dies directly, then propagates to callers over
+   *call-graph* -- the same walk propagate-implicit-arguments does for scratch.  Crisp has no
+   recursion, so this terminates."
+  (clrhash *may-die-functions*)
+  (let ((worklist '()))
+    (maphash (lambda (name info)
+               (when (%193-body-dies-directly-p (getf info :body))
+                 (log:info "193: ~a dies directly" name)
+                 (setf (gethash name *may-die-functions*) t)
+                 (push name worklist)))
+             *fn-normalized-info*)
+    (loop while worklist
+          do (let ((callee (pop worklist)))
+               (loop for caller being the hash-keys of *call-graph* using (hash-value callees)
+                     when (and (member callee callees) (not (gethash caller *may-die-functions*)))
+                       do (log:info "193: ~a may die (calls ~a)" caller callee)
+                          (setf (gethash caller *may-die-functions*) t)
+                          (push caller worklist))))
+    (log:info "193: may-die functions: ~s" (alexandria:hash-table-keys *may-die-functions*))))
+
+(defun %193-current-function (context)
+  "Endeavour 193.  The name of the function whose body is being analysed, or NIL."
+  (or *analyzing-function*
+      (and context (compiler-context-current-compiling-function context))))
+
+(defun %193-site-of (expr)
+  "Endeavour 193.  (FILE . LINE) for EXPR: its own entry; else that of an EQUAL subform of the
+   innermost enclosing read form (EXPR was copied by a body-rewriting macro); else the enclosing
+   form's line (EXPR was built by a macro)."
+  (or (and (consp expr) (gethash expr *193-form-sites*))
+      (and (consp expr) *193-enclosing-form*
+           (labels ((walk (f depth)
+                      (when (and (consp f) (< depth 400))
+                        (if (and (equal f expr) (gethash f *193-form-sites*))
+                            (gethash f *193-form-sites*)
+                            (loop for tail on f
+                                  thereis (and (consp tail) (walk (car tail) (1+ depth))))))))
+             (walk *193-enclosing-form* 0)))
+      *193-enclosing-site*))
+
 (defun propagate-implicit-arguments ()
   "Phase 4: Traverses the call graph backwards from originators to find all carriers."
   (log:info "OVERLAY: propagate-implicit-arguments called with ~a originators"
@@ -567,7 +611,9 @@
                          (log:info "OVERLAY: Propagating implicit args to ~a (Merged ~d -> ~d)"
                                    caller (length existing) (length merged))
                          (setf (gethash caller *implicit-arg-map*) merged)
-                         (pushnew caller worklist))))))))
+                         (pushnew caller worklist)))))))
+  ;; Endeavour 193: the same call graph decides which functions may die (they get the die flag).
+  (%193-compute-may-die-functions))
 
 ;; -----------------------------------------------------------------------------------------
 ;; Endeavor 137 Phase 2c — resolve a CUtensorMap descriptor's describes/tile references down
@@ -2149,6 +2195,20 @@ in single-pass mode."
 
 (defun analyze-expression (expr env context location)
   "Recursively analyzes a *single* expression."
+  ;; Endeavour 193: track the innermost form that came from a file, for die / log site lines.
+  (let* ((own (and (consp expr)
+                   (or (gethash expr *193-form-sites*)
+                       (and (symbolp (car expr))
+                            (member (symbol-name (car expr))
+                                    '("DIE" "R-T-ASSERT" "R-T-ASSERT-0" "R-T-OUTPUT" "R-T-OUTPUT-0")
+                                    :test #'string=)
+                            *193-enclosing-form*
+                            (let ((s (%193-site-of expr)))
+                              (and (not (eq s *193-enclosing-site*)) s))))))
+         (*193-enclosing-site* (or own *193-enclosing-site*))
+         (*193-enclosing-form* (if (and own (gethash expr *193-form-sites*)) expr *193-enclosing-form*)))
+    (when (and *runtime-checks-enabled* *193-enclosing-site* (consp expr))
+      (setf (gethash location *193-location-sites*) *193-enclosing-site*))
   (log:debug "analyze-expression expr: ~s location: ~s" expr location)
   ;; Handle empty body case, which `read` can return as NIL
   (when (null expr)
@@ -2227,7 +2287,7 @@ in single-pass mode."
           (t (error 'crisp-unsupported-form-error
                :form expr
                :source-location location)))))
-    res))
+    res)))
 
 
 
@@ -2236,7 +2296,15 @@ in single-pass mode."
 (defun analyze-function-call (op expr env context location)
   "Analyzes a function call expression.
    Checks for struct immutability violations via %check-struct-mutating-call.
-   Extended (091): grid functions can only be called from a dispatch context."
+   Extended (091): grid functions can only be called from a dispatch context.
+   Endeavour 193: a call to a function that may die makes the caller may-die too.  Multi-pass compiles
+   know this from Pass 1.5 already; --single-pass relies on this.  (A lazily instantiated variant marks
+   itself when its own body is analysed.)"
+  (when (%193-may-die-p op)
+    (let ((caller (%193-current-function context)))
+      (when (and caller (not (%193-may-die-p caller)))
+        (log:info "193: ~a may die (analysis: calls ~a)" caller op)
+        (setf (gethash caller *may-die-functions*) t))))
   (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
 
   ;; Recursion / call-graph tracking

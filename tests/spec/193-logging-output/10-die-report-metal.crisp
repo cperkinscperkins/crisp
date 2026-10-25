@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 2 7
+;; HOIST-EXPECT: DIE 10-die-report-metal.crisp:18 group 0 local 2: thread two gives up
+;;
+;; Endeavour 193 -- the die record.  A kernel that can reach a die gets an implicit 16-byte
+;; record argument (site_id, group_id, local_id).  The launcher reads it after the kernel and
+;; prints the site's file, line and message from the metadata.  No flag is needed.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel die_report (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 2))
+    (die "thread two gives up"))                     ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

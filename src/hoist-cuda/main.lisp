@@ -237,10 +237,17 @@
          ;; shrunken profile actually takes effect host-side).
          (hw-profile (metacrisp-hardware-profile data))
          (hw-compute-units (getf hw-profile :compute-units))
-         (base-name (pathname-name metacrisp-path)))
+         (base-name (pathname-name metacrisp-path))
+         ;; Endeavour 193: the die and log site tables, for the reports after the launch.
+         (*193-die-sites* (%193-read-metacrisp-section metacrisp-path :die-sites))
+         (*193-log-sites* (%193-read-metacrisp-section metacrisp-path :log-sites)))
 
     (format t "Processing ~a~%" metacrisp-path)
     (format t "  Kernels: ~a~%" (length kernels))
+    (when *193-die-sites*
+      (format t "  Die sites: ~d~%" (length (getf *193-die-sites* :sites))))
+    (when *193-log-sites*
+      (format t "  Log sites: ~d~%" (length (getf *193-log-sites* :sites))))
 
     (when (null kernels)
       (format t "WARNING: No kernels found in ~a. Nothing to hoist.~%" metacrisp-path))
@@ -1994,7 +2001,13 @@ overrides the runtime SM-count query in the grid-size heuristic."
 
 
 (defun emit-readback (stream allocations)
-  "Emit cuMemcpyDtoH and print buffer contents.  Endeavor 134: appends host-reference C=A·B."
+  "Emit cuMemcpyDtoH and print buffer contents.  Endeavor 134: appends host-reference C=A·B.
+   Endeavour 193: first the log (if the module logs) and the die report (if it can die) -- the kernel
+   has synchronised."
+  (when *193-log-sites*
+    (%193-cuda-emit-log-report stream))
+  (when *193-die-sites*
+    (%193-cuda-emit-die-report stream))
   (format stream "    // Read back and print output buffers~%")
   (dolist (alloc allocations)
     (let ((name      (getf alloc :name))
@@ -2016,3 +2029,52 @@ overrides the runtime SM-count query in the grid-size heuristic."
   (when *mma-test-dims*
     (%cuda-emit-mma-reference stream allocations))
   (format stream "~%"))
+
+(defun %193-cuda-emit-die-report (stream)
+  "Endeavour 193.  C++ that reads the die record and prints the DIE line from the site table."
+  (let ((record (getf *193-die-sites* :record))
+        (sites (getf *193-die-sites* :sites)))
+    (format stream "    {   // Endeavour 193: the die record (~d site~:p)~%" (length sites))
+    (format stream "        CUdeviceptr _dieRecDev = 0; size_t _dieRecSize = 0;~%")
+    (format stream "        if (cuModuleGetGlobal(&_dieRecDev, &_dieRecSize, module, \"~a\") == CUDA_SUCCESS && _dieRecSize >= 16) {~%" record)
+    (format stream "            uint32_t _dieRec[4] = {0, 0, 0, 0};~%")
+    (format stream "            CUDA_CHECK(cuMemcpyDtoH(_dieRec, _dieRecDev, 16));~%")
+    (format stream "            if (_dieRec[0] != 0) {~%")
+    (format stream "                std::cout << \"DIE \";~%")
+    (format stream "                switch (_dieRec[0]) {~%")
+    (dolist (s sites)
+      (destructuring-bind (id file line message) s
+        (declare (ignore message))
+        (format stream "                    case ~d: std::cout << \"~a:~d\"; break;~%" id (%193-c-string file) line)))
+    (format stream "                    default: std::cout << \"<unknown site \" << _dieRec[0] << \">\"; break;~%")
+    (format stream "                }~%")
+    (format stream "                std::cout << \" group \" << _dieRec[1] << \" local \" << _dieRec[2];~%")
+    (format stream "                switch (_dieRec[0]) {~%")
+    (dolist (s sites)
+      (destructuring-bind (id file line message) s
+        (declare (ignore file line))
+        (when message
+          (format stream "                    case ~d: std::cout << \": ~a\"; break;~%" id (%193-c-string message)))))
+    (format stream "                    default: break;~%")
+    (format stream "                }~%")
+    (format stream "                std::cout << std::endl;~%")
+    (format stream "            }~%")
+    (format stream "        } else {~%")
+    (format stream "            std::cerr << \"WARNING: die record ~a not found in the module\" << std::endl;~%" record)
+    (format stream "        }~%")
+    (format stream "    }~%~%")))
+
+(defun %193-cuda-emit-log-report (stream)
+  "Endeavour 193.  C++ that reads __crisp_log by name (cuModuleGetGlobal) and prints it."
+  (let ((record (getf *193-log-sites* :record)))
+    (format stream "    {   // Endeavour 193: the log (~d site~:p)~%" (length (getf *193-log-sites* :sites)))
+    (format stream "        CUdeviceptr _logDev = 0; size_t _logSize = 0;~%")
+    (format stream "        if (cuModuleGetGlobal(&_logDev, &_logSize, module, \"~a\") == CUDA_SUCCESS && _logSize >= 16) {~%" record)
+    (format stream "            std::vector<uint32_t> _logHost(_logSize / 4);~%")
+    (format stream "            CUDA_CHECK(cuMemcpyDtoH(_logHost.data(), _logDev, _logSize));~%")
+    (format stream "            const uint32_t* _log = _logHost.data();~%")
+    (%193-emit-log-decode stream)
+    (format stream "        } else {~%")
+    (format stream "            std::cerr << \"WARNING: log ~a not found in the module\" << std::endl;~%" record)
+    (format stream "        }~%")
+    (format stream "    }~%~%")))

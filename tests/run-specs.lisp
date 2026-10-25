@@ -108,6 +108,9 @@
 
 (defvar *compile-runtime-checks* nil
   "When T, pass :runtime-checks t to initialize-compiler in the in-process runner.")
+
+(defvar *compile-logging-output* nil
+  "Endeavour 193.  When T, pass :logging-output t to initialize-compiler in the in-process runner.")
 ;; cl-user::*log-level* is defined at the top
 
 (defun get-binary-path ()
@@ -1192,6 +1195,7 @@
                     :log-level cl-user::*log-level*
                     :differentiate *compile-differentiate*
                     :runtime-checks *compile-runtime-checks*
+                    :logging-output *compile-logging-output*
                     :math-precision (or *compile-math-precision* :ieee)
                     :force-math-precision *compile-force-math-precision*
                     :denormal-handling (or *compile-denormal-handling* :preserve))
@@ -1219,18 +1223,32 @@
           (crisp.llvm-bindings:llvm-dispose-module module))))))
 
 
-(defun validate-has-llvm-trap (file ir-string)
-  "Validator for TEST-WITH[--runtime-checks]: verifies that llvm.trap
-   appears in the generated IR, confirming that r-t-assert forms were
-   emitted (not elided) when --runtime-checks is active."
+(defun validate-has-die-check (file ir-string)
+  "Validator for TEST-WITH[--runtime-checks]: verifies that a runtime check was emitted (not
+   elided) and lowers through die -- a CAS on the module-scope die record -- and not llvm.trap."
   (declare (ignore file))
-  (if (search "llvm.trap" ir-string)
-      (progn
-        (format t "PASS (llvm.trap found)~%")
-        t)
-      (progn
-        (format t "FAIL: llvm.trap not found in IR (expected from r-t-assert under --runtime-checks)~%")
-        nil)))
+  (cond ((search "llvm.trap" ir-string)
+         (format t "FAIL: llvm.trap found in IR -- a runtime check must lower through die (BUG 136)~%")
+         nil)
+        ((search "cmpxchg ptr addrspace(1) @__crisp_die_record" ir-string)
+         (format t "PASS (die-record CAS found, no llvm.trap)~%")
+         t)
+        (t
+         (format t "FAIL: no die-record CAS in IR (expected from a runtime check under --runtime-checks)~%")
+         nil)))
+
+(defun validate-ptx-wait-checks-die-record (file ptx-string)
+  "Endeavour 193 Phase E: in a kernel that can die, the mbarrier try_wait spin also loads the die
+   record, so a consumer whose producer died stops waiting instead of hanging."
+  (declare (ignore file))
+  (let ((has-wait (search "mbarrier.try_wait" ptx-string))
+        (loads (count-if (lambda (line) (and (search "ld." line) (search "__crisp_die_record" line)))
+                         (uiop:split-string ptx-string :separator '(#\Newline)))))
+    (cond ((not has-wait)
+           (format t "FAIL: no mbarrier.try_wait in the PTX~%") nil)
+          ((zerop loads)
+           (format t "FAIL: the try_wait spin does not load __crisp_die_record (a dead producer would hang it)~%") nil)
+          (t (format t "PASS (try_wait present; ~d die-record load~:p)~%" loads) t))))
 
 (defun validate-fast-math (file ir-string)
   "Validator for TEST-WITH[--*-math-precision=fast] (Endeavor 126): FP ops must
@@ -1973,7 +1991,8 @@
    Checks SKIP_<BACKEND>_HOIST env var (e.g. SKIP_L0_HOIST=true) to skip
    gracefully on machines that don't have the target SDK.
    Endeavor 122: BC-FILES (foreign .bc) are prepended to the compiler args so
-   FFI device functions are linked into the hoisted kernel."
+   FFI device functions are linked into the hoisted kernel.
+   Endeavour 193: also forwards the HOIST-FLAGS directive's flags."
   ;; Endeavor 144: an L0 hoist compiles the kernel to SPIR-V first, so it is impossible
   ;; without the translator — skip rather than report a hoist "failure" (a CUDA-only box has
   ;; no llvm-spirv, since bin/ is gitignored).  Same detection as the three SPIR-V compile
@@ -2019,6 +2038,10 @@
                        ;; sm_90+ gate at hoist time and emits the sm_90a PTX + CUtensorMap path.
                        (let ((arch (parse-hoist-arch (extract-test-directives file))))
                          (when arch (list (format nil "--ir-target-arch=~a" arch))))
+                       ;; Endeavour 193: HOIST-FLAGS -- extra compiler flags for the hoist compile
+                       ;; (--runtime-checks, --logging-output), so a metal spec can run the kernel
+                       ;; built the way the flag builds it.
+                       (parse-hoist-flags (extract-test-directives file))
                        ;; Endeavour 190: the dogfood launcher -- embed the source, compile it at run
                        ;; time through the C API (L0 and CUDA).
                        ;; (never with foreign .bc libraries: a launcher cannot embed those)
@@ -3121,6 +3144,20 @@
       (when (starts-with trimmed "HOIST-ARCH:")
         (let ((v (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 11))))
           (when (plusp (length v)) (return v)))))))
+
+(defun parse-hoist-flags (directive-lines)
+  "Parse HOIST-FLAGS: <flag> <flag> ... (Endeavour 193).  Returns the flags as a list of strings
+   (each must start with --), forwarded verbatim to the hoist compile.  Several lines append."
+  (let ((flags '()))
+    (dolist (line directive-lines (nreverse flags))
+      (let ((trimmed (string-left-trim ";; " line)))
+        (when (starts-with trimmed "HOIST-FLAGS:")
+          (dolist (f (uiop:split-string (string-trim '(#\Space #\Tab #\Return #\Newline) (subseq trimmed 12))
+                                        :separator '(#\Space #\Tab)))
+            (when (plusp (length f))
+              (unless (alexandria:starts-with-subseq "--" f)
+                (error "HOIST-FLAGS: ~s is not a --flag" f))
+              (push f flags))))))))
 
 (defun parse-hoist-expect (directive-lines)
   "Parse HOIST-EXPECT: <string> lines.

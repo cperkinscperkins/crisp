@@ -1,0 +1,16 @@
+;; CHECK-FAIL-FLAGS: --logging-output
+;; CHECK-FAIL: "must be a scalar or a compile-time string"
+;; TEST-EXPECT: PASS
+;;
+;; Endeavour 193 -- a logged value is one 64-bit packet slot; a whole vector is refused.
+;; Without --logging-output the form compiles away and nothing is checked -- so the E2E runner,
+;; which compiles without the flag, expects this file to compile.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel refused_two (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (r-t-output "whole buffer" out)
+  (set! (~ out (get-local-id 0)) 7.0))

@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 2 7
+;;
+;; Endeavour 193 -- a die inside a called function stops the CALLER too.  On SPIR-V there is no
+;; thread-exit instruction, so the callee returns and every caller must return after it; the
+;; kernel's store after the call must not happen for thread 2.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-function give-up-on-two (i)
+  (declare #'(ulong => nil))
+  (when (= i (to-ulong 2))
+    (die "two")))
+
+(def-kernel die_in_callee (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (give-up-on-two (get-local-id 0))
+  (set! (~ out (get-local-id 0)) 7.0))

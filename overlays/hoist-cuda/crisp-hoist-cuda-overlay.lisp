@@ -22,5 +22,7 @@
 ;;;; %cuda-emit-num-workgroups-scratch-arg (the wrapper's branch, now a named function that
 ;;;; %cuda-emit-global-scratch-tensor-arg returns early into), and emit-launch (injects the
 ;;;; deferred blocks at the _crisp_launch anchor, after the cluster fix-up).
-
+;;;; EMPTY as of 2026-10-25 -- endeavour 193 folded: %193-cuda-emit-die-report / -log-report, the site tables
+;;;; bound in generate-cuda-launcher and reported at the top of emit-readback (src/hoist-cuda/main.lisp);
+;;;; the shared helpers into src/hoist/common.lisp.
 (in-package :crisp.hoist.cuda)

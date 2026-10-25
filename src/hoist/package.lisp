@@ -72,4 +72,11 @@
    #:%hk-strided-occupancy-p
    #:%hk-emit-launch-inputs
    #:%hk-emit-scratch-checks
-   #:%hk-replace-all))
+   #:%hk-replace-all
+   ;; Endeavour 193: the die and log reports
+   #:*193-die-sites*
+   #:*193-log-sites*
+   #:%193-read-metacrisp-section
+   #:%193-c-string
+   #:%193-emit-log-value
+   #:%193-emit-log-decode))

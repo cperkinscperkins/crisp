@@ -1,13 +1,16 @@
-# Logging and Debugging 📝
+# Logging and Debugging ⚠️
 
 
 > Overengineer much?
 >
 > (asked of Author)
+>
+> Yes.  This section used to be three times longer.
 
-When a kernel is running on a GPU it is often on a different device, with a completely different memory and addressing system and no 
-access to stdout or the file system. This makes debugging and logging challenging. Crisp attempts to assist with two different systems:
- - compile-time messaging, so that the compiler can be directed to output messages and information. 
- - side channel logging at runtime.  This has to be elected when compiling your kernel and the hoisting/enqueue code has to participate as well.
-
+When a kernel is running on a GPU it is on a different device, with its own memory, and no
+access to stdout or the file system. Crisp offers two kinds of help:
+ - compile-time messaging, so the compiler can be told to print things while it compiles;
+ - runtime asserts, `die`, and runtime logging.  You opt into these when compiling.  Nothing
+   changes in the host code that launches the kernel: the results are read back afterwards, and
+   the generated launchers do that for you.
 

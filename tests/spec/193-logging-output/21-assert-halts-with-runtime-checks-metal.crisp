@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --runtime-checks
+;; HOIST-EXPECT: BUFFER out: 7 7 2 7
+;; HOIST-EXPECT: DIE 21-assert-halts-with-runtime-checks-metal.crisp:18 group 0 local 2: lane check
+;;
+;; Endeavour 193 -- under --runtime-checks a failed r-t-assert is (unless test (die)).  Its runtime
+;; values are dropped, but its compile-time strings live in the site table, so the report still
+;; shows them at no runtime cost.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel assert_halts (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (r-t-assert (!= (get-local-id 0) (to-ulong 2)) "lane check")                       ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

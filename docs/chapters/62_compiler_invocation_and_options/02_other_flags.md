@@ -2,17 +2,23 @@
 
 
 #### `--runtime-checks` ✅
-This flag enables various runtime checks that Crips is able to generate. Bounds checks, etc. 
-The exact checks are documented in thei relevant sections. <!-- NOTE: gather them up --> 
-In the initial implementation, this flag is useless without also enabling `--logging-output` and the
-compiler will emit an error if that flag is not also elected. 
+Compiles the runtime asserts (`r-t-assert`, `r-t-assert-0`) and the compiler's own runtime checks
+(bounds checks etc., documented in their relevant sections) as `(unless <test> (die))`.  Their compile-time strings
+still reach the die report (they live in the site table); their runtime values are dropped.
+Add `--logging-output` to keep those too.  Without this flag they are compiled away entirely.
+See [Logging and Debugging](#logging-and-debugging).
 
-#### `--logging-output` 📝
-This enables the debugging output side channel as well as enabling the runtime checks ( `r-t-check` ). When this 
-option is used, the kernel may run significantly slower. Note that the code that actually hoists
-the kernels built with this flag has to be updated as well so that the debug output side channel vector
-is created and added as an argument. It is up to the calling application to decide what to
-do with the debug output once it is retrieved. The hoisting code typically models writing it to a file.
+#### `--logging-output` ✅
+Compiles the log in.  `r-t-output` forms are compiled, and a failed assert writes its message,
+runtime values included, into the log before it dies.  Implies `--runtime-checks`.  Kernels that log
+may run noticeably slower.  The log is a module-scope global, so the host code that launches the
+kernel does not change; the generated launchers read it back and print it.
+See [The Log](#the-log).
+
+#### `--logging-size=<bytes>` ✅
+The size of the log under `--logging-output`: a number of bytes, with an optional `K`, `M` or `G`
+suffix.  Default `4M`.  When a launch overflows the log, the launcher reports the size it would
+have needed.
 
 
 #### `--debug` or `-g` ✅

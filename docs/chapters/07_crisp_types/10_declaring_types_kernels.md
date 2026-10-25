@@ -65,7 +65,7 @@ Similarly, every invocation of `make-implicit-XXXX` adds at least two implicit a
 But kernels defined with `def-kernel-exact` do NOT support any implicit arguments.  
 Additionally the `&out` argument specifier is not supported in the param list for `def-kernel-exact`
 Instead `def-kernel-exact` supports different marshalling functions to help create Crisp Storage Handles, 
-including the ones required for the Crisp debug logging and scratch memory.
+including the ones required for the Crisp log and scratch memory.
 
 `def-kernel-exact` is provided for users who have less control over how their kernel is hoisted and may have to instead adapt to some existing interface.
 

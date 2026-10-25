@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-24T17:29:27.256126Z
+Generated on 2026-10-25T22:44:11.574688Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1399,6 +1399,26 @@ Generated on 2026-10-24T17:29:27.256126Z
 
 
 ---
+### DEFUN `%193-COMPUTE-MAY-DIE-FUNCTIONS`
+
+  > Endeavour 193, Pass 1.5 (multi-pass only).  Seeds *may-die-functions* from every function body  >    Pass 1 captured in *fn-normalized-info* that dies directly, then propagates to callers over  >    *call-graph* -- the same walk propagate-implicit-arguments does for scratch.  Crisp has no  >    recursion, so this terminates.
+
+
+---
+### DEFUN `%193-CURRENT-FUNCTION`
+- **Args**: `(CONTEXT)`
+
+  > Endeavour 193.  The name of the function whose body is being analysed, or NIL.
+
+
+---
+### DEFUN `%193-SITE-OF`
+- **Args**: `(EXPR)`
+
+  > Endeavour 193.  (FILE . LINE) for EXPR: its own entry; else that of an EQUAL subform of the  >    innermost enclosing read form (EXPR was copied by a body-rewriting macro); else the enclosing  >    form's line (EXPR was built by a macro).
+
+
+---
 ### DEFUN `PROPAGATE-IMPLICIT-ARGUMENTS`
 
   > Phase 4: Traverses the call graph backwards from originators to find all carriers.
@@ -1808,7 +1828,7 @@ Generated on 2026-10-24T17:29:27.256126Z
 ### DEFUN `ANALYZE-FUNCTION-CALL`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.  >    Extended (091): grid functions can only be called from a dispatch context.
+  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.  >    Extended (091): grid functions can only be called from a dispatch context.  >    Endeavour 193: a call to a function that may die makes the caller may-die too.  Multi-pass compiles  >    know this from Pass 1.5 already; --single-pass relies on this.  (A lazily instantiated variant marks  >    itself when its own body is analysed.)
 
 
 ---
@@ -2364,6 +2384,33 @@ Generated on 2026-10-24T17:29:27.256126Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION MODE)`
 
   > Shared analyzer for (rem x y) / (mod x y), MODE :rem or :mod (endeavour 185).
+
+
+---
+### DEFPARAMETER `+193-DIE-ID-FORMS+`
+
+  > Endeavour 193.  What the CAS winner writes into words 1 and 2 of the die record: the linear  >    workgroup id and the linear local id.
+
+
+---
+### DEFUN `ANALYZE-DIE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 193.  (die) or (die "message").  The message must be a compile-time string: the  >    die record carries only a site id, which the metadata maps back to file, line and message.  >    Marks the function being compiled as may-die (this is what --single-pass relies on, and what  >    catches a die produced by a user macro).  Phase B: records the site's file and line, and  >    carries the group/local id expressions as the call's argument nodes.
+
+
+---
+### DEFUN `%193-LOG-KIND`
+- **Args**: `(TYPE)`
+
+  > Endeavour 193.  The log's decoding kind for a scalar Crisp TYPE, or NIL (not loggable).
+
+
+---
+### DEFUN `ANALYZE-LOG-MESSAGE-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 193.  (%193-log-message arg ...) -- what r-t-output expands to under --logging-output.  >    Compile-time strings stay in the site table; every other argument must be a scalar, and is  >    carried as an argument node after the two id nodes (the writer's group and local ids).
 
 
 ---
@@ -5666,7 +5713,7 @@ Generated on 2026-10-24T17:29:27.256126Z
 ### DEFUN `GENERATE-FUNCTION-PROTOTYPE`
 - **Args**: `(SEMANTIC-FUNCTION MODULE DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)`
 
-  > Generates the LLVM function prototype and debug info.  >    For PTX entry points, threads IS-ENTRY-POINT and FN-NAME into  >    CREATE-LLVM-FUNCTION-TYPE so shared/local pointer params get demoted  >    to i64 at the kernel boundary, and the post-demotion verifier can  >    error with the kernel name (see header comment).
+  > Generates the LLVM function prototype and debug info.  >    For PTX entry points, threads IS-ENTRY-POINT and FN-NAME into  >    CREATE-LLVM-FUNCTION-TYPE so shared/local pointer params get demoted  >    to i64 at the kernel boundary, and the post-demotion verifier can  >    error with the kernel name (see header comment).  >    Endeavour 193: a non-entry function that may die gets the trailing die-flag parameter.
 
 
 ---
@@ -6119,10 +6166,94 @@ Generated on 2026-10-24T17:29:27.256126Z
 - **Args**: `(NODE-TYPE DOCSTRING ARG-ACCESSOR TYPE-ACCESSOR &BODY BODY)`
 
 ---
+### DEFUN `%193-DIE-RECORD-GLOBAL`
+- **Args**: `(MODULE)`
+
+  > Endeavour 193.  The module-scope die record: @__crisp_die_record, [4 x i32] in addrspace(1),  >    zero-initialised, external (Export) linkage so the host can find it by name  >    (zeModuleGetGlobalPointer / cuModuleGetGlobal).  Layout: site_id, group_id, local_id, reserved.
+
+
+---
+### DEFUN `%193-BUILD-BAIL-RETURN`
+- **Args**: `(BUILDER)`
+
+  > Endeavour 193.  Returns from the function BUILDER is in with zero of its return type (ret void  >    for a void function or kernel).  The value is never used: every caller bails out after it.
+
+
+---
+### DEFUN `%193-EMIT-DIE`
+- **Args**: `(BUILDER MODULE LOCATION &OPTIONAL NODE VAR-ENV DI-BUILDER
+              DI-SCOPE LOCATION-MAP INFO)`
+
+  > Endeavour 193.  The die lowering: claim the die record (CAS site id over 0, relaxed); the winner  >    writes its linear group id and local id into words 1 and 2.  Then set this thread's die flag and  >    return.  Code after it goes into a fresh block with no predecessors, as return-from-loop does.  >    INFO, when given, is the site's (MESSAGE FILE LINE); otherwise analysis recorded it.
+
+
+---
+### DEFUN `%193-CHECK-ID-NODES`
+- **Args**: `(LOCATION)`
+
+  > Endeavour 193.  The die record's id expressions for a check placed at CODEGEN: analysed on the  >    spot (the builtin analyzers need no environment), as if in a dispatch context.
+
+
+---
 ### DEFUN `%HANDLE-DIE-INTRINSIC`
 - **Args**: `(BUILDER MODULE)`
 
-  > Helper: Handles the compiler intrinsic DIE (llvm.trap).
+  > Endeavour 193.  A failed codegen-placed runtime check: die at the check's site  >    (*193-check-site*, bound by the node being generated).  Was llvm.trap -- a silent no-op on L0.
+
+
+---
+### DEFUN `%193-APPEND-FLAG-PARAM`
+- **Args**: `(FN-TYPE)`
+
+  > Endeavour 193.  FN-TYPE with one more parameter at the end: the die flag pointer (ptr, addrspace 0  >    -- the thread's private memory on both backends).
+
+
+---
+### DEFUN `%193-CALL-FLAG-ARG`
+- **Args**: `(CALLEE CALLER-FN)`
+
+  > Endeavour 193.  The die flag a call to may-die CALLEE passes.  The caller must itself be  >    may-die (propagation guarantees it); if not, the call graph was incomplete -- fail loudly.
+
+
+---
+### DEFUN `%193-CALL-PASSES-FLAG-P`
+- **Args**: `(CALLEE-SYM CALLEE-NAME MODULE PARAM-COUNT)`
+
+  > Endeavour 193.  Does this call pass the die flag?  The callee must be may-die and not foreign,  >    and if it is already in the module its LLVM signature must have the extra parameter -- a  >    function created some other way never gets a mismatched call.
+
+
+---
+### DEFUN `%193-LOG-GLOBAL`
+- **Args**: `(MODULE)`
+
+  > Endeavour 193.  @__crisp_log: [4 + C x i32] in addrspace(1), align 16, zero-initialised, Export  >    linkage (the host reads it by name).  Words 0-1 are the 64-bit cursor.
+
+
+---
+### DEFUN `%193-LOG-SLOT`
+- **Args**: `(BUILDER VALUE KIND)`
+
+  > Endeavour 193.  VALUE (of decoding KIND) as an i64 log slot: integers sign- or zero-extended,  >    floats by their bits.
+
+
+---
+### DEFUN `%193-EMIT-LOG-MESSAGE`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Endeavour 193.  Writes one log message: claim 3 + 2N words with an atomic add on the cursor  >    (relaxed; the cursor keeps counting past the end), and write the packet only if it fits.
+
+
+---
+### DEFUN `%193-MODULE-CAN-DIE-P`
+
+  > Endeavour 193.  T when anything in the module may reach a die.
+
+
+---
+### DEFUN `%193-LOAD-DIE-SITE-RELAXED`
+- **Args**: `(BUILDER MODULE)`
+
+  > Endeavour 193.  A relaxed atomic load of the die record's site word (non-zero once anyone died).
 
 
 ---
@@ -6145,7 +6276,7 @@ Generated on 2026-10-24T17:29:27.256126Z
               CALLEE-NAME LLVM-FN-TYPE PARAM-NODES PARAM-COUNT
               RETURN-TYPE-NAMES)`
 
-  > Helper: Builds the actual function call instruction.  >   >    Overlay change: propagate the callee's calling convention onto the  >    resulting call instruction.  Required on SPV builds — see overlay  >    header for the InstCombine UB bug this fix addresses.
+  > Helper: Builds the actual function call instruction.  >   >    Overlay change: propagate the callee's calling convention onto the  >    resulting call instruction.  Required on SPV builds — see overlay  >    header for the InstCombine UB bug this fix addresses.  >    Endeavour 193: a call to a may-die function passes the die flag as a trailing argument, then  >    loads it and returns from the caller if the callee died.
 
 
 ---
@@ -6592,7 +6723,7 @@ Generated on 2026-10-24T17:29:27.256126Z
 ### DEFUN `%GEN-NVVM-MBARRIER-TRY-WAIT-PARITY`
 - **Args**: `(BUILDER MBAR-ADDR-I32 PHASE-I32)`
 
-  > Inline PTX: try_wait.parity -> i32 (1 if the barrier's phase flipped, else 0).  Wrapped so  >    the caller can spin in an LLVM loop (no label in the asm).
+  > Inline PTX: try_wait.parity -> i32 (1 if the barrier's phase flipped, else 0).  Wrapped so  >    the caller can spin in an LLVM loop (no label in the asm).  >    Endeavour 193: in a module that can die, each spin also checks the die record.  A may-die waiter  >    unwinds (flag + return); any other waiter leaves the wait (returns 1).  A dead producer would  >    otherwise hang its consumers (H100 probe, put_temp_files_here/logging-probes/FINDINGS.md).
 
 
 ---
@@ -7592,12 +7723,125 @@ Generated on 2026-10-24T17:29:27.256126Z
 
 
 ---
+### DEFVAR `*MAY-DIE-FUNCTIONS*`
+
+  > Endeavour 193.  Function name -> T for every function that may reach a die: directly, or by  >    calling one that may.  Filled by the Pass-1 scan (%193-compute-may-die-functions, multi-pass)  >    and by analysis (analyze-die-expression / analyze-function-call, both modes).  Such a function  >    gets the trailing die-flag parameter.
+
+
+---
+### DEFVAR `*DIE-MESSAGES*`
+
+  > Endeavour 193.  Source location of a die -> its compile-time message string (or NIL).  >    Phase B turns these into the site table.
+
+
+---
+### DEFVAR `*DIE-SITES*`
+
+  > Endeavour 193.  Per-module list of (site-id location message), newest first.  Site ids start  >    at 1; 0 in the die record means nobody died.
+
+
+---
+### DEFVAR `*DIE-FLAG-PTR*`
+
+  > Endeavour 193.  While a may-die function's body is generated: the LLVM pointer to the thread's  >    i32 die flag (the kernel's entry alloca, or the function's trailing parameter).  NIL otherwise.
+
+
+---
+### DEFVAR `*193-FORM-SITES*`
+
+  > Endeavour 193.  A list read from a .crisp file -> (FILE-NAMESTRING . LINE).  Weak, so it never  >    holds a form alive; filled only while *193-read-file* is bound.
+
+
+---
+### DEFVAR `*193-ENCLOSING-SITE*`
+
+  > Endeavour 193.  (FILE . LINE) of the innermost form being analysed that came from a file.
+
+
+---
+### DEFVAR `*193-ENCLOSING-FORM*`
+
+  > Endeavour 193.  The innermost form being analysed that came from a file (has a *193-form-sites* entry).
+
+
+---
+### DEFVAR `*193-LOCATION-SITES*`
+
+  > Endeavour 193.  Under --runtime-checks: analysis location -> (FILE . LINE) of the innermost  >    enclosing source form, so a check placed at codegen can name its line.
+
+
+---
+### DEFVAR `*193-CHECK-SITE*`
+
+  > Endeavour 193.  While a node that may emit a bounds check is generated: (LOCATION . MESSAGE).
+
+
+---
+### DEFVAR `*LOGGING-OUTPUT-ENABLED*`
+
+  > Endeavour 193.  T when compiling with --logging-output (r-t-output and assert messages go to the  >    log).  Set by initialize-compiler; implies *runtime-checks-enabled*.
+
+
+---
+### DEFVAR `*LOGGING-SIZE-BYTES*`
+
+  > Endeavour 193.  --logging-size: the bytes reserved for @__crisp_log (header included).
+
+
+---
+### DEFVAR `*LOG-SITES*`
+
+  > Endeavour 193.  Per-module list of (site-id file line pieces location), newest first.  PIECES is  >    the message in order: compile-time strings, and a type keyword (:int :uint :long :ulong :float  >    :double) for each runtime value.
+
+
+---
+### DEFVAR `*193-LOG-MESSAGES*`
+
+  > Endeavour 193.  Analysis location of a log message -> (PIECES FILE LINE).
+
+
+---
+### DEFUN `%193-DIE-SYMBOL-P`
+- **Args**: `(SYM)`
+
+  > Endeavour 193.  T when SYM names die (by name: user code is read in :crisp-language).
+
+
+---
+### DEFUN `%193-MAY-DIE-P`
+- **Args**: `(NAME)`
+
+  > Endeavour 193.  T when the function NAME may reach a die (see *may-die-functions*).  Under  >    --runtime-checks every function may: bounds checks are placed at codegen, after prototypes.
+
+
+---
+### DEFUN `%193-BODY-DIES-DIRECTLY-P`
+- **Args**: `(BODY)`
+
+  > Endeavour 193.  T when the SURFACE forms BODY contain (die ...) -- or, under --runtime-checks,  >    an r-t-assert / r-t-assert-0, which then expand to (unless test (die)).  A raw walk: no macro  >    expansion, because expanding Crisp macros in Pass 1 has side effects (scratch counters).  A die  >    that only a user macro produces is caught at analysis instead (analyze-die-expression), which  >    covers every case except a caller compiled BEFORE such a callee -- and that one fails loudly in  >    %193-call-flag-arg rather than miscompiling.
+
+
+---
+### DEFUN `%193-PARSE-SIZE`
+- **Args**: `(TEXT)`
+
+  > Endeavour 193.  "4M" / "512K" / "1G" / "65536" -> bytes.
+
+
+---
+### DEFUN `%193-LOG-CAPACITY-WORDS`
+
+  > Endeavour 193.  Data words in the log: the size, less the 4-word header (at least 64).
+
+
+---
 ### DEFUN `INITIALIZE-COMPILER`
 - **Args**: `(&KEY (LOG-LEVEL OFF) (RUNTIME-CHECKS NIL) (DIFFERENTIATE NIL)
               (MATH-PRECISION IEEE) (FORCE-MATH-PRECISION NIL)
-              (DENORMAL-HANDLING PRESERVE) (HARDWARE-PROFILE NIL))`
+              (DENORMAL-HANDLING PRESERVE) (HARDWARE-PROFILE NIL)
+              (LOGGING-OUTPUT NIL) (LOGGING-SIZE NIL))`
 
-  > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.
+  > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.  >    Endeavour 193: LOGGING-OUTPUT (--logging-output) implies RUNTIME-CHECKS; under DIFFERENTIATE the  >    log is off (the gradient kernels are compiled without it) but RUNTIME-CHECKS is honoured.  >    LOGGING-SIZE is the log's size in bytes (--logging-size, default 4M).
 
 
 ---
@@ -8495,7 +8739,21 @@ Generated on 2026-10-24T17:29:27.256126Z
 ### DEFUN `EMIT-READBACK`
 - **Args**: `(STREAM ALLOCATIONS)`
 
-  > Emit cuMemcpyDtoH and print buffer contents.  Endeavor 134: appends host-reference C=A·B.
+  > Emit cuMemcpyDtoH and print buffer contents.  Endeavor 134: appends host-reference C=A·B.  >    Endeavour 193: first the log (if the module logs) and the die report (if it can die) -- the kernel  >    has synchronised.
+
+
+---
+### DEFUN `%193-CUDA-EMIT-DIE-REPORT`
+- **Args**: `(STREAM)`
+
+  > Endeavour 193.  C++ that reads the die record and prints the DIE line from the site table.
+
+
+---
+### DEFUN `%193-CUDA-EMIT-LOG-REPORT`
+- **Args**: `(STREAM)`
+
+  > Endeavour 193.  C++ that reads __crisp_log by name (cuModuleGetGlobal) and prints it.
 
 
 ---
@@ -8744,6 +9002,20 @@ Generated on 2026-10-24T17:29:27.256126Z
               DISPATCH-INFO)`
 
   > Generate kernel creation and launch code. Returns list of USM allocations.  >    Extended to accept dispatch-info plist with :global-size, :local-size, :num-groups.  >    (Its --mma-bench timing block, Endeavours 142/143, was retired 2026-10-16 -- benchmarks use the  >    reviewed fixture, benchmarks/matmul/crisp/bench_harness_l0.cpp.)
+
+
+---
+### DEFUN `%193-L0-EMIT-DIE-REPORT`
+- **Args**: `(STREAM)`
+
+  > Endeavour 193.  C++ that reads the die record and prints the DIE line from the site table.
+
+
+---
+### DEFUN `%193-L0-EMIT-LOG-REPORT`
+- **Args**: `(STREAM)`
+
+  > Endeavour 193.  C++ that reads @__crisp_log by name (zeModuleGetGlobalPointer) and prints it.
 
 
 ---
@@ -9175,6 +9447,46 @@ Generated on 2026-10-24T17:29:27.256126Z
 - **Args**: `(METACRISP-DATA)`
 
   > Extract the active hardware profile plist (or NIL) from metacrisp data.  > The plist keeps its :name plus every registered key, e.g.  >   (:name "GPU-A" :COMPUTE-UNITS 132 ...).
+
+
+---
+### DEFVAR `*193-DIE-SITES*`
+
+  > Endeavour 193.  The (:die-sites ...) plist of the .metacrisp being hoisted, or NIL.
+
+
+---
+### DEFVAR `*193-LOG-SITES*`
+
+  > Endeavour 193.  The (:log-sites ...) plist of the .metacrisp being hoisted, or NIL.
+
+
+---
+### DEFUN `%193-READ-METACRISP-SECTION`
+- **Args**: `(METACRISP-PATH KEY)`
+
+  > Endeavour 193.  The plist of the top-level (KEY ...) section of the .metacrisp, or NIL.
+
+
+---
+### DEFUN `%193-C-STRING`
+- **Args**: `(S)`
+
+  > Endeavour 193.  S as the body of a C string literal (backslashes and quotes escaped).
+
+
+---
+### DEFUN `%193-EMIT-LOG-VALUE`
+- **Args**: `(STREAM KIND SLOT-INDEX)`
+
+  > Endeavour 193.  C++ printing one log value: KIND's decoding of 64-bit slot SLOT-INDEX of the  >    message at _logData[_p].
+
+
+---
+### DEFUN `%193-EMIT-LOG-DECODE`
+- **Args**: `(STREAM)`
+
+  > Endeavour 193.  C++ that decodes the host copy of the log (uint32_t* _log) with the site table  >    and prints each message as LOG <file>:<line> group <g> local <l>: <message>, then LOG FULL if  >    the launch claimed more than the capacity.
 
 
 ---
@@ -9947,10 +10259,17 @@ Generated on 2026-10-24T17:29:27.256126Z
 
 
 ---
+### DEFUN `%193-ASSERT-MESSAGE`
+- **Args**: `(ARGS)`
+
+  > Endeavour 193.  The compile-time strings among an assert's ARGS, joined by spaces, or NIL.
+
+
+---
 ### DEFMACRO `R-T-ASSERT`
 - **Args**: `(TEST &REST ARGS)`
 
-  > Asserts that TEST is true at runtime. If not, terminates kernel.  >    Args (message strings etc) are currently ignored.
+  > Asserts that TEST is true at runtime; if not, the thread dies (see die).  Compiled ONLY under  >    --runtime-checks (or --logging-output); otherwise it disappears, test and all.  Its compile-time  >    string arguments become the die site's message; under --logging-output the whole message,  >    runtime values included, is written to the log first.
 
 
 ---
@@ -9964,7 +10283,33 @@ Generated on 2026-10-24T17:29:27.256126Z
 ### DEFMACRO `R-T-ASSERT-0`
 - **Args**: `(TEST &REST ARGS)`
 
-  > Asserts that TEST is true at runtime (placeholder for thread-0 check).
+  > r-t-assert evaluated by GLOBAL thread 0 only (when-thread-is 0).  For conditions every thread  >    sees the same way -- lengths, dispatch geometry.  Compiled only under --runtime-checks.
+
+
+---
+### DEFMACRO `R-T-OUTPUT`
+- **Args**: `(&REST ARGS)`
+
+  > Writes one message, made of ARGS (compile-time strings and scalar values), into the log.  Only  >    under --logging-output; otherwise it disappears along with its arguments.  Engaged by EVERY  >    thread -- choose who logs with a guard (when-thread-is, when-thread-in-group-is, ...).
+
+
+---
+### DEFMACRO `R-T-OUTPUT-0`
+- **Args**: `(&REST ARGS)`
+
+  > r-t-output from GLOBAL thread 0 only (when-thread-is 0): one message per launch.
+
+
+---
+### DEFMACRO `IS-LOGGING?`
+
+  > True at compile time when compiling with --logging-output.  Use with if+ / when+.
+
+
+---
+### DEFMACRO `IS-RUNTIME-CHECKING?`
+
+  > True at compile time when compiling with --runtime-checks (and so also under --logging-output).
 
 
 ---
@@ -10152,6 +10497,13 @@ Generated on 2026-10-24T17:29:27.256126Z
 
 
 ---
+### DEFMACRO `WHEN-THREAD-IS`
+- **Args**: `(&REST IDS-AND-BODY)`
+
+  > Runs BODY only in the thread whose global id (relative to the global offset) is the given one --  >    a per-LAUNCH election.  (when-thread-is id body...) compares the linear global id;  >    (when-thread-is x y body...) and (when-thread-is x y z body...) compare each dimension.  >    The ids must be literal integers.  sync-workgroup in BODY is refused (divergent).
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
@@ -10260,14 +10612,14 @@ Generated on 2026-10-24T17:29:27.256126Z
 ### DEFUN `%READ-CRISP-FORMS`
 - **Args**: `(FILES)`
 
-  > Every top-level form of FILES, in order, read in :crisp-language.
+  > Every top-level form of FILES, in order, read in :crisp-language.  >    Endeavour 193: records each list's file and line (*193-form-sites*) for the die report.
 
 
 ---
 ### DEFUN `%COMPILE-FILES-SINGLE-PASS`
 - **Args**: `(FILES MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT)`
 
-  > --single-pass: compile each file's forms as they are read, with one shared toplevel index so that  >    location indices are unique across the entire compilation unit.
+  > --single-pass: compile each file's forms as they are read, with one shared toplevel index so that  >    location indices are unique across the entire compilation unit.  >    Endeavour 193: records each list's file and line (*193-form-sites*) for the die report.
 
 
 ---
@@ -11153,6 +11505,20 @@ Generated on 2026-10-24T17:29:27.256126Z
 - **Args**: `(SIG DECLARED-PARAMS)`
 
   > Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap  >    descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.
+
+
+---
+### DEFUN `%193-SERIALIZE-DIE-SITES`
+- **Args**: `(STREAM)`
+
+  > Endeavour 193.  The (:die-sites ...) section: the record's global name and every site, oldest  >    first, as (ID "FILE" LINE "MESSAGE"-or-NIL).  Nothing when the module cannot die.
+
+
+---
+### DEFUN `%193-SERIALIZE-LOG-SITES`
+- **Args**: `(STREAM)`
+
+  > Endeavour 193.  The (:log-sites ...) section: the log's global name, its data capacity in words,  >    and every site, oldest first, as (ID "FILE" LINE PIECES).  Nothing when the module never logs.
 
 
 ---
@@ -12313,6 +12679,43 @@ Generated on 2026-10-24T17:29:27.256126Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\reader.lisp`
 
+### DEFVAR `*193-READ-FILE*`
+
+  > Endeavour 193.  While crisp.main reads a .crisp file: (FILE-NAMESTRING . NEWLINE-OCTET-OFFSETS).  >    NIL otherwise, and the `(` reader then does nothing extra.
+
+
+---
+### DEFUN `%193-NEWLINE-OFFSETS`
+- **Args**: `(PATH)`
+
+  > Endeavour 193.  A vector of the octet offsets of every LF in the file at PATH.
+
+
+---
+### DEFUN `%193-LINE-OF`
+- **Args**: `(OFFSET NEWLINES)`
+
+  > Endeavour 193.  1-based line of octet OFFSET, given the LF offsets NEWLINES (sorted).
+
+
+---
+### DEFVAR `*193-ORIG-PAREN-READER*`
+
+---
+### DEFUN `%193-PAREN-READER`
+- **Args**: `(STREAM CHAR)`
+
+  > Endeavour 193.  The `(` reader macro, recording where each list came from while a .crisp file is  >    read (*193-read-file*).  FILE-POSITION is just past the `(`.
+
+
+---
+### DEFMACRO `%193-WITH-READ-FILE`
+- **Args**: `((PATH) &BODY BODY)`
+
+  > Endeavour 193.  Runs BODY with *193-read-file* bound for the .crisp file at PATH.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\semantic.lisp`
 
 ### DEFSTRUCT `CRISP-TYPE`

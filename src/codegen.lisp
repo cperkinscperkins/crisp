@@ -677,7 +677,8 @@
    For PTX entry points, threads IS-ENTRY-POINT and FN-NAME into
    CREATE-LLVM-FUNCTION-TYPE so shared/local pointer params get demoted
    to i64 at the kernel boundary, and the post-demotion verifier can
-   error with the kernel name (see header comment)."
+   error with the kernel name (see header comment).
+   Endeavour 193: a non-entry function that may die gets the trailing die-flag parameter."
   (let* ((return-types (semantic-function-return-type semantic-function))
          (crisp-return-type (first return-types))
          (base-name (semantic-function-name semantic-function))
@@ -692,6 +693,10 @@
          (fn-loc (semantic-function-source-location semantic-function))
          (param-nodes (semantic-function-param-list semantic-function))
          (fn-type (create-llvm-function-type module return-types param-nodes is-entry-point fn-name)))
+
+    (when (and (not is-entry-point) (%193-may-die-p base-name))
+      (log:info "193: ~a may die -- adding the die-flag parameter" fn-name)
+      (setf fn-type (%193-append-flag-param fn-type)))
 
     (log:info "llvm-add-function: ~a Module: ~a" fn-name module)
 
@@ -886,12 +891,25 @@
         (var-env (make-hash-table))
         (param-nodes (semantic-function-param-list semantic-function))
         (return-types (semantic-function-return-type semantic-function))
-        (is-entry-point (semantic-function-is-entry-point semantic-function)))
+        (is-entry-point (semantic-function-is-entry-point semantic-function))
+        ;; Endeavour 193: the thread's die flag, set up below for a function that may die.
+        (*die-flag-ptr* nil))
 
     (log:debug "Positioning builder at entry block...")
     (llvm-position-builder-at-end builder entry-block)
 
     (initialize-function-parameters builder func param-nodes module var-env is-entry-point)
+
+    ;; Endeavour 193: a function that may die gets the thread's die flag -- a kernel allocates and zeroes
+    ;; it, a callee receives it as its trailing (LLVM-only) parameter.
+    (when (%193-may-die-p (semantic-function-name semantic-function))
+      (setf *die-flag-ptr*
+            (if is-entry-point
+                (let ((a (llvm-build-alloca builder (llvm-int32-type) "die_flag")))
+                  (llvm-build-store builder (llvm-const-int (llvm-int32-type) 0 0) a)
+                  a)
+                (llvm-get-param func (1- (llvm-count-params func)))))
+      (log:debug "193: die flag bound for ~a" (semantic-function-name semantic-function)))
 
     (let ((*kernel-readonly-tensor-syms*
            (%collect-readonly-tensor-param-syms semantic-function)))
@@ -2727,20 +2745,232 @@
     (llvm-build-insert-value builder agg-0 rem-val 1 "res_r")))
 
 
-(defun %handle-die-intrinsic (builder module)
-  "Helper: Handles the compiler intrinsic DIE (llvm.trap)."
-  (let ((trap-name "llvm.trap"))
-    (let ((f (llvm-get-named-function module trap-name)))
-      (when (cffi:null-pointer-p f)
-            (let ((ft (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)))
-              (setf f (llvm-add-function module trap-name ft))))
-      (llvm-build-call2 builder
-                        (llvm-function-type (llvm-void-type) (cffi:null-pointer) 0 nil)
-                        f
-                        (cffi:null-pointer)
-                        0
-                        ""))
+;;;; Endeavour 193: die (exit/unwind + the die record), the runtime checks, and the log.
+
+(defun %193-die-record-global (module)
+  "Endeavour 193.  The module-scope die record: @__crisp_die_record, [4 x i32] in addrspace(1),
+   zero-initialised, external (Export) linkage so the host can find it by name
+   (zeModuleGetGlobalPointer / cuModuleGetGlobal).  Layout: site_id, group_id, local_id, reserved."
+  (let ((g (llvm-get-named-global module "__crisp_die_record")))
+    (if (and g (not (cffi:null-pointer-p g)))
+        g
+        (let* ((ty (llvm-array-type (llvm-int32-type) 4))
+               (g (llvm-add-global-in-addrspace module ty "__crisp_die_record" 1)))
+          (llvm-set-initializer g (llvm-const-null ty))
+          (log:info "193: created @__crisp_die_record")
+          g))))
+
+(defun %193-build-bail-return (builder)
+  "Endeavour 193.  Returns from the function BUILDER is in with zero of its return type (ret void
+   for a void function or kernel).  The value is never used: every caller bails out after it."
+  (let* ((fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (ret-ty (crisp.llvm-bindings::llvm-get-return-type (crisp.llvm-bindings::llvm-global-get-value-type fn))))
+    (if (= (llvm-get-type-kind ret-ty) 0)     ; LLVMVoidTypeKind
+        (llvm-build-ret-void builder)
+        (llvm-build-ret builder (llvm-const-null ret-ty)))))
+
+(defun %193-emit-die (builder module location &optional node var-env di-builder di-scope location-map info)
+  "Endeavour 193.  The die lowering: claim the die record (CAS site id over 0, relaxed); the winner
+   writes its linear group id and local id into words 1 and 2.  Then set this thread's die flag and
+   return.  Code after it goes into a fresh block with no predecessors, as return-from-loop does.
+   INFO, when given, is the site's (MESSAGE FILE LINE); otherwise analysis recorded it."
+  (unless *die-flag-ptr*
+    (error "Compiler bug (endeavour 193): die reached codegen in a function that was not marked may-die (location ~s)." location))
+  (let* ((info (or info (gethash location *die-messages*)))
+         ;; One id per source location: a two-target compile (spv + ptx) generates the module
+         ;; twice, and a template body may be instantiated more than once.
+         (existing (find location *die-sites* :key #'fifth :test #'equal))
+         (site-id (if existing (first existing) (1+ (length *die-sites*))))
+         (rec (%193-die-record-global module))
+         (rec-ty (llvm-array-type (llvm-int32-type) 4))
+         (i32 (llvm-int32-type))
+         (fn (llvm-get-basic-block-parent (llvm-get-insert-block builder))))
+    (unless existing
+      (push (list site-id (second info) (third info) (first info) location) *die-sites*))
+    (log:info "193: die site ~d: ~a:~a ~s" site-id (second info) (third info) (first info))
+    (let* ((pair (crisp.llvm-bindings::llvm-build-atomic-cmpxchg
+                  builder rec (llvm-const-int i32 0 0) (llvm-const-int i32 site-id 0) 2 2 0))
+           (won (llvm-build-extract-value builder pair 1 "die_won"))
+           (fill (llvm-append-basic-block fn "die_fill"))
+           (done (llvm-append-basic-block fn "die_done")))
+      (llvm-build-cond-br builder won fill done)
+      (llvm-position-builder-at-end builder fill)
+      (when node
+        (loop for arg in (semantic-call-args node)
+              for word from 1
+              do (let* ((v (generate-node-ir arg builder module var-env di-builder di-scope location-map))
+                        (idx (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                   (setf (cffi:mem-aref idx 'llvm-value-ref 0) (llvm-const-int i32 0 0)
+                         (cffi:mem-aref idx 'llvm-value-ref 1) (llvm-const-int i32 word 0))
+                   (llvm-build-store builder v
+                                     (llvm-build-in-bounds-gep2 builder rec-ty rec idx 2 "die_word")))))
+      (llvm-build-br builder done)
+      (llvm-position-builder-at-end builder done))
+    (llvm-build-store builder (llvm-const-int i32 1 0) *die-flag-ptr*)
+    (%193-build-bail-return builder)
+    (llvm-position-builder-at-end builder (llvm-append-basic-block fn "after_die"))
     (values nil nil)))
+
+(defun %193-check-id-nodes (location)
+  "Endeavour 193.  The die record's id expressions for a check placed at CODEGEN: analysed on the
+   spot (the builtin analyzers need no environment), as if in a dispatch context."
+  (let ((*in-dispatch-context* t))
+    (loop for f in +193-die-id-forms+
+          for i from 1
+          collect (analyze-expression f nil (or *compiler-context* (make-compiler-context))
+                                      (append location (list :check i))))))
+
+(defun %handle-die-intrinsic (builder module)
+  "Endeavour 193.  A failed codegen-placed runtime check: die at the check's site
+   (*193-check-site*, bound by the node being generated).  Was llvm.trap -- a silent no-op on L0."
+  (let* ((site (or *193-check-site* (cons '(:unknown-check) "runtime check failed")))
+         (location (car site))
+         (file-line (gethash location *193-location-sites*))
+         (info (list (cdr site) (car file-line) (cdr file-line)))
+         (node (make-semantic-call :name 'die :type '(nil)
+                                   :args (%193-check-id-nodes location)
+                                   :signature (first (gethash 'die *function-table*))
+                                   :source-location location)))
+    (log:info "193: runtime check site at ~s: ~a (~a)" location (cdr site) file-line)
+    (%193-emit-die builder module (list :check location) node (make-hash-table) nil nil nil info)))
+
+(defmethod generate-node-ir :around ((node semantic-make-view) builder module var-env di-builder di-scope location-map)
+  "Endeavour 193: names the site of make-view's --runtime-checks bounds check."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*193-check-site* (cons (semantic-make-view-source-location node)
+                                "bounds check: the view does not fit its source")))
+    (call-next-method)))
+
+(defmethod generate-node-ir :around ((node semantic-struct-member-update) builder module var-env di-builder di-scope location-map)
+  "Endeavour 193: names the site of a storage handle update's --runtime-checks bounds check."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*193-check-site* (cons (semantic-struct-member-update-source-location node)
+                                "bounds check: storage handle offset or length out of range")))
+    (call-next-method)))
+
+(defun %193-append-flag-param (fn-type)
+  "Endeavour 193.  FN-TYPE with one more parameter at the end: the die flag pointer (ptr, addrspace 0
+   -- the thread's private memory on both backends)."
+  (let* ((n (llvm-count-param-types fn-type))
+         (arr (cffi:foreign-alloc 'llvm-type-ref :count (1+ n))))
+    (when (plusp n)
+      (llvm-get-param-types fn-type arr))
+    (setf (cffi:mem-aref arr 'llvm-type-ref n) (llvm-pointer-type (llvm-int32-type) 0))
+    (llvm-function-type (crisp.llvm-bindings::llvm-get-return-type fn-type) arr (1+ n) nil)))
+
+(defun %193-call-flag-arg (callee caller-fn)
+  "Endeavour 193.  The die flag a call to may-die CALLEE passes.  The caller must itself be
+   may-die (propagation guarantees it); if not, the call graph was incomplete -- fail loudly."
+  (or *die-flag-ptr*
+      (error "Compiler bug (endeavour 193): ~a calls may-die function ~a but has no die flag.  (A die that only a macro produces, in a callee defined AFTER its caller, is not seen by Pass 1.)"
+             (crisp.llvm-bindings::llvm-get-value-name caller-fn) callee)))
+
+(defun %193-call-passes-flag-p (callee-sym callee-name module param-count)
+  "Endeavour 193.  Does this call pass the die flag?  The callee must be may-die and not foreign,
+   and if it is already in the module its LLVM signature must have the extra parameter -- a
+   function created some other way never gets a mismatched call."
+  (and (%193-may-die-p callee-sym)
+       (not (gethash callee-sym *foreign-functions*))
+       (let ((f (llvm-get-named-function module callee-name)))
+         (or (cffi:null-pointer-p f)
+             (= (llvm-count-params f) (1+ param-count))))))
+
+(defun %193-log-global (module)
+  "Endeavour 193.  @__crisp_log: [4 + C x i32] in addrspace(1), align 16, zero-initialised, Export
+   linkage (the host reads it by name).  Words 0-1 are the 64-bit cursor."
+  (let ((g (llvm-get-named-global module "__crisp_log")))
+    (if (and g (not (cffi:null-pointer-p g)))
+        g
+        (let* ((ty (llvm-array-type (llvm-int32-type) (+ 4 (%193-log-capacity-words))))
+               (g (llvm-add-global-in-addrspace module ty "__crisp_log" 1)))
+          (llvm-set-initializer g (llvm-const-null ty))
+          (crisp.llvm-bindings::llvm-set-alignment g 16)
+          (log:info "193: created @__crisp_log (~d data words)" (%193-log-capacity-words))
+          g))))
+
+(defun %193-log-slot (builder value kind)
+  "Endeavour 193.  VALUE (of decoding KIND) as an i64 log slot: integers sign- or zero-extended,
+   floats by their bits."
+  (let* ((i64 (llvm-int64-type))
+         (ty (llvm-type-of value))
+         (int-p (= (llvm-get-type-kind ty) 8)))          ; LLVMIntegerTypeKind
+    (ecase kind
+      ((:int :uint :long :ulong)
+       (unless int-p
+         (error "Compiler bug (endeavour 193): a ~a log value is not an LLVM integer" kind))
+       (if (= (crisp.llvm-bindings::llvm-get-int-type-width ty) 64)
+           value
+           (if (eq kind :int)
+               (llvm-build-sext builder value i64 "log_sext")
+               (llvm-build-zext builder value i64 "log_zext"))))
+      (:float
+       (llvm-build-zext builder
+                        (crisp.llvm-bindings::llvm-build-bit-cast builder value (llvm-int32-type) "log_fbits")
+                        i64 "log_fslot"))
+      (:double
+       (crisp.llvm-bindings::llvm-build-bit-cast builder value i64 "log_dbits")))))
+
+(defun %193-emit-log-message (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 193.  Writes one log message: claim 3 + 2N words with an atomic add on the cursor
+   (relaxed; the cursor keeps counting past the end), and write the packet only if it fits."
+  (let* ((location (semantic-call-source-location node))
+         (info (gethash location *193-log-messages*))
+         (pieces (first info))
+         (kinds (remove-if #'stringp pieces))
+         (existing (find location *log-sites* :key #'fifth :test #'equal))
+         (site-id (if existing (first existing) (1+ (length *log-sites*))))
+         (cap (%193-log-capacity-words))
+         (nwords (+ 3 (* 2 (length kinds))))
+         (i32 (llvm-int32-type))
+         (i64 (llvm-int64-type))
+         (log-ty (llvm-array-type i32 (+ 4 cap)))
+         (g (%193-log-global module))
+         (fn (llvm-get-basic-block-parent (llvm-get-insert-block builder))))
+    (unless existing
+      (push (list site-id (second info) (third info) pieces location) *log-sites*))
+    (log:info "193: log site ~d: ~a:~a ~s" site-id (second info) (third info) pieces)
+    ;; values first (in the current block), then claim, then write
+    (let* ((args (semantic-call-args node))
+           (gid (generate-node-ir (first args) builder module var-env di-builder di-scope location-map))
+           (lid (generate-node-ir (second args) builder module var-env di-builder di-scope location-map))
+           (slots (loop for arg in (cddr args)
+                        for kind in kinds
+                        collect (let ((v (generate-node-ir arg builder module var-env di-builder di-scope location-map)))
+                                  (%193-log-slot builder (extract-primary-value builder v (semantic-node-type arg)) kind))))
+           (off (crisp.llvm-bindings::llvm-build-atomic-rmw builder 1 g (llvm-const-int i64 nwords 0) 2 0)) ; add, monotonic
+           (end (llvm-build-add builder off (llvm-const-int i64 nwords 0) "log_end"))
+           (fits (llvm-build-icmp builder +llvm-int-ule+ end (llvm-const-int i64 cap 0) "log_fits"))
+           (write (llvm-append-basic-block fn "log_write"))
+           (done (llvm-append-basic-block fn "log_done")))
+      (llvm-build-cond-br builder fits write done)
+      (llvm-position-builder-at-end builder write)
+      (let ((words (append (list (llvm-const-int i32 site-id 0) gid lid)
+                           (loop for s in slots
+                                 append (list (llvm-build-trunc builder s i32 "log_lo")
+                                              (llvm-build-trunc builder
+                                                                (crisp.llvm-bindings::llvm-build-l-shr builder s (llvm-const-int i64 32 0) "log_hi64")
+                                                                i32 "log_hi"))))))
+        (loop for w in words
+              for k from 0
+              do (let ((idx (cffi:foreign-alloc 'llvm-value-ref :count 2)))
+                   (setf (cffi:mem-aref idx 'llvm-value-ref 0) (llvm-const-int i64 0 0)
+                         (cffi:mem-aref idx 'llvm-value-ref 1)
+                         (llvm-build-add builder off (llvm-const-int i64 (+ 4 k) 0) "log_idx"))
+                   (llvm-build-store builder w (llvm-build-in-bounds-gep2 builder log-ty g idx 2 "log_word")))))
+      (llvm-build-br builder done)
+      (llvm-position-builder-at-end builder done))
+    (values nil nil)))
+
+(defun %193-module-can-die-p ()
+  "Endeavour 193.  T when anything in the module may reach a die."
+  (or *runtime-checks-enabled* (plusp (hash-table-count *may-die-functions*))))
+
+(defun %193-load-die-site-relaxed (builder module)
+  "Endeavour 193.  A relaxed atomic load of the die record's site word (non-zero once anyone died)."
+  (let ((ld (llvm-build-load2 builder (llvm-int32-type) (%193-die-record-global module) "die_site_seen")))
+    (llvm-set-ordering ld 2)                       ; monotonic
+    (crisp.llvm-bindings::llvm-set-alignment ld 4)
+    ld))
 
 (defun %build-llvm-function-type (module return-type-names param-types)
   "Helper: Constructs an llvm-function-type and parameter count from a list of return types and parameter types."
@@ -2772,20 +3002,34 @@
 
    Overlay change: propagate the callee's calling convention onto the
    resulting call instruction.  Required on SPV builds — see overlay
-   header for the InstCombine UB bug this fix addresses."
+   header for the InstCombine UB bug this fix addresses.
+   Endeavour 193: a call to a may-die function passes the die flag as a trailing argument, then
+   loads it and returns from the caller if the callee died."
   (declare (ignore sig))
-  (let* ((arg-nodes (semantic-call-args node))
+  (let* ((callee-sym (semantic-call-name node))
+         (dies-p (%193-call-passes-flag-p callee-sym callee-name module param-count))
+         (fn-type (if dies-p (%193-append-flag-param llvm-fn-type) llvm-fn-type))
+         (arg-nodes (semantic-call-args node))
          (args-array (prepare-call-arguments builder module var-env di-builder di-scope location-map
                                              arg-nodes param-nodes param-count))
+         (caller-fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (n-args (if dies-p (1+ param-count) param-count))
+         (final-args (if dies-p
+                         (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count n-args)))
+                           (dotimes (i param-count)
+                             (setf (cffi:mem-aref arr 'llvm-value-ref i) (cffi:mem-aref args-array 'llvm-value-ref i)))
+                           (setf (cffi:mem-aref arr 'llvm-value-ref param-count) (%193-call-flag-arg callee-sym caller-fn))
+                           arr)
+                         args-array))
          (callee-fn (let ((f (llvm-get-named-function module callee-name)))
                       (if (cffi:null-pointer-p f)
-                          (llvm-add-function module callee-name llvm-fn-type)
+                          (llvm-add-function module callee-name fn-type)
                           f)))
          (call-inst (llvm-build-call2 builder
-                                      llvm-fn-type
+                                      fn-type
                                       callee-fn
-                                      args-array
-                                      param-count
+                                      final-args
+                                      n-args
                                       (if (or (null return-type-names)
                                               (equal return-type-names '(nil))
                                               (and (consp return-type-names) (eq (first return-type-names) 'void)))
@@ -2793,6 +3037,16 @@
                                           "call_tmp")))
          (di-location (%attach-debug-loc call-inst node module di-builder di-scope location-map)))
     (%propagate-callee-cc-to-call call-inst callee-fn)
+    (when dies-p
+      (log:debug "193: call to may-die ~a -- checking the die flag after it" callee-name)
+      (let* ((flag (llvm-build-load2 builder (llvm-int32-type) *die-flag-ptr* "die_flag_val"))
+             (dead (llvm-build-icmp builder +llvm-int-ne+ flag (llvm-const-int (llvm-int32-type) 0 0) "died"))
+             (bail (llvm-append-basic-block caller-fn "die_bail"))
+             (cont (llvm-append-basic-block caller-fn "die_cont")))
+        (llvm-build-cond-br builder dead bail cont)
+        (llvm-position-builder-at-end builder bail)
+        (%193-build-bail-return builder)
+        (llvm-position-builder-at-end builder cont)))
     (values call-inst di-location)))
 
 
@@ -2805,9 +3059,14 @@
    declaration is given the target's device calling convention (SPIR_FUNC=75 on
    SPV; default on PTX) so the call instruction (which copies the callee's CC)
    matches the definition merged in from the linked .bc."
-  ;; Special handling for compiler intrinsic DIE
+  ;; Endeavour 193: die (exit/unwind + the die record) and the log message.
   (when (eq (semantic-call-name node) 'die)
-        (return-from generate-node-ir (%handle-die-intrinsic builder module)))
+        (return-from generate-node-ir
+          (%193-emit-die builder module (semantic-call-source-location node)
+                         node var-env di-builder di-scope location-map)))
+  (when (eq (semantic-call-name node) '%193-log-message)
+        (return-from generate-node-ir
+          (%193-emit-log-message node builder module var-env di-builder di-scope location-map)))
 
   (let* ((sig (semantic-call-signature node))
          (return-type-names (function-signature-return-types sig))
@@ -5123,12 +5382,32 @@ never implied by an atomic; it comes only from an explicit mem-fence."
 
 (defun %gen-nvvm-mbarrier-try-wait-parity (builder mbar-addr-i32 phase-i32)
   "Inline PTX: try_wait.parity -> i32 (1 if the barrier's phase flipped, else 0).  Wrapped so
-   the caller can spin in an LLVM loop (no label in the asm)."
-  (let ((i32 (llvm-int32-type)))
-    (%build-inline-asm-call builder i32 (list i32 i32)
-                            (list mbar-addr-i32 phase-i32)
-                            "{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [$1], $2; selp.u32 $0, 1, 0, p; }"
-                            "=r,r,r")))
+   the caller can spin in an LLVM loop (no label in the asm).
+   Endeavour 193: in a module that can die, each spin also checks the die record.  A may-die waiter
+   unwinds (flag + return); any other waiter leaves the wait (returns 1).  A dead producer would
+   otherwise hang its consumers (H100 probe, put_temp_files_here/logging-probes/FINDINGS.md)."
+  (let* ((i32 (llvm-int32-type))
+         (complete (%build-inline-asm-call builder i32 (list i32 i32)
+                                           (list mbar-addr-i32 phase-i32)
+                                           "{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [$1], $2; selp.u32 $0, 1, 0, p; }"
+                                           "=r,r,r")))
+    (if (not (%193-module-can-die-p))
+        complete
+        (let* ((fn (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+               (module (llvm-get-global-parent fn))
+               (site (%193-load-die-site-relaxed builder module))
+               (dead (llvm-build-icmp builder +llvm-int-ne+ site (llvm-const-int i32 0 0) "someone_died")))
+          (log:info "193: die check in an mbarrier wait (~a)" (if *die-flag-ptr* "unwind" "leave the wait"))
+          (if *die-flag-ptr*
+              (let ((bail (llvm-append-basic-block fn "wait_die_bail"))
+                    (cont (llvm-append-basic-block fn "wait_die_cont")))
+                (llvm-build-cond-br builder dead bail cont)
+                (llvm-position-builder-at-end builder bail)
+                (llvm-build-store builder (llvm-const-int i32 1 0) *die-flag-ptr*)
+                (%193-build-bail-return builder)
+                (llvm-position-builder-at-end builder cont)
+                complete)
+              (crisp.llvm-bindings::llvm-build-or builder complete (llvm-build-zext builder dead i32 "died_i32") "done_or_died"))))))
 
 (defun %tma-lookup-descriptor-ptr (builder var-env src-name glob-ptr-type)
   "Endeavor 137 Phase 2b: reconstruct the CUtensorMap descriptor implicit-arg name

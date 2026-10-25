@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --logging-output
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+;; HOIST-EXPECT: LOG 31-output-values-metal.crisp:18 group 0 local 1: lane 1 x 1.5
+;;
+;; Endeavour 193 -- runtime values of different types in one message: a ulong from the thread,
+;; and a float.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel output_values (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 1))
+    (r-t-output "lane" (get-local-id 0) "x" 1.5))   ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

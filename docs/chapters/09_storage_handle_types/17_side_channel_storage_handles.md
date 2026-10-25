@@ -202,7 +202,7 @@ Possible Implementation
 (make-implicit-tensor <ID> tensorType &key name msg)
 ```
 
-Do you think the Crisp scratch memory or debug logging systems are cool, but you could do better?
+Do you think the Crisp scratch memory or logging systems are cool, but you could do better?
 Knock yourself out, deviant!  The `make-implicit-XXXX` allows you to Side Channel any Storage Handle for any 
 purpose.  The `<vectorType>` et al must be complete, but it doesn't otherwise need to capture any particular
 size requirement.

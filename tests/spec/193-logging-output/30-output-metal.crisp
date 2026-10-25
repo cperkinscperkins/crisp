@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --logging-output
+;; HOIST-EXPECT: BUFFER out: 7 7 7 7
+;; HOIST-EXPECT: LOG 30-output-metal.crisp:18 group 0 local 0: reached midpoint 42
+;;
+;; Endeavour 193 -- r-t-output writes one message to the log; the launcher decodes it with the
+;; metadata's string table and prints it with its site and thread.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel output_basic (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when-thread-in-group-is 0
+    (r-t-output "reached midpoint" 42))              ;; site
+  (set! (~ out (get-local-id 0)) 7.0))

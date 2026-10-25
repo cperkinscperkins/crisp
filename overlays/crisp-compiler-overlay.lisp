@@ -5,6 +5,28 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-10-25 -- endeavour 193 (logging-output) folded into src/ (only the LAST copy of each
+;;;; re-appended function was taken; wrappers folded into their originals, *193-orig-* scaffolding dropped):
+;;;;   * state + helpers   -> the die / log defvars, %193-die-symbol-p, %193-may-die-p, %193-body-dies-directly-p,
+;;;;                          %193-parse-size, %193-log-capacity-words; :logging-output / :logging-size on
+;;;;                          initialize-compiler (src/compiler.lisp)
+;;;;   * analysis          -> %193-compute-may-die-functions (called from propagate-implicit-arguments),
+;;;;                          %193-current-function, %193-site-of; analyze-function-call marks callers;
+;;;;                          analyze-expression tracks the enclosing site (src/analysis/core.lisp)
+;;;;   * analyzers         -> +193-die-id-forms+, analyze-die-expression, %193-log-kind,
+;;;;                          analyze-log-message-expression, registered in register-ops-analyzers (src/analysis/ops.lisp)
+;;;;   * macros            -> when-thread-is, %193-assert-message, r-t-assert, r-t-assert-0, r-t-output(-0),
+;;;;                          is-logging?, is-runtime-checking? (src/macros.lisp; exported/imported in src/package.lisp)
+;;;;   * codegen           -> the %193-* die / check / log lowering block replacing %handle-die-intrinsic; die and
+;;;;                          the log message in generate-node-ir (semantic-call); %build-function-call,
+;;;;                          generate-function-prototype; the die flag in generate-function-body; the die check in
+;;;;                          %gen-nvvm-mbarrier-try-wait-parity (src/codegen.lisp)
+;;;;   * AD                -> the inactive clause in %active-scalar-vars (src/autodiff.lisp)
+;;;;   * metadata          -> %193-serialize-die-sites / -log-sites, called from serialize-kernels (src/metadata.lisp)
+;;;;   * reader            -> the `(` reader that records source lines, %193-with-read-file (src/reader.lisp);
+;;;;                          used by %read-crisp-forms / %compile-files-single-pass; parse-cli-args (src/main.lisp)
+;;;;   * bindings          -> LLVMCountParamTypes, GetParamTypes, CountParams, SetOrdering, GetGlobalParent
+;;;;                          (src/llvm-bindings.lisp)
 ;;;; EMPTY as of 2026-10-24 -- endeavour 192 (cache hints) folded into src/ (only the LAST copy of each
 ;;;; re-appended function was taken; wrappers folded as one call each, their defvar scaffolding dropped):
 ;;;;   * :cache parsing      -> +cache-intents+, %cache-intent-keyword, %parse-cache-hint,

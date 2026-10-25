@@ -26,6 +26,9 @@ bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
 | `--math-precision=ieee\|fast` | `ieee` (default): correctly rounded. `fast`: approximate hardware paths. |
 | `--hoist=L0` / `--hoist=CUDA` | Also write a host `.cpp` that loads and runs the kernel (Level Zero / CUDA). |
 | `--differentiate` | Compile the BACKWARD (gradient) kernels instead — see §11. |
+| `--runtime-checks` | Compile the runtime asserts and bounds checks; a failure stops the thread — see §15. |
+| `--logging-output` | Compile `r-t-output` into the log (implies `--runtime-checks`) — see §15. |
+| `--logging-size=4M` | The log's size in bytes (`K`/`M`/`G` suffixes; default `4M`). |
 
 **PTX + transcendentals** (`exp log sin cos tan asin acos atan pow atan2 log2 tanh erf exp2`) need NVIDIA's
 `libdevice.10.bc`: pass it as an extra input (`$CUDA_HOME/nvvm/libdevice/libdevice.10.bc`).  Without it
@@ -348,3 +351,65 @@ instantiations.  Each refusal is a compile error that says what to do instead.
 5. Known issues live in `plan/bugs.md`; check it when something compiles but computes the wrong thing
    (BUG 120: some integer operations written inline in a kernel body misbehaved on the BMG; the compiler
    routes the affected built-ins through helper functions).
+
+---
+
+## 15. Debugging: `die`, runtime asserts and the log
+
+None of this changes the host code that launches a kernel.  The die record and the log are module
+globals; the generated launchers (`--hoist=L0` / `--hoist=CUDA`) read them back after the kernel and print
+them.
+
+**`die` stops the thread that calls it.**  It is always compiled.  The message is optional and must be a
+compile-time string.  The first thread to die is recorded, and the launcher prints it:
+
+```lisp
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel die_report (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 2))
+    (die "thread two gives up"))
+  (set! (~ out (get-local-id 0)) 7.0))
+```
+```text
+BUFFER out: 7 7 2 7
+DIE die_report.crisp:8 group 0 local 2: thread two gives up
+```
+The kernel still finishes: other threads run on (a `die` inside a function stops its callers too, and a
+dead thread never hangs a `sync-workgroup` or an `await`).  Results are undefined after a death.
+
+**Runtime asserts disappear unless you compile with `--runtime-checks`** (or `--logging-output`) — test
+and all, like C's `assert` under `NDEBUG`.  With the flag, a failed assert dies, and its compile-time
+strings become the DIE line's message.  The compiler's own bounds checks (`make-vector` and friends) are
+compiled under the same flag and report the same way.
+```lisp
+(r-t-assert (!= (get-local-id 0) (to-ulong 2)) "lane check")   ; every thread tests
+(r-t-assert-0 (<= (get-num-groups 0) (to-ulong 64)) "too many groups")  ; global thread 0 only
+```
+
+**`--logging-output` turns on `r-t-output`.**  Each call writes one message: compile-time strings and
+scalar values (`int` `uint` `long` `ulong` `float` `double`, and `short` `char` `bool`).  Without the
+flag the form and its arguments are compiled away.  `r-t-output-0` writes from global thread 0 only.
+```lisp
+(when (= (get-local-id 0) (to-ulong 1))
+  (r-t-output "lane" (get-local-id 0) "x" 1.5))
+```
+```text
+LOG kernel.crisp:18 group 0 local 1: lane 1 x 1.5
+```
+Under the flag a failed assert also writes its full message, runtime values included, before it dies.
+
+**Choose who logs** — every thread that reaches an `r-t-output` writes.  Guard it:
+`(when-thread-is 0 ...)` (global thread 0, one message per launch), `(when-thread-in-group-is 0 ...)` (one
+per workgroup), or any condition of your own.  The log keeps the first messages to arrive, complete, and
+when it overflows the launcher says what the launch needed:
+```text
+LOG FULL: kept 1024 bytes; the launch wanted 1296 (recompile with --logging-size=2K)
+```
+
+`(is-logging?)` and `(is-runtime-checking?)` are compile-time truths, for `if+` / `when+`.  Under
+`--differentiate` the log is off (the gradient kernels are compiled without it); `--runtime-checks` still
+applies.  More: `docs/ideal_001.md`, "Logging and Debugging"; specs in `tests/spec/193-logging-output/`.

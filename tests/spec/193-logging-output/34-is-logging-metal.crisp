@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-FLAGS: --logging-output
+;; HOIST-EXPECT: BUFFER out: 1 1 1 1
+;;
+;; Endeavour 193 -- (is-logging?) and (is-runtime-checking?) are compile-time truths.
+;; --logging-output implies --runtime-checks, so both hold.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel is_logging (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (set! (~ out (get-local-id 0))
+        (if+ (is-logging?)
+             (if+ (is-runtime-checking?) 1.0 2.0)
+             3.0)))

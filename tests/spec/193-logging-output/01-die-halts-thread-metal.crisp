@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 7 2 7
+;;
+;; Endeavour 193 (BUG 136) -- die halts the thread that calls it, on both backends.
+;;
+;; Thread 2 dies before its store, so its slot keeps the launcher's pre-fill (0 1 2 3) while every
+;; other thread stores 7.  Before 193 the SPIR-V lowering was a bare OpUnreachable, which the Intel
+;; driver deletes: BMG printed 7 7 7 7.
+
+(def-type out-v (vector float :align :compact :address-space :global))
+
+(def-kernel die_halts_thread (&out out)
+  (declare #'(&out out-v => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (when (= (get-local-id 0) (to-ulong 2))
+    (die "thread two gives up"))
+  (set! (~ out (get-local-id 0)) 7.0))
