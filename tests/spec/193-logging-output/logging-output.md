@@ -120,3 +120,18 @@ Each phase is red then green.
   - Suites: unit 392/392; E2E 1536/1551 (the 15 failures are the not-yet-built 193 specs 10–14,
     21–24 and 30–35); negative 366/367 (193 `errors/02`, Phase D).
   - Not run locally (CI): `--single-pass`, `--debug`, `--differentiate`.
+- 2026-10-24 — **Phase B green** (compiler overlay plus both hoist overlays; the blocks are
+  `put_temp_files_here/193/phase-b*.lisp` and `hoist-{l0,cuda}-b.lisp`):
+  - Specs 10–14 print their DIE lines on BMG.
+  - Real lines come from a `(` reader wrapper that records cons -> (file . line) while
+    crisp.main reads a file. The --debug location-map holds virtual lines.
+  - `analyze-expression` tracks the enclosing site, so a die built by a macro takes the macro
+    call's line.
+  - The winner fills group/local ids. Their builtins are analysed under
+    `*in-dispatch-context*` t, so a die in a def-function works (spec 13).
+  - `.metacrisp` gains `(:die-sites :record ... :sites ((id file line msg) ...))`. A site keeps
+    one id across a spv+ptx compile.
+  - CUDA: all 9 launchers (01–04, 10–14) build with nvcc and all 9 PTX pass `ptxas -arch=sm_90a`
+    in the nvidia/cuda:12.4.1 image. Not yet run on metal.
+  - Suites: unit 392/392; E2E 1541/1551 (the failures are 21–24 and 30–35); negative 366/367
+    (`errors/02`).
