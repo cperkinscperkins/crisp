@@ -51,7 +51,6 @@
 - marshall-vector
 - marshall-scratch-vector
 - marshall-implicit-vector
-- marshall-die-record
 - marshall-log-vector
 - voidp
 - #(1 2 3)

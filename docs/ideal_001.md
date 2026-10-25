@@ -366,7 +366,7 @@ in your  kernel.   Each invocation of `make-implicit-XXXX` results in an extra a
 hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-XXXX` are collected
 by the compiler and are combined into a single scratch memory pool, which is similarly added as an implicit kernel argument.  These are conveniences.  The compiler calculates the size requirements for these and outputs them to the hoisting example code, but it's ultimately up to your final hoisting code to ensure the memory is sufficient.
 
-Two more side channels add implicit kernel arguments: the die record, for any kernel that can reach a `die`, and the log, when compiling with `--logging-output`.  See [Logging and Debugging](#logging-and-debugging).
+One more side channel adds an implicit kernel argument: the log, when compiling with `--logging-output`.  (The die record is NOT an argument; it is a module-scope global the host reads by name.)  See [Logging and Debugging](#logging-and-debugging).
 
 Lastly, if the data is constant and known at compile time then `def-constant-vector` and `use` would be better choices. 
 These are also discussed below.
@@ -812,7 +812,7 @@ Similarly, every invocation of `make-implicit-XXXX` adds at least two implicit a
 But kernels defined with `def-kernel-exact` do NOT support any implicit arguments.  
 Additionally the `&out` argument specifier is not supported in the param list for `def-kernel-exact`
 Instead `def-kernel-exact` supports different marshalling functions to help create Crisp Storage Handles, 
-including the ones required for the Crisp log, the die record, and scratch memory.
+including the ones required for the Crisp log and scratch memory.
 
 `def-kernel-exact` is provided for users who have less control over how their kernel is hoisted and may have to instead adapt to some existing interface.
 
@@ -912,12 +912,11 @@ In reality even `(def-kernel k (someVector) ...)` just expands to
 #### implicit Storage Handle arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
-like `make-scratch-XXXX` , `make-implicit-XXXX`, OR can reach a `die` (directly or through a runtime check), OR if the kernel was/will be compiled with `--logging-output`, then these Storage Handles will have
+like `make-scratch-XXXX` , `make-implicit-XXXX`, OR if the kernel was/will be compiled with `--logging-output`, then these Storage Handles will have
 to be  explicitly passed by the host and marshalled.  
 
 - `marshall-scratch-XXXX`
 - `marshall-implicit-XXXX`
-- `marshall-die-record`
 - `marshall-log-vector`
 
 Note that both the metadata and the example hoisting code that the compiler outputs will have size expressions gathered 
@@ -10700,10 +10699,12 @@ If `<testExpression>` is not evaluable at compile time, it will lead to a compil
 The message must be a compile-time string.  It is optional.
 
 What `die` promises:
-1. **The first death is recorded.** Every kernel that can reach a `die` (directly, through
-   a function it calls, or through a runtime check) gets a small implicit side-channel
-   argument: the *die record*.  The first thread to die claims it, and later deaths
-   leave it alone.
+1. **The first death is recorded** in the *die record*: a 16-byte module-scope global,
+   `__crisp_die_record`, that the host finds by name (`zeModuleGetGlobalPointer` /
+   `cuModuleGetGlobal`).  It is not a kernel argument, so it costs a kernel nothing, and
+   `def-kernel-exact` kernels can `die` too.  The first thread to die claims it, and later
+   deaths leave it alone.  The host zeroes it before every launch.  It is per module: two
+   kernels of one module running at once share it.
 2. **The dying thread stops.** It performs no further stores.
 3. **Everyone else stops eventually.** Other threads stop at their next safe point or run to
    completion.  The kernel always finishes; `die` never hangs it.
@@ -14621,7 +14622,6 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - marshall-vector
 - marshall-scratch-vector
 - marshall-implicit-vector
-- marshall-die-record
 - marshall-log-vector
 - voidp
 - #(1 2 3)

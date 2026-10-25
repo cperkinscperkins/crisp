@@ -104,3 +104,19 @@ Each phase is red then green.
 ## Decisions log
 - 2026-10-24 — API agreed; doc spliced and committed; BUG 136 filed; 20 specs + 2 negative
   written; ci-stop bumped to 193.
+- 2026-10-24 — **Phase A green** (overlay only; `put_temp_files_here/193/phase-a*.lisp` are the
+  appended blocks):
+  - Specs 01–04 pass on BMG; spec 14's buffer (two dying threads) is right too. The SPIR-V and the
+    pre-opt LLVM-IR were checked by hand. After inlining, the flag folds into plain branches with
+    no `OpUnreachable`.
+  - Decided with Chris: the die record is a module-scope global (`@__crisp_die_record`,
+    `addrspace(1)`, Export), not an implicit argument. The unwind is the same on both backends.
+  - Probe 4 (FINDINGS.md): llvm-spirv refuses a module-scope Private flag, so the flag is a kernel
+    entry alloca passed as a trailing LLVM-only `ptr` parameter to may-die functions.
+  - Single-pass bug found by `tests/test-runtime-checks.lisp`: the context's
+    current-compiling-function is NIL there. Fixed with `*analyzing-function*`.
+  - That test asserted `llvm.trap`; it now asserts the die-record CAS and no trap.
+  - New `logging-output.unit.lisp` pins the lowering for CI.
+  - Suites: unit 392/392; E2E 1536/1551 (the 15 failures are the not-yet-built 193 specs 10–14,
+    21–24 and 30–35); negative 366/367 (193 `errors/02`, Phase D).
+  - Not run locally (CI): `--single-pass`, `--debug`, `--differentiate`.
