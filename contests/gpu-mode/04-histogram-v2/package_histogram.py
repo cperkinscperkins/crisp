@@ -200,9 +200,13 @@ def make_gpumode_histogram_lastman(
     grid_policy: str = "sms",
     grid_multiplier: int = 2,
     bytes_per_thread: int = 256,
+    size_adaptive_bpt: tuple[int, int, int] | None = None,
 ) -> None:
     """
     Package a single-launch Last-Man histogram kernel (`(input &out partials ticket output)`).
+    `size_adaptive_bpt=(threshold, small, large)` picks bytes/thread at run time:
+    `small` when N <= threshold, else `large` (overrides `bytes_per_thread`).  The per-case H100
+    diagnostic (2026-10-25) found 64 B/thread best at 1.31M/2.62M and 128 at 5.24M/10.49M.
     Uses a persistent 257 * 8 byte zero-initialized scratch buffer on device (`partials[0..255]` + `ticket`).
     Because the last workgroup resets both `partials` and `ticket` back to 0 as it writes `output`,
     each benchmark/leaderboard call launches ONLY 1 kernel with zero `output.zero_()` overhead!
@@ -239,6 +243,16 @@ def make_gpumode_histogram_lastman(
         else ""
     )
     smem_launch = f", {smem_bytes}" if smem_bytes > 0 else ""
+    # above 48 KB of dynamic shared memory the kernel must opt in once (empty otherwise: older entries unchanged)
+    smem_optin = (
+        "static bool smem_optin_done = false;\n"
+        "    if (!smem_optin_done) {\n"
+        f"        cudaFuncSetAttribute(crisp_histogram_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, {smem_bytes});\n"
+        "        smem_optin_done = true;\n"
+        "    }\n    "
+        if smem_bytes > 49152
+        else ""
+    )
 
     m_bs = re.search(r"__launch_bounds__\((\d+)", launch_bounds)
     block_size = int(m_bs.group(1)) if m_bs else 256
@@ -261,6 +275,14 @@ def make_gpumode_histogram_lastman(
         grid_init = f"""        max_grid = (num_sms > 0) ? (num_sms * {grid_multiplier}) : 256;"""
     else:
         raise ValueError(f"Unknown grid_policy: {grid_policy}")
+
+    if size_adaptive_bpt:
+        threshold, small_bpt, large_bpt = size_adaptive_bpt
+        needed_code = (f"const int64_t bpt = (N <= {threshold}LL) ? {small_bpt}LL : {large_bpt}LL;\n"
+                       "    int64_t needed = (N + (BLOCK_SIZE * bpt) - 1) / (BLOCK_SIZE * bpt);")
+    else:
+        needed_code = (f"int64_t needed = (N + (BLOCK_SIZE * {bytes_per_thread}) - 1) / "
+                       f"(BLOCK_SIZE * {bytes_per_thread});")
 
     cuda_source = f"""
 #include <cuda_runtime.h>
@@ -293,11 +315,11 @@ torch::Tensor launch_crisp_histogram(torch::Tensor input, torch::Tensor output) 
         cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
 {grid_init}
     }}
-    int64_t needed = (N + (BLOCK_SIZE * {bytes_per_thread}) - 1) / (BLOCK_SIZE * {bytes_per_thread});
+    {needed_code}
     if (needed < 1) needed = 1;
     int grid_x = static_cast<int>(std::min<int64_t>(needed, max_grid));
 
-    uint64_t partials = reinterpret_cast<uint64_t>(scratch.data_ptr());
+    {smem_optin}uint64_t partials = reinterpret_cast<uint64_t>(scratch.data_ptr());
     crisp_histogram_kernel<<<grid_x, BLOCK_SIZE{smem_launch}>>>(
         reinterpret_cast<uint64_t>(input.data_ptr()),
         partials,
@@ -461,6 +483,20 @@ def build_all() -> None:
         grid_policy="sms",
         grid_multiplier=2,
         bytes_per_thread=64,
+    )
+    make_gpumode_histogram_lastman(
+        here / "histogram_lastman_u4_cs256.crisp",
+        here / "crisp_histogram_lastman_u4_cs256_adaptive.py",
+        grid_policy="direct",
+        grid_multiplier=1,
+        size_adaptive_bpt=(4194304, 64, 128),
+    )
+    make_gpumode_histogram_lastman(
+        here / "histogram_lastman_4rep_cs256.crisp",
+        here / "crisp_histogram_lastman_4rep_cs256_adaptive.py",
+        grid_policy="direct",
+        grid_multiplier=1,
+        size_adaptive_bpt=(4194304, 64, 128),
     )
 
 

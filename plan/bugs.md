@@ -4349,3 +4349,44 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX (hypothesis): on a failed companion compile, delete the half-built LLVM function
         (LLVMDeleteFunction) as well as unregistering it; and/or skip the companion for a void function whose
         only active params are integers.
+
+[ ] 138 ON PTX, ash AND popcount LOWER TO OUT-OF-LINE noinline HELPER CALLS (perf; the BUG 120 workaround is applied to every backend).
+        Found 2026-10-25 (histogram_v2 contest, reported by AG; reproduced: put_temp_files_here/hist_cases/bugs/a-ash.crisp).
+        OBSERVATION: (+ (logand (ash w -8) 255u) (popcount w)) compiled --ir-target=ptx gives
+        call.uni __crisp_ash_uint and call.uni __crisp_popcount_uint in the kernel body.  With a single constant
+        shift in the module, LLVM's IPO folds the count into the helper (shr.u32 %r, 8) but the call remains, so
+        ptxas cannot fuse (logand (ash w -8) 255u) into bfe.u32.  With two different counts (a-ash2.crisp) the
+        helper takes the count at run time (shr.u32 %r4, %r1, %r3 plus the sign handling).  Results are correct.
+        CAUSE: %185-helper-call (src/codegen.lisp) adds the noinline attribute unconditionally; only the
+        SPIR_FUNC calling convention is gated on (eq *target-backend* :spirv).  The noinline exists for BMG
+        (BUG 120 family, zeModuleCreate failures when inline) -- nothing says PTX needs it.
+        WORKAROUND in the contest kernels: (logand (/ w 256u) 255u) gives bfe.u32.
+        LIKELY FIX (hypothesis): add noinline only when (eq *target-backend* :spirv); check the IR corpus
+        is unchanged on SPIR-V and the PTX for 185's specs shows inline shr/popc.
+
+[ ] 139 A => nil def-function WHOSE IF HAS A VALUE BRANCH AND A VOID BRANCH EMITS `store void` (invalid IR; llc fails).
+        Found 2026-10-25 (histogram_v2 contest, histogram_lastman_run16.crisp, reported by AG; reproduced:
+        put_temp_files_here/hist_cases/bugs/b-nil-if.crisp).
+        OBSERVATION: in a (=> nil) function, (if (= w 0u) (atomic-add! (~ s 0ul) 4u) (progn (bump 1ul s) (bump 2ul s)))
+        where BUMP is a void def-function.  The analyzer accepts it; codegen allocates %if_result as i32 from
+        the then-branch, and the else-branch stores its (void) call result into it:
+            store void <badref>, ptr %if_result, align 8
+        llc: "void type only allowed for function results".  (AG's report said phi; it is the if_result slot.)
+        The if is in statement position -- its value is never used (the function returns nil).
+        WORKAROUND: declare the helper => uint so both branches yield uint.
+        LIKELY FIX (hypothesis): when either branch's type is void (or the if is not in value position),
+        do not create / store the if_result slot; alternatively the analyzer types such an IF as void.
+
+[ ] 140 CUDA HOIST SIZES uchar / ushort (and char? short?) SHARED SCRATCH AT 4 BYTES PER ELEMENT -- %hoist-elem-type-bytes never sees "uchar".
+        Found 2026-10-25 (histogram_v2 byte-counter kernel; reproduce: put_temp_files_here/hist_cases/hbyte.crisp with
+        c8 declared as (make-scratch-vector smem8 65536), smem8 = (vector uchar :address-space :local ...)).
+        OBSERVATION: the generated _CUDA.cu says "LOCAL scratch tensor: c8 (rank=1, unsigned char, 65536 elems,
+        262144 bytes ...)" and the next local cell lands at shared offset 262144 -- over the 228 KB H100 limit, so
+        the launch cannot succeed.  Declared as uint x 16384 and viewed with (make-vector c32 uchar :length 65536)
+        it is sized 65536 bytes, correctly (the workaround the contest kernel uses).
+        CAUSE: %hoist-elem-type-bytes (src/hoist-cuda/main.lisp) matches the C++ name, and lists "uchar" / "ushort",
+        but crisp-type-to-cpp-type (src/hoist/codegen-base.lisp) emits "unsigned char" / "unsigned short", which fall
+        to the (t 4) default.  Both the launch request and the per-tile offsets use the same table, so addressing is
+        consistent -- the cost is over-allocation (4x uchar, 2x ushort), not wrong results, until it exceeds the limit.
+        Not checked: what "char" / "short" map to, and whether the L0 hoist's sizer has the same table.
+        LIKELY FIX (hypothesis): add "unsigned char" / "signed char" -> 1 and "unsigned short" -> 2 to the table.

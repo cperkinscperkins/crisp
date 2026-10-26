@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `vectoradd_v2`
 
-> Generated from [`results/vectoradd_v2.json`](results/vectoradd_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/543?tab=rankings](https://www.gpumode.com/leaderboard/543?tab=rankings) (Crisp commit `5c17153c`).
+> Generated from [`results/vectoradd_v2.json`](results/vectoradd_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/543?tab=rankings](https://www.gpumode.com/leaderboard/543?tab=rankings) (Crisp commit `0aa4334a`).
 
 **Workload:** C = A + B on two 16384x16384 float16 tensors (536.87 MB each; 1.6106 GB = 1.50 GiB total 2R+1W memory traffic).
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#21** / 68 | **233.48 µs** | 232.89 µs | 6.90 TB/s | 96.6% (`225.45 µs`) | [`crisp_b200_inplace_2xhalf4.py`](01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp)) | `b200` | `2026-10-25 16:38` |
-| **H100** | Hopper (sm_90) | **#24** / 43 | **526.44 µs** | 526.12 µs | 3.06 TB/s | 97.4% (`512.59 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-25 16:38` |
-| **A100** | Ampere (sm_80) | **#57** / 108 | **912.90 µs** | 914.09 µs | 1.76 TB/s | 95.1% (`868.35 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-25 16:38` |
-| **L4** | Ada Lovelace (sm_89) | **#22** / 38 | **6891.89 µs** | 6916.10 µs | 233.7 GB/s | 88.9% (`6124.20 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-25 16:38` |
+| **B200** | Blackwell (sm_100) | **#21** / 68 | **233.48 µs** | 232.89 µs | 6.90 TB/s | 96.6% (`225.45 µs`) | [`crisp_b200_inplace_2xhalf4.py`](01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp)) | `b200` | `2026-10-26 01:43` |
+| **H100** | Hopper (sm_90) | **#24** / 43 | **526.44 µs** | 526.12 µs | 3.06 TB/s | 97.4% (`512.59 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-26 01:43` |
+| **A100** | Ampere (sm_80) | **#57** / 108 | **912.90 µs** | 914.09 µs | 1.76 TB/s | 95.1% (`868.35 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-26 01:43` |
+| **L4** | Ada Lovelace (sm_89) | **#22** / 38 | **6891.89 µs** | 6916.10 µs | 233.7 GB/s | 88.9% (`6124.20 µs`) | [`crisp_f16_direct_half4.py`](01-vectoradd-v2/crisp_f16_direct_half4.py) ([`.crisp`](01-vectoradd-v2/vectoradd_direct_half4.crisp)) | — | `2026-10-26 01:43` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 

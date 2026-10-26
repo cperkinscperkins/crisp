@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `prefixsum_v2`
 
-> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `5c17153c`).
+> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `0aa4334a`).
 
 **Workload:** Inclusive prefix sum (cumsum) of 1D float32 tensor across 11 benchmark sizes from 262,144 to 268,435,456 elements.
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#26** / 33 | **739.65 µs** | 737.29 µs | 2.90 TB/s | 32.0% (`236.70 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
-| **H100** | Hopper (sm_90) | **#25** / 30 | **1435.45 µs** | 1436.05 µs | 1.50 TB/s | 48.9% (`702.23 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
-| **A100** | Ampere (sm_80) | **#23** / 29 | **2649.53 µs** | 2529.72 µs | 810.5 GB/s | 34.8% (`922.11 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
-| **L4** | Ada Lovelace (sm_89) | **#21** / 24 | **17885.18 µs** | 17860.58 µs | 120.1 GB/s | 36.1% (`6454.27 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-25 16:38` |
+| **B200** | Blackwell (sm_100) | **#27** / 34 | **739.65 µs** | 737.29 µs | 2.90 TB/s | 32.0% (`236.70 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-26 01:43` |
+| **H100** | Hopper (sm_90) | **#25** / 30 | **1435.45 µs** | 1436.05 µs | 1.50 TB/s | 48.9% (`702.23 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-26 01:43` |
+| **A100** | Ampere (sm_80) | **#23** / 29 | **2649.53 µs** | 2529.72 µs | 810.5 GB/s | 34.8% (`922.11 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-26 01:43` |
+| **L4** | Ada Lovelace (sm_89) | **#21** / 24 | **17885.18 µs** | 17860.58 µs | 120.1 GB/s | 36.1% (`6454.27 µs`) | [`crisp_prefixsum_v4_b512.py`](05-prefixsum-v2/crisp_prefixsum_v4_b512.py) ([`.crisp`](05-prefixsum-v2/prefixsum_v4_b512_pass1.crisp)) | — | `2026-10-26 01:43` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
