@@ -191,9 +191,13 @@
             ;; which ends the walk exactly at tile 0.
             ;; WORKAROUND (184 D4): return-from-loop would make this loop divergent and refuse the
             ;; warp collectives in it, even though the exit is warp-uniform.  A warp-uniform DONE
-            ;; flag skips the remaining windows instead.
-            (dotimes+ (w nwin)
-             (let ((live (to-warp-uniform (= done 0u))))
+            ;; flag skips the remaining windows instead.  Two levels (blocks of 32 windows) so a
+            ;; finished walk costs at most ~47 empty iterations, not ceil(id/32) of them.
+            (dotimes+ (w2 (/ (+ nwin 31ul) 32ul))
+             (let ((live2 (to-warp-uniform (= done 0u))))
+              (when live2
+             (dotimes+ (w 32ul)
+             (let ((live (to-warp-uniform (and (= done 0u) (< (+ (* w2 32ul) w) nwin)))))
               (when live
               (let ((j    (- (- top 1l) (to-long lane)))
                     (kind 2u)
@@ -237,7 +241,7 @@
                   (let ((found (to-warp-uniform (< first 32u))))
                     (when found
                       (set! done 1u)))
-                  (set! top (- top 32l)))))))
+                  (set! top (- top 32l))))))))))
             (when (= lane 0ul)
               (set! (~ s-excl) excl)
               (when (> id 0ul)
