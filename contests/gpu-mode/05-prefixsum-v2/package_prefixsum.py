@@ -501,6 +501,7 @@ def make_gpumode_prefixsum_fallback(
     kernel_name: str = "prefixsum_fallback",
     block_threads: int = 256,
     tile_elems: int = 16384,
+    min_blocks: int | None = None,
     arch: str = "sm_80",
     hardware_profile: str | None = None,
 ) -> None:
@@ -551,6 +552,9 @@ def make_gpumode_prefixsum_fallback(
         if smem > 0
         else ""
     )
+    # min_blocks asks ptxas for that many resident CTAs/SM, capping registers (it may spill).
+    bounds = (f"__launch_bounds__({block_threads}, {min_blocks})" if min_blocks
+              else f"__launch_bounds__({block_threads})")
 
     crisp_src = crisp_path.read_text(encoding="utf-8").strip()
     commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
@@ -561,7 +565,7 @@ def make_gpumode_prefixsum_fallback(
 #include <torch/extension.h>
 #include <cstdint>
 
-__global__ __launch_bounds__({block_threads})
+__global__ {bounds}
 void crisp_prefixsum_fallback_kernel(
     uint64_t in_ptr,
     uint64_t out_ptr,
@@ -653,6 +657,17 @@ def build_all() -> None:
     make_gpumode_prefixsum_fallback(
         here / "prefixsum_fallback.crisp",
         here / "crisp_prefixsum_fallback.py",
+    )
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_fallback_t8.crisp",
+        here / "crisp_prefixsum_fallback_t8.py",
+        kernel_name="prefixsum_fallback_t8",
+        tile_elems=8192,
+    )
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_fallback.crisp",
+        here / "crisp_prefixsum_fallback_occ2.py",
+        min_blocks=2,
     )
     make_gpumode_prefixsum_hierarchical(
         here / "prefixsum_pass1.crisp",

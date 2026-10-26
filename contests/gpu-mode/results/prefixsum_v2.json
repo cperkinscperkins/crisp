@@ -490,6 +490,40 @@
       ],
       "public_score_us": null,
       "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-26T04:21:35Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_prefixsum_fallback_t8",
+      "file_name": "crisp_prefixsum_fallback_t8.py",
+      "mode": "benchmark",
+      "submission_id": 967808,
+      "benchmark_mean_us": 1403.0,
+      "benchmark_std_us": 0.2,
+      "benchmark_best_us": 1402.0,
+      "benchmark_worst_us": 1403.0,
+      "per_case_us": [
+        1403.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-26T04:24:43Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_prefixsum_fallback_occ2",
+      "file_name": "crisp_prefixsum_fallback_occ2.py",
+      "mode": "benchmark",
+      "submission_id": 967811,
+      "benchmark_mean_us": 1274.0,
+      "benchmark_std_us": 1.2,
+      "benchmark_best_us": 1270.0,
+      "benchmark_worst_us": 1277.0,
+      "per_case_us": [
+        1274.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
     }
   ],
   "ablation_size_label": "size = 268,435,456 (2.15 GB total traffic)",
