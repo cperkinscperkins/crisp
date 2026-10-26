@@ -1,0 +1,27 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "Here every exit is workgroup-uniform"
+;;
+;; Endeavour 194, decision D-194-6: a barrier stays refused in ANY loop that can exit early, even when
+;; every exit is workgroup-uniform (here the counter of a literal-bound loop).  The execution model
+;; allows it -- every thread leaves on the same iteration -- but BMG mis-executes a barrier in a loop
+;; holding a return-from-loop, even one never taken (BUG 141: the scratch value written before the
+;; barrier is never seen after it).  The relaxation 194 makes is for warp collectives only (spec 04).
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+(def-type s-vec (vector ulong :address-space :local  :align :compact))
+
+(def-kernel refused_13 (&out its)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid  (to-ulong (get-local-id 0)))
+        (slot (make-scratch-vector s-vec 1))
+        (n    0ul))
+    (dotimes (i 8ul)
+      (when (= lid 31ul)
+        (set! (~ slot 0ul) lid))
+      (sync-workgroup)
+      (set! n (+ n (~ slot 0ul)))
+      (when (= i 2ul)
+        (return-from-loop)))
+    (set! (~ its lid) n)))

@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "it broadcasts through a barrier"
+;;
+;; Endeavour 194 (F2 + F7): to-workgroup-uniform broadcasts through workgroup memory and a barrier, so
+;; it is a barrier.  Inside a branch only the first warp(s) take, the other warps never arrive.  This
+;; is the prefixsum lookback's mistake (a stray bar.sync in its warp-0 region).
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel refused_05 (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((w0 (to-warp-uniform (< (get-local-id 0) 32ul))))
+    (when w0
+      (let ((n (to-workgroup-uniform (get-local-id 0))))
+        (set! (~ out (get-local-id 0)) (to-uint n))))))

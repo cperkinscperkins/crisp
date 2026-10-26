@@ -1,0 +1,20 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "A call to swap-pairs, which reaches"
+;;
+;; Endeavour 194 (D4 / F3): swap-pairs holds a shuffle, so calling it where lanes of a warp have split
+;; asks for data from lanes that never arrive -- the same as writing the shuffle there.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-function swap-pairs (x)
+  (declare #'(uint => uint))
+  (return (shuffle-xor x 1ul)))
+
+(def-kernel refused_10 (&out out)
+  (declare #'(&out uvec-t => nil)
+           (local-size :set-to 32))
+  (let ((g (get-local-id 0))
+        (s 1u))
+    (when (< g 5ul)
+      (set! s (swap-pairs s)))
+    (set! (~ out g) s)))

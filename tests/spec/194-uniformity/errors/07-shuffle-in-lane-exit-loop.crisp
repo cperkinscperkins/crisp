@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "exit early on a per-lane condition"
+;;
+;; Endeavour 194 (F1, the refusing side): lane g leaves the loop on iteration g, so on later iterations
+;; the shuffle reads lanes that have gone.  A per-lane exit keeps 184 D4's refusal, for collectives too.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel refused_07 (&out out)
+  (declare #'(&out uvec-t => nil)
+           (local-size :set-to 32))
+  (let ((g (get-local-id 0))
+        (s 1u))
+    (dotimes (i 10ul)
+      (set! s (shuffle-xor s 1ul))
+      (when (= i g)
+        (return-from-loop)))
+    (set! (~ out g) s)))

@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER its: 4 4 4 4
+;; HOIST-EXPECT: BUFFER x: 17 7 37 27
+;;
+;; Endeavour 194 ON-METAL (D3): after reduce-warp every lane of the warp holds the same value, so the
+;; reduced variable is INFERRED warp-uniform -- no to-warp-uniform assertion needed.  Here it decides
+;;   * the early exit of a loop holding a warp collective (legal only for a warp-uniform exit), and
+;;   * a branch holding a warp collective (legal only for a warp-uniform condition).
+;; Without the inference both are :unknown and both shuffles are refused.
+;;
+;; v is 3 in lane 0 and 0 elsewhere (an arithmetic indicator, not an `if` -- BUG 109), so the warp sum
+;; is 3 whatever the warp width.  The loop leaves on i = 3: its = 4.  The branch is taken (v = 3) and
+;; does the 173/02 fingerprint shuffle: 17 7 37 27.
+;; (The reduction is OUTSIDE the early-exit loop: on BMG a reduce-warp -- a loop of shuffles -- nested
+;; inside a loop holding return-from-loop is mis-executed, BUG 141, and Crisp refuses it on SPIR-V.)
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel reduced_exit (&out its x)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid  (to-ulong (get-local-id 0)))
+        (lane (to-ulong (warp-lane)))
+        (v    (* 3ul (to-ulong (= (to-ulong (warp-lane)) 0ul))))
+        (n    0ul)
+        (r    0ul))
+    (reduce-warp #'+ v 0ul)
+    (dotimes (i 8ul)
+      (let ((s (shuffle-xor (+ lane i) 1ul)))
+        (set! n (+ n (- (+ s 1ul) s))))
+      (when (= i v)
+        (return-from-loop)))
+    (when (= v 3ul)
+      (set! r (shuffle-xor (+ (* lane 10ul) 7ul) 1ul)))
+    (when (= (* (/ lid 8ul) 8ul) lid)
+      (set! (~ its (/ lid 8ul)) n))
+    (when (< lid 4ul)
+      (set! (~ x lid) r))))

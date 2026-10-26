@@ -1,14 +1,19 @@
 ;; TEST-EXPECT: FAIL
 ;; CHECK-FAIL: "UNKNOWN"
 
-;; Endeavor 120: a memory read is :unknown (not provably uniform), so if+ must
+;; Endeavor 120: a value the compiler can prove nothing about is :unknown, so if+ must
 ;; reject it -- and the message must say UNKNOWN (distinct from the DIVERGENT
 ;; case, which gets no "declare uniform" suggestion).
+;; Endeavour 194: the value is an ATOMIC read -- each thread may see a different value.
+;; It was the plain read (~ IN 0), but Endeavour 124 makes a read of a kernel argument at a
+;; uniform index :uniform (every thread reads the same location); that only stayed :unknown
+;; here because kernel tensors themselves read as :unknown until 194 (their entry re-binding
+;; was a struct construction the uniformity analysis did not look into).
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 
 (def-kernel if_plus_mem (IN OUT)
   (declare #'(vec-t vec-t => nil))
-  (if+ (< (~ IN 0) 5.0)
+  (if+ (< (atomic-add! (~ IN 0) 0.0) 5.0)
     (set! (~ OUT (get-global-id 0)) 1.0)
     (set! (~ OUT (get-global-id 0)) 0.0)))

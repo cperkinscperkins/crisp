@@ -2,6 +2,9 @@
 ;; CHECK-FAIL: "can exit early"
 ;; Endeavour 184 D4: a barrier inside a loop that can exit early is refused -- a thread that has
 ;; left never reaches the next iteration's barrier, and the threads still inside wait forever.
+;; Endeavour 194: the loop bound is 10ul.  It was the int 10, so (= i g) compared int with ulong --
+;; a type error the barrier refusal used to mask by firing first.  194 judges the barrier when the
+;; loop ends (against the uniformity of its exits), so the type error surfaced instead.
 
 (def-type uvec-t (vector uint :address-space :global :align :compact))
 
@@ -9,7 +12,7 @@
   (declare #'(&out uvec-t => nil)
            (global-size :set-to 4))
   (let ((g (get-global-id 0)))
-    (dotimes (i 10)
+    (dotimes (i 10ul)
       (set! (~ out g) (+ (~ out g) 1u))
       (sync-workgroup)
       (when (= i g)

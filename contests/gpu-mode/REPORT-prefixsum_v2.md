@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `prefixsum_v2`
 
-> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `0a93bbb2`).
+> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `01ce81a5`).
 
 **Workload:** Inclusive prefix sum (cumsum) of 1D float32 tensor across 11 benchmark sizes from 262,144 to 268,435,456 elements.
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#25** / 34 | **622.50 µs** | 622.47 µs | 3.45 TB/s | 38.0% (`236.70 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed.crisp)) | — | `2026-10-26 06:21` |
-| **H100** | Hopper (sm_90) | **#24** / 30 | **1075.60 µs** | 1077.67 µs | 2.00 TB/s | 65.3% (`702.23 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed.crisp)) | — | `2026-10-26 06:21` |
-| **A100** | Ampere (sm_80) | **#23** / 29 | **1952.03 µs** | 1949.58 µs | 1.10 TB/s | 47.2% (`922.11 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed.crisp)) | — | `2026-10-26 06:21` |
-| **L4** | Ada Lovelace (sm_89) | **#21** / 24 | **9275.73 µs** | 9303.72 µs | 231.5 GB/s | 69.6% (`6454.27 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed.crisp)) | — | `2026-10-26 06:21` |
+| **B200** | Blackwell (sm_100) | **#15** / 34 | **461.29 µs** | 462.49 µs | 4.66 TB/s | 51.3% (`236.70 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
+| **H100** | Hopper (sm_90) | **#10** / 30 | **756.96 µs** | 753.57 µs | 2.84 TB/s | 92.8% (`702.23 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
+| **A100** | Ampere (sm_80) | **#21** / 29 | **1692.50 µs** | 1690.42 µs | 1.27 TB/s | 54.5% (`922.11 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
+| **L4** | Ada Lovelace (sm_89) | **#13** / 24 | **9147.39 µs** | 9161.28 µs | 234.8 GB/s | 70.6% (`6454.27 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -32,10 +32,10 @@
 
 | GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
 |---|---|---:|---:|---:|---:|---|---|---:|
-| **B200** | Blackwell (sm_100) | **1033.70 µs** | 2.08 TB/s | **22.9%** (`236.70 µs`) | 60.2% (`622.50 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) | `leaderboard` | `#967074` |
-| **H100** | Hopper (sm_90) | **2164.62 µs** | 992.1 GB/s | **32.4%** (`702.23 µs`) | 49.7% (`1075.60 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) | `leaderboard` | `#967070` |
-| **A100** | Ampere (sm_80) | **3455.25 µs** | 621.5 GB/s | **26.7%** (`922.11 µs`) | 56.5% (`1952.03 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) | `leaderboard` | `#967075` |
-| **L4** | Ada Lovelace (sm_89) | **17969.41 µs** | 119.5 GB/s | **35.9%** (`6454.27 µs`) | 51.6% (`9275.73 µs`) | [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) | `leaderboard` | `#967073` |
+| **B200** | Blackwell (sm_100) | **1033.70 µs** | 2.08 TB/s | **22.9%** (`236.70 µs`) | 44.6% (`461.29 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) | `leaderboard` | `#967074` |
+| **H100** | Hopper (sm_90) | **2164.62 µs** | 992.1 GB/s | **32.4%** (`702.23 µs`) | 35.0% (`756.96 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) | `leaderboard` | `#967070` |
+| **A100** | Ampere (sm_80) | **3455.25 µs** | 621.5 GB/s | **26.7%** (`922.11 µs`) | 49.0% (`1692.50 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) | `leaderboard` | `#967075` |
+| **L4** | Ada Lovelace (sm_89) | **17969.41 µs** | 119.5 GB/s | **35.9%** (`6454.27 µs`) | 50.9% (`9147.39 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) | `leaderboard` | `#967073` |
 
 ### Crisp Implementation ([`05-prefixsum-v2/prefixsum_beauty.crisp`](05-prefixsum-v2/prefixsum_beauty.crisp))
 
@@ -117,8 +117,9 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | 7 | [`prefixsum_fallback.crisp`](05-prefixsum-v2/prefixsum_fallback.crisp) / [`crisp_prefixsum_fallback.py`](05-prefixsum-v2/crisp_prefixsum_fallback.py) | Step 6 with a two-level window loop: at most ~47 empty iterations per tile | 202 | — | — | 1309.0 | — | — |
 | 8 | [`prefixsum_fallback_t8.crisp`](05-prefixsum-v2/prefixsum_fallback_t8.crisp) / [`crisp_prefixsum_fallback_t8.py`](05-prefixsum-v2/crisp_prefixsum_fallback_t8.py) | Step 7 with 8,192-float tiles (2 CTA/SM): doubles tiles, so doubles the per-tile lookback cost | 128 | — | — | 1403.0 | — | — |
 | 9 | [`prefixsum_fallback.crisp`](05-prefixsum-v2/prefixsum_fallback.crisp) / [`crisp_prefixsum_fallback_occ2.py`](05-prefixsum-v2/crisp_prefixsum_fallback_occ2.py) | Step 7 with __launch_bounds__(256,2): 2 CTA/SM, 256 B/thread spilled | 128 | — | — | 1274.0 | — | — |
-| 10 | [`prefixsum_packed.crisp`](05-prefixsum-v2/prefixsum_packed.crisp) / [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) | PACKED lookback word: double carry + 20-bit epoch/state tag in one ulong. One atomic per publish / poll, zero fences. __launch_bounds__(256,2) | 128 | — | **`LB: 622.50`** | 1078.0 (`LB: 1075.60`) | **`LB: 1952.03`** | **`LB: 9275.73`** |
-| 11 | [`prefixsum_packed.crisp`](05-prefixsum-v2/prefixsum_packed.crisp) / [`crisp_prefixsum_packed_occ1.py`](05-prefixsum-v2/crisp_prefixsum_packed_occ1.py) | Step 10 without the register cap (1 CTA/SM, no spills): same speed -- occupancy stops mattering | 202 | — | — | **1075.0** | — | — |
+| 10 | [`prefixsum_packed.crisp`](05-prefixsum-v2/prefixsum_packed.crisp) / [`crisp_prefixsum_packed.py`](05-prefixsum-v2/crisp_prefixsum_packed.py) | PACKED lookback word: double carry + 20-bit epoch/state tag in one ulong. One atomic per publish / poll, zero fences. __launch_bounds__(256,2) | 128 | — | `LB: 622.50` | 1078.0 (`LB: 1075.60`) | `LB: 1952.03` | `LB: 9275.73` |
+| 11 | [`prefixsum_packed.crisp`](05-prefixsum-v2/prefixsum_packed.crisp) / [`crisp_prefixsum_packed_occ1.py`](05-prefixsum-v2/crisp_prefixsum_packed_occ1.py) | Step 10 without the register cap (1 CTA/SM, no spills): same speed -- occupancy stops mattering | 202 | — | — | 1075.0 | — | — |
+| 12 | [`prefixsum_packed_rfl.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp) / [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) | Step 10 with the lookback walk ended by a WARP-UNIFORM return-from-loop (endeavour 194: two-level uniformity makes the collectives in an early-exit loop legal) -- no empty windows | 128 | — | **`LB: 461.29`** | **759.0 (`LB: 756.96`)** | **`LB: 1692.50`** | **`LB: 9147.39`** |
 
 ## § 3 — Key Architectural Takeaways
 
@@ -159,3 +160,9 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-10-26 06:09:49` | `967844` | **A100** | `leaderboard` | `crisp_prefixsum_packed.py` | — | **1952.03** | 1949.58 |
 | `2026-10-26 06:12:11` | `967845` | **L4** | `leaderboard` | `crisp_prefixsum_packed.py` | — | **9275.73** | 9303.72 |
 | `2026-10-26 06:14:26` | `967846` | **H100** | `benchmark` | `crisp_prefixsum_packed_occ1.py` | 1075.0 ± 1.1 | — | — |
+| `2026-10-26 07:22:53` | `967855` | **H100** | `test` | `crisp_prefixsum_packed_rfl.py` | — | — | — |
+| `2026-10-26 07:24:37` | `967856` | **H100** | `benchmark` | `crisp_prefixsum_packed_rfl.py` | 759.0 ± 0.7 | — | — |
+| `2026-10-26 07:38:21` | `967859` | **H100** | `leaderboard` | `crisp_prefixsum_packed_rfl.py` | — | **756.96** | 753.57 |
+| `2026-10-26 07:40:33` | `967860` | **B200** | `leaderboard` | `crisp_prefixsum_packed_rfl.py` | — | **461.29** | 462.49 |
+| `2026-10-26 07:43:11` | `967861` | **A100** | `leaderboard` | `crisp_prefixsum_packed_rfl.py` | — | **1692.50** | 1690.42 |
+| `2026-10-26 07:45:28` | `967862` | **L4** | `leaderboard` | `crisp_prefixsum_packed_rfl.py` | — | **9147.39** | 9161.28 |

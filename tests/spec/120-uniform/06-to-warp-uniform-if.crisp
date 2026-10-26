@@ -1,14 +1,17 @@
 ;; TEST-EXPECT: PASS
 ;; SKIP-WITH[--differentiate]: "kernel has no &out param, not differentiable"
 
-;; Endeavor 120 (gap #1): (to-warp-uniform ...) bound in a let must make the
+;; Endeavor 120 (gap #1): a uniformity broadcast bound in a let must make the
 ;; variable provably uniform so if+ accepts it.
+;; Endeavour 194: if+ certifies WORKGROUP uniformity, which to-warp-uniform does not
+;; give (it is uniform across one warp only -- 194-uniformity/errors/06 pins that
+;; refusal), so this now uses to-workgroup-uniform.  The file name is historical.
 
 (def-type vec-t (vector float :address-space :global :align :compact))
 
 (def-kernel to_warp_uniform_if (OUT)
   (declare #'(vec-t => nil))
-  (let ((u (to-warp-uniform (get-local-id 0))))
+  (let ((u (to-workgroup-uniform (get-local-id 0))))
     (if+ (< u (to-ulong 4))
       (set! (~ OUT (get-global-id 0)) 1.0)
       (set! (~ OUT (get-global-id 0)) 0.0))))

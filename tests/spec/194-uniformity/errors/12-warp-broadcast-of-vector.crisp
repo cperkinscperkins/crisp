@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "to-warp-uniform broadcasts with a shuffle, which moves"
+;;
+;; Endeavour 194 (F7): the warp broadcast is a shuffle, which moves the 32- and 64-bit scalars only.
+;; A float4 is refused at analysis rather than failing (or worse, passing through) in codegen.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel refused_12 (&out out)
+  (declare #'(&out vec-t => nil)
+           (local-size :set-to 32))
+  (let ((v (to-warp-uniform ##(1.0 2.0 3.0 4.0))))
+    (set! (~ out (get-local-id 0)) (x~ v))))

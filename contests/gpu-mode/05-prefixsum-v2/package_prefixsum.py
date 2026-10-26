@@ -696,6 +696,14 @@ def build_all() -> None:
         kernel_name="prefixsum_packed",
         packed=True,
     )
+    # Endeavour 194: the lookback walk ends with a warp-uniform return-from-loop.
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_packed_rfl.crisp",
+        here / "crisp_prefixsum_packed_rfl.py",
+        kernel_name="prefixsum_packed_rfl",
+        min_blocks=2,
+        packed=True,
+    )
     make_gpumode_prefixsum_hierarchical(
         here / "prefixsum_pass1.crisp",
         here / "prefixsum_pass2.crisp",

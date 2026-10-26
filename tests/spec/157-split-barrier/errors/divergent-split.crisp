@@ -2,6 +2,9 @@
 ;; Analysis 2 of 4: a rendezvous inside a conditional deadlocks when only some threads reach it.
 ;; The fused forms already refuse this; the split halves must refuse it too, and each half
 ;; independently -- an :arrive under an `if` is just as fatal as a fused barrier under one.
+;; Endeavour 194: the condition is per-THREAD (get-local-id).  It was (> gx 0), but a tile-stride
+;; binding is the workgroup's tile coordinate -- workgroup-uniform by construction -- which the
+;; analysis can see since 194, so that condition no longer divides the workgroup at all.
 (def-type m-t (matrix float :address-space :global :align :compact))
 (def-kernel divergent_split (A &out C)
   (declare #'(m-t &out m-t)
@@ -9,7 +12,7 @@
            (local-size :set-to 64))
   (tile-stride C (8 8) (gy gx)
     (progn
-      (if (> (to-int gx) 0)
+      (if (> (get-local-id 0) 0ul)
           (sync-workgroup :arrive)
           nil)
       (set! (~ C (to-int gy) (to-int gx)) (~ A (to-int gy) (to-int gx)))

@@ -108,8 +108,10 @@
   (is eq :uniform
       (ck-let-tail "(let ((u (to-workgroup-uniform (get-local-id 0)))) (uniformity-state u))")))
 
-(define-test (uniformity-logic to-warp-uniform-creates-uniform)
-  (is eq :uniform
+;; Endeavour 194: a warp broadcast is uniform across its WARP only -- :warp-uniform, which a warp
+;; collective accepts and if+ / dotimes+ / a barrier do not.
+(define-test (uniformity-logic to-warp-uniform-creates-warp-uniform)
+  (is eq :warp-uniform
       (ck-let-tail "(let ((u (to-warp-uniform (get-local-id 0)))) (uniformity-state u))")))
 
 ;;; ---- + variants enforce uniformity ------------------------------------
@@ -145,6 +147,25 @@
   (is eq :divergent (crisp.compiler::%uni-builtin-state 'get-local-id))
   (is eq :uniform   (crisp.compiler::%uni-builtin-state 'get-workgroup-id))
   (is eq :uniform   (crisp.compiler::%uni-builtin-state 'get-num-groups)))
+
+;;; ---- Endeavour 194: the warp level ---------------------------------------
+
+(define-test (uniformity-logic join-with-warp-uniform)
+  (is eq :uniform      (crisp.compiler::%uniformity-join '(:uniform :uniform)))
+  (is eq :warp-uniform (crisp.compiler::%uniformity-join '(:uniform :warp-uniform)))
+  (is eq :warp-uniform (crisp.compiler::%uniformity-join '(:warp-uniform :warp-uniform)))
+  (is eq :divergent    (crisp.compiler::%uniformity-join '(:warp-uniform :divergent)))
+  (is eq :unknown      (crisp.compiler::%uniformity-join '(:warp-uniform :unknown))))
+
+(define-test (uniformity-logic scope-meet)
+  ;; :unknown proves nothing, so as a SCOPE it counts as divergent.
+  (is eq :uniform      (crisp.compiler::%194-meet :uniform :uniform))
+  (is eq :warp-uniform (crisp.compiler::%194-meet :uniform :warp-uniform))
+  (is eq :divergent    (crisp.compiler::%194-meet :warp-uniform :unknown))
+  (is eq :divergent    (crisp.compiler::%194-meet :divergent :uniform)))
+
+(define-test (uniformity-logic warp-id-is-warp-uniform)
+  (is eq :warp-uniform (ck "(warp-id)")))
 
 ;; Run tests. The spec runner (run-unit-tests) only flags a unit file when it
 ;; signals an error during load -- a plain Parachute assertion failure does not

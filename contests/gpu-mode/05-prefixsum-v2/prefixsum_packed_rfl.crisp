@@ -1,0 +1,266 @@
+;; GPU MODE Challenge 05: prefixsum_v2 -- Single-pass lookback + fallback, PACKED lookback word,
+;; walk ended by a WARP-UNIFORM return-from-loop (endeavour 194; was a two-level done-flag loop).
+;;
+;; Same algorithm as prefixsum_fallback.crisp (bounded walk back, bounded spin, the warp reduces a
+;; silent predecessor's input itself).  What changes is how a tile publishes its carry:
+;;
+;;   prefixsum_fallback: three arrays.  Publish = value -> mem-fence -> flag.  Read = flag ->
+;;   mem-fence -> value.  Every lookback window costs two L2 round trips and a fence.
+;;
+;;   here: ONE 64-bit word per tile.  The word is the bits of the double carry with its low 20
+;;   mantissa bits replaced by a TAG:
+;;        TAG = epoch*4 + state        state 1 = AGGREGATE (this tile's sum)
+;;                                     state 2 = INCLUSIVE (sum of tiles 0..j)
+;;   Value and state travel in the same atomic, so a publish is one atomic-xchg!, a read is one
+;;   atomic, and no fence is needed on either side.  The carry keeps 32 of the double's 52 mantissa
+;;   bits, still well above float's 23.  The host keeps epoch < 2^18 - 1 (it clears the words and
+;;   restarts at 1), so a TAG from an earlier call is always smaller than this call's.
+;;
+;; Everything else is prefixsum_fallback.crisp:
+;;   1. Dynamic tile id from an atomic counter (the last tile resets it).
+;;   2. Warp-striped float4 loads: warp w owns 16 rows of 32 x float4 = 2,048 floats.
+;;   3. The tile AGGREGATE is published as soon as the loads land.
+;;   4. Warp 0: bounded lookback with fallback, then publish the INCLUSIVE prefix.
+;;   5. Per-warp carry, then row-by-row scan + store.
+
+(def-type in-vec   (vector float  :address-space :global :align :compact))
+(def-type out-vec  (vector float  :address-space :global :align :compact))
+(def-type word-vec (vector ulong  :address-space :global :align :compact))
+(def-type ctr-cell (cell   uint   :address-space :global))
+(def-type wsum-vec (vector float  :address-space :local  :align :compact))
+
+;; Lookback word: pack / unpack.  The low 20 bits are the TAG.
+(def-function lb-pack (v tag)
+  (declare #'(double ulong => ulong))
+  (return (logior (logand (as-ulong v) (lognot 1048575ul)) tag)))
+
+(def-function lb-value (word)
+  (declare #'(ulong => double))
+  (return (as-double (logand word (lognot 1048575ul)))))
+
+(def-function lb-tag (word)
+  (declare #'(ulong => ulong))
+  (return (logand word 1048575ul)))
+
+;; Inclusive warp scan (Kogge-Stone over shuffle-up).
+(def-function warp-incl-scan (x lane)
+  (declare #'(float ulong => float))
+  (let ((s x))
+    (do-power-step+ (off 32ul)
+      (let ((t (shuffle-up s off)))
+        (set! s (+ s (if (>= lane off) t 0.0)))))
+    (return s)))
+
+;; Warp sum / min via butterflies.
+(def-function warp-sum-d (x)
+  (declare #'(double => double))
+  (let ((s x))
+    (dec-times-by-half+ (m 16ul)
+      (set! s (+ s (shuffle-xor s m))))
+    (return s)))
+
+(def-function warp-min-u (x)
+  (declare #'(uint => uint))
+  (let ((s x))
+    (dec-times-by-half+ (m 16ul)
+      (let ((o (shuffle-xor s m)))
+        (set! s (if (< o s) o s))))
+    (return s)))
+
+;; Guarded float4 row load: vector load when fully in range, scalar otherwise.
+(def-function load4 (input i4 n)
+  (declare #'(in-vec ulong ulong => float4))
+  (let ((in4 (make-vector input float4 :length (/ n 4ul)))
+        (e   (* i4 4ul)))
+    (if (<= (+ e 4ul) n)
+        (return (~ in4 i4))
+        (return ##((if (< e n) (~ input e) 0.0)
+                   (if (< (+ e 1ul) n) (~ input (+ e 1ul)) 0.0)
+                   (if (< (+ e 2ul) n) (~ input (+ e 2ul)) 0.0)
+                   (if (< (+ e 3ul) n) (~ input (+ e 3ul)) 0.0))))))
+
+(def-function store4 (output i4 n v)
+  (declare #'(out-vec ulong ulong float4 => nil))
+  (let ((out4 (make-vector output float4 :length (/ n 4ul)))
+        (e    (* i4 4ul)))
+    (if (<= (+ e 4ul) n)
+        (set! (~ out4 i4) v)
+        (progn
+          (when (< e n)          (set! (~ output e) (x~ v)))
+          (when (< (+ e 1ul) n)  (set! (~ output (+ e 1ul)) (y~ v)))
+          (when (< (+ e 2ul) n)  (set! (~ output (+ e 2ul)) (z~ v))))))
+  (return))
+
+(def-function sum4 (v)
+  (declare #'(float4 => float))
+  (return (+ (+ (x~ v) (y~ v)) (+ (z~ v) (w~ v)))))
+
+;; FALLBACK: the whole warp reduces tile `j`'s input (4,096 float4 = 128 per lane) and returns its
+;; sum in every lane.  Only reached when a predecessor did not publish within SPIN tries.
+(def-function warp-tile-sum (input j lane n)
+  (declare #'(in-vec ulong ulong ulong => double))
+  (let ((part 0.0d))
+    (dotimes+ (k 128ul)
+      (set! part (+ part (to-double (sum4 (load4 input (+ (* j 4096ul) (* k 32ul) lane) n))))))
+    (return (warp-sum-d part))))
+
+;; Scan one row (32 lanes x float4) and store it.  Returns the row total (same in every lane).
+(def-function scan-row (v rowbase lane output i4 n)
+  (declare #'(float4 float ulong out-vec ulong ulong => float))
+  (let ((a (x~ v))
+        (b (+ (x~ v) (y~ v))))
+    (let ((c (+ b (z~ v))))
+      (let ((d (+ c (w~ v))))
+        (let ((s (warp-incl-scan d lane)))
+          (let ((ex (- s d))
+                (tot (shuffle s 31ul)))
+            (store4 output i4 n ##((+ rowbase (+ ex a))
+                                  (+ rowbase (+ ex b))
+                                  (+ rowbase (+ ex c))
+                                  (+ rowbase (+ ex d))))
+            (return tot)))))))
+
+(def-kernel prefixsum_packed_rfl (input epoch &out output words counter)
+  (declare #'(in-vec uint &out out-vec word-vec ctr-cell => nil)
+           (local-size :set-to 256))
+  (let ((tid    (to-ulong (get-local-id 0)))
+        (lane   (to-ulong (warp-lane)))
+        (wid    (/ (to-ulong (get-local-id 0)) 32ul))
+        (n      (length~ input))
+        (ntiles (/ (+ (length~ input) 16383ul) 16384ul))
+        (s-id   (make-scratch-cell ulong))
+        (s-excl (make-scratch-cell double))
+        (wsums  (make-scratch-vector wsum-vec 8))
+        (tag-a  (+ (* (to-ulong epoch) 4ul) 1ul))
+        (tag-i  (+ (* (to-ulong epoch) 4ul) 2ul)))
+    ;; 1. Dynamic tile id (the last tile resets the counter for the next call)
+    (when (= tid 0ul)
+      (let ((t (to-ulong (atomic-inc! (~ counter)))))
+        (set! (~ s-id) t)
+        (when (= t (- ntiles 1ul))
+          (atomic-xchg! (~ counter) 0u))))
+    (sync-workgroup)
+    ;; id is broadcast through scratch (the sync-workgroup above), so it IS workgroup-uniform.
+    ;; Declared, not to-workgroup-uniform: since endeavour 194 that really broadcasts -- two more
+    ;; barriers and a module-scope .shared slot, which the inline-asm packager would drop.
+    (let ((id   (~ s-id))
+          (seg4 (+ (* (~ s-id) 4096ul) (* wid 512ul) lane)))
+      (declare (uniform id))
+      ;; 2. Coalesced warp-striped loads: row r of this warp is float4 index seg4 + 32 r
+      (let ((v0  (load4 input seg4 n))
+            (v1  (load4 input (+ seg4 32ul) n))
+            (v2  (load4 input (+ seg4 64ul) n))
+            (v3  (load4 input (+ seg4 96ul) n))
+            (v4  (load4 input (+ seg4 128ul) n))
+            (v5  (load4 input (+ seg4 160ul) n))
+            (v6  (load4 input (+ seg4 192ul) n))
+            (v7  (load4 input (+ seg4 224ul) n))
+            (v8  (load4 input (+ seg4 256ul) n))
+            (v9  (load4 input (+ seg4 288ul) n))
+            (v10 (load4 input (+ seg4 320ul) n))
+            (v11 (load4 input (+ seg4 352ul) n))
+            (v12 (load4 input (+ seg4 384ul) n))
+            (v13 (load4 input (+ seg4 416ul) n))
+            (v14 (load4 input (+ seg4 448ul) n))
+            (v15 (load4 input (+ seg4 480ul) n)))
+        ;; 3. Warp totals -> tile aggregate
+        (let ((tsum (+ (+ (+ (+ (sum4 v0) (sum4 v1)) (+ (sum4 v2) (sum4 v3)))
+                          (+ (+ (sum4 v4) (sum4 v5)) (+ (sum4 v6) (sum4 v7))))
+                       (+ (+ (+ (sum4 v8) (sum4 v9)) (+ (sum4 v10) (sum4 v11)))
+                          (+ (+ (sum4 v12) (sum4 v13)) (+ (sum4 v14) (sum4 v15)))))))
+          (let ((wsum (to-float (warp-sum-d (to-double tsum)))))
+            (when (= lane 0ul)
+              (set! (~ wsums wid) wsum))))
+        (sync-workgroup)
+        ;; 4. Warp 0: publish aggregate, bounded lookback with fallback, publish inclusive
+        (let ((warp0 (to-warp-uniform (= wid 0ul))))
+         (when warp0
+          (let ((agg (+ (+ (+ (to-double (~ wsums 0ul)) (to-double (~ wsums 1ul)))
+                           (+ (to-double (~ wsums 2ul)) (to-double (~ wsums 3ul))))
+                        (+ (+ (to-double (~ wsums 4ul)) (to-double (~ wsums 5ul)))
+                           (+ (to-double (~ wsums 6ul)) (to-double (~ wsums 7ul))))))
+                (excl 0.0d)
+                (top  (to-long id))
+                (nwin (/ (+ id 31ul) 32ul)))
+            ;; Tile 0's aggregate IS its inclusive prefix.  One atomic, no fence.
+            (when (= lane 0ul)
+              (atomic-xchg! (~ words id) (lb-pack agg (if (= id 0ul) tag-i tag-a))))
+            ;; Window w: lane l inspects tile (top-1-l).  kind 2 = inclusive, 1 = aggregate,
+            ;; 0 = not published within SPIN tries.  A lane past tile 0 reads as "inclusive 0.0",
+            ;; which ends the walk exactly at tile 0.
+            ;; The walk ends with return-from-loop once a window holds an inclusive prefix.  That
+            ;; exit is WARP-uniform (`found`), so whole warps leave together and the warp collectives
+            ;; in the body stay legal (endeavour 194; before it, a two-level done flag ran up to ~47
+            ;; empty iterations per tile).
+            (dotimes (w nwin)
+              (let ((j    (- (- top 1l) (to-long lane)))
+                    (kind 2u)
+                    (val  0.0d))
+                (when (>= j 0l)
+                  (let ((ju   (to-ulong j))
+                        (word 0ul))
+                    ;; SPIN = 256 tries.  The word carries its own value: no fence, no 2nd read.
+                    (dotimes (s 256ul)
+                      (set! word (atomic-add! (~ words ju) 0ul))
+                      (when (>= (lb-tag word) tag-a)
+                        (return-from-loop)))
+                    (let ((tg (lb-tag word)))
+                      (if (= tg tag-i)
+                          (set! val (lb-value word))
+                          (if (= tg tag-a)
+                              (progn
+                                (set! kind 1u)
+                                (set! val (lb-value word)))
+                              (set! kind 0u))))))
+                ;; Nearest inclusive lane; lanes past it do not matter.
+                (let ((first (warp-min-u (if (= kind 2u) (to-uint lane) 32u))))
+                  ;; Fallback for every unpublished lane before `first`, one tile at a time,
+                  ;; the whole warp per tile.  Skipped entirely in the common case.
+                  (let ((miss (warp-min-u (if (and (= kind 0u) (< (to-uint lane) first))
+                                              (to-uint lane)
+                                              32u))))
+                    (let ((any-miss (to-warp-uniform (< miss 32u))))
+                      (when any-miss
+                        (dotimes+ (m 32ul)
+                          (let ((mk   (shuffle kind m)))
+                            (let ((redo (to-warp-uniform (and (= mk 0u) (< (to-uint m) first)))))
+                              (when redo
+                                (let ((a (warp-tile-sum input
+                                                        (to-ulong (- (- top 1l) (to-long m)))
+                                                        lane n)))
+                                  (when (= lane m)
+                                    (set! kind 1u)
+                                    (set! val a))))))))))
+                  (set! excl (+ excl (warp-sum-d (if (<= (to-uint lane) first) val 0.0d))))
+                  (set! top (- top 32l))
+                  (let ((found (to-warp-uniform (< first 32u))))
+                    (when found
+                      (return-from-loop))))))
+            (when (= lane 0ul)
+              (set! (~ s-excl) excl)
+              (when (> id 0ul)
+                (atomic-xchg! (~ words id) (lb-pack (+ excl agg) tag-i)))))))
+        (sync-workgroup)
+        ;; 5. Per-warp carry (double), then row-by-row scan + store
+        (let ((base (~ s-excl)))
+          (dotimes+ (k 8ul)
+            (when (< k wid)
+              (set! base (+ base (to-double (~ wsums k))))))
+          (let ((rb base))
+            (set! rb (+ rb (to-double (scan-row v0  (to-float rb) lane output seg4 n))))
+            (set! rb (+ rb (to-double (scan-row v1  (to-float rb) lane output (+ seg4 32ul) n))))
+            (set! rb (+ rb (to-double (scan-row v2  (to-float rb) lane output (+ seg4 64ul) n))))
+            (set! rb (+ rb (to-double (scan-row v3  (to-float rb) lane output (+ seg4 96ul) n))))
+            (set! rb (+ rb (to-double (scan-row v4  (to-float rb) lane output (+ seg4 128ul) n))))
+            (set! rb (+ rb (to-double (scan-row v5  (to-float rb) lane output (+ seg4 160ul) n))))
+            (set! rb (+ rb (to-double (scan-row v6  (to-float rb) lane output (+ seg4 192ul) n))))
+            (set! rb (+ rb (to-double (scan-row v7  (to-float rb) lane output (+ seg4 224ul) n))))
+            (set! rb (+ rb (to-double (scan-row v8  (to-float rb) lane output (+ seg4 256ul) n))))
+            (set! rb (+ rb (to-double (scan-row v9  (to-float rb) lane output (+ seg4 288ul) n))))
+            (set! rb (+ rb (to-double (scan-row v10 (to-float rb) lane output (+ seg4 320ul) n))))
+            (set! rb (+ rb (to-double (scan-row v11 (to-float rb) lane output (+ seg4 352ul) n))))
+            (set! rb (+ rb (to-double (scan-row v12 (to-float rb) lane output (+ seg4 384ul) n))))
+            (set! rb (+ rb (to-double (scan-row v13 (to-float rb) lane output (+ seg4 416ul) n))))
+            (set! rb (+ rb (to-double (scan-row v14 (to-float rb) lane output (+ seg4 448ul) n))))
+            (set! rb (+ rb (to-double (scan-row v15 (to-float rb) lane output (+ seg4 480ul) n))))))))
+    (return)))

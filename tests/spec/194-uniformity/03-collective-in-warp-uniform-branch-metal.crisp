@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER x: 17 7 37 27
+;;
+;; Endeavour 194 ON-METAL: a warp collective inside a branch that WHOLE WARPS take or skip is legal.
+;; The condition is warp-uniform (to-warp-uniform), so every lane of a warp agrees on it: the warps
+;; that enter are fully converged.  (A barrier here is refused -- errors/01.)
+;;
+;; Only the first warp enters.  Fingerprint as in 173/02: v(L) = 10L + 7, shuffle-xor by 1 swaps
+;; lanes 0<->1 and 2<->3 -> 17 7 37 27.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel warp_branch (&out x)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane   (to-ulong (warp-lane)))
+        (first? (to-warp-uniform (< (to-ulong (get-local-id 0)) (to-ulong (warp-size))))))
+    (when first?
+      (let ((r (shuffle-xor (+ (* lane 10ul) 7ul) 1ul)))
+        (when (< lane 4ul)
+          (set! (~ x lane) r))))))

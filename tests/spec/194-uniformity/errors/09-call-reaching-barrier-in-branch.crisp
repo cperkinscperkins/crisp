@@ -1,0 +1,21 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "A call to stage-and-wait, which reaches"
+;;
+;; Endeavour 194 (D4 / F3): a call reaches whatever its callee reaches.  stage-and-wait holds a barrier,
+;; so calling it where only some threads arrive is the same deadlock as writing the barrier there.
+;; (A barrier needs a def-grid-function: a plain def-function is thread-level and refuses one.)
+;; Before 194 the callee's barrier was checked only in the callee's own (convergent) context.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-grid-function stage-and-wait (out)
+  (declare #'(uvec-t => nil))
+  (sync-workgroup)
+  (return))
+
+(def-kernel refused_09 (&out out)
+  (declare #'(&out uvec-t => nil)
+           (local-size :set-to 64))
+  (when (< (get-local-id 0) 5ul)
+    (stage-and-wait out))
+  (set! (~ out (get-local-id 0)) 1u))
