@@ -243,6 +243,16 @@ def make_gpumode_histogram_lastman(
         else ""
     )
     smem_launch = f", {smem_bytes}" if smem_bytes > 0 else ""
+    # above 48 KB of dynamic shared memory the kernel must opt in once (empty otherwise: older entries unchanged)
+    smem_optin = (
+        "static bool smem_optin_done = false;\n"
+        "    if (!smem_optin_done) {\n"
+        f"        cudaFuncSetAttribute(crisp_histogram_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, {smem_bytes});\n"
+        "        smem_optin_done = true;\n"
+        "    }\n    "
+        if smem_bytes > 49152
+        else ""
+    )
 
     m_bs = re.search(r"__launch_bounds__\((\d+)", launch_bounds)
     block_size = int(m_bs.group(1)) if m_bs else 256
@@ -309,7 +319,7 @@ torch::Tensor launch_crisp_histogram(torch::Tensor input, torch::Tensor output) 
     if (needed < 1) needed = 1;
     int grid_x = static_cast<int>(std::min<int64_t>(needed, max_grid));
 
-    uint64_t partials = reinterpret_cast<uint64_t>(scratch.data_ptr());
+    {smem_optin}uint64_t partials = reinterpret_cast<uint64_t>(scratch.data_ptr());
     crisp_histogram_kernel<<<grid_x, BLOCK_SIZE{smem_launch}>>>(
         reinterpret_cast<uint64_t>(input.data_ptr()),
         partials,
