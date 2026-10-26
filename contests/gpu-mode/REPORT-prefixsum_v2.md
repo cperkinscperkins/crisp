@@ -142,3 +142,14 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-10-25 16:33:55` | `967387` | **B200** | `leaderboard` | `crisp_prefixsum_v4_b512.py` | — | **739.65** | 737.29 |
 | `2026-10-25 16:36:11` | `967389` | **A100** | `leaderboard` | `crisp_prefixsum_v4_b512.py` | — | **2649.53** | 2529.72 |
 | `2026-10-25 16:38:44` | `967392` | **L4** | `leaderboard` | `crisp_prefixsum_v4_b512.py` | — | **17885.18** | 17860.58 |
+| `2026-10-26 04:13:18` | `967804` | **H100** | `benchmark` | `crisp_prefixsum_fallback.py` | 2080.0 ± 1.0 | — | — |
+| `2026-10-26 04:15:40` | `967805` | **H100** | `benchmark` | `crisp_prefixsum_fallback.py` | 1309.0 ± 1.0 | — | — |
+| `2026-10-26 04:21:35` | `967808` | **H100** | `benchmark` | `crisp_prefixsum_fallback_t8.py` | 1403.0 ± 0.2 | — | — |
+| `2026-10-26 04:24:43` | `967811` | **H100** | `benchmark` | `crisp_prefixsum_fallback_occ2.py` | 1274.0 ± 1.2 | — | — |
+| `2026-10-26 04:31:38` | `967814` | **H100** | `test` | `crisp_prefixsum_packed.py` | — | — | — |
+| `2026-10-26 05:12:08` | `967826` | **H100** | `benchmark` | `crisp_prefixsum_packed.py` | 1078.0 ± 0.9 | — | — |
+| `2026-10-26 06:05:49` | `967842` | **H100** | `leaderboard` | `crisp_prefixsum_packed.py` | — | **1075.60** | 1077.67 |
+| `2026-10-26 06:07:38` | `967843` | **B200** | `leaderboard` | `crisp_prefixsum_packed.py` | — | **622.50** | 622.47 |
+| `2026-10-26 06:09:49` | `967844` | **A100** | `leaderboard` | `crisp_prefixsum_packed.py` | — | **1952.03** | 1949.58 |
+| `2026-10-26 06:12:11` | `967845` | **L4** | `leaderboard` | `crisp_prefixsum_packed.py` | — | **9275.73** | 9303.72 |
+| `2026-10-26 06:14:26` | `967846` | **H100** | `benchmark` | `crisp_prefixsum_packed_occ1.py` | 1075.0 ± 1.1 | — | — |
