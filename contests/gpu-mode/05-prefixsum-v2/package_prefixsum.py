@@ -502,6 +502,7 @@ def make_gpumode_prefixsum_fallback(
     block_threads: int = 256,
     tile_elems: int = 16384,
     min_blocks: int | None = None,
+    packed: bool = False,
     arch: str = "sm_80",
     hardware_profile: str | None = None,
 ) -> None:
@@ -540,6 +541,19 @@ def make_gpumode_prefixsum_fallback(
         "counter_size_bytes": "4ULL",
         "epoch_arg": "epoch",
     }
+    if packed:
+        # One 64-bit lookback word per tile (prefixsum_packed.crisp): it rides in the flags slot.
+        runtime_exprs = {k: v for k, v in runtime_exprs.items()
+                         if not k.startswith(("flags_", "aggs_", "incs_"))}
+        runtime_exprs.update({
+            "words_ptr": "flags_ptr",
+            "words_byte_size": "ntiles * 8ULL",
+            "words_ext0": "ntiles",
+            "words_length": "ntiles",
+        })
+    # packed tags are epoch*4 + state in 20 bits; unpacked tags are a full uint.
+    flags_dtype = "torch::kInt64" if packed else "torch::kInt32"
+    epoch_limit = "0x3FFFFu" if packed else "0x3FFFFFFFu"
     pmap, smem = param_map_from_cuda_hoist(hoist_cu, runtime_exprs)
     # epoch is a 32-bit kernel param (ld.param.b32): it needs an "r" operand, not the default "l".
     names = re.findall(r"&(\w+)", re.search(r"void\*\s+kernelParams\[\d+\]\s*=\s*\{(.*?)\};",
@@ -592,14 +606,14 @@ torch::Tensor launch_crisp_prefixsum(torch::Tensor input, torch::Tensor output) 
     static uint64_t cap = 0;
     static uint32_t epoch = 0;
     if (!flags.defined() || cap < ntiles || flags.device() != input.device()) {{
-        flags   = torch::zeros({{(int64_t)ntiles}}, input.options().dtype(torch::kInt32));
+        flags   = torch::zeros({{(int64_t)ntiles}}, input.options().dtype({flags_dtype}));
         aggs    = torch::zeros({{(int64_t)ntiles}}, input.options().dtype(torch::kFloat64));
         incs    = torch::zeros({{(int64_t)ntiles}}, input.options().dtype(torch::kFloat64));
         counter = torch::zeros({{1}}, input.options().dtype(torch::kInt32));
         cap = ntiles;
         epoch = 0;
     }}
-    if (++epoch >= 0x3FFFFFFFu) {{   // tags are epoch*4 + {{1,2}}: restart before they wrap
+    if (++epoch >= {epoch_limit}) {{   // tags are epoch*4 + {{1,2}}: restart before they wrap
         flags.zero_();
         epoch = 1;
     }}
@@ -668,6 +682,13 @@ def build_all() -> None:
         here / "prefixsum_fallback.crisp",
         here / "crisp_prefixsum_fallback_occ2.py",
         min_blocks=2,
+    )
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_packed.crisp",
+        here / "crisp_prefixsum_packed.py",
+        kernel_name="prefixsum_packed",
+        min_blocks=2,
+        packed=True,
     )
     make_gpumode_prefixsum_hierarchical(
         here / "prefixsum_pass1.crisp",
