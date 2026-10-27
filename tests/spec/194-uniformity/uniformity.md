@@ -221,9 +221,15 @@ something was accidentally `:unknown` (D-194-16).
 
 ## Not verified
 
-- CUDA on metal: no NVIDIA card here.  The `TEST-HOIST[CUDA]` lines are wired up, but these specs have
-  never run on PTX hardware.
-- `--debug`, `--single-pass`, `--differentiate` passes: left to CI, per the standing preference.
+- ~~CUDA on metal~~ -- VERIFIED 2026-10-26 by Chris on an H100 PCIe (`run-on-pod.sh ... 194-uniformity`):
+  22/22, binary run too.  That includes spec 01's static `.shared` broadcast slot alongside the CUDA
+  hoist's dynamic shared memory.
+- ~~`--debug`, `--single-pass`, `--differentiate` passes~~ -- CI clean (Chris pushed 2026-10-26).
+- The contest packager (`contests/ptx_packager.py`) now refuses an entry whose body references
+  module-scope PTX it cannot carry: a `.shared` / `.global` / `.const` variable, or a call.  NVPTX
+  normally DEMOTES a `__crisp_wgu_N` slot into the kernel; `nvcc` accepts that `.shared` declaration
+  inside the inline asm (sm_80 and sm_90 checked).  So `to-workgroup-uniform` kernels package fine,
+  and only a slot shared by several functions is refused.  Not run on a GPU through the packager.
 - The prefixsum lookback rewritten with `return-from-loop`: not done yet (next step after review).
 
 ## Fold notes

@@ -26,6 +26,31 @@ def prefix_ptx_registers(text: str, prefix: str = "cr_") -> str:
     return LLVM_REG_PATTERN.sub(rf"%{prefix}\1\2", text)
 
 
+_MODULE_VAR_RE = re.compile(
+    r"^\s*(?:\.(?:visible|extern|weak)\s+)*\.(?:shared|global|const)\b[^;\n]*?([A-Za-z_$][\w$]*)\s*"
+    r"(?:\[[^\]]*\])?\s*(?:=[^;]*)?;",
+    flags=re.MULTILINE,
+)
+
+
+def module_scope_dependencies(ptx_outside_entry: str, body: str) -> list[str]:
+    """Names of module-scope PTX the entry BODY needs but an inline-asm copy of the body cannot carry.
+
+    Covers .shared / .global / .const variables declared outside the entry (except
+    __crisp_dynamic_smem, which ptx_entry_to_inline_asm maps to an operand) and any `call` -- a
+    .func the body calls is not copied either.  Returned as human-readable entries, empty when the
+    body is self-contained.
+    """
+    lost = []
+    for name in sorted({mm.group(1) for mm in _MODULE_VAR_RE.finditer(ptx_outside_entry)}):
+        if name != "__crisp_dynamic_smem" and re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", body):
+            lost.append(name)
+    for callee in sorted(set(re.findall(r"^\s*call(?:\.uni)?\b[^;]*?\b([A-Za-z_$][\w$]*)\s*,\s*\(", body,
+                                        flags=re.MULTILINE))):
+        lost.append(f"call {callee}")
+    return lost
+
+
 def ptx_entry_to_inline_asm(
     ptx_text: str,
     entry_name: str,
@@ -55,6 +80,16 @@ def ptx_entry_to_inline_asm(
         raise ValueError(f"Could not find .visible .entry {entry_name} in PTX")
 
     body = m.group(2)
+    lost = module_scope_dependencies(ptx_text[: m.start()] + ptx_text[m.end():], body)
+    if lost:
+        raise ValueError(
+            f"{entry_name}: the inline-asm packaging copies only the entry body, but it references "
+            f"module-scope PTX that would be silently dropped: {', '.join(lost)}.  "
+            "A __crisp_wgu_N slot comes from to-workgroup-uniform (it broadcasts through static shared "
+            "memory since endeavour 194).  NVPTX normally demotes the slot into the kernel, which packages "
+            "fine; it stays module-scope when more than one function uses it -- assert the value with "
+            "(declare (uniform x)) instead.  A call means a helper was not inlined."
+        )
 
     # Identify param indices actually loaded in the entry body
     used_indices = sorted(
