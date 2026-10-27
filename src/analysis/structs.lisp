@@ -530,7 +530,10 @@
 (defun %analyze-set!-simple-variable (target-form value-node env location)
   "Helper to analyze simple variable assignment (set! target-form value-node).
    Endeavor 120 (gap #5): taints the variable :divergent when mutated inside a
-   divergent block, or when assigned a divergent value."
+   divergent block, or when assigned a divergent value.
+   Endeavour 194: two levels.  Set inside a scope only some WARPS reach, or to a warp-uniform value, a
+   :uniform variable becomes :warp-uniform -- the other warps never saw the store.  The variable is also
+   recorded for the enclosing loop, whose early exits lower it once more (%194-judge-loop)."
   (let ((var-info (find-variable-in-env target-form env)))
     (unless var-info
       (error 'crisp-unknown-variable :name target-form :source-location location))
@@ -540,14 +543,23 @@
         (error 'crisp-type-error :expected var-type :inferred val-type
                :source-location location)))
     ;; Endeavor 120: uniformity taint on mutation.
-    (let ((val-uni (calculate-uniformity-state value-node env)))
-      (cond
-       ((> *divergent-scope-depth* 0)
+    (let ((val-uni (calculate-uniformity-state value-node env))
+          (scope (%194-current-level)))
+      (cl:cond
+       ((eq scope :divergent)
         (log:debug "Endeavor 120: set! ~a inside divergent scope -> :divergent" target-form)
         (setf (parameter-def-uniformity var-info) :divergent))
        ((eq val-uni :divergent)
         (log:debug "Endeavor 120: set! ~a := divergent value -> :divergent" target-form)
-        (setf (parameter-def-uniformity var-info) :divergent))))
+        (setf (parameter-def-uniformity var-info) :divergent))
+       ((and (or (eq scope :warp-uniform) (eq val-uni :warp-uniform))
+             (eq (parameter-def-uniformity var-info) :uniform))
+        (log:debug "194: set! ~a in a warp-level scope / to a warp-uniform value -> :warp-uniform" target-form)
+        (setf (parameter-def-uniformity var-info) :warp-uniform))))
+    (when *194-loop*
+      (push var-info (%194-loop-record-sets *194-loop*)))
+    (when (member target-form *194-lane-index-names*)
+      (setf *194-lane-index-names* (remove target-form *194-lane-index-names*)))
     (make-semantic-set!
      :target-node (make-semantic-var-read
                    :name target-form

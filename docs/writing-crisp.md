@@ -147,10 +147,19 @@ well supported inside the MMA paths.
 - Bounded loops only: `(dotimes (i n) ...)`, `(dec-times-by-half (s 32ul) ...)` (s = 32, 16, ... 1),
   and the other members of the `dotimes` family (chapter 13).
 - The **`+` variants** (`dotimes+`, `dec-times-by-half+`, `when+`, `if+`) PROVE the condition / trip count is
-  uniform across the workgroup.  A barrier or a warp collective inside a loop requires the `+` form.
+  uniform across the workgroup.
+- **Two levels of uniform** (Endeavour 194).  A BARRIER (`sync-workgroup`, `to-workgroup-uniform`, a tile
+  op, or a call to a function holding one) needs every thread of the WORKGROUP to arrive: only under
+  workgroup-uniform conditions and loop bounds.  A WARP COLLECTIVE (shuffle, `reduce-warp`,
+  `to-warp-uniform`, `sync-warp`, or a call reaching one) needs only its WARP: a warp-uniform condition or
+  plain-loop bound is enough.  Warp-uniform values: `to-warp-uniform`, `(warp-id)`, a variable after
+  `reduce-warp`, a function whose returns are all warp-uniform.  `if+` / `dotimes+` need workgroup-uniform.
+- `to-workgroup-uniform` / `to-warp-uniform` BROADCAST (local thread 0 / lane 0) -- each costs a barrier /
+  a shuffle and is a collective itself.  `(declare (uniform x))` asserts for free.
 - **Strides** hand each thread its work: `loop-vector-stride` (one vector), `grid-stride`, `tile-stride`,
   `matrix-multiply-tile-stride` (§10), `hardware-stride`, `workgroup-stride` (chapter 13).
-- `return-from-loop` leaves the innermost `dotimes`-family loop.
+- `return-from-loop` leaves the innermost `dotimes`-family loop.  No barrier in a loop that holds one;
+  warp collectives only if every exit is warp-uniform (and, on SPIR-V, not in a nested loop -- BUG 141).
 - No recursion, no `while`.
 
 ---

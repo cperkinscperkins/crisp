@@ -495,8 +495,215 @@ def custom_kernel(data: input_t) -> output_t:
     print(f"Wrote {out_py_path.name} ({len(submission_py.splitlines())} lines)")
 
 
+def make_gpumode_prefixsum_fallback(
+    crisp_path: Path,
+    out_py_path: Path,
+    kernel_name: str = "prefixsum_fallback",
+    block_threads: int = 256,
+    tile_elems: int = 16384,
+    min_blocks: int | None = None,
+    packed: bool = False,
+    arch: str = "sm_80",
+    hardware_profile: str | None = None,
+) -> None:
+    """Single-pass decoupled lookback with fallback: ONE launch, any N (the kernel guards its own tail).
+
+    Host state persists across calls: flags (uint), aggs / incs (double), the tile counter, and an
+    epoch.  Each call bumps the epoch, so flags from earlier calls read as 'not published' and the
+    flag array never needs clearing.  The kernel's last tile resets the counter to 0.
+    """
+    ptx_path, hoist_cu = compile_crisp_with_cuda_hoist(
+        crisp_path, kernel_name, arch=arch, hardware_profile=hardware_profile
+    )
+    raw_ptx = ptx_path.read_text(encoding="utf-8")
+    runtime_exprs = {
+        "input_ptr": "in_ptr",
+        "input_byte_size": "in_bytes",
+        "input_ext0": "in_len",
+        "input_length": "in_len",
+        "output_ptr": "out_ptr",
+        "output_byte_size": "in_bytes",
+        "output_ext0": "in_len",
+        "output_length": "in_len",
+        "flags_ptr": "flags_ptr",
+        "flags_byte_size": "ntiles * 4ULL",
+        "flags_ext0": "ntiles",
+        "flags_length": "ntiles",
+        "aggs_ptr": "aggs_ptr",
+        "aggs_byte_size": "ntiles * 8ULL",
+        "aggs_ext0": "ntiles",
+        "aggs_length": "ntiles",
+        "incs_ptr": "incs_ptr",
+        "incs_byte_size": "ntiles * 8ULL",
+        "incs_ext0": "ntiles",
+        "incs_length": "ntiles",
+        "counter_ptr": "counter_ptr",
+        "counter_size_bytes": "4ULL",
+        "epoch_arg": "epoch",
+    }
+    if packed:
+        # One 64-bit lookback word per tile (prefixsum_packed.crisp): it rides in the flags slot.
+        runtime_exprs = {k: v for k, v in runtime_exprs.items()
+                         if not k.startswith(("flags_", "aggs_", "incs_"))}
+        runtime_exprs.update({
+            "words_ptr": "flags_ptr",
+            "words_byte_size": "ntiles * 8ULL",
+            "words_ext0": "ntiles",
+            "words_length": "ntiles",
+        })
+    # packed tags are epoch*4 + state in 20 bits; unpacked tags are a full uint.
+    flags_dtype = "torch::kInt64" if packed else "torch::kInt32"
+    epoch_limit = "0x3FFFFu" if packed else "0x3FFFFFFFu"
+    pmap, smem = param_map_from_cuda_hoist(hoist_cu, runtime_exprs)
+    # epoch is a 32-bit kernel param (ld.param.b32): it needs an "r" operand, not the default "l".
+    names = re.findall(r"&(\w+)", re.search(r"void\*\s+kernelParams\[\d+\]\s*=\s*\{(.*?)\};",
+                                             hoist_cu, flags=re.DOTALL).group(1))
+    pmap[names.index("epoch_arg")] = ("r", "epoch")
+    inline_asm, _ = ptx_entry_to_inline_asm(raw_ptx, kernel_name, pmap)
+    smem_decl = (
+        "    extern __shared__ __align__(128) unsigned char crisp_smem[];\n"
+        "    uint64_t smem_ptr = static_cast<uint64_t>(__cvta_generic_to_shared(crisp_smem));\n"
+        if smem > 0
+        else ""
+    )
+    # min_blocks asks ptxas for that many resident CTAs/SM, capping registers (it may spill).
+    bounds = (f"__launch_bounds__({block_threads}, {min_blocks})" if min_blocks
+              else f"__launch_bounds__({block_threads})")
+
+    crisp_src = crisp_path.read_text(encoding="utf-8").strip()
+    commented_crisp = "\n".join(f"#   {line}" if line else "#" for line in crisp_src.splitlines())
+    commented_crisp = re.sub(r"stream", "str_eam", commented_crisp, flags=re.IGNORECASE)
+
+    cuda_source = f"""
+#include <cuda_runtime.h>
+#include <torch/extension.h>
+#include <cstdint>
+
+__global__ {bounds}
+void crisp_prefixsum_fallback_kernel(
+    uint64_t in_ptr,
+    uint64_t out_ptr,
+    uint64_t flags_ptr,
+    uint64_t aggs_ptr,
+    uint64_t incs_ptr,
+    uint64_t counter_ptr,
+    uint64_t in_len,
+    uint64_t ntiles,
+    uint64_t in_bytes,
+    uint32_t epoch
+) {{
+{smem_decl}{inline_asm}
+}}
+
+torch::Tensor launch_crisp_prefixsum(torch::Tensor input, torch::Tensor output) {{
+    int64_t N = input.numel();
+    if (N <= 0) return output;
+    constexpr int64_t TILE = {tile_elems};
+    uint64_t ntiles = static_cast<uint64_t>((N + TILE - 1) / TILE);
+
+    // Lookback state persists across calls; the epoch makes old flags read as 'not published'.
+    static torch::Tensor flags, aggs, incs, counter;
+    static uint64_t cap = 0;
+    static uint32_t epoch = 0;
+    if (!flags.defined() || cap < ntiles || flags.device() != input.device()) {{
+        flags   = torch::zeros({{(int64_t)ntiles}}, input.options().dtype({flags_dtype}));
+        aggs    = torch::zeros({{(int64_t)ntiles}}, input.options().dtype(torch::kFloat64));
+        incs    = torch::zeros({{(int64_t)ntiles}}, input.options().dtype(torch::kFloat64));
+        counter = torch::zeros({{1}}, input.options().dtype(torch::kInt32));
+        cap = ntiles;
+        epoch = 0;
+    }}
+    if (++epoch >= {epoch_limit}) {{   // tags are epoch*4 + {{1,2}}: restart before they wrap
+        flags.zero_();
+        epoch = 1;
+    }}
+
+    crisp_prefixsum_fallback_kernel<<<(unsigned)ntiles, {block_threads}, {smem}>>>(
+        reinterpret_cast<uint64_t>(input.data_ptr()),
+        reinterpret_cast<uint64_t>(output.data_ptr()),
+        reinterpret_cast<uint64_t>(flags.data_ptr()),
+        reinterpret_cast<uint64_t>(aggs.data_ptr()),
+        reinterpret_cast<uint64_t>(incs.data_ptr()),
+        reinterpret_cast<uint64_t>(counter.data_ptr()),
+        static_cast<uint64_t>(N), ntiles, static_cast<uint64_t>(N * sizeof(float)), epoch);
+    return output;
+}}
+"""
+    cpp_source = "torch::Tensor launch_crisp_prefixsum(torch::Tensor input, torch::Tensor output);"
+    ext_name = f"crisp_{out_py_path.stem}_ext"
+    submission_py = f'''# Generated from Crisp (https://github.com/cperkinscperkins/crisp)
+#
+# Crisp Source ({crisp_path.name}):
+# -------------------------------------------------------------------------
+{commented_crisp}
+# -------------------------------------------------------------------------
+
+import torch
+from torch.utils.cpp_extension import load_inline
+from task import input_t, output_t
+
+CUDA_SOURCE = r"""{cuda_source}"""
+
+CPP_SOURCE = r"""{cpp_source}"""
+
+_crisp_mod = load_inline(
+    name="{ext_name}",
+    cpp_sources=[CPP_SOURCE],
+    cuda_sources=[CUDA_SOURCE],
+    functions=["launch_crisp_prefixsum"],
+    extra_cuda_cflags=["-O3", "--use_fast_math"],
+    verbose=False,
+)
+
+
+def custom_kernel(data: input_t) -> output_t:
+    inp, out = data
+    return _crisp_mod.launch_crisp_prefixsum(inp, out)
+'''
+    if "stream" in submission_py.lower():
+        raise ValueError(f"Generated {out_py_path.name} contains forbidden substring 'stream'!")
+    out_py_path.write_text(submission_py, encoding="utf-8")
+    print(f"Wrote {out_py_path.name} ({len(submission_py.splitlines())} lines)")
+
+
 def build_all() -> None:
     here = Path(__file__).resolve().parent
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_fallback.crisp",
+        here / "crisp_prefixsum_fallback.py",
+    )
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_fallback_t8.crisp",
+        here / "crisp_prefixsum_fallback_t8.py",
+        kernel_name="prefixsum_fallback_t8",
+        tile_elems=8192,
+    )
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_fallback.crisp",
+        here / "crisp_prefixsum_fallback_occ2.py",
+        min_blocks=2,
+    )
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_packed.crisp",
+        here / "crisp_prefixsum_packed.py",
+        kernel_name="prefixsum_packed",
+        min_blocks=2,
+        packed=True,
+    )
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_packed.crisp",
+        here / "crisp_prefixsum_packed_occ1.py",
+        kernel_name="prefixsum_packed",
+        packed=True,
+    )
+    # Endeavour 194: the lookback walk ends with a warp-uniform return-from-loop.
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_packed_rfl.crisp",
+        here / "crisp_prefixsum_packed_rfl.py",
+        kernel_name="prefixsum_packed_rfl",
+        min_blocks=2,
+        packed=True,
+    )
     make_gpumode_prefixsum_hierarchical(
         here / "prefixsum_pass1.crisp",
         here / "prefixsum_pass2.crisp",

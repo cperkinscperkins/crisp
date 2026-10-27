@@ -32,6 +32,12 @@
           *193-LOG-MESSAGES*
           *193-ORIG-PAREN-READER*
           *193-READ-FILE*
+          *194-DIVERGENCE-REASON*
+          *194-FN-SUMMARY*
+          *194-FUNCTION-SUMMARIES*
+          *194-LANE-INDEX-NAMES*
+          *194-LOOP*
+          *194-LOOP-LEVEL*
           *AD-ANY-OUTPUT-DOUBLE*
           *AD-BARRIER-RING-SYMS*
           *AD-INLINING-FNS*
@@ -114,6 +120,7 @@
           *IN-DIVERGENT-CONDITIONAL*
           *IN-EARLY-EXIT-LOOP*
           *IN-GRID-LEVEL-CONTEXT*
+          *IN-LANE-DIVERGENT*
           *IN-WARP-SPEC-BLOCK*
           *IN-WORKGROUP-LEVEL-CONTEXT*
           *INERT-FUNCTIONS*

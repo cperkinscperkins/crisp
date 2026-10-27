@@ -1,0 +1,15 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "it broadcasts with a shuffle"
+;;
+;; Endeavour 194 (F7): to-warp-uniform broadcasts lane 0's value with a shuffle, so it is a warp
+;; collective: inside a branch only some LANES take, the lanes that skip it never answer.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel refused_11 (&out out)
+  (declare #'(&out uvec-t => nil)
+           (local-size :set-to 32))
+  (let ((g (get-local-id 0)))
+    (when (< g 5ul)
+      (let ((u (to-warp-uniform (to-uint g))))
+        (set! (~ out g) u)))))

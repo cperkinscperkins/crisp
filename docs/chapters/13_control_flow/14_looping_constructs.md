@@ -241,10 +241,27 @@ Each of these is a compile error:
 - **Not out of a stride loop.**  `loop-vector-stride`, `tile-stride` and the other stride loops decide
   which elements each thread visits, so leaving one early would silently skip elements.  Put the early
   exit in a `dotimes` inside the stride body.
-- **No barrier inside the loop.**  A loop that can exit early is divergent: each thread leaves on its
-  own iteration.  A thread that has left never reaches a later iteration's `sync-workgroup` (or any
-  other collective), so the threads still inside would wait forever.  A `mem-fence` is allowed -- it
-  waits for no one.
+- **No barrier inside the loop.**  A loop that can exit early lets threads leave on different
+  iterations.  A thread that has left never reaches a later iteration's `sync-workgroup`, so the threads
+  still inside would wait forever.  A `mem-fence` is allowed -- it waits for no one.  (A barrier is
+  refused even when every exit is workgroup-uniform: the execution model would allow it, but BMG
+  mis-executes a barrier in any loop holding a `return-from-loop` -- BUG 141.)
+- **Warp collectives only with a warp-uniform exit.**  Each `return-from-loop` takes the uniformity of
+  the conditions around it inside the loop (*Two levels*, above).  If every exit is warp-uniform --
+  whole warps leave together -- a shuffle or `reduce-warp` inside the loop is legal: every lane still
+  inside has all of its warp.  A per-lane exit refuses them.  (On SPIR-V a collective in a NESTED loop or
+  behind a call inside such a loop is refused even so -- BMG mis-executes it, BUG 141; keep it directly
+  in the loop body, or do the reduction before or after the loop.)
+
+  ```
+  (dotimes (w nwin)
+    (let ((v    (shuffle-xor x 1ul))                ; a warp collective in the body
+          (stop (to-warp-uniform (> v limit))))     ; a warp-uniform exit condition
+      (when stop
+        (return-from-loop))))                       ; legal: whole warps leave together
+  ```
+  A variable `set!` inside the loop is, after it, only as uniform as the loop's exits: threads that
+  left early hold an older value.
 - **Not differentiable yet.**  Under `--differentiate`, a loop containing `return-from-loop` is
   refused.  The backward pass replays the loop in reverse and needs each thread's trip count, which an
   early exit makes data-dependent.  `atomic-binop!` and `atomic-op!` use it internally but have their

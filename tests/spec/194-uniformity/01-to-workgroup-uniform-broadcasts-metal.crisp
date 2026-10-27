@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER a: 5 5 5 5
+;; HOIST-EXPECT: BUFFER b: 3 3 3 3
+;;
+;; Endeavour 194 ON-METAL (F7): to-workgroup-uniform BROADCASTS.  ideal_001: "will capture the variable
+;; in [a] workgroup thread, use a sync-workgroup barrier and broadcast it to all the others."  Before 194
+;; it emitted the barrier and passed each thread's OWN value through, so `u` below was lid + 5 -- a
+;; per-thread value the analyser believed uniform.  Now every thread holds local thread 0's value.
+;;
+;;   a -- threads 0, 8, 16, 24 (both warps on BMG's 16-lane warps) store u: 5 everywhere.
+;;   b -- the broadcast value drives a dotimes+ holding a barrier, the use the analyser certifies:
+;;        u - 2 = 3 iterations in every thread.  Before 194 thread t ran t + 3 iterations of a loop
+;;        with a barrier in it.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel wg_broadcast (&out a b)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid (to-ulong (get-local-id 0)))
+        (u   (to-workgroup-uniform (+ (to-ulong (get-local-id 0)) 5ul)))
+        (n   0ul))
+    (dotimes+ (i (- u 2ul))
+      (sync-workgroup)
+      (set! n (+ n 1ul)))
+    (when (= (* (/ lid 8ul) 8ul) lid)
+      (set! (~ a (/ lid 8ul)) u)
+      (set! (~ b (/ lid 8ul)) n))))

@@ -2385,18 +2385,39 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
             (log:debug "176: ~s -> ~s" form (list* target fn var identity out pass-through))
             `(,target ,fn ,var ,identity ,out ,@pass-through)))))))
 
+(defun %194-reduced-variables (expr)
+  "Endeavour 194: the variables a reduce-warp form EXPR leaves reduced -- VAR for a single call, the
+   second element of each clause for an independent one.  A dependent call returns NIL (not inferred)."
+  (cl:case (%reduction-call-shape expr)
+    (:single (and (symbolp (third expr)) (list (third expr))))
+    (:independent (loop for clause in (second expr)
+                        when (and (consp clause) (symbolp (second clause)))
+                          collect (second clause)))
+    (t nil)))
+
 (defun %analyze-reduce-warp (expr env context location)
   "Analyzer for reduce-warp -- expands and delegates.  176: an independent call is lowered fused
    (%fused-reduce-warp-form); a dependent call has its combiner checked against the clauses and is lowered
    fused (%fused-reduce-warp-dependent-form).  Every dependent form reaches this analyzer, so the
-   combiner check covers reduce-workgroup and grid-reduce! too."
-  (case (%reduction-call-shape expr)
-    (:independent (analyze-expression (%fused-reduce-warp-form expr) env context location))
-    (:dependent
-     (%check-dependent-combiner "reduce-warp" (second expr) (%dependent-reduction-validate expr)
-                                env context location)
-     (analyze-expression (%fused-reduce-warp-dependent-form expr) env context location))
-    (t (analyze-expression (%reduce-warp-expand expr) env context location))))
+   combiner check covers reduce-workgroup and grid-reduce! too.
+   Endeavour 194 (D3): after the butterfly every lane of the warp holds the same value, so each reduced
+   variable is :warp-uniform afterwards -- :uniform stays :uniform.  reduce-warp is itself refused in
+   lane-divergent code, so the butterfly always completes."
+  (let ((%194-node
+         (progn
+             (case (%reduction-call-shape expr)
+               (:independent (analyze-expression (%fused-reduce-warp-form expr) env context location))
+               (:dependent
+                (%check-dependent-combiner "reduce-warp" (second expr) (%dependent-reduction-validate expr)
+                                           env context location)
+                (analyze-expression (%fused-reduce-warp-dependent-form expr) env context location))
+               (t (analyze-expression (%reduce-warp-expand expr) env context location))))))
+    (dolist (v (%194-reduced-variables expr))
+      (let ((pd (find-variable-in-env v env)))
+        (when (and pd (not (eq (parameter-def-uniformity pd) :uniform)))
+          (log:debug "194: ~a is :warp-uniform after reduce-warp" v)
+          (setf (parameter-def-uniformity pd) :warp-uniform))))
+    %194-node))
 
 (defun %reduce-workgroup-expand (expr)
   "The forward lowering of (reduce-workgroup FN VAR IDENTITY &key ...).  A plain function, not a

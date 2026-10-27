@@ -195,3 +195,19 @@ When the `--differentiate` flag is passed the Crisp compiler compiles the kernel
 The Crisp derivatives are mathematically correct. integers are supported, not just floating types. Some derivatives are trivial, but so be it. Note that optimized matrix multiplcation can be very compilicated as it entails a lot of data movement and coordination. But all these optimized MMA algorithms really just have the SAME derivative - the math doesn't change just because of prefetch and warp specialization. For this reason, Crisp keeps tables of VJP shorcuts so our A|D work doesn't get caught in the weeds.
 
 Be very cognizant of this - it is very easy when working through the details of an ANF transform to get ones focus hijacked by some individual tree in the path, when really it's the whole forest that we should be taking in. This has happened repeatedly. Countless times.  
+#   Two levels of uniformity (Endeavour 194)
+"Uniform" means two different things in Crisp, and the compiler tracks both.  A BARRIER needs every
+thread of the WORKGROUP to arrive; a WARP COLLECTIVE (shuffle, reduce-warp, to-warp-uniform, sync-warp)
+needs only every lane of its warp.  So uniformity is a lattice -- `:uniform` (workgroup) > `:warp-uniform`
+> `:divergent`, plus `:unknown` -- and every `if`, plain loop bound and `return-from-loop` exit is judged
+at the level its condition reaches.  A branch only some WARPS take may hold a shuffle but not a barrier.
+
+Things that surprise people:
+* `to-warp-uniform` does not satisfy `if+` / `dotimes+` -- those certify WORKGROUP uniformity.
+* `to-workgroup-uniform` / `to-warp-uniform` really BROADCAST (thread 0 / lane 0) -- each is itself a
+  collective with a cost.  `(declare (uniform x))` is the free assertion.
+* A call reaches whatever its callee reaches: a helper holding a shuffle cannot be called from a
+  per-lane branch, even though the helper compiles on its own.
+* A kernel's own tensor arguments, their extents, `reduce-warp` results, `(warp-id)` and function
+  results are inferred; `(/ (get-local-id 0) 32)` is NOT -- write `(warp-id)` or assert it.
+See tests/spec/194-uniformity/uniformity.md and ideal_001 "Two levels: workgroup-uniform and warp-uniform".

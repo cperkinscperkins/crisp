@@ -4778,27 +4778,89 @@ never implied by an atomic; it comes only from an explicit mem-fence."
         ;; unbound-variable instead of naming the offending builtin.
         (t (error "Unknown GPU builtin ~a" bname))))))
 
+(defun %194-workgroup-slot (module llvm-type)
+  "Endeavour 194 (F7): a fresh workgroup-memory (addrspace 3) global of LLVM-TYPE for one
+   to-workgroup-uniform site -- `.shared` on PTX, a Workgroup OpVariable on SPIR-V.  Internal and undef:
+   workgroup memory has no initializer on either target, and the slot is always written before it is read."
+  (let ((name (loop for i from 0
+                    for n = (format nil "__crisp_wgu_~d" i)
+                    when (cffi:null-pointer-p (crisp.llvm-bindings::llvm-get-named-global module n))
+                      return n)))
+    (let ((g (crisp.llvm-bindings::llvm-add-global-in-addrspace module llvm-type name 3)))
+      (crisp.llvm-bindings::llvm-set-linkage g 8) ; LLVMInternalLinkage
+      (crisp.llvm-bindings::llvm-set-initializer g (crisp.llvm-bindings::llvm-get-undef llvm-type))
+      (crisp.llvm-bindings::llvm-set-alignment g 16)
+      (log:debug "194: workgroup broadcast slot ~a" name)
+      g)))
+
+(defun %194-workgroup-barrier (builder module)
+  "Endeavour 194: a workgroup barrier on the current target."
+  (if (eq *target-backend* :ptx)
+      (%ptx-barrier builder module)
+      (%gen-spirv-control-barrier builder module)))
+
 (defmethod generate-node-ir ((node semantic-to-workgroup-uniform) builder module var-env di-builder di-scope location-map)
   "Emits IR to make a value uniform across the workgroup.
-   Phase 1a: This is currently a pass-through that emits a workgroup barrier."
+   Endeavour 194 (F7) -- the broadcast ideal_001 specifies (it used to be a barrier and a pass-through,
+   which left a per-thread value labelled uniform):
+     barrier                  -- a previous pass through this site (a loop) has finished reading the slot
+     if local id == 0: slot <- X
+     barrier                  -- the store is visible
+     every thread: X <- slot
+   Two barriers always: the cost the doc warns of.  (declare (uniform x)) is the free assertion."
   (let* ((val-node (semantic-to-workgroup-uniform-value-node node))
-         (val (generate-node-ir val-node builder module var-env di-builder di-scope location-map)))
-    (log:warn "to-workgroup-uniform codegen is currently a pass-through with a barrier.")
-    (if (eq *target-backend* :ptx)
-        (%ptx-barrier builder module)
-        (%gen-spirv-control-barrier builder module))
-    (values val nil)))
+         (val (generate-node-ir val-node builder module var-env di-builder di-scope location-map))
+         (llvm-ty (crisp.llvm-bindings::llvm-type-of val))
+         (slot (%194-workgroup-slot module llvm-ty))
+         (lid (generate-node-ir (make-semantic-gpu-builtin :builtin-name :get-local-linear-id
+                                                           :dimension nil :type 'ulong)
+                                builder module var-env di-builder di-scope location-map))
+         (is0 (crisp.llvm-bindings::llvm-build-icmp
+               builder +llvm-int-eq+ lid
+               (crisp.llvm-bindings::llvm-const-int (crisp.llvm-bindings::llvm-type-of lid) 0 nil)
+               "wgu_is0"))
+         (fn (crisp.llvm-bindings::llvm-get-basic-block-parent
+              (crisp.llvm-bindings::llvm-get-insert-block builder)))
+         (bb-store (crisp.llvm-bindings::llvm-append-basic-block fn "wgu_store"))
+         (bb-join (crisp.llvm-bindings::llvm-append-basic-block fn "wgu_join")))
+    (%194-workgroup-barrier builder module)
+    (crisp.llvm-bindings::llvm-build-cond-br builder is0 bb-store bb-join)
+    (crisp.llvm-bindings::llvm-position-builder-at-end builder bb-store)
+    (crisp.llvm-bindings::llvm-build-store builder val slot)
+    (crisp.llvm-bindings::llvm-build-br builder bb-join)
+    (crisp.llvm-bindings::llvm-position-builder-at-end builder bb-join)
+    (%194-workgroup-barrier builder module)
+    (values (crisp.llvm-bindings::llvm-build-load2 builder llvm-ty slot "wgu_val") nil)))
 
 (defmethod generate-node-ir ((node semantic-to-warp-uniform) builder module var-env di-builder di-scope location-map)
   "Emits IR to make a value uniform across the warp.
-   Phase 1a: This is currently a pass-through that emits a warp barrier."
-  (let* ((val-node (semantic-to-warp-uniform-value-node node))
-         (val (generate-node-ir val-node builder module var-env di-builder di-scope location-map)))
-    (log:warn "to-warp-uniform codegen is currently a pass-through.")
-    (if (eq *target-backend* :ptx)
-        (%ptx-syncwarp builder module)
-        (%gen-spirv-warp-barrier builder module))
-    (values val nil)))
+   Endeavour 194 (F7) -- the broadcast ideal_001 specifies (it used to be a __syncwarp and a
+   pass-through): every lane takes LANE 0's value with a full-width index shuffle.  Floats ride the
+   integer path by bitcast and 64-bit values are split, exactly as a user shuffle (173 D9).  The
+   analyser admits only *shuffle-value-types*."
+  (let* ((ty (resolve-type-alias (semantic-to-warp-uniform-type node)))
+         (val (generate-node-ir (semantic-to-warp-uniform-value-node node)
+                                builder module var-env di-builder di-scope location-map))
+         (i32 (crisp.llvm-bindings::llvm-int32-type))
+         (i64 (crisp.llvm-bindings::llvm-int64-type))
+         (lane0 (crisp.llvm-bindings::llvm-const-int i32 0 nil))
+         (width (%173-warp-size)))
+    (log:debug "194 codegen to-warp-uniform: ty=~a width=~a backend=~a" ty width *target-backend*)
+    (values
+     (ecase ty
+       ((int uint)
+        (%shuffle-emit-i32 builder module :idx val lane0 width))
+       ((float)
+        (let* ((bits (crisp.llvm-bindings::llvm-build-bit-cast builder val i32 "wu_fbits"))
+               (res (%shuffle-emit-i32 builder module :idx bits lane0 width)))
+          (crisp.llvm-bindings::llvm-build-bit-cast builder res (resolve-type-to-llvm 'float) "wu_fval")))
+       ((long ulong)
+        (%shuffle-emit-i64 builder module :idx val lane0 width))
+       ((double)
+        (let* ((bits (crisp.llvm-bindings::llvm-build-bit-cast builder val i64 "wu_dbits"))
+               (res (%shuffle-emit-i64 builder module :idx bits lane0 width)))
+          (crisp.llvm-bindings::llvm-build-bit-cast builder res (resolve-type-to-llvm 'double) "wu_dval"))))
+     nil)))
 
 
 

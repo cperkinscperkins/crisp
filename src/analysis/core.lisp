@@ -1,6 +1,149 @@
 ;;; src/analysis/core.lisp
 (in-package :crisp.compiler)
 
+;;; ============================================================================================
+;;; Endeavour 194 -- two-level uniformity: WORKGROUP-uniform vs WARP-uniform.
+;;; Design + decisions: tests/spec/194-uniformity/uniformity.md
+;;;
+;;; Two questions at every program point:
+;;;   does every thread of the WORKGROUP arrive here?  -- barriers need it  (*in-divergent-conditional*)
+;;;   does every lane of the WARP arrive here?         -- warp collectives need it (*in-lane-divergent*)
+;;; and a third uniformity value, :warp-uniform, between :uniform and :divergent.
+;;; The scope rules live in analysis/control.lisp (%194-call-in-scope, %194-judge-loop).
+;;; ============================================================================================
+
+;; internal-compile-function (below) BINDS these.  *divergent-scope-depth* is defvar'd later in this
+;; file and the other two in analysis/control.lisp, which compiles after it.  src/specials.lisp
+;; (generated, loaded first) already proclaims every global special; this keeps the bindings correct
+;; even read on their own -- a binding compiled before its defvar would otherwise silently be LEXICAL.
+(declaim (special *divergent-scope-depth* *in-divergent-conditional* *loop-exit-context*))
+
+(defvar *in-lane-divergent* nil
+  "Endeavour 194: T when some LANES of a warp may not reach the code being analysed -- inside a branch,
+   a loop bound or a loop exit governed by a per-thread (:divergent or :unknown) value.  A warp
+   collective (shuffle, reduce-warp, to-warp-uniform, sync-warp, or a call to a function containing one)
+   is refused here.  Its workgroup-level partner is *in-divergent-conditional*, which a merely
+   WARP-uniform condition also sets: a barrier needs the whole workgroup, a collective only the warp.")
+
+(defvar *194-divergence-reason* nil
+  "Endeavour 194: why *in-divergent-conditional* is set, for the refusal message -- :conditional (a
+   per-thread if / when / unless / cond), :warp-conditional (a condition only WARP-uniform), or
+   :loop-bound (a loop whose trip count is not uniform).  NIL outside any such scope.")
+
+(defvar *194-loop-level* :uniform
+  "Endeavour 194: the lowest uniformity of the conditions entered SINCE the innermost dotimes-family
+   loop began.  A return-from-loop records it as the uniformity of that exit.")
+
+(defstruct %194-loop-record
+  "Endeavour 194: what the innermost dotimes-family loop's body contained, judged when the loop ends.
+   EXITS  -- the scope level of each of its own return-from-loop forms.
+   EVENTS -- (kind name location nested) for each barrier (:barrier) or warp collective (:collective)
+             in it, nested loops included: an exit of THIS loop strands threads before all of them.
+             NESTED is T when the event sits in a nested loop or behind a call (BUG 141, SPIR-V).
+   SETS   -- the variables (parameter-defs) set! in it, lowered to the exit level afterwards."
+  (exits nil) (events nil) (sets nil))
+
+(defvar *194-loop* nil
+  "Endeavour 194: the %194-loop-record of the innermost dotimes-family loop being analysed, or NIL.")
+
+(defstruct %194-fn-summary
+  "Endeavour 194: what a function's body does that its CALLERS must know (D3/D4).
+   BARRIER    -- the name of a barrier it reaches (directly or through a callee), or NIL.
+   COLLECTIVE -- the name of a warp collective it reaches, or NIL.
+   RETURNS    -- the uniformity of each (return ...) it executes, joined with the scope it ran in."
+  (barrier nil) (collective nil) (returns nil))
+
+(defvar *194-fn-summary* nil
+  "Endeavour 194: the %194-fn-summary of the function whose body is being analysed, or NIL.")
+
+(defvar *194-function-summaries* (make-hash-table :test #'equal)
+  "Endeavour 194: function NAME (string) -> %194-fn-summary, filled as each function is compiled.
+   Overloads of one name share an entry, merged conservatively.  Cleared by initialize-compiler.")
+
+(defvar *194-lane-index-names* nil
+  "Endeavour 194 (D-194-15): names of let-bound variables holding the local thread index --
+   (get-local-linear-id), or (get-local-id 0), through to-ulong / to-uint / to-long / to-int.  The
+   provenance %194-warp-index-division-p needs to see that (/ tid 32ul) is warp-uniform; uniformity values
+   alone cannot, since tid itself is just :divergent.")
+
+(defun %194-level (u)
+  "Endeavour 194: uniformity U as a SCOPE level -- :uniform, :warp-uniform or :divergent.  :unknown
+   proves nothing, so it counts as :divergent."
+  (cl:case u
+    ((:uniform :warp-uniform) u)
+    (t :divergent)))
+
+(defun %194-meet (a b)
+  "Endeavour 194: the lower of two scope levels, ordered :uniform > :warp-uniform > :divergent."
+  (let ((a (%194-level a))
+        (b (%194-level b)))
+    (cl:cond ((or (eq a :divergent) (eq b :divergent)) :divergent)
+             ((or (eq a :warp-uniform) (eq b :warp-uniform)) :warp-uniform)
+             (t :uniform))))
+
+(defun %194-current-level ()
+  "Endeavour 194: the scope level of the code being analysed right now."
+  (cl:cond ((or *in-lane-divergent* (> *divergent-scope-depth* 0)) :divergent)
+           (*in-divergent-conditional* :warp-uniform)
+           (t :uniform)))
+
+(defun %194-summary-key (name)
+  "Endeavour 194: the *194-function-summaries* key for function NAME (a symbol or string)."
+  (string-upcase (if (symbolp name) (symbol-name name) (princ-to-string name))))
+
+(defun %194-record-summary (name summary)
+  "Endeavour 194: stores SUMMARY for function NAME, merging with an overload already stored -- a call
+   site cannot always tell overloads apart, so the merge is the conservative union."
+  (let* ((key (%194-summary-key name))
+         (old (gethash key *194-function-summaries*)))
+    (setf (gethash key *194-function-summaries*)
+          (if old
+              (make-%194-fn-summary
+               :barrier (or (%194-fn-summary-barrier old) (%194-fn-summary-barrier summary))
+               :collective (or (%194-fn-summary-collective old) (%194-fn-summary-collective summary))
+               :returns (append (%194-fn-summary-returns summary) (%194-fn-summary-returns old)))
+              summary))))
+
+(defun %194-summary-result (summary)
+  "Endeavour 194: the uniformity of a call's result from its callee SUMMARY -- the join of every return
+   it executes, whatever the arguments.  :unknown when nothing was recorded."
+  (let ((rs (and summary (%194-fn-summary-returns summary))))
+    (if rs (%uniformity-join rs) :unknown)))
+
+(defun %194-clear-summaries ()
+  "Endeavour 194: forgets every function summary.  Called by initialize-compiler, which lives in
+   src/compiler.lisp -- compiled before this file, hence a function rather than the variable."
+  (clrhash *194-function-summaries*))
+
+(defun %194-lane-index-node-p (n)
+  "Endeavour 194: T when the analysed node N is the local thread index, through casts."
+  (cl:cond ((semantic-cast-p n) (%194-lane-index-node-p (semantic-cast-arg n)))
+           ((semantic-var-read-p n) (and (member (semantic-var-read-name n) *194-lane-index-names*) t))
+           ((semantic-gpu-builtin-p n)
+            (let ((b (semantic-gpu-builtin-builtin-name n)))
+              (or (eq b :get-local-linear-id)
+                  (and (eq b :get-local-id) (eql (semantic-gpu-builtin-dimension n) 0)))))
+           (t nil)))
+
+(defun %194-one-dimensional-workgroup-p ()
+  "Endeavour 194: T when the function being compiled declares a compile-time workgroup that is 1-D
+   (Y = Z = 1).  Warps are then consecutive runs of the local index on both targets."
+  (let ((dims (and *compiler-context*
+                   (%declared-local-size-dims (compiler-context-declarations *compiler-context*)))))
+    (and dims (every (lambda (d) (= d 1)) (rest dims)))))
+
+(defun %194-warp-index-division-p (node)
+  "Endeavour 194 (D-194-15): T when the division NODE is (/ <local thread index> K) with K a literal the
+   warp size divides, in a 1-D workgroup -- constant across every warp, so :warp-uniform.  (K need only
+   be a multiple of the width the kernel is compiled against: a smaller real warp divides it too.)"
+  (let ((r (semantic-div-right-arg node)))
+    (and (semantic-literal-p r)
+         (integerp (semantic-literal-value r))
+         (plusp (semantic-literal-value r))
+         (zerop (mod (semantic-literal-value r) (%173-warp-size)))
+         (%194-lane-index-node-p (semantic-div-left-arg node))
+         (%194-one-dimensional-workgroup-p))))
+
 (defvar *176-generic-scratch-range* (make-hash-table :test 'eq)
   "Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter
    before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1
@@ -1660,116 +1803,136 @@ in single-pass mode."
     (values body-nodes inferred-types)))
 
 (defun internal-compile-function (name explicit-env return-type params body declarations location context)
-  "Core compilation logic for a function, accepting a pre-parsed environment."
-  (log:info "COMPILE: ~s (single-pass: ~a)" name (single-pass-mode-p))
-  (log:info "COMPILE: ~s (env keys for ~s: ~s)" name name (mapcar #'car (gethash name *implicit-arg-map*)))
+  "Core compilation logic for a function, accepting a pre-parsed environment.
+   Endeavour 194: the body is analysed in a FRESH divergence context -- a template instantiated while
+   its caller is mid-analysis must not inherit the caller's branch -- and leaves a %194-fn-summary that
+   its call sites are checked against (D3/D4).  The inner BLOCK keeps the template early-return on
+   that path, so the summary is recorded whichever way the body ends."
+  (let ((%194-summary (make-%194-fn-summary)))
+    (multiple-value-prog1
+        (let ((*in-divergent-conditional* nil)
+              (*in-lane-divergent* nil)
+              (*divergent-scope-depth* 0)
+              (*194-divergence-reason* nil)
+              (*194-loop* nil)
+              (*194-loop-level* :uniform)
+              (*loop-exit-context* nil)
+              (*194-lane-index-names* nil)
+              (*194-fn-summary* %194-summary))
+          (block internal-compile-function
+            (log:info "COMPILE: ~s (single-pass: ~a)" name (single-pass-mode-p))
+            (log:info "COMPILE: ~s (env keys for ~s: ~s)" name name (mapcar #'car (gethash name *implicit-arg-map*)))
 
-  ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
-  (let ((name-str (symbol-name name)))
-    (when (and (> (cl:length name-str) 2)
-               (cl:char= (cl:char name-str 0) #\~)
-               (cl:char= (cl:char name-str (1- (length name-str))) #\~))
-          (unless (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)))
-            (error 'crisp-compiler-error
-              :source-location location
-              :message (format nil "Function name '~a' is reserved (accessors ending in ~~ are not overloadable)." name)))))
+            ;; 0-a. Reserved Name Validation (Accessors ~x~ are not overloadable unless system generated)
+            (let ((name-str (symbol-name name)))
+              (when (and (> (cl:length name-str) 2)
+                         (cl:char= (cl:char name-str 0) #\~)
+                         (cl:char= (cl:char name-str (1- (length name-str))) #\~))
+                    (unless (find 'crisp-system-generated declarations :key (lambda (x) (if (listp x) (car x) x)))
+                      (error 'crisp-compiler-error
+                        :source-location location
+                        :message (format nil "Function name '~a' is reserved (accessors ending in ~~ are not overloadable)." name)))))
 
-  ;; 0-b. Implicit Template Detection
-  (when (detect-and-register-implicit-template name explicit-env return-type params body declarations)
-        (return-from internal-compile-function nil))
+            ;; 0-b. Implicit Template Detection
+            (when (detect-and-register-implicit-template name explicit-env return-type params body declarations)
+                  (return-from internal-compile-function nil))
 
-  ;; 1. Single-Pass Carrier Look-ahead
-  (scan-for-carriers name body)
+            ;; 1. Single-Pass Carrier Look-ahead
+            (scan-for-carriers name body)
 
-  ;; 2. Implicit Argument Handling
-  (let ((env (inject-implicit-arguments name explicit-env)))
-    ;; Save old declarations to restore after (for nested definitions support)
-    (let ((old-declarations (compiler-context-declarations context)))
-      (setf (compiler-context-declarations context) declarations)
-      (let ((compilation-result
-             (unwind-protect
-                 ;; 3. Analyze Body and Validate Return Types
-               (multiple-value-bind (body-nodes inferred-return-types)
-                   (validate-return-types name body env context return-type location)
+            ;; 2. Implicit Argument Handling
+            (let ((env (inject-implicit-arguments name explicit-env)))
+              ;; Save old declarations to restore after (for nested definitions support)
+              (let ((old-declarations (compiler-context-declarations context)))
+                (setf (compiler-context-declarations context) declarations)
+                (let ((compilation-result
+                       (unwind-protect
+                           ;; 3. Analyze Body and Validate Return Types
+                         (multiple-value-bind (body-nodes inferred-return-types)
+                             (validate-return-types name body env context return-type location)
 
-                 ;; Update the function registry if we inferred a return type and none was declared.
-                 (when (and (or (null return-type) (equal return-type '(nil)))
-                            (not (equal inferred-return-types '(nil))))
-                       (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
-                       (let* ((param-types (mapcar #'parameter-def-type explicit-env))
-                              (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
-                                       (gethash name *function-table*))))
-                         (when sig
-                               (setf (function-signature-return-types sig) inferred-return-types))))
+                           ;; Update the function registry if we inferred a return type and none was declared.
+                           (when (and (or (null return-type) (equal return-type '(nil)))
+                                      (not (equal inferred-return-types '(nil))))
+                                 (log:info "Updating signature for ~a with inferred return types: ~a" name inferred-return-types)
+                                 (let* ((param-types (mapcar #'parameter-def-type explicit-env))
+                                        (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
+                                                 (gethash name *function-table*))))
+                                   (when sig
+                                         (setf (function-signature-return-types sig) inferred-return-types))))
 
-                 ;; Update implicit parameters in recursive registry
-                 (let* ((num-explicit (length explicit-env))
-                        (num-total (length env)))
-                   (when (> num-total num-explicit)
-                         (let* ((implicit-count (- num-total num-explicit))
-                                (implicit-params (subseq env 0 implicit-count))
-                                ;; Find the signature again (or reuse if I refactor, but robust to find it)
-                                (param-types (mapcar #'parameter-def-type explicit-env))
-                                (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
-                                         (gethash name *function-table*))))
-                           (when sig
-                                 (log:info "Persisting implicit parameters for ~a: ~s" name implicit-params)
-                                 (setf (function-signature-implicit-parameters sig) implicit-params)))))
+                           ;; Update implicit parameters in recursive registry
+                           (let* ((num-explicit (length explicit-env))
+                                  (num-total (length env)))
+                             (when (> num-total num-explicit)
+                                   (let* ((implicit-count (- num-total num-explicit))
+                                          (implicit-params (subseq env 0 implicit-count))
+                                          ;; Find the signature again (or reuse if I refactor, but robust to find it)
+                                          (param-types (mapcar #'parameter-def-type explicit-env))
+                                          (sig (find-if (lambda (s) (equal (mapcar #'parameter-def-type (function-signature-parameters s)) param-types))
+                                                   (gethash name *function-table*))))
+                                     (when sig
+                                           (log:info "Persisting implicit parameters for ~a: ~s" name implicit-params)
+                                           (setf (function-signature-implicit-parameters sig) implicit-params)))))
 
-                 ;; 4. Build and return the "blueprint"
-                 (let ((return-node (first (last body-nodes))))
-                   (make-semantic-function
-                    :name name
-                    :param-list (loop for param in env
-                                      collect (make-semantic-param :name (parameter-def-name param)
-                                                                   :type (parameter-def-type param)
-                                                                   :source-location location))
-                    :return-type (cond
-                                  ((or (null return-type) (equal return-type '(nil)))
-                                    inferred-return-types)
-                                  (t
-                                    return-type))
-                    :body (cond
-                           ((null return-node)
-                             (list (make-semantic-return :return-type '(nil) :value-node nil)))
-                           ((typep return-node 'semantic-explicit-return)
-                             body-nodes)
-                           (t
-                             (append (butlast body-nodes)
-                               (list (make-semantic-return
-                                      :return-type (let ((nt (semantic-node-type return-node)))
-                                                     (if (and (listp nt) (not (valid-type-p nt)))
-                                                         nt
-                                                         (list nt)))
-                                      ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
-                                      :value-node (let* ((nt (semantic-node-type return-node))
-                                                         (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
-                                                         (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
-                                                                             (t return-type)))
-                                                         (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
+                           ;; 4. Build and return the "blueprint"
+                           (let ((return-node (first (last body-nodes))))
+                             (make-semantic-function
+                              :name name
+                              :param-list (loop for param in env
+                                                collect (make-semantic-param :name (parameter-def-name param)
+                                                                             :type (parameter-def-type param)
+                                                                             :source-location location))
+                              :return-type (cond
+                                            ((or (null return-type) (equal return-type '(nil)))
+                                              inferred-return-types)
+                                            (t
+                                              return-type))
+                              :body (cond
+                                     ((null return-node)
+                                       (list (make-semantic-return :return-type '(nil) :value-node nil)))
+                                     ((typep return-node 'semantic-explicit-return)
+                                       body-nodes)
+                                     (t
+                                       (append (butlast body-nodes)
+                                         (list (make-semantic-return
+                                                :return-type (let ((nt (semantic-node-type return-node)))
+                                                               (if (and (listp nt) (not (valid-type-p nt)))
+                                                                   nt
+                                                                   (list nt)))
+                                                ;; TRUNCATION LOGIC FOR IMPLICIT RETURN
+                                                :value-node (let* ((nt (semantic-node-type return-node))
+                                                                   (val-types (if (and (listp nt) (not (valid-type-p nt))) nt (list nt)))
+                                                                   (target-types (cond ((or (null return-type) (equal return-type '(nil))) inferred-return-types)
+                                                                                       (t return-type)))
+                                                                   (target-list (if (and (listp target-types) (not (valid-type-p target-types))) target-types (list target-types))))
 
-                                                    (cond
-                                                     ;; Case: 1 value needed, >1 provided. Extract index 0.
-                                                     ((and (= (length target-list) 1) (> (length val-types) 1))
-                                                       (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
-                                                       (make-semantic-extract-value
-                                                        :type (first target-list)
-                                                        :aggregate-node return-node
-                                                        :index 0
-                                                        :source-location (if return-node (semantic-node-source-location return-node) location)))
+                                                              (cond
+                                                               ;; Case: 1 value needed, >1 provided. Extract index 0.
+                                                               ((and (= (length target-list) 1) (> (length val-types) 1))
+                                                                 (log:info "Implicit Return Truncation: ~a -> ~a" val-types target-list)
+                                                                 (make-semantic-extract-value
+                                                                  :type (first target-list)
+                                                                  :aggregate-node return-node
+                                                                  :index 0
+                                                                  :source-location (if return-node (semantic-node-source-location return-node) location)))
 
-                                                     ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
-                                                     ;; For now return original node.
-                                                     (t return-node)))
+                                                               ;; TODO: Handle N -> M (where M > 1 and N > M) case if needed.
+                                                               ;; For now return original node.
+                                                               (t return-node)))
 
-                                      :source-location (if return-node (semantic-node-source-location return-node) location))))))
-                    :is-entry-point (loop for decl in declarations
-                                            thereis (and (listp decl) (eq (first decl) 'entry-point)))
-                    :source-location location)))
-               ;; Cleanup
-               (setf (compiler-context-declarations context) old-declarations))))
-        (log:info "INTERNAL-COMPILE-FUNCTION RESULT ~s" (type-of compilation-result))
-        compilation-result))))
+                                                :source-location (if return-node (semantic-node-source-location return-node) location))))))
+                              :is-entry-point (loop for decl in declarations
+                                                      thereis (and (listp decl) (eq (first decl) 'entry-point)))
+                              :source-location location)))
+                         ;; Cleanup
+                         (setf (compiler-context-declarations context) old-declarations))))
+                  (log:info "INTERNAL-COMPILE-FUNCTION RESULT ~s" (type-of compilation-result))
+                  compilation-result)))))
+      (log:debug "194 summary ~a: barrier ~a, collective ~a, returns ~s" name
+                 (%194-fn-summary-barrier %194-summary) (%194-fn-summary-collective %194-summary)
+                 (%194-fn-summary-returns %194-summary))
+      (%194-record-summary name %194-summary))))
 
 
 
@@ -2071,10 +2234,12 @@ in single-pass mode."
 
 (defun %uniformity-join (states)
   "The uniformity of a value computed from parts whose uniformity STATES are given: :divergent if any
-   part is, :uniform only if every part is, :unknown otherwise."
-  (cond ((member :divergent states) :divergent)
-        ((every (lambda (s) (eq s :uniform)) states) :uniform)
-        (t :unknown)))
+   part is, :uniform only if every part is, :unknown otherwise.
+   Endeavour 194: :warp-uniform when every part is :uniform or :warp-uniform (and not all :uniform)."
+  (cl:cond ((member :divergent states) :divergent)
+           ((every (lambda (s) (eq s :uniform)) states) :uniform)
+           ((every (lambda (s) (member s '(:uniform :warp-uniform))) states) :warp-uniform)
+           (t :unknown)))
 
 (defun %uniformity-of-all (nodes env)
   "%uniformity-join over the uniformity of each of NODES, computed in order."
@@ -2082,7 +2247,7 @@ in single-pass mode."
 
 (defun calculate-uniformity-state (node env)
   "Recursively determines the uniformity state of an analyzed semantic AST node.
-   Returns :uniform, :divergent, or :unknown.
+   Returns :uniform, :warp-uniform (Endeavour 194), :divergent, or :unknown.
    - Literals are :uniform.
    - Variables are looked up in the env for their stored uniformity. If env lookup
      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.
@@ -2117,8 +2282,12 @@ in single-pass mode."
      (%uniformity-of-all (list (semantic-sub-left-arg node) (semantic-sub-right-arg node)) env))
     (semantic-mul
      (%uniformity-of-all (list (semantic-mul-left-arg node) (semantic-mul-right-arg node)) env))
+    ;; Endeavour 194 (D-194-15): (/ tid K) is WARP-uniform when tid is the local thread index of a 1-D
+    ;; workgroup and the warp size divides K -- "warp 0 does X" written as (= (/ tid 32ul) 0ul).
     (semantic-div
-     (%uniformity-of-all (list (semantic-div-left-arg node) (semantic-div-right-arg node)) env))
+     (if (%194-warp-index-division-p node)
+         :warp-uniform
+         (%uniformity-of-all (list (semantic-div-left-arg node) (semantic-div-right-arg node)) env)))
     (semantic-sin
      (calculate-uniformity-state (semantic-sin-arg node) env))
     (semantic-cos
@@ -2150,8 +2319,18 @@ in single-pass mode."
      (%uniformity-of-all (list (semantic-if-condition-node node) (semantic-if-then-node node)
                                (semantic-if-else-node node))
                          env))
+    ;; Endeavour 194: a let used as a VALUE (ANF wraps --differentiate's expressions this way) is as uniform
+    ;; as its last body form, with each binding as uniform as its init.  It was a flat :unknown, which made
+    ;; every tile-stride bound in a _GRAD kernel non-uniform once loop bounds started to count.
     (semantic-let
-     :unknown)
+     (let ((e env))
+       (dolist (b (semantic-let-bindings node))
+         (when (and (consp b) (car b) (symbolp (car b)) (cdr b))
+           (push (make-parameter-def :name (car b) :kind :local
+                                     :uniformity (calculate-uniformity-state (cdr b) e))
+                 e)))
+       (let ((last-form (car (last (semantic-let-body node)))))
+         (if last-form (calculate-uniformity-state last-form e) :unknown))))
     (semantic-gpu-builtin
      (let ((name (semantic-gpu-builtin-builtin-name node)))
        (cond
@@ -2166,9 +2345,12 @@ in single-pass mode."
                          :get-local-linear-size :get-global-linear-size
                          :get-total-threads :get-total-groups))
           :uniform)
+         ;; Endeavour 194: the warp (sub-group) index is shared by every lane of a warp.
+         ((eq name :warp-id) :warp-uniform)
          (t :unknown))))
     (semantic-to-workgroup-uniform :uniform)
-    (semantic-to-warp-uniform :uniform)
+    ;; Endeavour 194: a warp broadcast makes a value uniform across its WARP only.
+    (semantic-to-warp-uniform :warp-uniform)
     ;; Endeavor 124: a memory read (~ src [idx]) is UNIFORM when every thread reads
     ;; the same location — a uniform storage handle at a uniform index. The common
     ;; case is a whole-cell read (~ x) of a scalar kernel-input cell: x's handle is
@@ -2182,6 +2364,49 @@ in single-pass mode."
        (if (and (eq as :uniform) (eq is :uniform))
            :uniform
            :unknown)))
+    ;; Endeavour 194: a struct is as uniform as its fields, and a field as its struct.  Kernel entry
+    ;; re-binds every storage-handle parameter as a struct built from its (uniform) NAME_PTR / extents /
+    ;; strides arguments, so without these a kernel's own tensor read as :unknown -- and with it every
+    ;; extent, and the hidden loop of every tile-stride (D-194-5 fallout).
+    (semantic-struct-construction
+     (%uniformity-of-all (semantic-struct-construction-args node) env))
+    (semantic-extract-value
+     (calculate-uniformity-state (semantic-extract-value-aggregate-node node) env))
+    (semantic-ct-array
+     (%uniformity-of-all (semantic-ct-array-val-nodes node) env))
+    ;; Endeavour 194: a view (make-matrix / make-vector / ... over a handle) is as uniform as its source
+    ;; and whichever of its offset / length / extents / strides are runtime NODES (literals are fixed).
+    (semantic-make-view
+     (flet ((nodes (x) (remove-if-not (lambda (v) (typep v 'structure-object))
+                                      (if (listp x) x (list x)))))
+       (%uniformity-of-all (append (list (semantic-make-view-source-node node))
+                                   (nodes (semantic-make-view-offset node))
+                                   (nodes (semantic-make-view-offset-node node))
+                                   (nodes (semantic-make-view-length node))
+                                   (nodes (semantic-make-view-extents node))
+                                   (nodes (semantic-make-view-strides node)))
+                           env)))
+    ;; Endeavour 194 (D3): a shuffle FROM one lane every lane names, across the whole warp, hands every
+    ;; lane the same value.
+    (semantic-shuffle
+     (let ((iu (calculate-uniformity-state (semantic-shuffle-index node) env)))
+       (if (and (eq (semantic-shuffle-op node) :idx)
+                (member iu '(:uniform :warp-uniform))
+                (>= (semantic-shuffle-width node) (%173-warp-size)))
+           (if (eq (calculate-uniformity-state (semantic-shuffle-value node) env) :uniform)
+               :uniform
+               :warp-uniform)
+           :unknown)))
+    ;; Endeavour 194 (D3): a call is as uniform as every return its callee executes -- its summary,
+    ;; which does not depend on the arguments.  :unknown for a callee not compiled yet.
+    ;; A generated ACCESSOR (EXTENTS~, LENGTH~, ~OFFSET~ ...) is a pure function of the storage handle,
+    ;; so it is exactly as uniform as its arguments: (~ (extents~ T) 0) of a kernel argument is :uniform,
+    ;; which is what makes tile-stride's hidden loop provably uniform (D-194-5 fallout).
+    (semantic-call
+     (let ((key (%194-summary-key (semantic-call-name node))))
+       (if (and (plusp (length key)) (char= (cl:char key (1- (length key))) #\~))
+           (%uniformity-of-all (semantic-call-args node) env)
+           (%194-summary-result (gethash key *194-function-summaries*)))))
     ;; Memory reads and anything else
     (t :unknown)))
 
@@ -2299,129 +2524,154 @@ in single-pass mode."
    Extended (091): grid functions can only be called from a dispatch context.
    Endeavour 193: a call to a function that may die makes the caller may-die too.  Multi-pass compiles
    know this from Pass 1.5 already; --single-pass relies on this.  (A lazily instantiated variant marks
-   itself when its own body is analysed.)"
-  (when (%193-may-die-p op)
-    (let ((caller (%193-current-function context)))
-      (when (and caller (not (%193-may-die-p caller)))
-        (log:info "193: ~a may die (analysis: calls ~a)" caller op)
-        (setf (gethash caller *may-die-functions*) t))))
-  (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
+   itself when its own body is analysed.)
+   Endeavour 194 (D4, F3): a call reaches whatever its callee reaches.  A callee that contains a
+   barrier is refused where only some threads of the workgroup arrive; one that contains a warp
+   collective, where lanes may have split.  Both are recorded for the enclosing loop and the caller's
+   own summary, so the rule is transitive."
+  (let ((%194-node
+         (progn
+             (when (%193-may-die-p op)
+               (let ((caller (%193-current-function context)))
+                 (when (and caller (not (%193-may-die-p caller)))
+                   (log:info "193: ~a may die (analysis: calls ~a)" caller op)
+                   (setf (gethash caller *may-die-functions*) t))))
+             (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
 
-  ;; Recursion / call-graph tracking
-  (if (multi-pass-mode-p)
-      (when (compiler-context-current-compiling-function context)
-            (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
-      (when (eq op (compiler-context-current-compiling-function context))
-            (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
+             ;; Recursion / call-graph tracking
+             (if (multi-pass-mode-p)
+                 (when (compiler-context-current-compiling-function context)
+                       (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
+                 (when (eq op (compiler-context-current-compiling-function context))
+                       (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
 
-  ;; Grid function dispatch-context check
-  (when (and (gethash op *grid-functions*)
-             (not *in-dispatch-context*))
-    (error 'crisp-compiler-error
-      :message (format nil "Grid function '~(~a~)' cannot be called outside a dispatch context. Use def-kernel or def-grid-function to provide a dispatch context." op)
-      :source-location location))
+             ;; Grid function dispatch-context check
+             (when (and (gethash op *grid-functions*)
+                        (not *in-dispatch-context*))
+               (error 'crisp-compiler-error
+                 :message (format nil "Grid function '~(~a~)' cannot be called outside a dispatch context. Use def-kernel or def-grid-function to provide a dispatch context." op)
+                 :source-location location))
 
-  ;; Implicit args
-  (let ((implicit-args-required (gethash op *implicit-arg-map*)))
-    (when (and (single-pass-mode-p) implicit-args-required)
-          (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
+             ;; Implicit args
+             (let ((implicit-args-required (gethash op *implicit-arg-map*)))
+               (when (and (single-pass-mode-p) implicit-args-required)
+                     (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
 
-    (let* ((arg-forms (rest expr))
-           (explicit-arg-nodes (loop for arg-form in arg-forms
-                                     for i from 1
-                                     collect (analyze-expression arg-form env context (append location (list i)))))
-           (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
-           (signature (resolve-best-signature op explicit-arg-types context)))
+               (let* ((arg-forms (rest expr))
+                      (explicit-arg-nodes (loop for arg-form in arg-forms
+                                                for i from 1
+                                                collect (analyze-expression arg-form env context (append location (list i)))))
+                      (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
+                      (signature (resolve-best-signature op explicit-arg-types context)))
 
-      ;; Struct mutating function check
-      (%check-struct-mutating-call op explicit-arg-nodes env context location)
+                 ;; Struct mutating function check
+                 (%check-struct-mutating-call op explicit-arg-nodes env context location)
 
-      (let ((final-arg-nodes
-             (if implicit-args-required
-                 (let ((implicit-arg-nodes
-                        (loop for (param-name . param-type) in implicit-args-required
-                              collect (let ((found (find-variable-in-env param-name env)))
-                                        (if found
-                                            (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
-                                            (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
-                                              (compiler-context-current-compiling-function context) param-name))))))
-                   (append implicit-arg-nodes explicit-arg-nodes))
-                 explicit-arg-nodes)))
+                 (let ((final-arg-nodes
+                        (if implicit-args-required
+                            (let ((implicit-arg-nodes
+                                   (loop for (param-name . param-type) in implicit-args-required
+                                         collect (let ((found (find-variable-in-env param-name env)))
+                                                   (if found
+                                                       (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
+                                                       (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                                         (compiler-context-current-compiling-function context) param-name))))))
+                              (append implicit-arg-nodes explicit-arg-nodes))
+                            explicit-arg-nodes)))
 
-        (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
-          (error 'crisp-signature-arity-error
-            :expected (length (function-signature-parameters signature))
-            :inferred (length explicit-arg-types)
-            :source-location location))
+                   (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+                     (error 'crisp-signature-arity-error
+                       :expected (length (function-signature-parameters signature))
+                       :inferred (length explicit-arg-types)
+                       :source-location location))
 
-        ;; === Uniformity Constraint Checking ===
-        (let ((sig-params (function-signature-parameters signature)))
-          (loop for param in sig-params
-                for arg-node in explicit-arg-nodes
-                do (when (eq (parameter-def-uniformity param) :uniform)
-                     (let ((arg-uniformity (calculate-uniformity-state arg-node env)))
-                       (unless (eq arg-uniformity :uniform)
-                         (error 'crisp-compiler-error
-                           :message (format nil "Function ~a requires parameter ~a to be :uniform, but inferred state was ~a. Use (to-workgroup-uniform ...) if you must."
-                                            (function-signature-name signature)
-                                            (parameter-def-name param)
-                                            arg-uniformity)
-                           :source-location location))))))
+                   ;; === Uniformity Constraint Checking ===
+                   (let ((sig-params (function-signature-parameters signature)))
+                     (loop for param in sig-params
+                           for arg-node in explicit-arg-nodes
+                           do (when (eq (parameter-def-uniformity param) :uniform)
+                                (let ((arg-uniformity (calculate-uniformity-state arg-node env)))
+                                  (unless (eq arg-uniformity :uniform)
+                                    (error 'crisp-compiler-error
+                                      :message (format nil "Function ~a requires parameter ~a to be :uniform, but inferred state was ~a. Use (to-workgroup-uniform ...) if you must."
+                                                       (function-signature-name signature)
+                                                       (parameter-def-name param)
+                                                       arg-uniformity)
+                                      :source-location location))))))
 
-        (let ((augmented-signature
-               (if implicit-args-required
-                   (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
-                                                collect (make-parameter-def :name param-name :type param-type :kind :in))))
-                     (make-function-signature
-                      :name (function-signature-name signature)
-                      :parameters (append implicit-params (function-signature-parameters signature))
-                      :return-types (function-signature-return-types signature)
-                      :source-location (function-signature-source-location signature)
-                      :is-template-p (function-signature-is-template-p signature)
-                      :template-params (function-signature-template-params signature)))
-                   signature)))
+                   (let ((augmented-signature
+                          (if implicit-args-required
+                              (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
+                                                           collect (make-parameter-def :name param-name :type param-type :kind :in))))
+                                (make-function-signature
+                                 :name (function-signature-name signature)
+                                 :parameters (append implicit-params (function-signature-parameters signature))
+                                 :return-types (function-signature-return-types signature)
+                                 :source-location (function-signature-source-location signature)
+                                 :is-template-p (function-signature-is-template-p signature)
+                                 :template-params (function-signature-template-params signature)))
+                              signature)))
 
-          ;; === Brand Instance Type Checking (when --differentiate is active) ===
-          (let ((refined-return-types (function-signature-return-types augmented-signature)))
+                     ;; === Brand Instance Type Checking (when --differentiate is active) ===
+                     (let ((refined-return-types (function-signature-return-types augmented-signature)))
 
-            (when *differentiate-p*
-              (let ((sig-params (function-signature-parameters augmented-signature)))
+                       (when *differentiate-p*
+                         (let ((sig-params (function-signature-parameters augmented-signature)))
 
-                ;; 1. Brand parameter type checking
-                (loop for param in sig-params
-                      for arg-node in final-arg-nodes
-                      for param-type = (parameter-def-type param)
-                      do (let ((brand-def (is-brand-type-p param-type)))
-                           (when (and brand-def (brand-active-p brand-def))
-                             (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
-                                                                        sig-params final-arg-nodes)))
-                               (when owner-var
-                                 (let* ((expected-type (resolve-brand-type param-type owner-var))
-                                           (actual-type (get-single-value-type arg-node)))
-                                   (unless (or (eq actual-type expected-type)
-                                               (is-substitutable-for? actual-type expected-type))
-                                     (error 'crisp-type-error
-                                       :expected (list expected-type)
-                                       :inferred (list actual-type)
-                                       :source-location location))))))))
+                           ;; 1. Brand parameter type checking
+                           (loop for param in sig-params
+                                 for arg-node in final-arg-nodes
+                                 for param-type = (parameter-def-type param)
+                                 do (let ((brand-def (is-brand-type-p param-type)))
+                                      (when (and brand-def (brand-active-p brand-def))
+                                        (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                   sig-params final-arg-nodes)))
+                                          (when owner-var
+                                            (let* ((expected-type (resolve-brand-type param-type owner-var))
+                                                      (actual-type (get-single-value-type arg-node)))
+                                              (unless (or (eq actual-type expected-type)
+                                                          (is-substitutable-for? actual-type expected-type))
+                                                (error 'crisp-type-error
+                                                  :expected (list expected-type)
+                                                  :inferred (list actual-type)
+                                                  :source-location location))))))))
 
-                ;; 2. Brand return type refinement
-                (setf refined-return-types
-                  (loop for ret-type in (function-signature-return-types augmented-signature)
-                        collect (let ((brand-def (is-brand-type-p ret-type)))
-                                  (if (and brand-def (brand-active-p brand-def))
-                                      (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
-                                                                                 sig-params final-arg-nodes)))
-                                        (if owner-var
-                                            (resolve-brand-type ret-type owner-var)
-                                            ret-type))
-                                      ret-type))))))
+                           ;; 2. Brand return type refinement
+                           (setf refined-return-types
+                             (loop for ret-type in (function-signature-return-types augmented-signature)
+                                   collect (let ((brand-def (is-brand-type-p ret-type)))
+                                             (if (and brand-def (brand-active-p brand-def))
+                                                 (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                            sig-params final-arg-nodes)))
+                                                   (if owner-var
+                                                       (resolve-brand-type ret-type owner-var)
+                                                       ret-type))
+                                                 ret-type))))))
 
-            (make-semantic-call :name (function-signature-name augmented-signature)
-                                :type refined-return-types
-                                :args final-arg-nodes
-                                :signature augmented-signature
-                                :source-location location)))))))
+                       (make-semantic-call :name (function-signature-name augmented-signature)
+                                           :type refined-return-types
+                                           :args final-arg-nodes
+                                           :signature augmented-signature
+                                           :source-location location))))))))) 
+    (when (semantic-call-p %194-node)
+      (let ((summary (gethash (%194-summary-key (semantic-call-name %194-node)) *194-function-summaries*)))
+        (if (null summary)
+            (log:debug "194: no summary for callee ~a (not compiled yet) -- call site unchecked"
+                       (semantic-call-name %194-node))
+            (let ((barrier (%194-fn-summary-barrier summary))
+                  (collective (%194-fn-summary-collective summary))
+                  (callee (string-downcase (%194-summary-key (semantic-call-name %194-node)))))
+              (when barrier
+                (%194-note :barrier (format nil "~a (it reaches ~a)" callee barrier) location t)
+                (when *in-divergent-conditional*
+                  (%194-barrier-refusal (format nil "A call to ~a, which reaches ~a," callee barrier)
+                                        "workgroup" location)))
+              (when collective
+                (%194-note :collective (format nil "~a (it reaches ~a)" callee collective) location t)
+                (when *in-lane-divergent*
+                  (%194-collective-refusal (format nil "A call to ~a, which reaches ~a," callee collective)
+                                           location)))))))
+    %194-node))
 
 ;; --- Helper to get the type from any node ---
 

@@ -164,6 +164,13 @@ OPEN
 - [ ] rework quantized and microfloats (L1050)
 - [/] precision naming: ieee | fast | ieee-ftz (L710)
 - [/] anaphoric support, star `*` variants (L202, L203)
+- [ ] `atomic-load` (relaxed, device scope): a plain atomic READ.  Polling today has to use a read-modify-
+      write -- the prefixsum lookback spins on (atomic-add! (~ flags j) 0u), which PTX lowers to
+      atom.or / atom.add and which serializes at L2 when many tiles poll one flag.  CUB polls with
+      ld.relaxed.gpu.  Fits "atomics order nothing, fences do": atomic-load is relaxed, an explicit
+      mem-fence orders it.  PTX ld.relaxed.gpu (sm_70+) / SPIR-V OpAtomicLoad; probably an atomic-store
+      to match.  Measure on the prefixsum kernel (contests/gpu-mode/05-prefixsum-v2/prefixsum_packed_rfl.crisp).
+      Found 2026-10-25 (F4 of the prefixsum single-pass findings, put_temp_files_here/psum/FINDINGS.md).
 
 ### Tiles / tensors
 - [ ] hoisting: total tensor size an even multiple of the tile ("oversubscribe", identity fill

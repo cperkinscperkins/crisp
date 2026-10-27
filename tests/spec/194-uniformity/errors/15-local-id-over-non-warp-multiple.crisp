@@ -1,0 +1,20 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "A call to swap-pairs, which reaches"
+;;
+;; Endeavour 194 (D-194-15, the refusing side): tid / 8 is NOT warp-uniform -- a 32-lane warp spans four
+;; values of it -- so (= (/ tid 8ul) 0ul) is a per-lane condition, and a call reaching a shuffle under it
+;; is refused.  Only a K that the warp size divides is inferred (spec 08).
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-function swap-pairs (x)
+  (declare #'(ulong => ulong))
+  (return (shuffle-xor x 1ul)))
+
+(def-kernel refused_15 (&out x)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-ulong (get-local-id 0))))
+    (when (= (/ tid 8ul) 0ul)
+      (set! (~ x tid) (swap-pairs tid)))))

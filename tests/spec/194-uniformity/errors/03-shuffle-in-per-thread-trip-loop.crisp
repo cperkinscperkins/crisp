@@ -1,0 +1,15 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "trip count differs between the lanes"
+;;
+;; Endeavour 194 (P2): a warp collective in a loop whose trip count differs between LANES.  Lane t runs
+;; t iterations, so on the later ones the shuffle reads lanes that have already left the loop.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel refused_03 (&out out)
+  (declare #'(&out uvec-t => nil)
+           (local-size :set-to 64))
+  (let ((s 1u))
+    (dotimes (i (get-local-id 0))
+      (set! s (shuffle-xor s 1ul)))
+    (set! (~ out (get-local-id 0)) s)))

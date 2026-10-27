@@ -5,6 +5,20 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-10-26 -- endeavour 194 (two-level uniformity) folded into src/ (one copy of each
+;;;; definition existed; the six wrappers merged into their originals, *194-orig-* scaffolding dropped):
+;;;;   * state, structs, lattice, summaries, (/ tid K) inference -> top of src/analysis/core.lisp, with a
+;;;;                          (declaim (special ...)) for the specials internal-compile-function binds
+;;;;   * calculate-uniformity-state, %uniformity-join, internal-compile-function (fresh context + summary),
+;;;;     analyze-function-call (call-site check)                  -> src/analysis/core.lisp
+;;;;   * %194-call-in-scope / -note / -judge-loop / refusals, the if / dotimes / loop-variant / unroll-loop /
+;;;;     return-from-loop / to-*-uniform / sync / shuffle / tile checks, analyze-return-expression,
+;;;;     analyze-let-expression                                   -> src/analysis/control.lisp
+;;;;   * %analyze-set!-simple-variable                            -> src/analysis/structs.lisp
+;;;;   * %194-reduced-variables, %analyze-reduce-warp            -> src/analysis/ops.lisp
+;;;;   * initialize-compiler calls %194-clear-summaries           -> src/compiler.lisp
+;;;;   * the two broadcasts, %194-workgroup-slot / -barrier      -> src/codegen.lisp
+;;;;
 ;;;; EMPTY as of 2026-10-25 -- endeavour 193 (logging-output) folded into src/ (only the LAST copy of each
 ;;;; re-appended function was taken; wrappers folded into their originals, *193-orig-* scaffolding dropped):
 ;;;;   * state + helpers   -> the die / log defvars, %193-die-symbol-p, %193-may-die-p, %193-body-dies-directly-p,

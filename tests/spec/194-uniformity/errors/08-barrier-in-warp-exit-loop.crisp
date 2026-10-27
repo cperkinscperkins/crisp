@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "Here an exit is warp-uniform"
+;;
+;; Endeavour 194 (F1): a warp-uniform exit lets whole warps leave together -- enough for a warp
+;; collective, not for a barrier: the warps still inside wait at it for warps that have left.
+
+(def-type uvec-t (vector uint :address-space :global :align :compact))
+
+(def-kernel refused_08 (&out out)
+  (declare #'(&out uvec-t => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((last (to-warp-uniform (+ 2ul (to-ulong (warp-id))))))
+    (dotimes (i 8ul)
+      (sync-workgroup)
+      (when (= i last)
+        (return-from-loop)))
+    (set! (~ out (get-local-id 0)) 1u)))

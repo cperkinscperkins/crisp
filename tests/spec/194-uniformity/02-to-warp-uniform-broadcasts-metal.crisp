@@ -1,0 +1,32 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER a: 7 7 7 7
+;; HOIST-EXPECT: BUFFER b: 4 4 4 4
+;;
+;; Endeavour 194 ON-METAL (F7): to-warp-uniform BROADCASTS lane 0's value to its warp with a shuffle.
+;; ideal_001: "to-warp-uniform is similar, but uses shuffles to broadcast through the warp."  Before 194
+;; it was a __syncwarp and a pass-through, so `u` below was lane + 7 in every lane.
+;;
+;;   a -- threads 0, 8, 16, 24 store u.  Lane 0 of every warp holds 7, so a is 7 7 7 7 whether the warp
+;;        is 32 lanes (NVIDIA: all four in warp 0) or 16 (BMG: two in each warp).
+;;   b -- u drives the trip count of a loop holding a warp collective, the use the analyser certifies
+;;        (a warp-uniform bound keeps collectives legal): u - 3 = 4 iterations everywhere.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel warp_broadcast (&out a b)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid  (to-ulong (get-local-id 0)))
+        (lane (to-ulong (warp-lane)))
+        (u    (to-warp-uniform (+ (to-ulong (warp-lane)) 7ul)))
+        (n    0ul))
+    (dotimes (i (- u 3ul))
+      (let ((r (shuffle-xor lane 1ul)))
+        (set! n (+ n (- (+ r 1ul) r)))))
+    (when (= (* (/ lid 8ul) 8ul) lid)
+      (set! (~ a (/ lid 8ul)) u)
+      (set! (~ b (/ lid 8ul)) n))))

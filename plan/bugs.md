@@ -4390,3 +4390,39 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         consistent -- the cost is over-allocation (4x uchar, 2x ushort), not wrong results, until it exceeds the limit.
         Not checked: what "char" / "short" map to, and whether the L0 hoist's sizer has the same table.
         LIKELY FIX (hypothesis): add "unsigned char" / "signed char" -> 1 and "unsigned short" -> 2 to the table.
+
+[ ] 141 BMG MIS-EXECUTES A LOOP THAT HOLDS A return-from-loop WHEN THE LOOP ALSO HOLDS A BARRIER, OR A WARP
+        COLLECTIVE INSIDE A NESTED LOOP -- correct LLVM IR, wrong answer.  (Worked around in endeavour 194.)
+        Found 2026-10-26 (endeavour 194).  Probes: put_temp_files_here/194/probes/zz-probe-*.crisp (L0, bmg profile,
+        global = local = 32, BMG's 16-lane subgroups).
+        OBSERVATIONS (each against an otherwise identical control that is correct on BMG):
+          * barrier: thread 31 stores lid into a 1-element scratch vector, sync-workgroup, every thread reads it.
+            In a 3-iteration dotimes: 31 everywhere (zz-probe-loops, `sa`).  The same loop plus
+            (when (= i 99ul) (return-from-loop)) -- an exit NEVER TAKEN: 0 everywhere, even when read inside the
+            loop on iteration 0 (zz-probe-barrier-exit, zz-probe-barrier-exit2).
+          * nested collective: reduce-warp (a dec-times-by-half+ loop of shuffle-xor) of a lane-0-only value
+            inside a dotimes with a warp-uniform return-from-loop: lanes 0-7 and 8-15 of one subgroup end with
+            DIFFERENT sums (its 3 8 3 8; spec 194/06 first cut).  Controls, both correct: the same reduce-warp in
+            a loop with no return-from-loop (zz-probe-reduce-exit `ia`), and a hand-unrolled butterfly in the
+            early-exit loop (`ib`).  A FLAT shuffle in an early-exit loop is correct (194/04, zz-probe-warp-exit).
+        The LLVM IR was read for 194/04, /05, /06: loop structure, the exit edge, the barrier calls and the
+        butterfly are as written.  Not checked: the SPIR-V itself (no spirv-val / spirv-dis on this machine), the
+        same kernels on PTX/CUDA (no NVIDIA here), and whether a nested loop WITHOUT collectives is affected.
+        CAUSE (hypothesis, unverified): IGC's handling of a loop with more than one exit -- an unstructured exit
+        edge -- around barriers and subgroup operations; the cousin of BUG 109.
+        WORKAROUND (194, decisions D-194-6 / D-194-7): a barrier stays refused in ANY loop holding a
+        return-from-loop (every target); on SPIR-V a warp collective in a nested loop or behind a call inside
+        such a loop is refused.  PTX keeps the full relaxation (a warp-uniform exit keeps collectives legal).
+        NEXT: run the probes on an H100 to see whether PTX is affected; get spirv-val; try lowering
+        return-from-loop on SPIR-V as a done-flag (no second exit edge) to see whether IGC then gets it right.
+
+[ ] 142 (as-bits type val) IS UNREACHABLE FROM CRISP SOURCE -- "Unsupported form 'AS-BITS'".
+        Found 2026-10-25 (prefixsum packed-word kernel).  ideal_001 documents (as-bits type val) (radix-sort examples,
+        the keyword list near the end), and analysis/ops.lisp registers (def-expression-analyzer as-bits
+        analyze-bitcast-expression) -- but under a CRISP.COMPILER symbol.  package.lisp does not export AS-BITS, so
+        source read in :crisp-language interns its own AS-BITS, which has no analyzer.
+        WORKAROUND: (as-ulong d) / (as-double w) -- an as-XXXX cast between different categories is a bitcast
+        (analyze-cast-expression).
+        LIKELY FIX: export AS-BITS from crisp.compiler and import it into crisp-language like as-ulong et al.
+        (a defpackage change: cannot be done from an overlay).  Then a spec for both (as-bits ulong 1.5d) and
+        (as-bits double ...).

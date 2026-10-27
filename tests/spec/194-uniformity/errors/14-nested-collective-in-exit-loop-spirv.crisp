@@ -1,0 +1,26 @@
+;; CHECK-FAIL: "inside a nested loop (or a called function) within a loop that can exit early"
+;; CHECK-FAIL-FLAGS: --ir-target=spv --hardware-profile=bmg
+;; (No TEST-EXPECT, like 158-prefetch-warps/errors/non-16bit-element.  The refusal applies on every
+;;  target except PTX, so the E2E runner's default target refuses it too.)
+;;
+;; Endeavour 194, decision D-194-7: on SPIR-V a warp collective in a NESTED loop -- here the butterfly
+;; inside reduce-warp -- within a loop that can exit early is refused, even for a warp-uniform exit.
+;; The execution model allows it (and PTX keeps it), but BMG mis-executes it: lanes read stale partners
+;; and the reduction comes out different in different lanes (BUG 141).  A collective DIRECTLY in the
+;; early-exit loop's body is fine (spec 04).
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel refused_14 (&out its)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (n    0ul))
+    (dotimes (i 8ul)
+      (let ((v (* i (to-ulong (= lane 0ul)))))
+        (reduce-warp #'+ v 0ul)
+        (set! n (+ n 1ul))
+        (when (>= v 3ul)
+          (return-from-loop))))
+    (set! (~ its (to-ulong (get-local-id 0))) n)))

@@ -1,0 +1,46 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER its: 4 4 4 4
+;; HOIST-EXPECT: BUFFER x: 17 7 37 27
+;;
+;; Endeavour 194 ON-METAL (D3 + D4), through FUNCTION CALLS:
+;;   * warp-total returns a reduce-warp result, so its summary records a warp-uniform result and a call
+;;     to it is warp-uniform at the call site (D3) -- it decides a warp-level early exit below.
+;;   * swap-pairs contains a warp collective, so a call to it counts as one at the call site (D4/F3):
+;;     legal here because the branch around it is warp-uniform (t, the call result).
+;; Same arithmetic as 06: warp-total of the lane-0 indicator times 3 is 3 in every lane; the loop leaves
+;; on i = 3 (its = 4) and the branch takes the 173/02 fingerprint shuffle (17 7 37 27).
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-function warp-total (x)
+  (declare #'(ulong => ulong))
+  (let ((s x))
+    (reduce-warp #'+ s 0ul)
+    (return s)))
+
+(def-function swap-pairs (x)
+  (declare #'(ulong => ulong))
+  (return (shuffle-xor x 1ul)))
+
+(def-kernel called_exit (&out its x)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid  (to-ulong (get-local-id 0)))
+        (lane (to-ulong (warp-lane)))
+        (t    (warp-total (* 3ul (to-ulong (= (to-ulong (warp-lane)) 0ul)))))
+        (n    0ul)
+        (r    0ul))
+    (dotimes (i 8ul)
+      (set! n (+ n 1ul))
+      (when (= i t)
+        (return-from-loop)))
+    (when (= t 3ul)
+      (set! r (swap-pairs (+ (* lane 10ul) 7ul))))
+    (when (= (* (/ lid 8ul) 8ul) lid)
+      (set! (~ its (/ lid 8ul)) n))
+    (when (< lid 4ul)
+      (set! (~ x lid) r))))

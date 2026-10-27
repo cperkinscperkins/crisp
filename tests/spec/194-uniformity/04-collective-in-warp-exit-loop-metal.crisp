@@ -1,0 +1,38 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER acc: 6 3 12 9
+;; HOIST-EXPECT: BUFFER its: 3 3 3 3
+;;
+;; Endeavour 194 ON-METAL (F1): a warp collective inside a loop that exits early is legal when the exit
+;; is WARP-uniform -- whole warps leave together, so every lane still inside has all its warp-mates.
+;; Before 194 (184 D4) any return-from-loop made the loop divergent and the shuffle was refused; the
+;; prefixsum lookback paid 0.77 ms for the workaround.
+;;
+;; Warp w leaves after iteration 2 + w (to-warp-uniform of a warp-id expression), so on BMG's 16-lane
+;; warps the two warps of the workgroup leave at DIFFERENT iterations.  Lanes 0..3 are in warp 0:
+;;   iterations i = 0, 1, 2;   r = shuffle-xor (lane + i) 1 = (lane ^ 1) + i
+;;   acc = 3 (lane ^ 1) + 3   ->   lane 0..3:  6 3 12 9;   its = 3.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel warp_exit (&out acc its)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (to-ulong (warp-lane)))
+        (last (to-warp-uniform (+ 2ul (to-ulong (warp-id)))))
+        (a    0ul)
+        (n    0ul))
+    (dotimes (i 8ul)
+      (let ((r (shuffle-xor (+ lane i) 1ul)))
+        (set! a (+ a r))
+        (set! n (+ n 1ul)))
+      (when (= i last)
+        (return-from-loop)))
+    ;; lid, not lane: on 16-lane warps `lane < 4` is true in BOTH warps, and the second (one more
+    ;; iteration) would overwrite the first.
+    (when (< (to-ulong (get-local-id 0)) 4ul)
+      (set! (~ acc lane) a)
+      (set! (~ its lane) n))))

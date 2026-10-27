@@ -1,0 +1,15 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "if+ requires a provably uniform condition"
+;;
+;; Endeavour 194: if+ certifies a WORKGROUP-uniform condition (that is what makes a barrier inside it
+;; legal), so a warp-uniform one is refused.  120/06 used to assert the opposite; it now uses
+;; to-workgroup-uniform.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel refused_06 (&out out)
+  (declare #'(&out vec-t => nil))
+  (let ((u (to-warp-uniform (get-local-id 0))))
+    (if+ (< u (to-ulong 4))
+      (set! (~ out (get-global-id 0)) 1.0)
+      (set! (~ out (get-global-id 0)) 0.0))))
