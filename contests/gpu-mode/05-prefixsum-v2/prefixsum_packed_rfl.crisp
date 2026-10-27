@@ -29,6 +29,50 @@
 (def-type ctr-cell (cell   uint   :address-space :global))
 (def-type wsum-vec (vector float  :address-space :local  :align :compact))
 
+;; ---- Unrolling macros -----------------------------------------------------------------------------
+;; Each warp handles its 16 rows one at a time, and the 8 warp totals are summed the same way.  These
+;; macros write each "for every row" ONCE.  They expand to exactly the hand-unrolled forms they
+;; replaced -- the same balanced addition trees, the bare seg4 for row 0 -- so the PTX is
+;; byte-identical.  A macro body is Common Lisp run in the crisp-language package, which imports
+;; almost nothing from CL: hence the cl: prefixes.  In a template, the symbol ROW stands for the row
+;; number.
+
+(defmacro ul (n)
+  "The ulong literal N -- what 96ul reads as."
+  (cl:intern (cl:format nil "~DUL" n) "CRISP-LANGUAGE"))
+
+(defmacro row-var (name r)
+  "Row R's variable: (row-var v 3) => v3."
+  (cl:intern (cl:format nil "~A~D" name r) "CRISP-LANGUAGE"))
+
+(defmacro row-index (base r)
+  "Row R's float4 index in this warp's stripe: BASE + 32 R (BASE itself for row 0)."
+  (cl:if (cl:zerop r) base `(+ ,base (ul ,(cl:* 32 r)))))
+
+(defmacro sum-tree (&rest terms)
+  "TERMS added as a balanced tree: (sum-tree a b c d) => (+ (+ a b) (+ c d))."
+  (cl:labels ((tree (xs)
+                (cl:if (cl:cdr xs)
+                       (cl:let ((h (cl:floor (cl:length xs) 2)))
+                         (cl:list '+ (tree (cl:subseq xs 0 h)) (tree (cl:subseq xs h))))
+                       (cl:car xs))))
+    (tree terms)))
+
+(defmacro let-rows ((name count) init &body body)
+  "Binds NAME0 .. NAME<count-1> around BODY, each to INIT with ROW replaced by its row number."
+  `(let ,(cl:loop for r below count
+                  collect (cl:list (cl:intern (cl:format nil "~A~D" name r) "CRISP-LANGUAGE")
+                                   (cl:subst r 'row init)))
+     ,@body))
+
+(defmacro sum-rows (count term)
+  "TERM for rows 0 .. COUNT-1 (ROW replaced by the row number), added as a balanced tree."
+  `(sum-tree ,@(cl:loop for r below count collect (cl:subst r 'row term))))
+
+(defmacro for-rows (count form)
+  "FORM once per row, in order, with ROW replaced by the row number."
+  `(progn ,@(cl:loop for r below count collect (cl:subst r 'row form))))
+
 ;; Lookback word: pack / unpack.  The low 20 bits are the TAG.
 (def-function lb-pack (v tag)
   (declare #'(double ulong => ulong))
@@ -147,27 +191,9 @@
           (seg4 (+ (* (~ s-id) 4096ul) (* wid 512ul) lane)))
       (declare (uniform id))
       ;; 2. Coalesced warp-striped loads: row r of this warp is float4 index seg4 + 32 r
-      (let ((v0  (load4 input seg4 n))
-            (v1  (load4 input (+ seg4 32ul) n))
-            (v2  (load4 input (+ seg4 64ul) n))
-            (v3  (load4 input (+ seg4 96ul) n))
-            (v4  (load4 input (+ seg4 128ul) n))
-            (v5  (load4 input (+ seg4 160ul) n))
-            (v6  (load4 input (+ seg4 192ul) n))
-            (v7  (load4 input (+ seg4 224ul) n))
-            (v8  (load4 input (+ seg4 256ul) n))
-            (v9  (load4 input (+ seg4 288ul) n))
-            (v10 (load4 input (+ seg4 320ul) n))
-            (v11 (load4 input (+ seg4 352ul) n))
-            (v12 (load4 input (+ seg4 384ul) n))
-            (v13 (load4 input (+ seg4 416ul) n))
-            (v14 (load4 input (+ seg4 448ul) n))
-            (v15 (load4 input (+ seg4 480ul) n)))
+      (let-rows (v 16) (load4 input (row-index seg4 row) n)
         ;; 3. Warp totals -> tile aggregate
-        (let ((tsum (+ (+ (+ (+ (sum4 v0) (sum4 v1)) (+ (sum4 v2) (sum4 v3)))
-                          (+ (+ (sum4 v4) (sum4 v5)) (+ (sum4 v6) (sum4 v7))))
-                       (+ (+ (+ (sum4 v8) (sum4 v9)) (+ (sum4 v10) (sum4 v11)))
-                          (+ (+ (sum4 v12) (sum4 v13)) (+ (sum4 v14) (sum4 v15)))))))
+        (let ((tsum (sum-rows 16 (sum4 (row-var v row)))))
           (let ((wsum (to-float (warp-sum-d (to-double tsum)))))
             (when (= lane 0ul)
               (set! (~ wsums wid) wsum))))
@@ -175,10 +201,7 @@
         ;; 4. Warp 0: publish aggregate, bounded lookback with fallback, publish inclusive
         (let ((warp0 (to-warp-uniform (= wid 0ul))))
          (when warp0
-          (let ((agg (+ (+ (+ (to-double (~ wsums 0ul)) (to-double (~ wsums 1ul)))
-                           (+ (to-double (~ wsums 2ul)) (to-double (~ wsums 3ul))))
-                        (+ (+ (to-double (~ wsums 4ul)) (to-double (~ wsums 5ul)))
-                           (+ (to-double (~ wsums 6ul)) (to-double (~ wsums 7ul))))))
+          (let ((agg (sum-rows 8 (to-double (~ wsums (ul row)))))
                 (excl 0.0d)
                 (top  (to-long id))
                 (nwin (/ (+ id 31ul) 32ul)))
@@ -247,20 +270,7 @@
             (when (< k wid)
               (set! base (+ base (to-double (~ wsums k))))))
           (let ((rb base))
-            (set! rb (+ rb (to-double (scan-row v0  (to-float rb) lane output seg4 n))))
-            (set! rb (+ rb (to-double (scan-row v1  (to-float rb) lane output (+ seg4 32ul) n))))
-            (set! rb (+ rb (to-double (scan-row v2  (to-float rb) lane output (+ seg4 64ul) n))))
-            (set! rb (+ rb (to-double (scan-row v3  (to-float rb) lane output (+ seg4 96ul) n))))
-            (set! rb (+ rb (to-double (scan-row v4  (to-float rb) lane output (+ seg4 128ul) n))))
-            (set! rb (+ rb (to-double (scan-row v5  (to-float rb) lane output (+ seg4 160ul) n))))
-            (set! rb (+ rb (to-double (scan-row v6  (to-float rb) lane output (+ seg4 192ul) n))))
-            (set! rb (+ rb (to-double (scan-row v7  (to-float rb) lane output (+ seg4 224ul) n))))
-            (set! rb (+ rb (to-double (scan-row v8  (to-float rb) lane output (+ seg4 256ul) n))))
-            (set! rb (+ rb (to-double (scan-row v9  (to-float rb) lane output (+ seg4 288ul) n))))
-            (set! rb (+ rb (to-double (scan-row v10 (to-float rb) lane output (+ seg4 320ul) n))))
-            (set! rb (+ rb (to-double (scan-row v11 (to-float rb) lane output (+ seg4 352ul) n))))
-            (set! rb (+ rb (to-double (scan-row v12 (to-float rb) lane output (+ seg4 384ul) n))))
-            (set! rb (+ rb (to-double (scan-row v13 (to-float rb) lane output (+ seg4 416ul) n))))
-            (set! rb (+ rb (to-double (scan-row v14 (to-float rb) lane output (+ seg4 448ul) n))))
-            (set! rb (+ rb (to-double (scan-row v15 (to-float rb) lane output (+ seg4 480ul) n))))))))
+            (for-rows 16
+              (set! rb (+ rb (to-double (scan-row (row-var v row) (to-float rb) lane output
+                                                  (row-index seg4 row) n)))))))))
     (return)))
