@@ -234,8 +234,27 @@ something was accidentally `:unknown` (D-194-16).
 
 ## Fold notes
 
-- Fold the 194 chunk of `overlays/crisp-compiler-overlay.lisp` into the src files named above.  Two
-  `defstruct`s are new, not redefinitions.
-- Regenerate the chapters, `reference.md`, the call graph and specials AFTER the fold, since the
-  generators read src.
-- `tests/ci-stop.txt` -> `194-uniformity`.
+**FOLDED 2026-10-26.**  The overlay is empty again (its header lists where each piece went).  The fold
+was done by script (`put_temp_files_here/194/fold194.py`):
+
+- Every definition was taken verbatim from the overlay's single copy; there were no duplicates.
+- The six wrappers were merged into their src originals:
+  - `internal-compile-function` keeps an inner `(block internal-compile-function ...)`, so its template
+    early-return still records the summary.
+  - `initialize-compiler` calls `%194-clear-summaries`, because `compiler.lisp` compiles before the
+    variable exists.
+- New state, structs and lattice code sit at the top of `analysis/core.lisp`, with a
+  `(declaim (special ...))` for the specials that `internal-compile-function` binds ahead of their
+  `defvar`s.  The regenerated `src/specials.lisp` also proclaims them.
+- The files stayed CRLF.  Whitespace-insensitive diff: +638 / -97.
+
+Verified on the folded source with an empty overlay:
+
+| check | result |
+|---|---|
+| unit | 392/392 |
+| E2E | 1576/1576 |
+| negative | 382/382 |
+| prefixsum leaderboard kernel | PTX byte-identical to the overlay build |
+
+Regenerated: chapters, `reference.md`, `call_graph.md`, globals matrices, `src/specials.lisp`.

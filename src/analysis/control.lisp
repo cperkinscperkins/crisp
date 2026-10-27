@@ -921,6 +921,133 @@
    %tlc-check-not-divergent relaxes when this is set.  A workgroup collective (sync-workgroup, a
    cooperative :linear load) inside a role block WOULD deadlock and is rejected separately.")
 
+;;; Endeavour 194 -- the two-level scope rules.  State and lattice: analysis/core.lisp.
+
+(defun %194-lane-index-form-p (form)
+  "Endeavour 194: T when the SOURCE FORM is the local thread index, possibly cast, or a variable already
+   known to hold it (*194-lane-index-names*)."
+  (cl:cond
+    ((symbolp form) (and form (member form *194-lane-index-names*) t))
+    ((not (consp form)) nil)
+    (t (let ((h (and (symbolp (car form)) (symbol-name (car form)))))
+         (cl:cond ((null h) nil)
+                  ((string= h "GET-LOCAL-LINEAR-ID") (null (cdr form)))
+                  ((string= h "GET-LOCAL-ID") (equal (cdr form) '(0)))
+                  ((member h '("TO-ULONG" "TO-UINT" "TO-LONG" "TO-INT") :test #'string=)
+                   (and (= (length form) 2) (%194-lane-index-form-p (second form))))
+                  (t nil))))))
+
+(defun %194-call-in-scope (uniformity reason thunk)
+  "Endeavour 194: calls THUNK to analyse code governed by a condition / bound / exit of UNIFORMITY.
+     :uniform      -- every thread arrives together: nothing changes.
+     :warp-uniform -- whole warps arrive together: barriers are refused (*in-divergent-conditional*),
+                      warp collectives stay legal.
+     otherwise     -- lanes may split: both are refused (*in-lane-divergent* too).
+   REASON (:conditional or :loop-bound) only picks the refusal message.  Also lowers *194-loop-level*
+   (the level a return-from-loop inside records) and bumps *divergent-scope-depth* (set! taint) for a
+   lane-divergent scope, as the conditional and loop analysers always did."
+  (let* ((level (%194-level uniformity))
+         (*194-divergence-reason* (cl:cond ((eq level :uniform) *194-divergence-reason*)
+                                           (*in-divergent-conditional* *194-divergence-reason*)
+                                           ((eq level :warp-uniform) :warp-conditional)
+                                           (t reason)))
+         (*in-divergent-conditional* (or *in-divergent-conditional* (not (eq level :uniform))))
+         (*in-lane-divergent* (or *in-lane-divergent* (eq level :divergent)))
+         (*divergent-scope-depth* (if (eq level :divergent)
+                                      (1+ *divergent-scope-depth*)
+                                      *divergent-scope-depth*))
+         (*194-loop-level* (%194-meet *194-loop-level* level)))
+    (funcall thunk)))
+
+(defun %194-note (kind name location &optional nested)
+  "Endeavour 194: records that a barrier (KIND :barrier) or warp collective (:collective) named NAME was
+   analysed at LOCATION -- into the innermost loop, which judges it against its exits when it ends, and
+   into the summary of the function being compiled, which its call sites are checked against.  NESTED
+   (a call: the callee may loop) marks it for the SPIR-V rule in %194-judge-loop."
+  (when *194-loop*
+    (push (list kind name location nested) (%194-loop-record-events *194-loop*)))
+  (when *194-fn-summary*
+    (if (eq kind :barrier)
+        (unless (%194-fn-summary-barrier *194-fn-summary*)
+          (setf (%194-fn-summary-barrier *194-fn-summary*) name))
+        (unless (%194-fn-summary-collective *194-fn-summary*)
+          (setf (%194-fn-summary-collective *194-fn-summary*) name)))))
+
+(defun %194-barrier-refusal (name-str scope-word location)
+  "Endeavour 194: the error for a barrier NAME-STR (every thread of the SCOPE-WORD must reach it) in code
+   only some threads reach.  The :conditional wording is the original one (specs pin its phrases)."
+  (error 'crisp-compiler-error
+    :message
+    (cl:case *194-divergence-reason*
+      (:warp-conditional
+       (format nil "~a cannot appear inside a branch that only some WARPS take.  It is a barrier every thread of the ~a must reach, and the condition here is only warp-uniform (to-warp-uniform, warp-id, reduce-warp, or a value set inside such a branch): the warps that skip it never arrive, so the ones that enter wait forever.  Use a workgroup-uniform condition (to-workgroup-uniform, get-workgroup-id, a kernel argument) -- or move the barrier out of the branch."
+               name-str scope-word))
+      (:loop-bound
+       (format nil "~a cannot appear inside a loop whose trip count is not uniform across the ~a.  It is a barrier every thread of the ~a must reach on every iteration: a thread that runs fewer iterations stops arriving, so the others wait forever.  Make the bound uniform (to-workgroup-uniform, or (declare (uniform ...)) if it already is) and use dotimes+, or move the barrier out of the loop."
+               name-str scope-word scope-word))
+      (t
+       (format nil "~a cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It is a barrier every thread of the ~a must reach: threads that skip the branch never arrive, so the threads that enter it wait forever.  (sync-wait ends in a sync-workgroup, so it is refused here too.)  Compile-time conditionals (if+ / when+ / unless+) are safe, and so is a condition every thread of the ~a evaluates the same way (e.g. one based on get-workgroup-id, not get-local-id).  A mem-fence, which waits for no one, may appear here."
+               name-str scope-word scope-word)))
+    :source-location location))
+
+(defun %194-collective-refusal (name location)
+  "Endeavour 194: the error for warp collective NAME in code that only some lanes of a warp reach."
+  (error 'crisp-compiler-error
+    :message (format nil "~a is a warp collective and cannot appear ~a: the lanes that arrive would be asking for data from lanes that never will. Shuffle in every lane UNCONDITIONALLY and gate only what you do with the result, or use a uniform condition (if+ / when+ / unless+, a warp-uniform one such as to-warp-uniform, or one based on get-workgroup-id rather than get-local-id)"
+                     name
+                     (if (eq *194-divergence-reason* :loop-bound)
+                         "inside a loop whose trip count differs between the lanes of a warp"
+                         "inside a thread-divergent conditional (if / when / unless / cond)"))
+    :source-location location))
+
+(defun %194-judge-loop (record)
+  "Endeavour 194: judges a finished loop's barriers and collectives against its exits (184 D4, made
+   two-level).  The exit level is the lowest of the loop's return-from-loop levels (:uniform when it has
+   none).
+     A warp collective is refused only for a lane-divergent exit: a warp-uniform exit lets whole warps
+     leave together, so every lane still inside has all of its warp (F1).
+     On any target but PTX (SPIR-V, or :generic IR that may become SPIR-V) a collective in a NESTED loop
+     (or behind a call) is refused even so: BMG mis-executes it (BUG 141, decision D-194-7).
+     A BARRIER is refused for ANY exit, as 184 D4 had it.  A workgroup-uniform exit would be safe by the
+     execution model, but BMG mis-executes a barrier in any loop holding a return-from-loop -- even one
+     never taken (BUG 141) -- so the relaxation stops at collectives (decision D-194-6).
+   Afterwards each variable the loop set! is lowered to the exit level: threads that left early hold an
+   older value."
+  (let* ((exits (%194-loop-record-exits record))
+         (level (reduce #'%194-meet exits :initial-value :uniform)))
+    (when exits
+      (dolist (ev (reverse (%194-loop-record-events record)))
+        (destructuring-bind (kind name loc nested) ev
+          (cl:cond
+            ((eq kind :barrier)
+             (error 'crisp-compiler-error
+               :message (format nil "~a cannot appear inside a loop that can exit early (one containing return-from-loop).  A thread that has left the loop never reaches this barrier on a later iteration, so the threads still inside wait for it forever.  ~a  Move the barrier out of the loop, or end the loop by its bound instead of by return-from-loop."
+                                name
+                                (cl:case level
+                                  (:warp-uniform "Here an exit is warp-uniform: whole warps leave together, which keeps a warp collective legal but not a barrier.")
+                                  (:uniform "Here every exit is workgroup-uniform, which the execution model allows -- but BMG mis-executes a barrier in a loop holding any return-from-loop (BUG 141), so Crisp refuses it.")
+                                  (t "")))
+               :source-location loc))
+            ((and nested (not (eq *target-backend* :ptx)))
+             (error 'crisp-compiler-error
+               :message (format nil "~a is a warp collective inside a nested loop (or a called function) within a loop that can exit early.  The execution model allows it for a warp-uniform exit, but on SPIR-V BMG mis-executes it -- lanes see stale partners (BUG 141) -- so Crisp refuses it there.  Keep the collective directly in the early-exit loop's body (a flat shuffle is fine), do the reduction before or after the loop, or end the loop by its bound."
+                                name)
+               :source-location loc))
+            ((eq level :divergent)
+             (error 'crisp-compiler-error
+               :message (format nil "~a is a warp collective and cannot appear inside a loop that can exit early on a per-lane condition: a lane that has left never reaches it on a later iteration, so the lanes still inside would ask for data from lanes that never will.  Make the exit condition warp-uniform (to-warp-uniform, or a reduce-warp result) -- whole warps then leave together -- or end the loop by its bound."
+                                name)
+               :source-location loc))))))
+    (unless (eq level :uniform)
+      (dolist (pd (%194-loop-record-sets record))
+        (let ((u (parameter-def-uniformity pd)))
+          (cl:cond ((eq level :divergent)
+                    (setf (parameter-def-uniformity pd) :divergent))
+                   ((eq u :uniform)
+                    (setf (parameter-def-uniformity pd) :warp-uniform))))))
+    level))
+
+
 (defun analyze-%uniform-if-impl (expr env context location)
   "Internal-use: structurally identical to analyze-if-expression-impl but
    does NOT bind *in-divergent-conditional* on the two-branch path.  Use
@@ -961,7 +1088,9 @@
    conditional.  Call from load-tile-at / store-tile-at analyzers.
    NOTE (Endeavor 139): a with-warp-specialization role block ALSO sets *in-divergent-conditional*,
    but its callers gate this on (not *in-warp-spec-block*) and apply the mode-aware
-   %warp-spec-check-block-only instead — a :block load there is leader-issued and safe."
+   %warp-spec-check-block-only instead — a :block load there is leader-issued and safe.
+   Endeavour 194: the internal sync-workgroup is recorded (%194-note) for loop exits and call sites."
+  (%194-note :barrier op-name location)
   (when *in-divergent-conditional*
         (error 'crisp-compiler-error
           :message (format nil
@@ -972,20 +1101,13 @@
 (defun %shuffle-check-not-divergent (op-name location)
   "Endeavour 173, D6: a shuffle is a warp collective and every lane must reach it.
 
-   Deliberately NOT %tlc-check-not-divergent: that one explains a deadlocking internal
-   sync-workgroup, which is not what goes wrong here, and it would reject a case that is
-   actually fine.
-
-   THE WARP-SPECIALIZATION EXEMPTION.  Endeavour 139 role blocks also set
-   *in-divergent-conditional*, but that divergence is BETWEEN warps -- every lane of any one
-   warp takes the same role. A warp collective is therefore still fully converged inside a
-   role block, so a shuffle there is legal.  What breaks a shuffle is divergence WITHIN a
-   warp, which is what an ordinary thread-divergent conditional produces."
-  (when (and *in-divergent-conditional* (not *in-warp-spec-block*))
-    (error 'crisp-compiler-error
-           :message (format nil "~a is a warp collective and cannot appear inside a thread-divergent conditional (if / when / unless / cond): the lanes that arrive would be asking for data from lanes that never will. Shuffle in every lane UNCONDITIONALLY and gate only what you do with the result, or use a uniform condition (if+ / when+ / unless+, or one based on get-workgroup-id rather than get-local-id)"
-                            op-name)
-           :source-location location)))
+   Endeavour 194: the test is *in-lane-divergent* -- whether LANES of one warp may have split.  A
+   branch whole warps take or skip (a warp-uniform condition, or an Endeavour 139 role block, which used
+   to be a special case here) leaves every warp converged, so the shuffle is legal there.  The
+   collective is also recorded (%194-note) for the enclosing loop's exits and for call sites."
+  (%194-note :collective op-name location)
+  (when *in-lane-divergent*
+    (%194-collective-refusal op-name location)))
 
 ;;; Endeavour 173 — `let*` is not a Crisp form.
 ;;;
@@ -1026,31 +1148,31 @@
    thread-divergent conditional is refused.
 
    Endeavour 183 (BUG 082): a FENCE (mem-fence, mem-fence-workgroup) is exempt.  It orders the calling
-   thread's own memory accesses and waits for no one, so there is nothing to deadlock -- and
-   publish-then-signal (store, fence, ticket) needs it inside the one thread that stores.  The barriers
-   get their own message: the shared %tlc-check-not-divergent text explains an INTERNAL sync-workgroup
-   (load-tile-at's problem), which is not what a barrier is."
-  (cond
-    ;; Endeavour 184 D4: a barrier inside a loop that can exit early.  Its own message -- the
-    ;; divergent-conditional one would name if / when / unless / cond, which is not where the problem is.
-    ((and *in-early-exit-loop*
-          (not (member builtin-kw '(:mem-fence :mem-fence-workgroup))))
-     (error 'crisp-compiler-error
-       :message (format nil "~a cannot appear inside a loop that can exit early (one containing return-from-loop).  A thread that has left the loop never reaches this barrier on a later iteration, so the threads still inside wait for it forever.  Move the barrier out of the loop, or end the loop by its bound instead of by return-from-loop." name-str)
-       :source-location location))
+   thread's own memory accesses and waits for no one, so there is nothing to deadlock.
+
+   Endeavour 194: two levels.  sync-warp needs only its WARP converged (*in-lane-divergent*); a
+   workgroup barrier needs the whole WORKGROUP (*in-divergent-conditional*, which a warp-uniform
+   condition or a non-uniform loop bound now sets too).  A barrier inside a loop that can exit early is
+   no longer refused HERE: it is recorded (%194-note) and judged when the loop ends, against the
+   uniformity of the loop's exits (%194-judge-loop)."
+  (cl:cond
+    ((member builtin-kw '(:mem-fence :mem-fence-workgroup)) nil)
+    ((eq builtin-kw :sync-warp)
+     (%194-note :collective name-str location)
+     (when *in-lane-divergent*
+       (%194-collective-refusal name-str location)))
     (*in-warp-spec-block*
+     (%194-note :barrier name-str location)
      (when (member builtin-kw '(:sync-workgroup :sync-cluster))
        (error 'crisp-compiler-error
          :message (format nil "~a cannot appear inside a with-warp-specialization role block — it is a COLLECTIVE and only one role's warps reach it, so it deadlocks.  Synchronize the producer and consumer through the barrier rings (await / signal) instead; sync-warp is fine for intra-warp ordering." name-str)
          :source-location location)))
-    ((member builtin-kw '(:mem-fence :mem-fence-workgroup)) nil)
-    (*in-divergent-conditional*
-     (error 'crisp-compiler-error
-       :message (format nil "~a cannot appear inside a thread-divergent conditional (if / when / unless / cond).  It is a barrier every thread of the ~a must reach: threads that skip the branch never arrive, so the threads that enter it wait forever.  (sync-wait ends in a sync-workgroup, so it is refused here too.)  Compile-time conditionals (if+ / when+ / unless+) are safe, and so is a condition every thread of the ~a evaluates the same way (e.g. one based on get-workgroup-id, not get-local-id).  A mem-fence, which waits for no one, may appear here."
-                        name-str
-                        (case builtin-kw (:sync-cluster "cluster") (:sync-warp "warp") (t "workgroup"))
-                        (case builtin-kw (:sync-cluster "cluster") (:sync-warp "warp") (t "workgroup")))
-       :source-location location))))
+    (t
+     (%194-note :barrier name-str location)
+     (when *in-divergent-conditional*
+       (%194-barrier-refusal name-str
+                             (if (eq builtin-kw :sync-cluster) "cluster" "workgroup")
+                             location)))))
 
 
 (defun %warp-spec-check-block-only (op-name mode location)
@@ -1441,12 +1563,22 @@
       ;; actually achievable — previously a uniform guard was rejected identically, which made
       ;; the guarded prefetch of a pipelined ring loop (`(when (< next-k n-k-steps) ...)`,
       ;; uniform in the K-loop counter) impossible to express.
-      (let* ((*in-divergent-conditional* (if (eq cond-uniformity :uniform)
-                                             *in-divergent-conditional*
-                                             t))
-             (*divergent-scope-depth* (if (not (eq cond-uniformity :uniform))
+      ;;
+      ;; Endeavour 194: two levels.  A WARP-uniform condition takes whole warps down one branch:
+      ;; barriers are refused inside (*in-divergent-conditional*), warp collectives are not
+      ;; (*in-lane-divergent* stays clear).  Only a lane-divergent condition bumps the set! taint depth;
+      ;; a warp-level scope taints through %194-current-level.
+      (let* ((%194-lv (%194-level cond-uniformity))
+             (*194-divergence-reason* (cl:cond ((eq %194-lv :uniform) *194-divergence-reason*)
+                                               (*in-divergent-conditional* *194-divergence-reason*)
+                                               ((eq %194-lv :warp-uniform) :warp-conditional)
+                                               (t :conditional)))
+             (*in-divergent-conditional* (or *in-divergent-conditional* (not (eq %194-lv :uniform))))
+             (*in-lane-divergent* (or *in-lane-divergent* (eq %194-lv :divergent)))
+             (*divergent-scope-depth* (if (eq %194-lv :divergent)
                                           (1+ *divergent-scope-depth*)
                                           *divergent-scope-depth*))
+             (*194-loop-level* (%194-meet *194-loop-level* %194-lv))
              (then-node (analyze-expression (third expr) env context (append location '(2))))
              (else-node
                (cond
@@ -1596,130 +1728,142 @@
   "Analyzes a `(let ...)` expression.
    Extended (091): strips leading declare forms from the body, checks for
    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
-   Extended (120): propagates each binding's uniformity from its init."
-  (unless (and (>= (length expr) 2) (listp (cadr expr)))
-    (error "Malformed let form: ~a" expr))
+   Extended (120): propagates each binding's uniformity from its init.
+   Endeavour 194 (D-194-15): tracks which bindings hold the local thread index (*194-lane-index-names*)
+   for the body.  Sequential, like the let: a binding sees the ones before it, and rebinding a name
+   shadows an outer index of that name."
+  (let ((%194-names *194-lane-index-names*))
+    (dolist (b (and (consp (cdr expr)) (listp (second expr)) (second expr)))
+      (let ((name (if (consp b) (first b) b))
+            (init (and (consp b) (second b))))
+        (when (and name (symbolp name))
+          (setf %194-names (remove name %194-names))
+          (when (let ((*194-lane-index-names* %194-names)) (%194-lane-index-form-p init))
+            (push name %194-names)))))
+    (let ((*194-lane-index-names* %194-names))
+        (unless (and (>= (length expr) 2) (listp (cadr expr)))
+          (error "Malformed let form: ~a" expr))
 
-  (let* ((binding-forms (cadr expr))
-         (raw-body (cddr expr)))
+        (let* ((binding-forms (cadr expr))
+               (raw-body (cddr expr)))
 
-    ;; Strip leading declares and check for execution-context declarations
-    (multiple-value-bind (body-forms decl-specs)
-        (%strip-execution-context-declares raw-body)
-      (multiple-value-bind (has-grid-level has-workgroup-level)
-          (%check-context-declarations decl-specs location)
+          ;; Strip leading declares and check for execution-context declarations
+          (multiple-value-bind (body-forms decl-specs)
+              (%strip-execution-context-declares raw-body)
+            (multiple-value-bind (has-grid-level has-workgroup-level)
+                (%check-context-declarations decl-specs location)
 
-        ;; Bind context vars for the body analysis
-        (let ((*in-grid-level-context* (or *in-grid-level-context* has-grid-level))
-              (*in-workgroup-level-context* (or *in-workgroup-level-context* has-workgroup-level)))
+              ;; Bind context vars for the body analysis
+              (let ((*in-grid-level-context* (or *in-grid-level-context* has-grid-level))
+                    (*in-workgroup-level-context* (or *in-workgroup-level-context* has-workgroup-level)))
 
-          ;; Implement let* scoping by sequentially building the environment.
-          (multiple-value-bind (final-env analyzed-bindings)
-              (let ((current-env env)
-                    (bindings-list '()))
-                (loop for binding in binding-forms
-                      for i from 0 do
-                        (log:debug "Analyzing let binding form: ~s" binding)
+                ;; Implement let* scoping by sequentially building the environment.
+                (multiple-value-bind (final-env analyzed-bindings)
+                    (let ((current-env env)
+                          (bindings-list '()))
+                      (loop for binding in binding-forms
+                            for i from 0 do
+                              (log:debug "Analyzing let binding form: ~s" binding)
 
-                        (let ((is-flat-mvb (and (> (length binding) 2)
-                                                (not (listp (first binding))))))
+                              (let ((is-flat-mvb (and (> (length binding) 2)
+                                                      (not (listp (first binding))))))
 
-                          (let* ((binding-vars (if is-flat-mvb
-                                                   (butlast binding)
-                                                   (if (and (= (length binding) 2) (listp (first binding)))
-                                                       (first binding)
-                                                       (list (first binding)))))
-                                 (init-form (first (last binding)))
-                                 (current-binding-name (if (= (length binding-vars) 1) (first binding-vars) nil))
-                                 (init-node
-                                  (let ((old-name (compiler-context-current-binding-name context)))
-                                    (when current-binding-name
-                                          (setf (compiler-context-current-binding-name context) current-binding-name))
-                                    (unwind-protect
-                                        ;; Endeavor 120 gap #4: permit to-*-uniform only when it
-                                        ;; is the direct initializer of this binding.
-                                        (let ((*to-uniform-allowed* (%to-uniform-form-p init-form))
-                                              (init-loc (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
-                                          ;; Endeavour 185 D1: (q r (floor a b)) etc. -> quotient AND remainder.
-                                          (or (%185-maybe-divmod-node init-form binding-vars current-env context init-loc)
-                                              (analyze-expression init-form current-env context init-loc)))
-                                      (when current-binding-name
-                                            (setf (compiler-context-current-binding-name context) old-name)))))
-                                 (init-node-types (semantic-node-type init-node))
-                                 ;; Endeavor 120: uniformity of the init, computed in the
-                                 ;; pre-binding environment (let* sequential scope).
-                                 (init-uniformity (calculate-uniformity-state init-node current-env)))
+                                (let* ((binding-vars (if is-flat-mvb
+                                                         (butlast binding)
+                                                         (if (and (= (length binding) 2) (listp (first binding)))
+                                                             (first binding)
+                                                             (list (first binding)))))
+                                       (init-form (first (last binding)))
+                                       (current-binding-name (if (= (length binding-vars) 1) (first binding-vars) nil))
+                                       (init-node
+                                        (let ((old-name (compiler-context-current-binding-name context)))
+                                          (when current-binding-name
+                                                (setf (compiler-context-current-binding-name context) current-binding-name))
+                                          (unwind-protect
+                                              ;; Endeavor 120 gap #4: permit to-*-uniform only when it
+                                              ;; is the direct initializer of this binding.
+                                              (let ((*to-uniform-allowed* (%to-uniform-form-p init-form))
+                                                    (init-loc (append location '(1) (list i) (list (if is-flat-mvb (length binding-vars) 1)))))
+                                                ;; Endeavour 185 D1: (q r (floor a b)) etc. -> quotient AND remainder.
+                                                (or (%185-maybe-divmod-node init-form binding-vars current-env context init-loc)
+                                                    (analyze-expression init-form current-env context init-loc)))
+                                            (when current-binding-name
+                                                  (setf (compiler-context-current-binding-name context) old-name)))))
+                                       (init-node-types (semantic-node-type init-node))
+                                       ;; Endeavor 120: uniformity of the init, computed in the
+                                       ;; pre-binding environment (let* sequential scope).
+                                       (init-uniformity (calculate-uniformity-state init-node current-env)))
 
-                            (cond
-                             ((= (length binding-vars) 1)
-                               (let* ((var-name (first binding-vars))
-                                      (var-type (get-single-value-type init-node)))
-                                 (log:warn "ANALYZE-LET VAR: ~a -> Inferred Type: ~a Uniformity: ~a" var-name var-type init-uniformity)
-                                 (push (cons var-name init-node) bindings-list)
-                                 (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local
-                                                                             :uniformity init-uniformity)
-                                                         current-env))))
+                                  (cond
+                                   ((= (length binding-vars) 1)
+                                     (let* ((var-name (first binding-vars))
+                                            (var-type (get-single-value-type init-node)))
+                                       (log:warn "ANALYZE-LET VAR: ~a -> Inferred Type: ~a Uniformity: ~a" var-name var-type init-uniformity)
+                                       (push (cons var-name init-node) bindings-list)
+                                       (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local
+                                                                                   :uniformity init-uniformity)
+                                                               current-env))))
 
-                             ((> (length binding-vars) 1)
-                               (unless (listp init-node-types)
-                                 (error "Cannot destructure a single-value return into multiple variables at ~a. Got type ~a for binding ~a."
-                                   (semantic-node-source-location init-node) init-node-types binding))
-                               (unless (>= (length init-node-types) (length binding-vars))
-                                 (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
+                                   ((> (length binding-vars) 1)
+                                     (unless (listp init-node-types)
+                                       (error "Cannot destructure a single-value return into multiple variables at ~a. Got type ~a for binding ~a."
+                                         (semantic-node-source-location init-node) init-node-types binding))
+                                     (unless (>= (length init-node-types) (length binding-vars))
+                                       (error "Not enough return values from ~a to bind ~a variables at ~a" init-form (length binding-vars) (semantic-node-source-location init-node)))
 
-                               (loop for var-name in binding-vars
-                                     for j from 0 do
-                                       (let* ((var-type (nth j init-node-types))
-                                              (extract-node (make-semantic-extract-value
-                                                             :type var-type
-                                                             :aggregate-node init-node
-                                                             :index j
-                                                             :source-location (semantic-node-source-location init-node))))
-                                         (push (cons var-name extract-node) bindings-list)
-                                         (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local
-                                                                                     :uniformity init-uniformity)
-                                                                 current-env)))))
-                             (t (error "Malformed let binding: ~a" binding))))))
-                (values current-env (reverse bindings-list)))
+                                     (loop for var-name in binding-vars
+                                           for j from 0 do
+                                             (let* ((var-type (nth j init-node-types))
+                                                    (extract-node (make-semantic-extract-value
+                                                                   :type var-type
+                                                                   :aggregate-node init-node
+                                                                   :index j
+                                                                   :source-location (semantic-node-source-location init-node))))
+                                               (push (cons var-name extract-node) bindings-list)
+                                               (setf current-env (cons (make-parameter-def :name var-name :type var-type :kind :local
+                                                                                           :uniformity init-uniformity)
+                                                                       current-env)))))
+                                   (t (error "Malformed let binding: ~a" binding))))))
+                      (values current-env (reverse bindings-list)))
 
-            ;; Endeavor 120 gap #2/#3: apply (declare (uniform v)) hints from the
-            ;; let block. Only let-bound variables are eligible (so the hint
-            ;; cannot leak into an outer scope's shared parameter-def). A hint on
-            ;; a provably-divergent binding is an error -- the user can always use
-            ;; a plain if/when/dotimes instead, so an unsafe assertion buys
-            ;; nothing.
-            (let ((let-bound-names (mapcar #'car analyzed-bindings)))
-              (dolist (uvar (loop for d in decl-specs
-                                  when (and (consp d) (symbolp (car d))
-                                            (string-equal (symbol-name (car d)) "UNIFORM"))
-                                  append (rest d)))
-                (cond
-                 ((not (member uvar let-bound-names))
-                  (log:warn "(declare (uniform ~s)) ignored: not a variable bound by this let." uvar))
-                 (t
-                  (let ((pd (find-variable-in-env uvar final-env)))
-                    (cond
-                     ((null pd)
-                      (log:warn "(declare (uniform ~s)): binding not found." uvar))
-                     ((eq (parameter-def-uniformity pd) :divergent)
-                      (error 'crisp-compiler-error
-                        :message (format nil "(declare (uniform ~a)) is invalid: ~a is provably divergent in this scope. Use a plain if/when/dotimes instead."
-                                         uvar uvar)
-                        :source-location location))
-                     (t
-                      (log:debug "Endeavor 120: (declare (uniform ~a)) -> :uniform (was ~a)"
-                                 uvar (parameter-def-uniformity pd))
-                      (setf (parameter-def-uniformity pd) :uniform))))))))
+                  ;; Endeavor 120 gap #2/#3: apply (declare (uniform v)) hints from the
+                  ;; let block. Only let-bound variables are eligible (so the hint
+                  ;; cannot leak into an outer scope's shared parameter-def). A hint on
+                  ;; a provably-divergent binding is an error -- the user can always use
+                  ;; a plain if/when/dotimes instead, so an unsafe assertion buys
+                  ;; nothing.
+                  (let ((let-bound-names (mapcar #'car analyzed-bindings)))
+                    (dolist (uvar (loop for d in decl-specs
+                                        when (and (consp d) (symbolp (car d))
+                                                  (string-equal (symbol-name (car d)) "UNIFORM"))
+                                        append (rest d)))
+                      (cond
+                       ((not (member uvar let-bound-names))
+                        (log:warn "(declare (uniform ~s)) ignored: not a variable bound by this let." uvar))
+                       (t
+                        (let ((pd (find-variable-in-env uvar final-env)))
+                          (cond
+                           ((null pd)
+                            (log:warn "(declare (uniform ~s)): binding not found." uvar))
+                           ((eq (parameter-def-uniformity pd) :divergent)
+                            (error 'crisp-compiler-error
+                              :message (format nil "(declare (uniform ~a)) is invalid: ~a is provably divergent in this scope. Use a plain if/when/dotimes instead."
+                                               uvar uvar)
+                              :source-location location))
+                           (t
+                            (log:debug "Endeavor 120: (declare (uniform ~a)) -> :uniform (was ~a)"
+                                       uvar (parameter-def-uniformity pd))
+                            (setf (parameter-def-uniformity pd) :uniform))))))))
 
-            (let* ((analyzed-body (analyze-body-expressions body-forms final-env context (append location '(2))))
-                   (last-body-node (first (last analyzed-body)))
-                   (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
-              (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
-                         analyzed-bindings analyzed-body return-type)
-              (make-semantic-let :type return-type
-                                 :bindings analyzed-bindings
-                                 :body analyzed-body
-                                 :source-location location))))))))
+                  (let* ((analyzed-body (analyze-body-expressions body-forms final-env context (append location '(2))))
+                         (last-body-node (first (last analyzed-body)))
+                         (return-type (if last-body-node (semantic-node-type last-body-node) 'nil)))
+                    (log:debug "Analyzed let bindings: ~s~% Analyzed body nodes: ~s~% Let return type: ~s"
+                               analyzed-bindings analyzed-body return-type)
+                    (make-semantic-let :type return-type
+                                       :bindings analyzed-bindings
+                                       :body analyzed-body
+                                       :source-location location))))))))))
 
 (defun analyze-progn-expression (expr env context location)
   "Analyzes a `(progn ...)` expression.
@@ -1774,87 +1918,100 @@
   "Analyzes a `(return ...)` expression.
    FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always
    treated as a return-types list, not a parameterized type. This mirrors the fix
-   in validate-return-types."
-  (let* ((value-forms (rest expr))
-         (value-nodes (loop for form in value-forms
-                            for i from 1
-                            collect (analyze-expression form env context (append location (list i)))))
+   in validate-return-types.
+   Endeavour 194 (D3): also records the uniformity of what this (return ...) returns -- its values
+   joined with the scope it runs in -- in the function's summary."
+  (let ((%194-node
+         (progn
+             (let* ((value-forms (rest expr))
+                    (value-nodes (loop for form in value-forms
+                                       for i from 1
+                                       collect (analyze-expression form env context (append location (list i)))))
 
-         ;; Flatten types to check against signature
-         ;; FIX: Also treat 1-element symbol lists as return-type lists, not parameterized types
-         (all-inferred-types (if value-nodes
+                    ;; Flatten types to check against signature
+                    ;; FIX: Also treat 1-element symbol lists as return-type lists, not parameterized types
+                    (all-inferred-types (if value-nodes
+                                            (loop for node in value-nodes
+                                                    append (let ((t-spec (semantic-node-type node)))
+                                                             (if (and (listp t-spec)
+                                                                      (or (not (valid-type-p t-spec))
+                                                                          (and (= (length t-spec) 1)
+                                                                               (symbolp (first t-spec)))))
+                                                                 t-spec
+                                                                 (list t-spec))))
+                                            '(nil)))
+
+                    ;; Context
+                    (current-func (compiler-context-current-compiling-function context))
+                    (sig (if current-func (first (gethash current-func *function-table*)) nil))
+                    (declared-ret (if sig (function-signature-return-types sig) nil))
+
+                    ;; Check for invalid return (Deferred Error 04)
+                    (is-kernel (member '(entry-point) (compiler-context-declarations context) :test #'equal))
+                    (invalid-return-p (and declared-ret
+                                           (or (null declared-ret) (equal declared-ret '(nil)))
+                                           value-nodes
+                                           is-kernel
+                                           (not (every (lambda (n)
+                                                         (let ((t-spec (semantic-node-type n)))
+                                                           (or (eq t-spec :void)
+                                                               (eq t-spec 'void)
+                                                               (equal t-spec '(void))
+                                                               (equal t-spec '(nil))
+                                                               (null t-spec))))
+                                                    value-nodes)))))
+
+               (when invalid-return-p
+                     (let* ((node (first value-nodes))
+                            (is-explicit-nil (and (= (length value-nodes) 1)
+                                                  (or (and (typep node 'semantic-literal)
+                                                           (null (semantic-literal-value node)))
+                                                      (and (typep node 'semantic-progn)
+                                                           (equal (semantic-node-type node) '(nil))
+                                                           (null (semantic-progn-body node)))))))
+                       (unless is-explicit-nil
+                         (error 'crisp-compiler-error :message (format nil "Invalid Return: Function declared to return VOID/NIL but returned a value. Declared: ~a" declared-ret) :source-location location))))
+
+               (let ((return-types all-inferred-types))
+
+                 ;; Truncation Logic
+                 (when (and declared-ret (not (equal declared-ret '(nil))))
+                       (let ((num-declared (length declared-ret))
+                             (num-inferred (length all-inferred-types)))
+
+                         (when (> num-inferred num-declared)
+                               (log:info "Truncating return values for ~a. declared: ~a inferred: ~a" current-func declared-ret all-inferred-types)
+                               (let ((new-nodes '())
+                                     (captured 0))
                                  (loop for node in value-nodes
-                                         append (let ((t-spec (semantic-node-type node)))
-                                                  (if (and (listp t-spec)
-                                                           (or (not (valid-type-p t-spec))
-                                                               (and (= (length t-spec) 1)
-                                                                    (symbolp (first t-spec)))))
-                                                      t-spec
-                                                      (list t-spec))))
-                                 '(nil)))
+                                       while (< captured num-declared)
+                                       do (let* ((type (semantic-node-type node))
+                                                 (is-mv (and (listp type) (not (valid-type-p type))))
+                                                 (count (if is-mv (length type) 1)))
+                                            (cond
+                                             (is-mv
+                                               (loop for i from 0 below count
+                                                     while (< captured num-declared)
+                                                     do (push (make-semantic-extract-value :type (nth i type) :aggregate-node node :index i :source-location (semantic-node-source-location node)) new-nodes)
+                                                       (incf captured)))
+                                             (t
+                                               (push node new-nodes)
+                                               (incf captured)))))
+                                 (setf value-nodes (nreverse new-nodes))
+                                 (setf return-types declared-ret)))))
 
-         ;; Context
-         (current-func (compiler-context-current-compiling-function context))
-         (sig (if current-func (first (gethash current-func *function-table*)) nil))
-         (declared-ret (if sig (function-signature-return-types sig) nil))
-
-         ;; Check for invalid return (Deferred Error 04)
-         (is-kernel (member '(entry-point) (compiler-context-declarations context) :test #'equal))
-         (invalid-return-p (and declared-ret
-                                (or (null declared-ret) (equal declared-ret '(nil)))
-                                value-nodes
-                                is-kernel
-                                (not (every (lambda (n)
-                                              (let ((t-spec (semantic-node-type n)))
-                                                (or (eq t-spec :void)
-                                                    (eq t-spec 'void)
-                                                    (equal t-spec '(void))
-                                                    (equal t-spec '(nil))
-                                                    (null t-spec))))
-                                         value-nodes)))))
-
-    (when invalid-return-p
-          (let* ((node (first value-nodes))
-                 (is-explicit-nil (and (= (length value-nodes) 1)
-                                       (or (and (typep node 'semantic-literal)
-                                                (null (semantic-literal-value node)))
-                                           (and (typep node 'semantic-progn)
-                                                (equal (semantic-node-type node) '(nil))
-                                                (null (semantic-progn-body node)))))))
-            (unless is-explicit-nil
-              (error 'crisp-compiler-error :message (format nil "Invalid Return: Function declared to return VOID/NIL but returned a value. Declared: ~a" declared-ret) :source-location location))))
-
-    (let ((return-types all-inferred-types))
-
-      ;; Truncation Logic
-      (when (and declared-ret (not (equal declared-ret '(nil))))
-            (let ((num-declared (length declared-ret))
-                  (num-inferred (length all-inferred-types)))
-
-              (when (> num-inferred num-declared)
-                    (log:info "Truncating return values for ~a. declared: ~a inferred: ~a" current-func declared-ret all-inferred-types)
-                    (let ((new-nodes '())
-                          (captured 0))
-                      (loop for node in value-nodes
-                            while (< captured num-declared)
-                            do (let* ((type (semantic-node-type node))
-                                      (is-mv (and (listp type) (not (valid-type-p type))))
-                                      (count (if is-mv (length type) 1)))
-                                 (cond
-                                  (is-mv
-                                    (loop for i from 0 below count
-                                          while (< captured num-declared)
-                                          do (push (make-semantic-extract-value :type (nth i type) :aggregate-node node :index i :source-location (semantic-node-source-location node)) new-nodes)
-                                            (incf captured)))
-                                  (t
-                                    (push node new-nodes)
-                                    (incf captured)))))
-                      (setf value-nodes (nreverse new-nodes))
-                      (setf return-types declared-ret)))))
-
-      (make-semantic-explicit-return :type return-types
-                                     :value-nodes value-nodes
-                                     :source-location location))))
+                 (make-semantic-explicit-return :type return-types
+                                                :value-nodes value-nodes
+                                                :source-location location))))))
+    (when *194-fn-summary*
+      (let* ((vals (cl:cond ((semantic-explicit-return-p %194-node) (semantic-explicit-return-value-nodes %194-node))
+                            ((semantic-return-p %194-node) (list (semantic-return-value-node %194-node)))
+                            (t nil)))
+             (u (%uniformity-join
+                 (cons (%194-current-level)
+                       (mapcar (lambda (n) (if n (calculate-uniformity-state n env) :uniform)) vals)))))
+        (push u (%194-fn-summary-returns *194-fn-summary*))))
+    %194-node))
 
 (defun analyze-function-literal (expr env context location)
   "Analyzes (function x) or #'(...)"
@@ -2198,8 +2355,10 @@
    Endeavour 184: every dotimes-family loop comes through here, so this is also where
    return-from-loop learns which loop it is in.
      D2 -- a + loop whose own body exits early is refused: a + loop promises a uniform trip count.
-     D4 -- a loop whose own body exits early is analysed as DIVERGENT: a thread that has left never
-           reaches a later iteration's barrier, so barriers and collectives inside are refused."
+   Endeavour 194: D4 is now judged AFTER the body (%194-judge-loop), against the uniformity of the
+   loop's exits, which only the analysis of the body can tell.  The body runs with a fresh
+   %194-loop-record; what it recorded also goes to the enclosing loop, which an exit of its own would
+   strand before this whole loop."
   (let ((plus-p (%rfl-plus-loop-p expr))
         (exits-p (%rfl-free-in-forms-p (cddr expr))))
     (log:debug "184 loop ~a: plus-p=~a exits-early=~a" (%rfl-head-name expr) plus-p exits-p)
@@ -2209,19 +2368,32 @@
                          (%rfl-head-name expr)
                          (subseq (%rfl-head-name expr) 0 (1- (length (%rfl-head-name expr)))))
         :source-location location))
-    (let ((*loop-exit-context* (if plus-p :plus :plain))
-          (*in-early-exit-loop* (or *in-early-exit-loop* exits-p))
-          (*in-divergent-conditional* (or *in-divergent-conditional* exits-p))
-          (*divergent-scope-depth* (if exits-p (1+ *divergent-scope-depth*) *divergent-scope-depth*)))
-      (multiple-value-bind (body spec)
-          (%split-loop-body-declarations (cddr expr) (car expr) location)
-        (let ((node (funcall analyzer
-                             (if (eq body (cddr expr)) expr (list* (car expr) (cadr expr) body))
-                             env context location)))
+    (let ((outer *194-loop*)
+          (record (make-%194-loop-record))
+          (node nil))
+      (let ((*loop-exit-context* (if plus-p :plus :plain))
+            (*194-loop* record)
+            (*194-loop-level* :uniform))
+        (multiple-value-bind (body spec)
+            (%split-loop-body-declarations (cddr expr) (car expr) location)
+          (setf node (funcall analyzer
+                              (if (eq body (cddr expr)) expr (list* (car expr) (cadr expr) body))
+                              env context location))
           (when (and spec (semantic-dotimes-p node))
             (setf (semantic-dotimes-unroll node)
-                  (%resolve-unroll-spec spec node (car expr) env context location)))
-          node)))))
+                  (%resolve-unroll-spec spec node (car expr) env context location)))))
+      (let ((level (%194-judge-loop record)))
+        (log:debug "194 loop ~a: exits ~s -> ~a; ~d barrier/collective event(s), ~d set!"
+                   (%rfl-head-name expr) (%194-loop-record-exits record) level
+                   (length (%194-loop-record-events record)) (length (%194-loop-record-sets record))))
+      (when outer
+        (setf (%194-loop-record-events outer)
+              (append (mapcar (lambda (ev) (list (first ev) (second ev) (third ev) t))
+                              (%194-loop-record-events record))
+                      (%194-loop-record-events outer)))
+        (setf (%194-loop-record-sets outer)
+              (append (%194-loop-record-sets record) (%194-loop-record-sets outer))))
+      node)))
 
 (defun %rfl-head-name (form)
   "The SYMBOL-NAME of FORM's head when FORM is a cons headed by a symbol, else NIL.  Endeavour 184."
@@ -2248,7 +2420,9 @@
 
 (defun analyze-return-from-loop-expression (expr env context location)
   "Analyzes (return-from-loop).  Endeavour 184 D1-D3: legal only in the body of a dotimes or a non-+
-   172 variant, lexically.  Returns a semantic-return-from-loop node (type void)."
+   172 variant, lexically.  Returns a semantic-return-from-loop node (type void).
+   Endeavour 194: records the exit's uniformity -- the lowest condition between it and its loop
+   (*194-loop-level*) -- for %194-judge-loop."
   (declare (ignore env context))
   (unless (= (length expr) 1)
     (error 'crisp-compiler-error
@@ -2256,6 +2430,8 @@
       :source-location location))
   (cl:case *loop-exit-context*
     (:plain
+     (when *194-loop*
+       (push *194-loop-level* (%194-loop-record-exits *194-loop*)))
      (make-semantic-return-from-loop :type 'void :source-location location))
     (:plus
      ;; Normally refused at the loop by %analyze-loop-with-unroll; this is the backstop.
@@ -2329,12 +2505,15 @@
       ;; Check uniformity
       (let* ((limit-uniformity (calculate-uniformity-state limit-node env))
              (stride-uniformity (if stride-node (calculate-uniformity-state stride-node env) :uniform))
-             (is-divergent (or (eq limit-uniformity :divergent) (eq stride-uniformity :divergent)
-                               (eq limit-uniformity :unknown) (eq stride-uniformity :unknown))))
+             (bound-uniformity (%uniformity-join (list limit-uniformity stride-uniformity))))
         ;; Extend env: bind var as the limit's type, inheriting uniformity from the limit
+        ;; Endeavour 194: a trip count that is not uniform divides threads exactly like a branch, so the
+        ;; body is analysed in that scope -- barriers / collectives refused by level -- not only tainted.
         (let* ((body-env (cons (make-parameter-def :name var-name :type limit-type :kind :local :uniformity limit-uniformity) env))
-               (*divergent-scope-depth* (if is-divergent (1+ *divergent-scope-depth*) *divergent-scope-depth*))
-               (body-nodes (analyze-body-expressions body-forms body-env context (append location '(1)))))
+               (body-nodes (%194-call-in-scope
+                            bound-uniformity :loop-bound
+                            (lambda ()
+                              (analyze-body-expressions body-forms body-env context (append location '(1)))))))
           (make-semantic-dotimes :type 'void
                                  :var-name var-name
                                  :limit-node limit-node
@@ -2480,9 +2659,8 @@
            (var-type (get-single-value-type n-node))
            (states (mapcar (lambda (p) (cons (car p) (calculate-uniformity-state (cdr p) env)))
                            nodes))
-           (combined (cond ((some (lambda (s) (eq (cdr s) :divergent)) states) :divergent)
-                           ((some (lambda (s) (eq (cdr s) :unknown)) states) :unknown)
-                           (t :uniform))))
+           ;; Endeavour 194: %uniformity-join, so warp-uniform operands give a warp-uniform loop.
+           (combined (%uniformity-join (mapcar #'cdr states))))
       (log:debug "~a: kind ~s, var ~a : ~a, operand uniformity ~s" head-name kind var-name var-type states)
       (when plus-p
         (let ((bad (find-if-not (lambda (s) (eq (cdr s) :uniform)) states)))
@@ -2496,10 +2674,11 @@
       (let* ((body-env (cons (make-parameter-def :name var-name :type var-type :kind :local
                                                  :uniformity combined)
                              env))
-             (*divergent-scope-depth* (if (eq combined :uniform)
-                                          *divergent-scope-depth*
-                                          (1+ *divergent-scope-depth*)))
-             (body-nodes (analyze-body-expressions (cddr expr) body-env context (append location '(1)))))
+             ;; Endeavour 194: analysed in the scope its operands give it, like dotimes.
+             (body-nodes (%194-call-in-scope
+                          combined :loop-bound
+                          (lambda ()
+                            (analyze-body-expressions (cddr expr) body-env context (append location '(1)))))))
         (make-semantic-loop-variant :type 'void
                                     :var-name var-name
                                     :var-type var-type
@@ -2576,12 +2755,19 @@
 
 
 (defun analyze-to-workgroup-uniform (expr env context location)
+  "Analyzes (to-workgroup-uniform X), legal only as a let initializer.
+   Endeavour 194 (F7): it BROADCASTS -- local thread 0's X reaches every thread through workgroup memory
+   and a barrier -- so it is a barrier: refused where only some threads arrive, and recorded for loop
+   exits and call sites like one."
   (unless *to-uniform-allowed*
     (error 'crisp-compiler-error
       :message "to-workgroup-uniform may only be used as the initializer of a let binding, e.g. (let ((u (to-workgroup-uniform ...))) ...)."
       :source-location location))
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error :message "to-workgroup-uniform expects 1 argument" :source-location location))
+  (%194-note :barrier "to-workgroup-uniform" location)
+  (when *in-divergent-conditional*
+    (%194-barrier-refusal "to-workgroup-uniform (it broadcasts through a barrier)" "workgroup" location))
   (let* ((val-node (let ((*to-uniform-allowed* nil))
                      (analyze-expression (second expr) env context (append location '(1)))))
          (type (get-single-value-type val-node)))
@@ -2589,15 +2775,24 @@
 
 ;; src/analysis/control.lisp
 (defun analyze-to-warp-uniform (expr env context location)
+  "Analyzes (to-warp-uniform X), legal only as a let initializer.
+   Endeavour 194 (F7): it BROADCASTS lane 0's X to its warp with a shuffle, so it is a warp collective:
+   refused where lanes of a warp may have split, and recorded like one."
   (unless *to-uniform-allowed*
     (error 'crisp-compiler-error
       :message "to-warp-uniform may only be used as the initializer of a let binding, e.g. (let ((u (to-warp-uniform ...))) ...)."
       :source-location location))
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error :message "to-warp-uniform expects 1 argument" :source-location location))
+  (%shuffle-check-not-divergent "to-warp-uniform (it broadcasts with a shuffle)" location)
   (let* ((val-node (let ((*to-uniform-allowed* nil))
                      (analyze-expression (second expr) env context (append location '(1)))))
          (type (get-single-value-type val-node)))
+    (unless (member (resolve-type-alias type) *shuffle-value-types*)
+      (error 'crisp-compiler-error
+        :message (format nil "to-warp-uniform broadcasts with a shuffle, which moves ~{~(~a~)~^, ~} -- ~(~a~) is not one of them.  Convert the value to one of those types first."
+                         *shuffle-value-types* type)
+        :source-location location))
     (make-semantic-to-warp-uniform :type type :value-node val-node :source-location location)))
 
 ;; ==========================================================================

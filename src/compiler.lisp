@@ -1765,7 +1765,9 @@ from a fixed !100."
    Extended to clear *grid-functions* for def-grid-function support.
    Endeavour 193: LOGGING-OUTPUT (--logging-output) implies RUNTIME-CHECKS; under DIFFERENTIATE the
    log is off (the gradient kernels are compiled without it) but RUNTIME-CHECKS is honoured.
-   LOGGING-SIZE is the log's size in bytes (--logging-size, default 4M)."
+   LOGGING-SIZE is the log's size in bytes (--logging-size, default 4M).
+   Endeavour 194: also forgets the function summaries (%194-clear-summaries)."
+  (%194-clear-summaries)
   (let ((logging (and logging-output (not differentiate))))
     (setf *logging-output-enabled* logging
           *logging-size-bytes* (or logging-size (* 4 1024 1024))

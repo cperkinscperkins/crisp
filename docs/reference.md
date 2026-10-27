@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-25T22:44:11.574688Z
+Generated on 2026-10-27T06:05:57.640198Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -248,6 +248,48 @@ Generated on 2026-10-25T22:44:11.574688Z
 
 
 ---
+### DEFUN `%194-LANE-INDEX-FORM-P`
+- **Args**: `(FORM)`
+
+  > Endeavour 194: T when the SOURCE FORM is the local thread index, possibly cast, or a variable already  >    known to hold it (*194-lane-index-names*).
+
+
+---
+### DEFUN `%194-CALL-IN-SCOPE`
+- **Args**: `(UNIFORMITY REASON THUNK)`
+
+  > Endeavour 194: calls THUNK to analyse code governed by a condition / bound / exit of UNIFORMITY.  >      :uniform      -- every thread arrives together: nothing changes.  >      :warp-uniform -- whole warps arrive together: barriers are refused (*in-divergent-conditional*),  >                       warp collectives stay legal.  >      otherwise     -- lanes may split: both are refused (*in-lane-divergent* too).  >    REASON (:conditional or :loop-bound) only picks the refusal message.  Also lowers *194-loop-level*  >    (the level a return-from-loop inside records) and bumps *divergent-scope-depth* (set! taint) for a  >    lane-divergent scope, as the conditional and loop analysers always did.
+
+
+---
+### DEFUN `%194-NOTE`
+- **Args**: `(KIND NAME LOCATION &OPTIONAL NESTED)`
+
+  > Endeavour 194: records that a barrier (KIND :barrier) or warp collective (:collective) named NAME was  >    analysed at LOCATION -- into the innermost loop, which judges it against its exits when it ends, and  >    into the summary of the function being compiled, which its call sites are checked against.  NESTED  >    (a call: the callee may loop) marks it for the SPIR-V rule in %194-judge-loop.
+
+
+---
+### DEFUN `%194-BARRIER-REFUSAL`
+- **Args**: `(NAME-STR SCOPE-WORD LOCATION)`
+
+  > Endeavour 194: the error for a barrier NAME-STR (every thread of the SCOPE-WORD must reach it) in code  >    only some threads reach.  The :conditional wording is the original one (specs pin its phrases).
+
+
+---
+### DEFUN `%194-COLLECTIVE-REFUSAL`
+- **Args**: `(NAME LOCATION)`
+
+  > Endeavour 194: the error for warp collective NAME in code that only some lanes of a warp reach.
+
+
+---
+### DEFUN `%194-JUDGE-LOOP`
+- **Args**: `(RECORD)`
+
+  > Endeavour 194: judges a finished loop's barriers and collectives against its exits (184 D4, made  >    two-level).  The exit level is the lowest of the loop's return-from-loop levels (:uniform when it has  >    none).  >      A warp collective is refused only for a lane-divergent exit: a warp-uniform exit lets whole warps  >      leave together, so every lane still inside has all of its warp (F1).  >      On any target but PTX (SPIR-V, or :generic IR that may become SPIR-V) a collective in a NESTED loop  >      (or behind a call) is refused even so: BMG mis-executes it (BUG 141, decision D-194-7).  >      A BARRIER is refused for ANY exit, as 184 D4 had it.  A workgroup-uniform exit would be safe by the  >      execution model, but BMG mis-executes a barrier in any loop holding a return-from-loop -- even one  >      never taken (BUG 141) -- so the relaxation stops at collectives (decision D-194-6).  >    Afterwards each variable the loop set! is lowered to the exit level: threads that left early hold an  >    older value.
+
+
+---
 ### DEFUN `ANALYZE-%UNIFORM-IF-IMPL`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
@@ -265,14 +307,14 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `%TLC-CHECK-NOT-DIVERGENT`
 - **Args**: `(OP-NAME LOCATION)`
 
-  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-at / store-tile-at analyzers.  >    NOTE (Endeavor 139): a with-warp-specialization role block ALSO sets *in-divergent-conditional*,  >    but its callers gate this on (not *in-warp-spec-block*) and apply the mode-aware  >    %warp-spec-check-block-only instead — a :block load there is leader-issued and safe.
+  > Signals a clear compile error if (op-name) appears inside a thread-divergent  >    conditional.  Call from load-tile-at / store-tile-at analyzers.  >    NOTE (Endeavor 139): a with-warp-specialization role block ALSO sets *in-divergent-conditional*,  >    but its callers gate this on (not *in-warp-spec-block*) and apply the mode-aware  >    %warp-spec-check-block-only instead — a :block load there is leader-issued and safe.  >    Endeavour 194: the internal sync-workgroup is recorded (%194-note) for loop exits and call sites.
 
 
 ---
 ### DEFUN `%SHUFFLE-CHECK-NOT-DIVERGENT`
 - **Args**: `(OP-NAME LOCATION)`
 
-  > Endeavour 173, D6: a shuffle is a warp collective and every lane must reach it.  >   >    Deliberately NOT %tlc-check-not-divergent: that one explains a deadlocking internal  >    sync-workgroup, which is not what goes wrong here, and it would reject a case that is  >    actually fine.  >   >    THE WARP-SPECIALIZATION EXEMPTION.  Endeavour 139 role blocks also set  >    *in-divergent-conditional*, but that divergence is BETWEEN warps -- every lane of any one  >    warp takes the same role. A warp collective is therefore still fully converged inside a  >    role block, so a shuffle there is legal.  What breaks a shuffle is divergence WITHIN a  >    warp, which is what an ordinary thread-divergent conditional produces.
+  > Endeavour 173, D6: a shuffle is a warp collective and every lane must reach it.  >   >    Endeavour 194: the test is *in-lane-divergent* -- whether LANES of one warp may have split.  A  >    branch whole warps take or skip (a warp-uniform condition, or an Endeavour 139 role block, which used  >    to be a special case here) leaves every warp converged, so the shuffle is legal there.  The  >    collective is also recorded (%194-note) for the enclosing loop's exits and for call sites.
 
 
 ---
@@ -286,7 +328,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `%WARP-SPEC-CHECK-SYNC`
 - **Args**: `(BUILTIN-KW NAME-STR LOCATION)`
 
-  > Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective  >    (sync-workgroup, sync-cluster) DEADLOCKS -- only one role's warps reach it -- so it is forbidden;  >    warp-scoped ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, a BARRIER inside a  >    thread-divergent conditional is refused.  >   >    Endeavour 183 (BUG 082): a FENCE (mem-fence, mem-fence-workgroup) is exempt.  It orders the calling  >    thread's own memory accesses and waits for no one, so there is nothing to deadlock -- and  >    publish-then-signal (store, fence, ticket) needs it inside the one thread that stores.  The barriers  >    get their own message: the shared %tlc-check-not-divergent text explains an INTERNAL sync-workgroup  >    (load-tile-at's problem), which is not what a barrier is.
+  > Endeavor 139 (decision B): the sync/fence builtins inside a role block.  A workgroup collective  >    (sync-workgroup, sync-cluster) DEADLOCKS -- only one role's warps reach it -- so it is forbidden;  >    warp-scoped ops (sync-warp, mem-fence) are fine.  Outside a warp-spec block, a BARRIER inside a  >    thread-divergent conditional is refused.  >   >    Endeavour 183 (BUG 082): a FENCE (mem-fence, mem-fence-workgroup) is exempt.  It orders the calling  >    thread's own memory accesses and waits for no one, so there is nothing to deadlock.  >   >    Endeavour 194: two levels.  sync-warp needs only its WARP converged (*in-lane-divergent*); a  >    workgroup barrier needs the whole WORKGROUP (*in-divergent-conditional*, which a warp-uniform  >    condition or a non-uniform loop bound now sets too).  A barrier inside a loop that can exit early is  >    no longer refused HERE: it is recorded (%194-note) and judged when the loop ends, against the  >    uniformity of the loop's exits (%194-judge-loop).
 
 
 ---
@@ -460,7 +502,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `ANALYZE-LET-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.  >    Extended (120): propagates each binding's uniformity from its init.
+  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.  >    Extended (120): propagates each binding's uniformity from its init.  >    Endeavour 194 (D-194-15): tracks which bindings hold the local thread index (*194-lane-index-names*)  >    for the body.  Sequential, like the let: a binding sees the ones before it, and rebinding a name  >    shadows an outer index of that name.
 
 
 ---
@@ -481,7 +523,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `ANALYZE-RETURN-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(return ...)` expression.  >    FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always  >    treated as a return-types list, not a parameterized type. This mirrors the fix  >    in validate-return-types.
+  > Analyzes a `(return ...)` expression.  >    FIX: A 1-element list whose sole element is a symbol (e.g. (INDEX-T)) is always  >    treated as a return-types list, not a parameterized type. This mirrors the fix  >    in validate-return-types.  >    Endeavour 194 (D3): also records the uniformity of what this (return ...) returns -- its values  >    joined with the scope it runs in -- in the function's summary.
 
 
 ---
@@ -594,7 +636,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `%ANALYZE-LOOP-WITH-UNROLL`
 - **Args**: `(ANALYZER EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 180.  Runs the counted-loop ANALYZER on EXPR with its body's leading declarations  >    stripped, then records the unroll request on the node it returns.  The loop's own analysis  >    never sees a declaration.  >    Endeavour 184: every dotimes-family loop comes through here, so this is also where  >    return-from-loop learns which loop it is in.  >      D2 -- a + loop whose own body exits early is refused: a + loop promises a uniform trip count.  >      D4 -- a loop whose own body exits early is analysed as DIVERGENT: a thread that has left never  >            reaches a later iteration's barrier, so barriers and collectives inside are refused.
+  > Endeavour 180.  Runs the counted-loop ANALYZER on EXPR with its body's leading declarations  >    stripped, then records the unroll request on the node it returns.  The loop's own analysis  >    never sees a declaration.  >    Endeavour 184: every dotimes-family loop comes through here, so this is also where  >    return-from-loop learns which loop it is in.  >      D2 -- a + loop whose own body exits early is refused: a + loop promises a uniform trip count.  >    Endeavour 194: D4 is now judged AFTER the body (%194-judge-loop), against the uniformity of the  >    loop's exits, which only the analysis of the body can tell.  The body runs with a fresh  >    %194-loop-record; what it recorded also goes to the enclosing loop, which an exit of its own would  >    strand before this whole loop.
 
 
 ---
@@ -622,7 +664,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `ANALYZE-RETURN-FROM-LOOP-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (return-from-loop).  Endeavour 184 D1-D3: legal only in the body of a dotimes or a non-+  >    172 variant, lexically.  Returns a semantic-return-from-loop node (type void).
+  > Analyzes (return-from-loop).  Endeavour 184 D1-D3: legal only in the body of a dotimes or a non-+  >    172 variant, lexically.  Returns a semantic-return-from-loop node (type void).  >    Endeavour 194: records the exit's uniformity -- the lowest condition between it and its loop  >    (*194-loop-level*) -- for %194-judge-loop.
 
 
 ---
@@ -723,9 +765,15 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `ANALYZE-TO-WORKGROUP-UNIFORM`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
+  > Analyzes (to-workgroup-uniform X), legal only as a let initializer.  >    Endeavour 194 (F7): it BROADCASTS -- local thread 0's X reaches every thread through workgroup memory  >    and a barrier -- so it is a barrier: refused where only some threads arrive, and recorded for loop  >    exits and call sites like one.
+
+
 ---
 ### DEFUN `ANALYZE-TO-WARP-UNIFORM`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (to-warp-uniform X), legal only as a let initializer.  >    Endeavour 194 (F7): it BROADCASTS lane 0's X to its warp with a shuffle, so it is a warp collective:  >    refused where lanes of a warp may have split, and recorded like one.
+
 
 ---
 ### DEFUN `%BUILD-EXACT-ITER-COUNT-FORM`
@@ -1218,6 +1266,127 @@ Generated on 2026-10-25T22:44:11.574688Z
 ---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
 
+### DEFVAR `*IN-LANE-DIVERGENT*`
+
+  > Endeavour 194: T when some LANES of a warp may not reach the code being analysed -- inside a branch,  >    a loop bound or a loop exit governed by a per-thread (:divergent or :unknown) value.  A warp  >    collective (shuffle, reduce-warp, to-warp-uniform, sync-warp, or a call to a function containing one)  >    is refused here.  Its workgroup-level partner is *in-divergent-conditional*, which a merely  >    WARP-uniform condition also sets: a barrier needs the whole workgroup, a collective only the warp.
+
+
+---
+### DEFVAR `*194-DIVERGENCE-REASON*`
+
+  > Endeavour 194: why *in-divergent-conditional* is set, for the refusal message -- :conditional (a  >    per-thread if / when / unless / cond), :warp-conditional (a condition only WARP-uniform), or  >    :loop-bound (a loop whose trip count is not uniform).  NIL outside any such scope.
+
+
+---
+### DEFVAR `*194-LOOP-LEVEL*`
+
+  > Endeavour 194: the lowest uniformity of the conditions entered SINCE the innermost dotimes-family  >    loop began.  A return-from-loop records it as the uniformity of that exit.
+
+
+---
+### DEFSTRUCT `%194-LOOP-RECORD`
+
+  > Endeavour 194: what the innermost dotimes-family loop's body contained, judged when the loop ends.  >    EXITS  -- the scope level of each of its own return-from-loop forms.  >    EVENTS -- (kind name location nested) for each barrier (:barrier) or warp collective (:collective)  >              in it, nested loops included: an exit of THIS loop strands threads before all of them.  >              NESTED is T when the event sits in a nested loop or behind a call (BUG 141, SPIR-V).  >    SETS   -- the variables (parameter-defs) set! in it, lowered to the exit level afterwards.
+
+
+---
+### DEFVAR `*194-LOOP*`
+
+  > Endeavour 194: the %194-loop-record of the innermost dotimes-family loop being analysed, or NIL.
+
+
+---
+### DEFSTRUCT `%194-FN-SUMMARY`
+
+  > Endeavour 194: what a function's body does that its CALLERS must know (D3/D4).  >    BARRIER    -- the name of a barrier it reaches (directly or through a callee), or NIL.  >    COLLECTIVE -- the name of a warp collective it reaches, or NIL.  >    RETURNS    -- the uniformity of each (return ...) it executes, joined with the scope it ran in.
+
+
+---
+### DEFVAR `*194-FN-SUMMARY*`
+
+  > Endeavour 194: the %194-fn-summary of the function whose body is being analysed, or NIL.
+
+
+---
+### DEFVAR `*194-FUNCTION-SUMMARIES*`
+
+  > Endeavour 194: function NAME (string) -> %194-fn-summary, filled as each function is compiled.  >    Overloads of one name share an entry, merged conservatively.  Cleared by initialize-compiler.
+
+
+---
+### DEFVAR `*194-LANE-INDEX-NAMES*`
+
+  > Endeavour 194 (D-194-15): names of let-bound variables holding the local thread index --  >    (get-local-linear-id), or (get-local-id 0), through to-ulong / to-uint / to-long / to-int.  The  >    provenance %194-warp-index-division-p needs to see that (/ tid 32ul) is warp-uniform; uniformity values  >    alone cannot, since tid itself is just :divergent.
+
+
+---
+### DEFUN `%194-LEVEL`
+- **Args**: `(U)`
+
+  > Endeavour 194: uniformity U as a SCOPE level -- :uniform, :warp-uniform or :divergent.  :unknown  >    proves nothing, so it counts as :divergent.
+
+
+---
+### DEFUN `%194-MEET`
+- **Args**: `(A B)`
+
+  > Endeavour 194: the lower of two scope levels, ordered :uniform > :warp-uniform > :divergent.
+
+
+---
+### DEFUN `%194-CURRENT-LEVEL`
+
+  > Endeavour 194: the scope level of the code being analysed right now.
+
+
+---
+### DEFUN `%194-SUMMARY-KEY`
+- **Args**: `(NAME)`
+
+  > Endeavour 194: the *194-function-summaries* key for function NAME (a symbol or string).
+
+
+---
+### DEFUN `%194-RECORD-SUMMARY`
+- **Args**: `(NAME SUMMARY)`
+
+  > Endeavour 194: stores SUMMARY for function NAME, merging with an overload already stored -- a call  >    site cannot always tell overloads apart, so the merge is the conservative union.
+
+
+---
+### DEFUN `%194-SUMMARY-RESULT`
+- **Args**: `(SUMMARY)`
+
+  > Endeavour 194: the uniformity of a call's result from its callee SUMMARY -- the join of every return  >    it executes, whatever the arguments.  :unknown when nothing was recorded.
+
+
+---
+### DEFUN `%194-CLEAR-SUMMARIES`
+
+  > Endeavour 194: forgets every function summary.  Called by initialize-compiler, which lives in  >    src/compiler.lisp -- compiled before this file, hence a function rather than the variable.
+
+
+---
+### DEFUN `%194-LANE-INDEX-NODE-P`
+- **Args**: `(N)`
+
+  > Endeavour 194: T when the analysed node N is the local thread index, through casts.
+
+
+---
+### DEFUN `%194-ONE-DIMENSIONAL-WORKGROUP-P`
+
+  > Endeavour 194: T when the function being compiled declares a compile-time workgroup that is 1-D  >    (Y = Z = 1).  Warps are then consecutive runs of the local index on both targets.
+
+
+---
+### DEFUN `%194-WARP-INDEX-DIVISION-P`
+- **Args**: `(NODE)`
+
+  > Endeavour 194 (D-194-15): T when the division NODE is (/ <local thread index> K) with K a literal the  >    warp size divides, in a 1-D workgroup -- constant across every warp, so :warp-uniform.  (K need only  >    be a multiple of the width the kernel is compiled against: a smaller real warp divides it too.)
+
+
+---
 ### DEFVAR `*176-GENERIC-SCRATCH-RANGE*`
 
   > Endeavour 176.  Generic (&optional / &key) function name -> (START . COUNT): the scratch counter  >    before its body was scanned, and how many scratch buffers the scan registered.  Set by Pass 1  >    (multi-pass) or at the function's skip point (single-pass); read when its variants are generated.
@@ -1713,7 +1882,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 - **Args**: `(NAME EXPLICIT-ENV RETURN-TYPE PARAMS BODY DECLARATIONS LOCATION
               CONTEXT)`
 
-  > Core compilation logic for a function, accepting a pre-parsed environment.
+  > Core compilation logic for a function, accepting a pre-parsed environment.  >    Endeavour 194: the body is analysed in a FRESH divergence context -- a template instantiated while  >    its caller is mid-analysis must not inherit the caller's branch -- and leaves a %194-fn-summary that  >    its call sites are checked against (D3/D4).  The inner BLOCK keeps the template early-return on  >    that path, so the summary is recorded whichever way the body ends.
 
 
 ---
@@ -1793,7 +1962,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `%UNIFORMITY-JOIN`
 - **Args**: `(STATES)`
 
-  > The uniformity of a value computed from parts whose uniformity STATES are given: :divergent if any  >    part is, :uniform only if every part is, :unknown otherwise.
+  > The uniformity of a value computed from parts whose uniformity STATES are given: :divergent if any  >    part is, :uniform only if every part is, :unknown otherwise.  >    Endeavour 194: :warp-uniform when every part is :uniform or :warp-uniform (and not all :uniform).
 
 
 ---
@@ -1807,7 +1976,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `CALCULATE-UNIFORMITY-STATE`
 - **Args**: `(NODE ENV)`
 
-  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: per-work-item ids (get-global-id/get-local-id/*-linear-id/  >      get-global-id-abs) are :divergent; ids/sizes/offsets constant across the  >      workgroup (get-workgroup-id, get-num-groups, get-*-work-size, get-global-offset,  >      get-work-dim, get-*-linear-size, get-total-*) are :uniform.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
+  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :warp-uniform (Endeavour 194), :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: per-work-item ids (get-global-id/get-local-id/*-linear-id/  >      get-global-id-abs) are :divergent; ids/sizes/offsets constant across the  >      workgroup (get-workgroup-id, get-num-groups, get-*-work-size, get-global-offset,  >      get-work-dim, get-*-linear-size, get-total-*) are :uniform.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
 
 
 ---
@@ -1828,7 +1997,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `ANALYZE-FUNCTION-CALL`
 - **Args**: `(OP EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.  >    Extended (091): grid functions can only be called from a dispatch context.  >    Endeavour 193: a call to a function that may die makes the caller may-die too.  Multi-pass compiles  >    know this from Pass 1.5 already; --single-pass relies on this.  (A lazily instantiated variant marks  >    itself when its own body is analysed.)
+  > Analyzes a function call expression.  >    Checks for struct immutability violations via %check-struct-mutating-call.  >    Extended (091): grid functions can only be called from a dispatch context.  >    Endeavour 193: a call to a function that may die makes the caller may-die too.  Multi-pass compiles  >    know this from Pass 1.5 already; --single-pass relies on this.  (A lazily instantiated variant marks  >    itself when its own body is analysed.)  >    Endeavour 194 (D4, F3): a call reaches whatever its callee reaches.  A callee that contains a  >    barrier is refused where only some threads of the workgroup arrive; one that contains a warp  >    collective, where lanes may have split.  Both are recorded for the enclosing loop and the caller's  >    own summary, so the rule is transitive.
 
 
 ---
@@ -2722,10 +2891,17 @@ Generated on 2026-10-25T22:44:11.574688Z
 
 
 ---
+### DEFUN `%194-REDUCED-VARIABLES`
+- **Args**: `(EXPR)`
+
+  > Endeavour 194: the variables a reduce-warp form EXPR leaves reduced -- VAR for a single call, the  >    second element of each clause for an independent one.  A dependent call returns NIL (not inferred).
+
+
+---
 ### DEFUN `%ANALYZE-REDUCE-WARP`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for reduce-warp -- expands and delegates.  176: an independent call is lowered fused  >    (%fused-reduce-warp-form); a dependent call has its combiner checked against the clauses and is lowered  >    fused (%fused-reduce-warp-dependent-form).  Every dependent form reaches this analyzer, so the  >    combiner check covers reduce-workgroup and grid-reduce! too.
+  > Analyzer for reduce-warp -- expands and delegates.  176: an independent call is lowered fused  >    (%fused-reduce-warp-form); a dependent call has its combiner checked against the clauses and is lowered  >    fused (%fused-reduce-warp-dependent-form).  Every dependent form reaches this analyzer, so the  >    combiner check covers reduce-workgroup and grid-reduce! too.  >    Endeavour 194 (D3): after the butterfly every lane of the warp holds the same value, so each reduced  >    variable is :warp-uniform afterwards -- :uniform stays :uniform.  reduce-warp is itself refused in  >    lane-divergent code, so the butterfly always completes.
 
 
 ---
@@ -3097,7 +3273,7 @@ Generated on 2026-10-25T22:44:11.574688Z
 ### DEFUN `%ANALYZE-SET!-SIMPLE-VARIABLE`
 - **Args**: `(TARGET-FORM VALUE-NODE ENV LOCATION)`
 
-  > Helper to analyze simple variable assignment (set! target-form value-node).  >    Endeavor 120 (gap #5): taints the variable :divergent when mutated inside a  >    divergent block, or when assigned a divergent value.
+  > Helper to analyze simple variable assignment (set! target-form value-node).  >    Endeavor 120 (gap #5): taints the variable :divergent when mutated inside a  >    divergent block, or when assigned a divergent value.  >    Endeavour 194: two levels.  Set inside a scope only some WARPS reach, or to a warp-uniform value, a  >    :uniform variable becomes :warp-uniform -- the other warps never saw the store.  The variable is also  >    recorded for the enclosing loop, whose early exits lower it once more (%194-judge-loop).
 
 
 ---
@@ -6575,6 +6751,20 @@ Generated on 2026-10-25T22:44:11.574688Z
 
 
 ---
+### DEFUN `%194-WORKGROUP-SLOT`
+- **Args**: `(MODULE LLVM-TYPE)`
+
+  > Endeavour 194 (F7): a fresh workgroup-memory (addrspace 3) global of LLVM-TYPE for one  >    to-workgroup-uniform site -- `.shared` on PTX, a Workgroup OpVariable on SPIR-V.  Internal and undef:  >    workgroup memory has no initializer on either target, and the slot is always written before it is read.
+
+
+---
+### DEFUN `%194-WORKGROUP-BARRIER`
+- **Args**: `(BUILDER MODULE)`
+
+  > Endeavour 194: a workgroup barrier on the current target.
+
+
+---
 ### DEFPARAMETER `*STREAM-UNROLL-MAX-FACTOR*`
 
   > Endeavour 180.  The largest factor the stream default picks.  Probe 1 measured up to x8; a  >    1-byte element would otherwise ask for x16, which no probe has run.
@@ -7841,7 +8031,7 @@ Generated on 2026-10-25T22:44:11.574688Z
               (DENORMAL-HANDLING PRESERVE) (HARDWARE-PROFILE NIL)
               (LOGGING-OUTPUT NIL) (LOGGING-SIZE NIL))`
 
-  > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.  >    Endeavour 193: LOGGING-OUTPUT (--logging-output) implies RUNTIME-CHECKS; under DIFFERENTIATE the  >    log is off (the gradient kernels are compiled without it) but RUNTIME-CHECKS is honoured.  >    LOGGING-SIZE is the log's size in bytes (--logging-size, default 4M).
+  > Initializes the compiler state.  >    Extended to clear *grid-functions* for def-grid-function support.  >    Endeavour 193: LOGGING-OUTPUT (--logging-output) implies RUNTIME-CHECKS; under DIFFERENTIATE the  >    log is off (the gradient kernels are compiled without it) but RUNTIME-CHECKS is honoured.  >    LOGGING-SIZE is the log's size in bytes (--logging-size, default 4M).  >    Endeavour 194: also forgets the function summaries (%194-clear-summaries).
 
 
 ---
