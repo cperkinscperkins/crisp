@@ -214,6 +214,15 @@ literal; `(local-size :set-to (warp-size))` is not yet accepted there — BUG 11
       (set! (~ Res (get-workgroup-id 0)) sum))))
 ```
 
+**Atomics** take a place `(~ v i)`.  `atomic-add! atomic-sub! atomic-inc! atomic-dec! atomic-min!
+atomic-max! atomic-xchg! atomic-cas! atomic-binop! atomic-op!` read-modify-write it and return the OLD
+value; `(atomic-load place)` and `(atomic-store! place v)` are a plain atomic read and write (32- and
+64-bit scalars only).  Every one is relaxed at device scope: it **orders nothing**, so a publish is
+data, `(mem-fence)`, flag, and a poll is flag, `(mem-fence)`, data.  An atomic may read an `&out`
+(a plain `(~ out i)` read may not), so a kernel can poll the flags it publishes into.  A complete
+publish / poll kernel, run on metal: `tests/spec/195-atomic-load/05-publish-poll-across-workgroups-metal.crisp`.
+`atomic-load` is not differentiable; an integer `atomic-store!` is inert under `--differentiate`.
+
 ---
 
 ## 9. Reductions

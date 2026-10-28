@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "cannot reproduce"
+;; CHECK-FAIL: "cannot reproduce"
+;; CHECK-FAIL-FLAGS: --differentiate
+;; Endeavour 195 D-195-7: the forward kernel compiles; under the differentiate flag an atomic-load is
+;; refused for EVERY element type -- here a uint flag that steers a float result.  The backward kernel is
+;; a separate launch that replays the forward's bindings but not its statements, so the replayed load
+;; would read whatever the flag holds by then, not the value the forward saw.
+
+(def-type f-vec (vector float :address-space :global :align :compact))
+
+(def-kernel k_f (x &out y)
+  (declare #'(f-vec &out f-vec => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((flags (make-scratch-vector uint :match-workgroup-size))
+        (l (to-ulong (get-local-id 0)))
+        (i (get-global-id 0)))
+    (atomic-store! (~ flags l) 1u)
+    (let ((s (if (= (atomic-load (~ flags l)) 1u) 3.0 1.0)))
+      (set! (~ y i) (* s (~ x i))))))

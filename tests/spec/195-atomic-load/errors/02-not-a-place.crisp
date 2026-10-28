@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must be a memory location"
+;; Endeavour 195: an atomic store needs a place in memory.  A let variable lives in a register; no
+;; other thread can see it, so there is nothing for an atomic to do.
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel k_b (&out a)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 4))
+  (let ((v 3u))
+    (atomic-store! v 4u)
+    (set! (~ a 0) v)))

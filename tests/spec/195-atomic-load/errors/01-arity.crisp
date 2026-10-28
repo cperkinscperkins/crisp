@@ -1,0 +1,10 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "expected 1 argument"
+;; Endeavour 195: atomic-load takes exactly one argument, the place.
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel k_a (&out a)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 4))
+  (set! (~ a 0) (atomic-load (~ a 1) 2u)))

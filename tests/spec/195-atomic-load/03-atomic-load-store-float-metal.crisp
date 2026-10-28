@@ -1,0 +1,29 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-relaxed-load-store
+;; TEST-WITH[--ir-target=spv] : validate-spv-relaxed-load-store
+;; FAIL-WITH[--differentiate]: "cross-thread"
+;; CHECK-FAIL: "cross-thread"
+;; CHECK-FAIL-FLAGS: --differentiate
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER a: 0 2 4 6
+;; HOIST-EXPECT: BUFFER b: 0.5 2.5 4.5 6.5
+;; HOIST-EXPECT: BUFFER c: 0.25 3.25 6.25 9.25
+;;
+;; Endeavour 195: float and double elements load and store as themselves (no bit-pattern games, unlike
+;; atomic-cas!).  The inputs are pre-filled 0 1 2 3.
+;;
+;; D-195-7: under the differentiate flag a FLOAT atomic-load / atomic-store! is refused.  The only
+;; reason to use one is to move a value between threads, and that dataflow is invisible to the
+;; backward walk -- differentiating it as a plain read would be a silently wrong gradient.
+
+(def-type f-vec (vector float  :address-space :global :align :compact))
+(def-type d-vec (vector double :address-space :global :align :compact))
+
+(def-kernel atomic_load_store_fp (xs ys &out a b c)
+  (declare #'(f-vec d-vec &out f-vec f-vec d-vec => nil)
+           (global-size :set-to 4))
+  (let ((i (get-global-id 0)))
+    (atomic-store! (~ a i) (* 2.0 (~ xs i)))
+    (set! (~ b i) (+ (atomic-load (~ a i)) 0.5))
+    (atomic-store! (~ c i) (+ (* 3.0d (~ ys i)) 0.25d))))

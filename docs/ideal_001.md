@@ -8650,7 +8650,7 @@ system-wide fence on every attempt.)
 
 
 ### Atomic Operations ⚠️
-Crisp provides a number of built-in atomic operations that perform their work on shared memory locations. Each function is guaranteed to be a single, indivisible transaction.  Each one updates some variable in place and returns the value at the location BEFORE the modification occured.
+Crisp provides a number of built-in atomic operations that perform their work on shared memory locations. Each function is guaranteed to be a single, indivisible transaction.  Each one updates some variable in place and returns the value at the location BEFORE the modification occured.  (`atomic-load` and `atomic-store!`, at the end of this section, are the exceptions: a plain atomic read and a plain atomic write.)
 
 #### atomic-add! ✅
 Adds a value to a memory location, updating it. This routine returns the value BEFORE this modification. This "fetch-and-add" behavior is the classic parallel reduction primitive.
@@ -8793,6 +8793,59 @@ program's inputs -- two identical runs can legitimately return different values 
 derivative to take. `--differentiate` refuses it rather than returning a gradient of zero, which
 would be indistinguishable from a correct answer. For a differentiable accumulation use
 `atomic-add!`, `(atomic-binop! loc #'+ x)`, or one of the `grid-reduce-*` strategies.
+
+#### atomic-load ✅
+Atomically reads a memory location and returns its value.  It changes nothing, so it has no `!`, and
+unlike every atomic above it does not return "the value before a modification" -- there is no
+modification.  Use it to POLL a location that other threads write: a flag, a ticket, a packed
+value-and-state word.
+
+Syntax: `(atomic-load location)`
+
+Example: `(when (= (atomic-load (~ ready 0)) 1u) ...)`
+
+Before `atomic-load` existed, a poll had to be a read-modify-write that changes nothing --
+`(atomic-add! (~ flag 0) 0)` -- which PTX executes as an `atom` at L2.  `atomic-load` is a plain
+relaxed load: `ld.relaxed.gpu` on NVIDIA, `OpAtomicLoad` (Device scope, Relaxed) on SPIR-V.
+
+#### atomic-store! ✅
+Atomically writes a value to a memory location.  It is not an exchange and returns nothing useful
+(like `set!`); when you need the old value, use `atomic-xchg!`.
+
+Syntax: `(atomic-store! location value)`
+
+Example: `(atomic-store! (~ ready 0) 1u)`
+
+PTX `st.relaxed.gpu`; SPIR-V `OpAtomicStore` (Device scope, Relaxed).
+
+**Both are relaxed, like every Crisp atomic.**  They are indivisible -- a 64-bit word is never seen
+half-written -- and they order nothing.  The publish / poll idiom puts the ordering in fences:
+
+```lisp
+;; publisher                          ;; poller
+(set! (~ data i) v)                   (when (= (atomic-load (~ flag i)) 1u)
+(mem-fence)                             (mem-fence)
+(atomic-store! (~ flag i) 1u)           (~ data i))
+```
+
+When the value and its state fit in ONE word, no fence is needed at all: the word is the message.
+
+**Types.**  The element must be a 32- or 64-bit scalar: `int`, `uint`, `long`, `ulong`, `float`,
+`double`.  8- and 16-bit elements, device vectors (`float4`) and structs are refused -- the SPIR-V
+lowering would need 16-bit atomic extensions, and a vector is more than one word.  Both work on
+`:global` and `:local` memory, and an `atomic-load` may read an `&out` parameter (polling your own
+outputs is the point), as every atomic RMW may.
+
+**Measure before replacing an `atomic-xchg!` publish.**  In a decoupled-lookback prefix sum on H100
+(2026-10-27), polling with `atomic-load` instead of `(atomic-add! loc 0)` was neutral, but publishing
+with `atomic-store!` instead of `atomic-xchg!` made the kernel 20% SLOWER (presumably the pollers
+see a relaxed store later than an `atom.exch`; nothing else in the PTX differed).  `atomic-store!` is the right tool when nobody is spinning on the location.
+
+**Autodiff.**  `atomic-load` is not differentiable, for any element type: it reads a value another
+thread (or an earlier statement) published, and the backward kernel -- a separate launch that replays
+the forward's bindings but not its statements -- cannot reproduce it.  An integer `atomic-store!` is
+inert (no derivative to carry); a floating-point one is refused, because it exists to hand a value to
+another thread and that dataflow is invisible to the backward pass.
 
 #### Example: Summing a Vector to One Value.
 
