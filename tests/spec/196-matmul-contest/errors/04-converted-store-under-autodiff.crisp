@@ -1,0 +1,26 @@
+;; CHECK-FAIL: "not differentiable yet"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --hardware-profile=h100 --differentiate
+;;
+;; Endeavour 196 (D-196-12).  Under --differentiate a converted store source is refused BY NAME -- not
+;; "No adjoint rule for the tile expression", and not the "Unknown variable C-TILE_ADJ" that resolving
+;; the adjoint's name alone produced.  When the accumulator backward learns to see through the
+;; conversion this spec flips: delete it and drop the SKIP-WITH[--differentiate] lines in this directory.
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel converted_store_bwd (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix half (16 16)))
+        (B-tile (make-scratch-matrix half (16 8)))
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

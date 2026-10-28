@@ -1,17 +1,17 @@
 # GPU MODE Contest Report: `histogram_v2`
 
-> Generated from [`results/histogram_v2.json`](results/histogram_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/539?tab=rankings](https://www.gpumode.com/leaderboard/539?tab=rankings) (Crisp commit `01ce81a5`).
+> Generated from [`results/histogram_v2.json`](results/histogram_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/539?tab=rankings](https://www.gpumode.com/leaderboard/539?tab=rankings) (Crisp commit `0e648a7f`).
 
 **Workload:** 256-bin histogram of 1D uint8 tensor. task.yml lists 6 benchmarks (1.31M-10.49M bytes; contention 10/40/90%), but kernelbot ranks by RankCriterion.LAST (the default; task.yml sets no ranking_by): the score is the LAST case only, 10,485,760 bytes at 10% contention.
 
 ## § 1 — Official Leaderboard Standings
 
-| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
+| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#29** / 35 | **16.38 µs** | 16.42 µs | 640.2 GB/s | 57.7% (`9.45 µs`) | [`crisp_histogram_lastman_4rep_cs256_adaptive.py`](04-histogram-v2/crisp_histogram_lastman_4rep_cs256_adaptive.py) ([`.crisp`](04-histogram-v2/histogram_lastman_4rep_cs256.crisp)) | — | `2026-10-26 07:45` |
-| **H100** | Hopper (sm_90) | **#16** / 29 | **14.90 µs** | 16.87 µs | 703.7 GB/s | 59.7% (`8.89 µs`) | [`crisp_histogram_lastman_u4_cs256.py`](04-histogram-v2/crisp_histogram_lastman_u4_cs256.py) ([`.crisp`](04-histogram-v2/histogram_lastman_u4_cs256.crisp)) | — | `2026-10-26 07:45` |
-| **A100** | Ampere (sm_80) | **#20** / 28 | **23.55 µs** | 23.07 µs | 445.3 GB/s | 59.2% (`13.95 µs`) | [`crisp_histogram_lastman_u4_direct64.py`](04-histogram-v2/crisp_histogram_lastman_u4_direct64.py) ([`.crisp`](04-histogram-v2/histogram_lastman_u4.crisp)) | — | `2026-10-26 07:45` |
-| **L4** | Ada Lovelace (sm_89) | **#6** / 20 | **63.44 µs** | 64.12 µs | 165.3 GB/s | 96.8% (`61.43 µs`) | [`crisp_histogram_lastman_u4_cs256.py`](04-histogram-v2/crisp_histogram_lastman_u4_cs256.py) ([`.crisp`](04-histogram-v2/histogram_lastman_u4_cs256.crisp)) | — | `2026-10-26 07:45` |
+| **B200** | Blackwell (sm_100) | **#29** / 35 | **16.38 µs** | 16.42 µs | 640.2 GB/s | 57.7% (`9.45 µs`) | [`crisp_histogram_lastman_4rep_cs256_adaptive.py`](04-histogram-v2/crisp_histogram_lastman_4rep_cs256_adaptive.py) ([`.crisp`](04-histogram-v2/histogram_lastman_4rep_cs256.crisp)) | — | `2026-10-28 09:51` |
+| **H100** | Hopper (sm_90) | **#16** / 30 | **14.90 µs** | 16.87 µs | 703.7 GB/s | 59.7% (`8.89 µs`) | [`crisp_histogram_lastman_u4_cs256.py`](04-histogram-v2/crisp_histogram_lastman_u4_cs256.py) ([`.crisp`](04-histogram-v2/histogram_lastman_u4_cs256.crisp)) | — | `2026-10-28 09:51` |
+| **A100** | Ampere (sm_80) | **#20** / 28 | **23.55 µs** | 23.07 µs | 445.3 GB/s | 59.2% (`13.95 µs`) | [`crisp_histogram_lastman_u4_direct64.py`](04-histogram-v2/crisp_histogram_lastman_u4_direct64.py) ([`.crisp`](04-histogram-v2/histogram_lastman_u4.crisp)) | — | `2026-10-28 09:51` |
+| **L4** | Ada Lovelace (sm_89) | **#6** / 20 | **63.44 µs** | 64.12 µs | 165.3 GB/s | 96.8% (`61.43 µs`) | [`crisp_histogram_lastman_u4_cs256.py`](04-histogram-v2/crisp_histogram_lastman_u4_cs256.py) ([`.crisp`](04-histogram-v2/histogram_lastman_u4_cs256.crisp)) | — | `2026-10-28 09:51` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -32,7 +32,7 @@
 
 
 
-| GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
+| GPU | Architecture | Beauty Score | Achieved BW / TFLOPS | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
 |---|---|---:|---:|---:|---:|---|---|---:|
 | **H100** | Hopper (sm_90) | **22.50 µs** | 466.0 GB/s | **39.5%** (`8.89 µs`) | 66.2% (`14.90 µs`) | [`crisp_histogram_lastman_u4_cs256.py`](04-histogram-v2/crisp_histogram_lastman_u4_cs256.py) | `benchmark` | `#966692` |
 

@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 04: Histogram (uint8 -> 256 int64 bins under 10%/40%/90% Contention)",
   "leaderboard_id": 539,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/539?tab=rankings",
-  "crisp_commit": "01ce81a5",
+  "crisp_commit": "0e648a7f",
   "workload": {
     "description": "256-bin histogram of 1D uint8 tensor. task.yml lists 6 benchmarks (1.31M-10.49M bytes; contention 10/40/90%), but kernelbot ranks by RankCriterion.LAST (the default; task.yml sets no ranking_by): the score is the LAST case only, 10,485,760 bytes at 10% contention",
     "total_traffic_bytes": 10485760
@@ -32,7 +32,7 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-26T07:45:42Z",
+      "captured_at": "2026-10-28T09:51:03Z",
       "user_name": "cperkinscperkins",
       "rank": 29,
       "total_entrants": 35,
@@ -48,10 +48,10 @@
       "median_score_us": 12.05
     },
     "H100": {
-      "captured_at": "2026-10-26T07:45:42Z",
+      "captured_at": "2026-10-28T09:51:03Z",
       "user_name": "cperkinscperkins",
       "rank": 16,
-      "total_entrants": 29,
+      "total_entrants": 30,
       "file_name": "crisp_histogram_lastman_u4_cs256.py",
       "crisp_file": "04-histogram-v2/histogram_lastman_u4_cs256.crisp",
       "py_file": "04-histogram-v2/crisp_histogram_lastman_u4_cs256.py",
@@ -61,10 +61,10 @@
       "submission_id": 966697,
       "top1_score_us": 8.89,
       "top1_user": "zjsxply",
-      "median_score_us": 14.13
+      "median_score_us": 14.9
     },
     "A100": {
-      "captured_at": "2026-10-26T07:45:42Z",
+      "captured_at": "2026-10-28T09:51:03Z",
       "user_name": "cperkinscperkins",
       "rank": 20,
       "total_entrants": 28,
@@ -80,7 +80,7 @@
       "median_score_us": 21.5
     },
     "L4": {
-      "captured_at": "2026-10-26T07:45:42Z",
+      "captured_at": "2026-10-28T09:51:03Z",
       "user_name": "cperkinscperkins",
       "rank": 6,
       "total_entrants": 20,

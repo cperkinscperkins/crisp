@@ -415,3 +415,409 @@
          (%196-refuse-converted-non-accumulator "store-tile-at" convert src-type location))
         (t
          (analyze-store-tile-at-expression expr env context location))))))
+
+;;;; ==========================================================================================
+;;;; ENDEAVOUR 196 (matmul contest gaps) -- (b): the Ampere cp.async load-tile, VECTORIZED.
+;;;;
+;;;; (load-tile SRC TILE coords :barrier BAR) with a :linear barrier on PTX (A100 / L4: no TMA) was
+;;;; one cp.async per ELEMENT, and PTX cp.async moves only 4, 8 or 16 bytes, so a half / bfloat16
+;;;; tile was refused outright ("element type HALF needs 4 or 8 bytes").  Now:
+;;;;
+;;;;   * the last (contiguous) tile dimension is walked in 16-byte CHUNKS -- one cp.async .16 per
+;;;;     chunk (8 halves, 4 floats, 2 doubles) -- when a uniform run-time test says the layout
+;;;;     allows it: source and tile contiguous in the last dimension, every other stride and the
+;;;;     origin's last coordinate a multiple of the chunk (D-196-7);
+;;;;   * a chunk that runs off the tile or the source falls back to per-element copies with the
+;;;;     identity fill, exactly as before;
+;;;;   * when the layout test fails, the old per-element loop runs; and an element under 4 bytes in
+;;;;     that per-element path is copied SYNCHRONOUSLY (a plain set!) instead of being refused --
+;;;;     correct, just not asynchronous.
+;;;; ==========================================================================================
+
+;; src/analysis/control.lisp
+(defun analyze-%cp-async-copy-elem-expression (expr env context location)
+  "Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref> [BYTES]) — one non-blocking cp.async,
+   dst (SLM) <- src (global).  Both operands are aref forms; codegen grabs each element's address
+   (the aref's 3rd return value) and emits cp.async.ca.shared.global.
+
+   Endeavour 196: optional BYTES (4, 8 or 16) copies that many bytes starting at the element -- the
+   vectorized load-tile passes 16 for a whole chunk.  BYTES must be a multiple of the element size.
+   Without BYTES an element under 4 bytes (half, bfloat16, char ...) cannot be a cp.async at all, so it
+   is analysed as the SYNCHRONOUS copy (set! dst src): the per-element fallback of a 16-bit tile stays
+   correct instead of being refused."
+  (let* ((bytes-arg (fourth expr))
+         (dst-node (analyze-expression (second expr) env context (append location '(1))))
+         (elem-type (semantic-node-type dst-node))
+         (elem (if (listp elem-type) (first elem-type) elem-type))
+         (elem-size (case elem
+                      ((char uchar) 1)
+                      ((short ushort half bfloat16) 2)
+                      ((int uint float) 4)
+                      ((long ulong double) 8)
+                      (t nil))))
+    (log:debug "196 cp-async-copy-elem: elem=~a size=~a bytes=~a" elem elem-size bytes-arg)
+    (cond
+      ((null elem-size)
+       (error 'crisp-compiler-error
+              :message (format nil "%cp-async-copy-elem: element type ~S has no cp.async size" elem-type)
+              :source-location location))
+      ((and (null bytes-arg) (< elem-size 4))
+       (analyze-expression (list (intern "SET!" (find-package :crisp-language)) (second expr) (third expr))
+                           env context location))
+      (t
+       (let ((bytes (or bytes-arg elem-size)))
+         (unless (and (member bytes '(4 8 16)) (zerop (mod bytes elem-size)))
+           (error 'crisp-compiler-error
+                  :message (format nil "%cp-async-copy-elem: ~a bytes is not a cp.async size (4, 8, 16) that is a multiple of the ~a-byte element ~S" bytes elem-size elem)
+                  :source-location location))
+         (make-semantic-cp-async-copy-elem
+          :dst-aref-node dst-node
+          :src-aref-node (analyze-expression (third expr) env context (append location '(2)))
+          :elem-bytes bytes
+          :type 'nil
+          :source-location location))))))
+
+;; src/analysis/control.lisp (new, after %expand-async-load-tile-at-form)
+(defun %196-expand-async-load-tile-vec-form (expr location vec &optional static-dims)
+  "Endeavour 196.  Like %expand-async-load-tile-at-form, but the LAST tile dimension is walked in
+   chunks of VEC elements (VEC x element-size = 16 bytes), each chunk one (%cp-async-copy-elem tile src 16).
+
+   A uniform run-time test VOK picks the vector nest or the original per-element nest:
+     - source and tile have stride 1 in the last dimension,
+     - every other source / tile stride is a multiple of VEC,
+     - the origin's last coordinate is a multiple of VEC.
+   Each thread's chunk starts at a multiple of VEC within the tile, so together these make every
+   chunk 16-byte aligned on both sides -- ASSUMING the tensors' base addresses (pointer + offsets)
+   are 16-byte aligned, which no Crisp form can test (D-196-8).
+
+   A chunk that is not wholly inside the tile and the source is copied element by element, with the
+   identity for out-of-bounds elements -- the same contract as the scalar path.
+
+   Thread mapping (like the scalar nest): dims 0..n-2 stride by the local work size, the last dim
+   strides by VEC x its local work size, thread lid starting at lid x VEC.
+
+   STATIC-DIMS, when the tile's shape is a compile-time literal (a make-scratch-matrix / -ring binding),
+   replaces the run-time extents~ reads: the chunk walk divides and takes remainders by the tile
+   extents, and a 64-bit divide by a VARIABLE costs dozens of instructions per chunk, where a divide by
+   a literal power of two is a shift.  (A100: the flattened walk on run-time extents made the 1-warp
+   kernel 6.8 -> 9.6 ms.)"
+  (let* ((src-form (second expr))
+         (tile-form (third expr))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (identity-form (%extract-key-arg key-args :identity 0))
+         (n (length origin-list))
+         (last (1- n))
+         (cl (find-package :crisp-language))
+         (s (lambda (name) (intern name cl)))
+         (src (gensym "SRC")) (tile (gensym "TILE")) (ident (gensym "IDENT")) (vok (gensym "VOK"))
+         (orig (loop for i below n collect (gensym (format nil "ORIG~A" i))))
+         (tc   (loop for i below n collect (gensym (format nil "TLC~A" i))))
+         (te   (loop for i below n collect (gensym (format nil "TE~A" i))))
+         (ge   (loop for i below n collect (gensym (format nil "GE~A" i))))
+         (lid  (loop for i below n collect (gensym (format nil "LID~A" i))))
+         (lws  (loop for i below n collect (gensym (format nil "LWS~A" i))))
+         (uvec (list (funcall s "TO-ULONG") vec)))
+    (labels ((sym (name) (funcall s name))
+             (u (x) (list (sym "TO-ULONG") x))
+             (stride (tensor k) (list (sym "~") (list (sym "STRIDES~") tensor) k))
+             (src-coords (last-coord)
+               (loop for k below n
+                     collect (list (sym "+") (nth k orig) (if (= k last) last-coord (nth k tc)))))
+             (tile-aref (last-coord)
+               (list* (sym "~") tile (loop for k below n collect (if (= k last) last-coord (nth k tc)))))
+             (src-aref (last-coord) (list* (sym "~") src (src-coords last-coord)))
+             (in-bounds (last-coord)
+               (%tlc-all-in-bounds-form n (src-coords last-coord) ge (sym "<") (sym "AND")))
+             (one-elem (last-coord)
+               ;; per-element: async when in bounds (sync for <4-byte elements), identity otherwise
+               (list (sym "IF") (in-bounds last-coord)
+                     (list (sym "%CP-ASYNC-COPY-ELEM") (tile-aref last-coord) (src-aref last-coord))
+                     (list (sym "SET!") (tile-aref last-coord) ident))))
+      (let* ((tcl (nth last tc)) (tel (nth last te))
+             (chunk-end (list (sym "+") tcl uvec))
+             (whole-chunk-ok
+               (list (sym "AND")
+                     (list (sym "<=") chunk-end tel)
+                     (%tlc-all-in-bounds-form
+                      n (src-coords (list (sym "+") tcl (u (1- vec)))) ge (sym "<") (sym "AND"))))
+             (chunk
+               (list (sym "IF") whole-chunk-ok
+                     (list (sym "%CP-ASYNC-COPY-ELEM") (tile-aref tcl) (src-aref tcl) 16)
+                     (cons (sym "PROGN")
+                           (loop for j below vec
+                                 for cj = (if (zerop j) tcl (list (sym "+") tcl (u j)))
+                                 collect (list (sym "WHEN") (list (sym "<") cj tel) (one-elem cj))))))
+             ;; FLATTENED chunk walk: every thread of the workgroup takes chunks q = LIN, LIN+NT, ...
+             ;; over all TE0 x .. x TE(n-2) x NCH chunks, row-major, so consecutive threads take
+             ;; consecutive 16-byte chunks of a row (coalesced) and no thread idles because a tile
+             ;; dimension is shorter than the workgroup (a 16-row B slice under 128 threads).
+             (nch (gensym "NCH")) (tot (gensym "TOT")) (lin (gensym "LIN")) (nt (gensym "NT"))
+             (qb (gensym "QB")) (q (gensym "Q"))
+             (rests (loop for k below n collect (gensym "R")))
+             (mul (lambda (forms) (reduce (lambda (x y) (list (sym "*") x y)) forms)))
+             (decomp-bindings
+               (append
+                (list (list tcl (list (sym "*") (list (sym "REM") q nch) uvec)))
+                (when (> n 1)
+                  (list (list (nth (- n 2) rests) (list (sym "/") q nch))))
+                (loop for k from (- n 2) downto 0
+                      append (list (list (nth k tc) (list (sym "REM") (nth k rests) (nth k te))))
+                      when (> k 0)
+                        append (list (list (nth (1- k) rests) (list (sym "/") (nth k rests) (nth k te)))))))
+             (vec-nest
+               (list (sym "LET")
+                     (list (list nch (list (sym "/") (list (sym "+") tel (u (1- vec))) uvec))
+                           (list lin (u (list (sym "GET-LOCAL-LINEAR-ID"))))
+                           (list nt (funcall mul lws))
+                           (list tot (funcall mul (append (butlast te) (list nch)))))
+                     (list (sym "DOTIMES") (list qb tot nt)
+                           (list (sym "LET") (list (list q (list (sym "+") qb lin)))
+                                 (list (sym "WHEN") (list (sym "<") q tot)
+                                       (list (sym "LET") decomp-bindings chunk))))))
+             (scalar-nest (%tlc-coop-loop-skeleton n tile nil tc te lid lws (one-elem tcl) cl))
+             (vok-form
+               (cons (sym "AND")
+                     (append
+                      (list (list (sym "=") (stride src last) (u 1))
+                            (list (sym "=") (stride tile last) (u 1))
+                            (list (sym "=") (list (sym "REM") (nth last orig) uvec) (u 0)))
+                      (loop for k below last
+                            append (list (list (sym "=") (list (sym "REM") (stride src k) uvec) (u 0))
+                                         (list (sym "=") (list (sym "REM") (stride tile k) uvec) (u 0)))))))
+             (bindings
+               (append
+                (list (list src src-form)
+                      (list tile tile-form)
+                      (list ident (list (sym "%ELEMENT-OF-CAST") tile identity-form)))
+                (loop for i below n collect (list (nth i orig) (u (nth i origin-list))))
+                (loop for i below n collect (list (nth i te)
+                                                  (if static-dims
+                                                      (u (nth i static-dims))
+                                                      (list (sym "~") (list (sym "EXTENTS~") tile) i))))
+                (loop for i below n collect (list (nth i ge) (list (sym "~") (list (sym "EXTENTS~") src) i)))
+                (loop for i below n collect (list (nth i lid) (list (sym "GET-LOCAL-ID") i)))
+                (loop for i below n collect (list (nth i lws) (list (sym "GET-LOCAL-WORK-SIZE") i))))))
+        (declare (ignorable location))
+        (log:debug "196 vectorized load-tile: n=~a vec=~a" n vec)
+        (list (sym "LET") bindings
+              (list (sym "LET") (list (list vok vok-form))
+                    (list (sym "PROGN")
+                          (list (sym "IF") vok vec-nest scalar-nest)
+                          (list (sym "%CP-ASYNC-COMMIT")))))))))
+
+;; src/analysis/control.lisp (new helper, before analyze-load-tile-at-expression)
+(defun %196-static-tile-dims (tile-form rank)
+  "Endeavour 196.  The compile-time (ROWS COLS) of TILE-FORM -- a scratch-matrix binding or a ring-get of
+   a scratch-matrix ring -- from *mma-scratch-tile-dims* (published by the enclosing LET), or NIL."
+  (let* ((sym (cond ((symbolp tile-form) tile-form)
+                    ((and (consp tile-form) (symbolp (first tile-form))
+                          (string= (symbol-name (first tile-form)) "RING-GET")
+                          (symbolp (second tile-form)))
+                     (second tile-form))))
+         (dims (and sym (cdr (assoc sym *mma-scratch-tile-dims*)))))
+    (and dims (= (length dims) rank) (every #'integerp dims) dims)))
+
+;; src/analysis/control.lisp (new helper, before analyze-load-tile-at-expression)
+(defun %196-cp-async-vec-width (tile-form env context location)
+  "Endeavour 196.  Elements per 16-byte cp.async chunk for TILE-FORM's element type (8 for half /
+   bfloat16, 4 for float / int, 2 for double / long, 16 for char), or NIL when the element type is
+   unknown.  Analysing TILE-FORM here is a pure read: it is a variable or a ring-get."
+  (let* ((node (analyze-expression tile-form env context location))
+         (elem (get-array-element-type (semantic-node-type node))))
+    (case elem
+      ((char uchar) 16)
+      ((short ushort half bfloat16) 8)
+      ((int uint float) 4)
+      ((long ulong double) 2)
+      (t nil))))
+
+;; src/analysis/control.lisp
+(defun analyze-load-tile-at-expression (expr env context location)
+  "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
+   Rejects placement inside a thread-divergent conditional. If :barrier is provided
+   and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
+   codegen via %expand-load-tile-at-form.
+   Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).
+   Endeavour 196: a :linear barrier on PTX without :transpose takes the VECTORIZED cp.async nest
+   (%196-expand-async-load-tile-vec-form, 16-byte chunks); with :transpose the per-element one."
+  ;; Endeavour 192: the cache hint comes from the tensor's type; a per-operation :cache is refused.
+  (%refuse-per-operation-cache "load-tile-at" (nthcdr 4 expr) location)
+  ;; Endeavor 139: inside a warp-spec block, %warp-spec-check-block-only (after mode resolution)
+  ;; governs instead of the thread-divergent check.
+  (unless *in-warp-spec-block* (%tlc-check-not-divergent "load-tile-at" location))
+  (%tlc-check-elem-match (second expr) (third expr) env "load-tile-at" location)
+  (let* ((key-args (nthcdr 4 expr))
+         (barrier-form (%extract-key-arg key-args :barrier nil)))
+    (when (and (getf key-args :barrier) (getf key-args :transformF))
+       (error 'crisp-compiler-error :message "Cannot use :barrier and :transformF together" :source-location location))
+    ;; Endeavor 137: the barrier's :mode (looked up via its binding) picks the lowering.
+    (let ((mode (and barrier-form (async-barrier-mode-of barrier-form))))
+      (%warp-spec-check-block-only "load-tile" mode location)
+      (cond
+        ;; :block on PTX (Chapter 1.5, Phase 2) — NVIDIA TMA: one bulk descriptor-driven copy
+        ;; (cp.async.bulk.tensor...mbarrier::complete_tx::bytes) issued by an elected leader,
+        ;; tracked by the barrier's SLM mbarrier.  Arch (sm_90+) already gated at barrier parse.
+        ((and barrier-form (eq mode :block) (eq *target-backend* :ptx))
+         (%analyze-nvvm-tma-load-tile-at expr env context location))
+        ;; :block on any other target (the GENERIC compile-check pass; SPV is rejected at
+        ;; barrier parse) — fall to the sync staging so the kernel still compiles + runs
+        ;; correctly (just not block-optimized).
+        ((and barrier-form (eq mode :block))
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :ptx))
+         ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
+         ;; Endeavour 196: vectorized (16-byte chunks) unless :transpose reorders the walk.
+         (let ((vec (and (null (%extract-key-arg key-args :transpose nil))
+                         (%196-cp-async-vec-width (third expr) env context (append location '(2))))))
+           (log:debug "196 load-tile-at :linear PTX: vec=~a" vec)
+           (analyze-expression (if vec
+                                   (%196-expand-async-load-tile-vec-form
+                                    expr location vec (%196-static-tile-dims (third expr) (length (fourth expr))))
+                                   (%expand-async-load-tile-at-form expr location))
+                               env context location)))
+        ((and barrier-form (eq mode :linear) (eq *target-backend* :spirv)
+              (<= (length (fourth expr)) 2))
+         ;; Endeavor 136 (Chapter 1, SPV): 1D -> one OpGroupAsyncCopy; 2D -> per-row.
+         (analyze-expression (%expand-spirv-async-load-tile-at-form expr location)
+                             env context location))
+        (t
+         (analyze-expression (%expand-load-tile-at-form expr location)
+                             env context location))))))
+
+;;;; ==========================================================================================
+;;;; ENDEAVOUR 196 -- the register FIT-CHECK charges a DISTRIBUTED tile per warp (D-196-10).
+;;;;
+;;;; (make-register-tile float (128 128) 0.0 :warps '(true true true true)) spreads 128 fragments over
+;;;; four warps: each thread holds 32 fragments = 128 registers.  The fit check charged all 128 fragments
+;;;; (512 registers) to every thread and refused the tile, so a multi-warp register tile could never be
+;;;; bigger than a single warp could hold -- which is the point of distributing it.
+;;;; ==========================================================================================
+
+;; src/mma.lisp (new, before %register-tile-fit-check)
+(defvar *196-tile-warp-shares* nil
+  "Endeavour 196.  ((M N ELEM N-TRUE) ...) for the register tiles of the LET being exploded, so the fit
+   check can charge a :warps-distributed tile per warp.  Bound by the %explode-register-tiles wrapper.")
+
+;; src/mma.lisp (new helper)
+(defun %196-tile-warp-shares (bindings location)
+  "Endeavour 196.  For each (V (make-register-tile ELEM (M N) INIT ... :warps MASK)) binding, (M N ELEM
+   N-TRUE); N-TRUE is 1 without :warps."
+  (loop for b in bindings
+        when (and (consp b) (= (length b) 2) (symbolp (first b))
+                  (%register-tile-init-form-p (second b)))
+          collect (let* ((form (second b))
+                         (warps-in (getf (nthcdr 4 form) :warps))
+                         (mask (and warps-in (%normalize-warp-mask (%warp-mask-unquote warps-in) location))))
+                    (list (first (third form)) (second (third form)) (second form)
+                          (max 1 (if mask (count t mask) 1))))))
+
+;; src/mma.lisp -- WRAPPER around %explode-register-tiles.  FOLD: bind *196-tile-warp-shares* in the
+;; original's LET* (next to *register-tile-elems*) and drop the wrapper.
+(defvar *196-orig-explode-register-tiles* (fdefinition '%explode-register-tiles))
+(defun %explode-register-tiles (let-expr &optional location context)
+  "Endeavour 196 wrapper: publishes each register tile's warp share for %register-tile-fit-check, then
+   runs the original."
+  (let ((*196-tile-warp-shares*
+          (if (and (consp let-expr) (>= (length let-expr) 2) (listp (second let-expr)))
+              (%196-tile-warp-shares (second let-expr) location)
+              *196-tile-warp-shares*)))
+    (funcall *196-orig-explode-register-tiles* let-expr location context)))
+
+;; src/mma.lisp
+(defun %register-tile-fit-check (m n location &optional (elem 'float))
+  "F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque
+   cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is
+   separate (Phase 4).  Else: (M/fr)x(N/fc) accumulator fragments x regs-per-fragment <=
+   :max-registers-per-thread.
+
+   Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since
+   :max-registers-per-thread may be a scalar OR a list of selectable modes.
+
+   Endeavour 165 (BUG 058): also refuses a tile too SMALL to hold one fragment.  A tile that
+   overflows the register budget and a tile that holds nothing are the same kind of mistake and
+   are named by the same function, at compile time, rather than discovered as a spill or as an
+   empty kernel.
+
+   Endeavour 165 (2b-i): takes ELEM so both bounds use the element type's own fragment geometry.
+   Inert while %acc-frag-mn answers 16x8 for everything.
+
+   Endeavour 196 (D-196-10): a tile distributed over N-TRUE warps (:warps) costs each thread
+   ceil(fragments / N-TRUE) fragments -- the share it actually allocates -- looked up in
+   *196-tile-warp-shares* by (M N ELEM)."
+  (unless (eq *target-backend* :spirv)
+    (destructuring-bind (fr . fc) (%acc-frag-mn elem)
+      (%register-tile-dims-must-divide m n location fr fc)
+      (let* ((share         (or (fourth (find-if (lambda (e) (and (eql (first e) m) (eql (second e) n)
+                                                                      (equal (symbol-name (third e))
+                                                                             (symbol-name elem))))
+                                                     *196-tile-warp-shares*))
+                                1))
+             (nfrags-all    (* (floor m fr) (floor n fc)))
+             (nfrags        (ceiling nfrags-all share))
+             (regs-per-frag 4)
+             (total-regs    (* nfrags regs-per-frag))
+             (budget        (or (%hp-registers-per-thread-default)
+                                *default-max-registers-per-thread*)))
+        (log:debug "196 fit-check ~ax~a ~a: ~a fragments over ~a warp(s) -> ~a regs (budget ~a)"
+                   m n elem nfrags-all share total-regs budget)
+        (when (> total-regs budget)
+          (error 'crisp-compiler-error
+                 :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs~a), exceeding the register budget of ~a.  Use a smaller tile shape, distribute it over more warps (:warps), or a hardware profile with a larger :max-registers-per-thread."
+                                  m n total-regs nfrags regs-per-frag
+                                  (if (> share 1) (format nil ", ~a-way :warps share" share) "")
+                                  budget)
+                 :source-location location))))))
+
+;;;; ==========================================================================================
+;;;; ENDEAVOUR 196 -- `await` on a :linear barrier (PTX cp.async) also synchronises the workgroup
+;;;; (D-196-11).
+;;;;
+;;;; cp.async.wait_group N waits for the CALLING THREAD's own copies only.  A cooperative load-tile always
+;;;; spreads a tile's elements over the workgroup, so after a bare wait_group a thread may read shared
+;;;; memory another thread's copy has not reached yet.  CUDA's canonical sequence is
+;;;; cp_async_wait_all(); __syncthreads().  Found on A100 (matmul_v2, 4-warp kernel with the flattened
+;;;; chunk walk): 2.8% of outputs wrong, every one-warp kernel right.  Inside a warp-specialized block the
+;;;; old behaviour is kept -- a workgroup barrier there would wait for warps that never reach it.
+;;;; ==========================================================================================
+
+;; src/analysis/control.lisp -- WRAPPER around analyze-await-expression.  FOLD: in the original's
+;; (eq *target-backend* :ptx) cp.async branch, return the progn built below.
+(defvar *196-orig-analyze-await-expression* (fdefinition 'analyze-await-expression))
+(defun analyze-await-expression (expr env context location)
+  "Endeavour 196 wrapper: a cp.async await (a :linear barrier on PTX) outside a warp-specialized block
+   becomes wait_group + sync-workgroup, so every thread sees every thread's copies.  See D-196-11."
+  (let ((node (funcall *196-orig-analyze-await-expression* expr env context location)))
+    (if (and (semantic-nvvm-cp-async-wait-p node) (not *in-warp-spec-block*))
+        (let ((sync (analyze-expression (list (intern "SYNC-WORKGROUP" (find-package :crisp-language)))
+                                        env context location)))
+          (log:debug "196 await: cp.async wait_group + sync-workgroup")
+          (make-semantic-progn :type (semantic-node-type sync)
+                               :body (list node sync)
+                               :source-location location))
+        node)))
+
+;;;; ==========================================================================================
+;;;; ENDEAVOUR 196 -- autodiff of (store-tile (to-half D) C ...) is REFUSED, by name (D-196-12).
+;;;;
+;;;; Mathematically the adjoint of (to-half D) is D's adjoint (a precision cast is the identity on value,
+;;;; the rule %ad-widening-conversion-form-p applies to a scalar).  But the backward machinery asks
+;;;; "is the store source a register / wgmma accumulator SYMBOL" in several places -- the activity scan
+;;;; that mints <tile>_ADJ, %mma-ad-register-accumulator-tile-p, the wgmma store path -- and resolving the
+;;;; name alone only moved the failure to "Unknown variable C-TILE_ADJ".  Until those agree, refuse with a
+;;;; message that says what is missing instead of "No adjoint rule for the tile expression".
+;;;; ==========================================================================================
+
+;; src/autodiff.lisp -- WRAPPER around %tlc-bwd-adj-name.  FOLD: add the clause to the original's COND,
+;; before the (not (symbolp sym)) refusal.
+(defvar *196-orig-tlc-bwd-adj-name* (fdefinition '%tlc-bwd-adj-name))
+(defun %tlc-bwd-adj-name (sym inputs outputs local-adj-fn kernel-pkg)
+  "Endeavour 196 wrapper: a converted tile -- (to-half D), (to-bfloat16 D) -- as a store source is refused
+   under --differentiate with a message naming the gap (D-196-12).  Everything else goes to the original."
+  (if (%ad-widening-conversion-form-p sym)
+      (error 'crisp-compiler-error
+             :message (format nil "--differentiate: ~(~s~) as a store source is not differentiable yet.  Its adjoint is ~(~a~)'s (a precision cast is the identity on value), but the accumulator backward does not yet see through the conversion (endeavour 196, D-196-12).  The forward kernel compiles without --differentiate."
+                              sym (second sym))
+             :source-location nil)
+      (funcall *196-orig-tlc-bwd-adj-name* sym inputs outputs local-adj-fn kernel-pkg)))

@@ -1,5 +1,6 @@
 ;; CHECK-FAIL: "needs X to be an MMA accumulator"
 ;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
 ;;
 ;; Endeavour 196 (D-196-3).  (to-half X) as a store source is the fused narrowing of an f32 MMA
 ;; ACCUMULATOR.  X here is a scratch matrix, which has no f32 fragment to narrow; refuse at analysis,

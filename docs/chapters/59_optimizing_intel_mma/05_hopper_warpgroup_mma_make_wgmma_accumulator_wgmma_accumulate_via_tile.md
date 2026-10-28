@@ -58,4 +58,15 @@ Shape rules — grounded in the ISA, checked at compile time:
 wgmma is **forward-only** (no autodiff) and NVIDIA-Hopper-only; on other targets use
 `mma-accumulate-via-tile`.
 
+**Storing the accumulator.**  `(store-tile D C (gy gx))` places a 64×N accumulator by tile index;
+`(store-tile-at D C (row col))` places it at an absolute origin (needed when two consumer warpgroups
+split a 128-row tile).  The accumulator is `float`; to write a `half` / `bfloat16` matrix, convert on the
+source — `(store-tile-at (to-half D) C (row col))` — and each element is rounded to nearest-even as it is
+stored (endeavour 196).
+
+wgmma reads B **K-major**: declare B `(N K)`, i.e. a `(K N)` matrix that is `:col-major`.  A row-major
+`(K N)` B (PyTorch's plain `a @ b`) is refused today; transpose it first.  Blackwell (sm_100) has no
+wgmma — its tensor-core instruction is `tcgen05`, not yet in Crisp — so B200 kernels use
+`mma-accumulate-via-tile`.
+
 

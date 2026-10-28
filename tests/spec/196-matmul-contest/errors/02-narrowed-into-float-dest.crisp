@@ -1,5 +1,6 @@
 ;; CHECK-FAIL: "storing a half into an element of type float"
 ;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
 ;;
 ;; Endeavour 196 (D-196-1).  (to-half D) converts D's elements to half; the destination must then be
 ;; a half matrix.  Storing those halves into a FLOAT matrix is refused by set!'s ordinary rule (an

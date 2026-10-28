@@ -1,0 +1,28 @@
+;; matmul_v2 -- the SMALL-SHAPE kernel: any M multiple of 16, N of 8, K of 16.
+;;
+;; The fast kernels tile 128x256 (H100) / 64x64 (B200) with a 64-deep K step, so the contest's
+;; correctness shapes (32x512x32, 64x64x64, ...) need something smaller.  It must still be a
+;; TENSOR-CORE kernel summing K in order: the check is bit-exact against cuBLAS, and an fp32 FMA
+;; loop misses ~1% of outputs by one fp16 ulp (contests/gpu-mode/06-matmul-v2/README.md).
+;;
+;; One warp per 16x8 output tile.  B is the contest's own (K N) row-major b -- no transpose: the
+;; cooperative load-tile copies elements, and the fragment read takes B as (K N).
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul_small (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix half (16 16)))
+        (B-tile (make-scratch-matrix half (16 8)))
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

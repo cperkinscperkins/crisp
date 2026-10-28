@@ -1,17 +1,17 @@
 # GPU MODE Contest Report: `prefixsum_v2`
 
-> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `01ce81a5`).
+> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `0e648a7f`).
 
 **Workload:** Inclusive prefix sum (cumsum) of 1D float32 tensor across 11 benchmark sizes from 262,144 to 268,435,456 elements.
 
 ## § 1 — Official Leaderboard Standings
 
-| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
+| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#15** / 34 | **461.29 µs** | 462.49 µs | 4.66 TB/s | 51.3% (`236.70 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
-| **H100** | Hopper (sm_90) | **#10** / 30 | **756.96 µs** | 753.57 µs | 2.84 TB/s | 92.8% (`702.23 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
-| **A100** | Ampere (sm_80) | **#21** / 29 | **1692.50 µs** | 1690.42 µs | 1.27 TB/s | 54.5% (`922.11 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
-| **L4** | Ada Lovelace (sm_89) | **#13** / 24 | **9147.39 µs** | 9161.28 µs | 234.8 GB/s | 70.6% (`6454.27 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-26 07:45` |
+| **B200** | Blackwell (sm_100) | **#15** / 34 | **461.29 µs** | 462.49 µs | 4.66 TB/s | 51.3% (`236.70 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-28 09:51` |
+| **H100** | Hopper (sm_90) | **#10** / 30 | **756.96 µs** | 753.57 µs | 2.84 TB/s | 92.8% (`702.23 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-28 09:51` |
+| **A100** | Ampere (sm_80) | **#21** / 29 | **1692.50 µs** | 1690.42 µs | 1.27 TB/s | 54.5% (`922.11 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-28 09:51` |
+| **L4** | Ada Lovelace (sm_89) | **#13** / 24 | **9147.39 µs** | 9161.28 µs | 234.8 GB/s | 70.6% (`6454.27 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-28 09:51` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -30,7 +30,7 @@
 
 
 
-| GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
+| GPU | Architecture | Beauty Score | Achieved BW / TFLOPS | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
 |---|---|---:|---:|---:|---:|---|---|---:|
 | **B200** | Blackwell (sm_100) | **1033.70 µs** | 2.08 TB/s | **22.9%** (`236.70 µs`) | 44.6% (`461.29 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) | `leaderboard` | `#967074` |
 | **H100** | Hopper (sm_90) | **2164.62 µs** | 992.1 GB/s | **32.4%** (`702.23 µs`) | 35.0% (`756.96 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) | `leaderboard` | `#967070` |

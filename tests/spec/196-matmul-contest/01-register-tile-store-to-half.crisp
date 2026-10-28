@@ -17,6 +17,7 @@
 ;;
 ;; SKIP-DEFAULT-PASS
 ;; TEST-WITH[--ir-target=ptx --hardware-profile=h100] : validate-ptx-store-to-half
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
 (def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
 (def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
 (def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))

@@ -1,0 +1,24 @@
+;; matmul_v2 -- A100 / L4 variant: four warps share each staged A / B slice.
+;;
+;; The 1-warp kernel (matmul_ampere_cp_async.crisp) stages a 64x16 A and 16x64 B slice for one 64x64
+;; output tile.  Here a 128x128 output tile is spread over a 2x2 warp grid (:warps), so each staged
+;; slice feeds four warps' MMAs: half the global traffic per FLOP.
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel matmul_ampere_4w (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (128 16)))
+        (B-tile (make-scratch-matrix half (16 128)))
+        (C-tile (make-register-tile float (128 128) 0.0 :warps '(true true true true)))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

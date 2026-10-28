@@ -190,6 +190,20 @@ OPEN
       MN-major, so it is not just flipping the bit.  tf32 has no transpose -- keep refusing there.
       Found 2026-10-27 on matmul_v2 (GPU MODE): its b is (K N) contiguous in N, the plain `a @ b`
       layout.  First contest entry transposes B in the wrapper instead (~25 us tax on H100).
+- [ ] ldmatrix for load-fragment-a / -b on PTX.  The mma.sync path reads every operand fragment from
+      shared memory one 2-byte element at a time (ld.shared.b16 + packing; no ldmatrix anywhere).  The
+      A100 matmul_v2 entry (4-warp, vectorized cp.async) is 4.7 ms vs cuBLAS 0.67 ms.  ldmatrix.x4 for A
+      and ldmatrix.x2.trans for a (K N) B, plus a padded or swizzled scratch layout against bank
+      conflicts.  Found 2026-10-28, endeavour 196.
+- [ ] (local-size :set-to N) should emit .maxntid N (or .reqntid) in the PTX.  Without it ptxas may
+      spend 255 registers a thread and a 288-thread block cannot launch ("too many resources requested
+      for launch"); the matmul_v2 launcher passes CU_JIT_THREADS_PER_BLOCK to compensate.  Endeavour 196.
+- [ ] offsets~ accessor for tensors (strides~ and extents~ exist).  The vectorized cp.async load-tile
+      ASSUMES the base address + offsets is 16-byte aligned because it cannot test it (D-196-8).
+- [ ] autodiff through a converted store source, (store-tile (to-half D) C ...) -- refused by name today
+      (D-196-12).  The adjoint of (to-half D) is D's; the accumulator backward must see through the
+      conversion in the activity scan, %mma-ad-register-accumulator-tile-p and the wgmma store path.
+      Then delete tests/spec/196-matmul-contest/errors/04 and that directory's SKIP-WITH[--differentiate].
 - [ ] tcgen05 lowering (B200/B300, sm_100a) -- its own endeavour.  wgmma is sm_90a only, so today
       B200 falls back to mma.sync.  Surface mostly fits the wgmma forms; new pieces: TMEM accumulator
       (compiler-managed alloc/dealloc), single-thread issue, completion via tcgen05.commit -> mbarrier

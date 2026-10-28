@@ -4,7 +4,7 @@
   "leaderboard_id": 544,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/544?tab=rankings",
   "directory": "02-vectorsum-v2",
-  "crisp_commit": "01ce81a5",
+  "crisp_commit": "0e648a7f",
   "workload": {
     "dtype": "float32",
     "sizes": [
@@ -47,10 +47,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-26T07:45:45Z",
+      "captured_at": "2026-10-28T09:51:07Z",
       "user_name": "cperkinscperkins",
       "rank": 37,
-      "total_entrants": 81,
+      "total_entrants": 82,
       "file_name": "crisp_vectorsum_lastman_wg_occ1.py",
       "crisp_file": "02-vectorsum-v2/vectorsum_lastman_wg.crisp",
       "py_file": "02-vectorsum-v2/crisp_vectorsum_lastman_wg_occ1.py",
@@ -60,13 +60,13 @@
       "submission_id": null,
       "top1_score_us": 37.03,
       "top1_user": "uno03270@gmail.com",
-      "median_score_us": 50.59
+      "median_score_us": 50.83
     },
     "H100": {
-      "captured_at": "2026-10-26T07:45:45Z",
+      "captured_at": "2026-10-28T09:51:07Z",
       "user_name": "cperkinscperkins",
       "rank": 32,
-      "total_entrants": 67,
+      "total_entrants": 68,
       "file_name": "crisp_vectorsum_lastman_u8_cs256.py",
       "crisp_file": "02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp",
       "py_file": "02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py",
@@ -76,13 +76,13 @@
       "submission_id": 966529,
       "top1_score_us": 67.92,
       "top1_user": "salad",
-      "median_score_us": 83.32
+      "median_score_us": 83.38
     },
     "A100": {
-      "captured_at": "2026-10-26T07:45:45Z",
+      "captured_at": "2026-10-28T09:51:07Z",
       "user_name": "cperkinscperkins",
       "rank": 64,
-      "total_entrants": 115,
+      "total_entrants": 117,
       "file_name": "crisp_vectorsum_lastman_u8_cs256.py",
       "crisp_file": "02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp",
       "py_file": "02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py",
@@ -92,13 +92,13 @@
       "submission_id": 966547,
       "top1_score_us": 101.24,
       "top1_user": "WGX11",
-      "median_score_us": 143.42
+      "median_score_us": 143.45
     },
     "L4": {
-      "captured_at": "2026-10-26T07:45:45Z",
+      "captured_at": "2026-10-28T09:51:07Z",
       "user_name": "cperkinscperkins",
       "rank": 11,
-      "total_entrants": 43,
+      "total_entrants": 44,
       "file_name": "crisp_vectorsum_lastman_u8_cs256.py",
       "crisp_file": "02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp",
       "py_file": "02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py",
@@ -108,7 +108,7 @@
       "submission_id": 966550,
       "top1_score_us": 692.02,
       "top1_user": "zjsxply",
-      "median_score_us": 949.93
+      "median_score_us": 951.55
     }
   },
   "kernels": [

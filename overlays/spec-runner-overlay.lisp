@@ -58,3 +58,47 @@
    %196-validate-ptx-store-narrowed."
   (declare (ignore file))
   (%196-validate-ptx-store-narrowed ptx-string "bf16" "to-bfloat16"))
+
+;; tests/run-specs.lisp -- Endeavour 196 (b), after validate-ptx-store-to-bfloat16.
+(defun validate-ptx-cp-async-16 (file ptx-string)
+  "Endeavour 196 (b): the Ampere cp.async load-tile of a HALF tile.  Two-sided: a 16-byte cp.async
+   (`cp.async.ca.shared.global [..], [..], 16;`) is present -- the chunked copy, the only cp.async a
+   2-byte element can use -- AND the fp16 m16n8k16 MMA is present, so the staged tile reached the tensor
+   cores as half."
+  (declare (ignore file))
+  (let ((has16 (loop with start = 0
+                     for pos = (search "cp.async.ca.shared.global" ptx-string :start2 start)
+                     while pos
+                     thereis (let ((semi (position #\; ptx-string :start pos)))
+                               (and semi (search ", 16" ptx-string :start2 pos :end2 semi)))
+                     do (setf start (1+ pos))))
+        (mma (search "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" ptx-string)))
+    (cond
+      ((not has16)
+       (format *error-output* "FAIL: no 16-byte cp.async -- the half tile was not copied in chunks~%")
+       nil)
+      ((not mma)
+       (format *error-output* "FAIL: 16-byte cp.async present but no fp16 m16n8k16 MMA~%")
+       nil)
+      (t t))))
+
+;; tests/run-specs.lisp -- Endeavour 196, after validate-ptx-cp-async-16.
+(defun validate-ptx-cp-async-wait-then-barrier (file ptx-string)
+  "Endeavour 196 (D-196-11): every `cp.async.wait_group` is immediately followed by a CTA barrier
+   (`bar.sync` / `barrier.sync`), so no thread reads a tile chunk another thread is still copying."
+  (declare (ignore file))
+  (let ((lines (remove-if (lambda (l) (or (zerop (length (string-trim '(#\Space #\Tab #\Return) l)))
+                                          (search "//" (string-trim '(#\Space #\Tab) l) :end2 (min 2 (length (string-trim '(#\Space #\Tab) l))))))
+                          (uiop:split-string ptx-string :separator '(#\Newline))))
+        (waits 0) (bad 0))
+    (loop for (l next) on lines
+          when (search "cp.async.wait_group" l)
+            do (incf waits)
+               (unless (and next (or (search "bar.sync" next) (search "barrier.sync" next)))
+                 (incf bad)))
+    (cond
+      ((zerop waits)
+       (format *error-output* "FAIL: no cp.async.wait_group at all~%") nil)
+      ((plusp bad)
+       (format *error-output* "FAIL: ~a of ~a cp.async.wait_group not followed by a CTA barrier~%" bad waits) nil)
+      (t t))))
