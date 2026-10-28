@@ -122,6 +122,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (REGISTER-OPS-ANALYZERS)  analysis/ops.lisp
 - - - - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp
 - - - - - - - - - (%185-REGISTER-MATH-OP-ANALYZERS)  analysis/ops.lisp
+- - - - - - - - - (REGISTER-195-ATOMIC-ACCESS-ANALYZERS)  analysis/ops.lisp
+- - - - - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
 - - - - - - - - (REGISTER-CONTROL-ANALYZERS)  analysis/control.lisp
 - - - - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
 - - - - - - - - - (REGISTER-LOOP-VARIANT-ANALYZERS)  analysis/control.lisp
@@ -791,7 +793,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - (%MV-BUILD-ZERO-I64-ARRAY RANK)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%MV-ROW-MAJOR-STRIDES EXTENTS)  analysis/structs.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%MV-BUILD-CONST-I64-ARRAY BUILDER RANK VALUES)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%184-DEVICE-SYNC-SCOPE MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%195-BUILD-ATOMIC-LOAD BUILDER MODULE PTR LLVM-TYPE ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%195-MAKE-RELAXED-DEVICE INST MODULE ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%184-DEVICE-SYNC-SCOPE MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%195-ATOMIC-ALIGNMENT ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%195-BUILD-ATOMIC-STORE BUILDER MODULE PTR VAL ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%195-MAKE-RELAXED-DEVICE INST MODULE ELEM-TYPE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%184-DEVICE-SYNC-SCOPE MODULE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%SV-TO-I64 BUILDER VAL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%GET-BUILTIN-VEC3 BUILDER MODULE SPIRV-NAME)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-SREG-VEC3 BUILDER MODULE SREG-BASE)  codegen.lisp
@@ -1624,6 +1633,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%193-PAREN-READER STREAM CHAR)  reader.lisp
 - - (%193-LINE-OF OFFSET NEWLINES)  reader.lisp
 
+- (%195-VJP-ATOMIC-LOAD FORM CTX)  autodiff.lisp
+
+- (%195-VJP-ATOMIC-STORE FORM CTX)  autodiff.lisp
+- - (%195-PLACE-ELEM-CATEGORY PLACE CTX)  autodiff.lisp
+- - - (%AD-REPLAY-PLACE-SYM PLACE)  autodiff.lisp
+- - - (%195-ELEM-CATEGORY-OF-TYPE TYPE-SPEC)  autodiff.lisp
+- - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+
 - (%AD-REPLAY-READ-SYMS FORM)  autodiff.lisp
 
 - (%AD-REPLAY-SCALAR-WRITE-TARGETS FORM)  autodiff.lisp
@@ -2067,7 +2084,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%AD-REPLAY-FORMS-FOR-SCOPE FORMS &OPTIONAL INHERITED)  autodiff.lisp
 - - - - - (%AD-REPLAY-SLICE FORMS TILES)  autodiff.lisp
 - - - - - - (%AD-REPLAY-FILL-TARGETS FORM)  autodiff.lisp
-- - - - - - - (%AD-REPLAY-PLACE-SYM PLACE)  autodiff.lisp
+- - - - - - - (%AD-REPLAY-PLACE-SYM PLACE)  autodiff.lisp [See above]
 - - - - - - (%AD-REPLAY-BARRIER-P FORM)  autodiff.lisp
 - - - - - - - (%AD-REPLAY-OP-NAME-P FORM NAME)  autodiff.lisp [See above]
 - - - - - (%AD-REPLAY-CHECK-SAFE SLICE TILES)  autodiff.lisp
@@ -2404,6 +2421,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-ATOMIC-INC!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
 
+- (ANALYZE-ATOMIC-LOAD-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%195-CHECK-ARITY OP-NAME EXPR EXPECTED LOCATION)  analysis/ops.lisp
+- - (%195-ANALYZE-ATOMIC-PLACE OP-NAME EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (%195-CHECK-ATOMIC-ACCESS-ELEM OP-NAME ELEM-TYPE LOCATION)  analysis/ops.lisp
+- - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+
 - (ANALYZE-ATOMIC-MAX!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
 
@@ -2412,6 +2436,27 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-ATOMIC-SET!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
+
+- (ANALYZE-ATOMIC-STORE!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (%195-CHECK-ARITY OP-NAME EXPR EXPECTED LOCATION)  analysis/ops.lisp [See above]
+- - (%195-ANALYZE-ATOMIC-PLACE OP-NAME EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp [See above]
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%195-CHECK-STORE-VALUE-TYPE TARGET-NODE VALUE-NODE LOCATION)  analysis/ops.lisp
+- - - (%CHECK-ELEMENT-STORE-TYPE TARGET-NODE VALUE-NODE LOCATION)  analysis/structs.lisp
+- - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
+- - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
+- - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp
+- - - - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [See above]
+- - - - - (%CT-QUALIFIED-ARG-FITS-BARE-PARAM-P ARG-TYPE PARAM-TYPE)  types/hierarchy.lisp
+- - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - (%STRUCT-HAS-REQUIRED-CT-MEMBER-P STRUCT-NAME)  types/hierarchy.lisp
+- - - - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
+- - - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
+- - - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
 
 - (ANALYZE-ATOMIC-SUB!-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
@@ -2570,15 +2615,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%MEMBER-ACCESS-STRUCT-NAME OBJ-TYPE)  structs.lisp [See above]
 - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp
-- - - (TYPES-EQUIVALENT-P T1 T2)  types/validation.lisp [See above]
-- - - (%CT-QUALIFIED-ARG-FITS-BARE-PARAM-P ARG-TYPE PARAM-TYPE)  types/hierarchy.lisp
-- - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - (%STRUCT-HAS-REQUIRED-CT-MEMBER-P STRUCT-NAME)  types/hierarchy.lisp
-- - - - - (LOOKUP-STRUCT-DEFINITION TYPE-NAME)  structs.lisp [See above]
-- - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
-- - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp [See above]
 
 - (ANALYZE-IS-SET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
@@ -2974,13 +3011,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (TYPES-LIST-COMPATIBLE-P ARG-TYPES PARAM-TYPES)  type-checker.lisp [See above]
 - - - (ENSURE-TEMPLATE-INSTANTIATION NAME EXPLICIT-ARG-TYPES COMPILER-CALLBACK)  templates.lisp [See above]
 - - - (%CHECK-AREF-BOUNDARY-MUTATION AREF-NODE LOCATION)  analysis/core.lisp
-- - - (%CHECK-ELEMENT-STORE-TYPE TARGET-NODE VALUE-NODE LOCATION)  analysis/structs.lisp
-- - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
-- - - - (IS-BRAND-TYPE-P TYPE-NAME)  types/brand.lisp [See above]
-- - - - (%FN-NAME-IS-GRAD-P NAME)  autodiff.lisp [See above]
-- - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
-- - - - (TYPES-COMPATIBLE-P ARG-TYPE PARAM-TYPE)  type-checker.lisp [See above]
+- - - (%CHECK-ELEMENT-STORE-TYPE TARGET-NODE VALUE-NODE LOCATION)  analysis/structs.lisp [See above]
 - - - (%ANALYZE-SET!-STRUCT-ACCESSOR OP ARG-NODES VALUE-NODE ENV CONTEXT LOCATION TARGET-FORM)  analysis/structs.lisp
 - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - (%CHECK-STRUCT-BOUNDARY-MUTATION STRUCT-NODE ENV CONTEXT LOCATION)  analysis/core.lisp

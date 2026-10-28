@@ -494,6 +494,99 @@ set!  analyzer's behavior in analysis/structs.lisp."
   "Analyzes (atomic-set! target new-val) — alias for atomic-xchg!."
   (%analyze-atomic-rmw-expression :xchg expr env context location))
 
+;;; Endeavour 195 -- atomic-load / atomic-store!.  Decisions D-195-1..9 in
+;;; tests/spec/195-atomic-load/atomic-load.md.  Registered by register-ops-analyzers.
+
+(defun %195-check-atomic-access-elem (op-name elem-type location)
+  "Endeavour 195 D-195-4.  Refuse an atomic-load / atomic-store! whose element is not a 32- or 64-bit
+   scalar -- int, uint, long, ulong, float or double.  An atomic load or store is one machine word."
+  (multiple-value-bind (category bits lanes) (%hw-type-parts elem-type)
+    (log:debug "195 ~a: element ~s -> category ~s, ~s bits, lanes ~s" op-name elem-type category bits lanes)
+    (unless (and category (null lanes) (member bits '(32 64)))
+      (error 'crisp-type-error
+             :message (format nil "~a: the element type ~(~a~) is not a 32- or 64-bit scalar.  An atomic load or store moves one indivisible machine word: int, uint, long, ulong, float or double.  8- and 16-bit types are refused because the SPIR-V lowering would need 16-bit atomic extensions the PTX one does not, and a device vector or a struct is more than one word"
+                              op-name elem-type)
+             :source-location location))))
+
+(defun %195-check-arity (op-name expr expected location)
+  "Endeavour 195.  EXPR must have exactly EXPECTED arguments."
+  (let ((actual (1- (length expr))))
+    (unless (= actual expected)
+      (error 'crisp-type-error
+             :message (format nil "~a: expected ~a argument~:p, got ~a" op-name expected actual)
+             :source-location location))))
+
+(defun %195-analyze-atomic-place (op-name expr env context location)
+  "Endeavour 195.  Analyse the PLACE of an atomic-load / atomic-store! (EXPR's second element) and
+   return its semantic-aref.
+
+   The place is analysed in WRITE access mode for BOTH operators (D-195-9).  A plain read of an &out
+   parameter is refused, and every atomic RMW is exempt from that because it analyses its place in
+   write mode.  The arrays a kernel publishes into and polls are its &outs, so atomic-load needs the
+   same exemption or it could not replace an (atomic-add! place 0) poll."
+  (let* ((target-form (second expr))
+         (target-node (let ((*analysis-access-mode* :write))
+                        (analyze-expression target-form env context (append location '(1))))))
+    (unless (semantic-aref-p target-node)
+      (error 'crisp-type-error
+             :message (format nil "~a: target must be a memory location like (~~ vec idx), got ~a"
+                              op-name target-form)
+             :source-location location))
+    (%195-check-atomic-access-elem op-name (semantic-aref-type target-node) location)
+    target-node))
+
+(defun %195-check-store-value-type (target-node value-node location)
+  "Endeavour 195.  atomic-store! obeys set!'s element rule (186, BUG 059): an element holds exactly its
+   own type.  Reuses %check-element-store-type and renames the operator in its message."
+  (handler-case (%check-element-store-type target-node value-node location)
+    (crisp-type-error (e)
+      (let ((msg (type-error-message e)))
+        (error 'crisp-type-error
+               :message (if (and (stringp msg) (eql 0 (search "set!:" msg)))
+                            (concatenate 'string "atomic-store!:" (subseq msg 5))
+                            msg)
+               :source-location location)))))
+
+(defun analyze-atomic-load-expression (expr env context location)
+  "Analyzes (atomic-load place) -- endeavour 195.  A RELAXED, DEVICE-scope atomic read of PLACE that
+   returns its value.  Not a read-modify-write: PTX ld.relaxed.gpu, SPIR-V OpAtomicLoad.  Represented
+   as a semantic-atomic-rmw with op :load and no delta (D-195-5)."
+  (%195-check-arity "atomic-load" expr 1 location)
+  (let ((target (%195-analyze-atomic-place "atomic-load" expr env context location)))
+    (log:debug "195 atomic-load of a ~s element" (semantic-aref-type target))
+    (make-semantic-atomic-rmw :type (semantic-aref-type target)
+                              :op :load
+                              :target-node target
+                              :delta-node nil
+                              :source-location location)))
+
+(defun analyze-atomic-store!-expression (expr env context location)
+  "Analyzes (atomic-store! place value) -- endeavour 195.  A RELAXED, DEVICE-scope atomic write of
+   VALUE to PLACE.  Not an exchange (that is atomic-xchg!): its type is void, like set! (D-195-3).
+   PTX st.relaxed.gpu, SPIR-V OpAtomicStore.  A semantic-atomic-rmw with op :store; the value rides
+   in the delta slot."
+  (%195-check-arity "atomic-store!" expr 2 location)
+  (let* ((target     (%195-analyze-atomic-place "atomic-store!" expr env context location))
+         (value-node (analyze-expression (third expr) env context (append location '(2)))))
+    (%195-check-store-value-type target value-node location)
+    (log:debug "195 atomic-store! into a ~s element" (semantic-aref-type target))
+    (make-semantic-atomic-rmw :type 'void
+                              :op :store
+                              :target-node target
+                              :delta-node value-node
+                              :source-location location)))
+
+(defun register-195-atomic-access-analyzers ()
+  "Endeavour 195.  Registers atomic-load / atomic-store! under both packages, like the 082 atomics."
+  (def-expression-analyzer atomic-load   analyze-atomic-load-expression)
+  (def-expression-analyzer atomic-store! analyze-atomic-store!-expression)
+  (let ((lang (find-package :crisp-language)))
+    (when lang
+      (dolist (pair '(("ATOMIC-LOAD"   analyze-atomic-load-expression)
+                      ("ATOMIC-STORE!" analyze-atomic-store!-expression)))
+        (setf (gethash (intern (first pair) lang) *expression-analyzers*)
+              (second pair))))))
+
 
 
   
@@ -1399,7 +1492,9 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
                 (second pair))))))
   ;; Endeavour 193: die and the log message (what r-t-output expands to under --logging-output).
   (setf (gethash 'die *expression-analyzers*) #'analyze-die-expression)
-  (setf (gethash '%193-log-message *expression-analyzers*) #'analyze-log-message-expression))
+  (setf (gethash '%193-log-message *expression-analyzers*) #'analyze-log-message-expression)
+  ;; Endeavour 195: atomic-load / atomic-store!.
+  (register-195-atomic-access-analyzers))
 
 
 ;;;; ===========================================================================

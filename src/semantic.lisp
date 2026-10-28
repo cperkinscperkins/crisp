@@ -230,10 +230,13 @@
 (defstruct semantic-atomic-rmw
   "Represents an atomic read-modify-write operation (atomic-add!, atomic-sub!, etc.).
 Returns the value at the location BEFORE the modification (fetch-and-op semantics).
-OP is a keyword: :add :sub :min :max :xchg.
-DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1)."
+OP is a keyword: :add :sub :min :max :xchg, or :load / :store (endeavour 195).
+DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1).
+Endeavour 195 (D-195-5): :load is atomic-load -- no delta, TYPE is the element type;
+:store is atomic-store! -- DELTA-NODE is the value stored, TYPE is void.  Neither is a
+read-modify-write: they lower to `load atomic` / `store atomic`."
   type        ; element type — also the return type (old value)
-  op          ; keyword :add :sub :min :max :xchg
+  op          ; keyword :add :sub :min :max :xchg :load :store
   target-node ; semantic-aref for the memory location
   delta-node  ; semantic node for the value to apply
   source-location)

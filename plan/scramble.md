@@ -62,6 +62,7 @@ OPEN
 - [ ] Quicklisp distribution (L22, L67)
 - [ ] SEO: logo; confirm discoverable at https://cperkinscperkins.github.io/crisp/ ; search console (L1186-1190)
 - [ ] proper bug tracker -- GitHub Issues? (L1200)
+- [ ] .whl and Python Wheel <== 
 
 ### Benchmarks ("above reproach")
 - [ ] MMA and reduction reports BOTH: (a) measure/report vendor device compile time (MKL, cuBLAS ...)
@@ -164,13 +165,17 @@ OPEN
 - [ ] rework quantized and microfloats (L1050)
 - [/] precision naming: ieee | fast | ieee-ftz (L710)
 - [/] anaphoric support, star `*` variants (L202, L203)
-- [ ] `atomic-load` (relaxed, device scope): a plain atomic READ.  Polling today has to use a read-modify-
+- [x] `atomic-load` (relaxed, device scope): a plain atomic READ.  Polling today has to use a read-modify-
       write -- the prefixsum lookback spins on (atomic-add! (~ flags j) 0u), which PTX lowers to
       atom.or / atom.add and which serializes at L2 when many tiles poll one flag.  CUB polls with
       ld.relaxed.gpu.  Fits "atomics order nothing, fences do": atomic-load is relaxed, an explicit
       mem-fence orders it.  PTX ld.relaxed.gpu (sm_70+) / SPIR-V OpAtomicLoad; probably an atomic-store
       to match.  Measure on the prefixsum kernel (contests/gpu-mode/05-prefixsum-v2/prefixsum_packed_rfl.crisp).
       Found 2026-10-25 (F4 of the prefixsum single-pass findings, put_temp_files_here/psum/FINDINGS.md).
+      DONE 2026-10-27, endeavour 195 (overlay, not folded; 9 decisions for review in
+      tests/spec/195-atomic-load/atomic-load.md): atomic-load + atomic-store!, BMG-verified.  H100 A/B on
+      the prefixsum: the relaxed POLL is neutral (760 vs 753 us); an atomic-store! PUBLISH is 20% slower
+      than atomic-xchg! (913 us).  F4's L2-serialization premise does not show up in this kernel.
 
 ### Tiles / tensors
 - [ ] hoisting: total tensor size an even multiple of the tile ("oversubscribe", identity fill

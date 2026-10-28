@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-relaxed-load-store
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER seen: 42 1 0 0
+;;
+;; Endeavour 195: the idiom atomic-load exists for -- a poll that is not a read-modify-write.
+;; Two workgroups of one thread.  Workgroup 1 PUBLISHES: data, mem-fence, then (atomic-store! flag 1).
+;; Workgroup 0 POLLS (atomic-load flag) in a bounded loop, leaves when it sees 1, mem-fences, then reads
+;; data.  The fences carry the ordering (D-195-2: atomics order nothing).
+;;
+;;   seen[0] -- the data workgroup 0 read: 42.  (0 would mean the poll timed out or the read was not
+;;              ordered after it.)
+;;   seen[1] -- 1 when the poll saw the flag before the bound ran out.
+;;
+;; The output buffers arrive pre-filled 0 1 2 3, so flag[0] starts at 0 (the poll is not vacuous) and
+;; seen[2], seen[3] are cleared explicitly.  The kernel has no float input, so under the differentiate
+;; flag nothing reaches the backward rules (with a float input it would be refused twice: the early-exit
+;; loop, 184 D5, and the atomic-load, D-195-7).
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel publish_poll (&out data flag seen)
+  (declare #'(&out u-vec u-vec u-vec => nil)
+           (global-size :set-to 2)
+           (local-size  :set-to 1))
+  (let ((g (get-workgroup-id 0)))
+    (when (= g 1ul)
+      (set! (~ data 0) 42u)
+      (mem-fence)
+      (atomic-store! (~ flag 0) 1u))
+    (when (= g 0ul)
+      (let ((got 0u))
+        (dotimes (k 50000000)
+          (when (= (atomic-load (~ flag 0)) 1u)
+            (set! got 1u)
+            (return-from-loop)))
+        (mem-fence)
+        (set! (~ seen 0) (~ data 0))
+        (set! (~ seen 1) got)
+        (set! (~ seen 2) 0u)
+        (set! (~ seen 3) 0u)))))

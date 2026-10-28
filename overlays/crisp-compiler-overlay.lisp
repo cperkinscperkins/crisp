@@ -5,6 +5,22 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-10-27 -- endeavour 195 (atomic-load / atomic-store!) folded into src/ (only the LAST copy
+;;;; of %195-vjp-atomic-store was taken; both wrappers merged into their originals, *195-orig-* dropped):
+;;;;   * analyzers  -> %195-check-* / %195-analyze-atomic-place, analyze-atomic-load-expression,
+;;;;                   analyze-atomic-store!-expression, register-195-atomic-access-analyzers after
+;;;;                   analyze-atomic-set!-expression; called at the end of register-ops-analyzers (src/analysis/ops.lisp)
+;;;;   * ANF        -> *anf-atomic-op-names* (src/anf-transform.lisp)
+;;;;   * codegen    -> %195-atomic-alignment, %195-make-relaxed-device, %195-build-atomic-load / -store after
+;;;;                   %184-device-sync-scope; the :load / :store CASE in generate-node-ir semantic-atomic-rmw (src/codegen.lisp)
+;;;;   * AD         -> "ATOMIC-STORE!" in %ad-replay-fill-targets / %ad-replay-read-syms; *195-ad-param-types*
+;;;;                   (defvar before generate-backward-walk, bound in its outer LET); the %195-* VJP helpers
+;;;;                   and their register-vjp block at the end of src/autodiff.lisp
+;;;;   * semantic   -> semantic-atomic-rmw docstring (src/semantic.lisp)
+;;;;   * bindings   -> LLVMSetAtomicSyncScopeID after LLVMSetOrdering (src/llvm-bindings.lisp)
+;;;;   (spec-runner-overlay.lisp -> tests/run-specs.lisp the same day: %195-ptx-lines-with,
+;;;;    %195-check-ptx-relaxed, validate-ptx-relaxed-load-store(-shared), validate-spv-relaxed-load-store)
+;;;;
 ;;;; EMPTY as of 2026-10-26 -- endeavour 194 (two-level uniformity) folded into src/ (one copy of each
 ;;;; definition existed; the six wrappers merged into their originals, *194-orig-* scaffolding dropped):
 ;;;;   * state, structs, lattice, summaries, (/ tid K) inference -> top of src/analysis/core.lisp, with a

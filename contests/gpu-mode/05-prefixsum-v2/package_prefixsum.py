@@ -704,6 +704,15 @@ def build_all() -> None:
         min_blocks=2,
         packed=True,
     )
+    # Endeavour 195: the same kernel, polling with atomic-load (ld.relaxed.gpu) and publishing with
+    # atomic-store! (st.relaxed.gpu) instead of RMW atomics.  Same build settings as _rfl, for an A/B.
+    make_gpumode_prefixsum_fallback(
+        here / "prefixsum_packed_al.crisp",
+        here / "crisp_prefixsum_packed_al.py",
+        kernel_name="prefixsum_packed_al",
+        min_blocks=2,
+        packed=True,
+    )
     make_gpumode_prefixsum_hierarchical(
         here / "prefixsum_pass1.crisp",
         here / "prefixsum_pass2.crisp",

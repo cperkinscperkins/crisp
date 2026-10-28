@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-relaxed-load-store
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER a: 4294967297 4294967298 4294967299 4294967300
+;; HOIST-EXPECT: BUFFER b: -4 -3 -2 -1
+;; HOIST-EXPECT: BUFFER c: 1 0 -1 -2
+;;
+;; Endeavour 195: the other integer widths D-195-4 admits -- ulong, long, int.  a crosses 2^32 so a
+;; 32-bit lowering would show; b and c are negative so a sign error would show.  Each element is
+;; atomic-store!d, atomic-loaded back, and the load + 1 written with a plain set!.
+
+(def-type ul-vec (vector ulong :address-space :global :align :compact))
+(def-type l-vec  (vector long  :address-space :global :align :compact))
+(def-type i-vec  (vector int   :address-space :global :align :compact))
+
+(def-kernel atomic_load_store_wide (&out a b c)
+  (declare #'(&out ul-vec l-vec i-vec => nil)
+           (global-size :set-to 4))
+  (let ((i (get-global-id 0)))
+    (atomic-store! (~ a i) (+ i 4294967296ul))
+    (atomic-store! (~ b i) (- (to-long i) 5l))
+    (atomic-store! (~ c i) (- 0 (to-int i)))
+    (set! (~ a i) (+ (atomic-load (~ a i)) 1ul))
+    (set! (~ b i) (+ (atomic-load (~ b i)) 1l))
+    (set! (~ c i) (+ (atomic-load (~ c i)) 1))))

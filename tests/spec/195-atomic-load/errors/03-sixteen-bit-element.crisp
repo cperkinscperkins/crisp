@@ -1,0 +1,11 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "32- or 64-bit scalar"
+;; Endeavour 195 D-195-4: 8- and 16-bit elements are refused.  PTX could do it, SPIR-V would need
+;; 16-bit atomic extensions, and the two lowerings must agree.
+
+(def-type h-vec (vector half :address-space :global :align :compact))
+
+(def-kernel k_c (&out a)
+  (declare #'(&out h-vec => nil)
+           (global-size :set-to 4))
+  (atomic-store! (~ a 0) (to-half 1.0)))

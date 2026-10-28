@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "32- or 64-bit scalar"
+;; Endeavour 195 D-195-4: a device vector element (float4) is not one atomic word.
+
+(def-type f4-vec (vector float4 :address-space :global :align :compact))
+(def-type f-vec  (vector float  :address-space :global :align :compact))
+
+(def-kernel k_d (xs &out a)
+  (declare #'(f4-vec &out f-vec => nil)
+           (global-size :set-to 4))
+  (let ((v (atomic-load (~ xs 0))))
+    (set! (~ a 0) (x~ v))))

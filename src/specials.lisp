@@ -38,6 +38,7 @@
           *194-LANE-INDEX-NAMES*
           *194-LOOP*
           *194-LOOP-LEVEL*
+          *195-AD-PARAM-TYPES*
           *AD-ANY-OUTPUT-DOUBLE*
           *AD-BARRIER-RING-SYMS*
           *AD-INLINING-FNS*

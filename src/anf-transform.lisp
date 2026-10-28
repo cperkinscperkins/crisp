@@ -245,8 +245,11 @@
   '("ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-INC!" "ATOMIC-DEC!"
     "ATOMIC-MIN!" "ATOMIC-MAX!" "ATOMIC-XCHG!" "ATOMIC-SET!"
     ;; Endeavour 175 -- see the header above anf-normalize.
-    "ATOMIC-CAS!" "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
-  "The place-writing atomic operators, normalized by %anf-normalize-atomic.")
+    "ATOMIC-CAS!" "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!"
+    ;; Endeavour 195 -- place-taking too: flattening the place would turn the atomic load into a
+    ;; plain one and hand atomic-load a temp.
+    "ATOMIC-LOAD" "ATOMIC-STORE!")
+  "The place-taking atomic operators, normalized by %anf-normalize-atomic.")
 
 (defun %anf-bind-if-nested (form bindings is-nested?)
   "The tail every anf-normalize clause shares: return FORM with its BINDINGS -- or, when IS-NESTED?, bind

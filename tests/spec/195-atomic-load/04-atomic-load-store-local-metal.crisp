@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-relaxed-load-store-shared
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 13 12 11 10
+;;
+;; Endeavour 195: atomic-load / atomic-store! on workgroup-local scratch.  Each thread publishes into
+;; its own slot, the barrier orders the workgroup, and each thread reads its mirror's slot.  PTX:
+;; ld.relaxed.gpu.shared / st.relaxed.gpu.shared (the scope stays DEVICE, D-195-2).
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel atomic_local_mirror (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((s (make-scratch-vector uint :match-workgroup-size))
+        (l (to-ulong (get-local-id 0))))
+    (atomic-store! (~ s l) (+ (to-uint l) 10u))
+    (sync-workgroup)
+    (set! (~ out l) (atomic-load (~ s (- 3ul l))))))

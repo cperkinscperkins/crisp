@@ -4081,6 +4081,30 @@
     (crisp.llvm-bindings::llvm-get-sync-scope-id
      (crisp.llvm-bindings::llvm-get-module-context module) name (length name))))
 
+(defun %195-atomic-alignment (elem-type)
+  "Endeavour 195.  The byte alignment of an atomic access to an ELEM-TYPE element (its own size).  LLVM
+   requires an explicit alignment on every atomic load and store."
+  (let ((bits (nth-value 1 (%hw-type-parts elem-type))))
+    (if bits (floor bits 8) 4)))
+
+(defun %195-make-relaxed-device (inst module elem-type)
+  "Endeavour 195.  Turn the plain load / store INST into an atomic one: monotonic (relaxed) at the
+   \"device\" sync scope -- the 184 rule -- aligned to its own size."
+  (llvm-set-ordering inst 2)                                   ; LLVMAtomicOrderingMonotonic
+  (crisp.llvm-bindings::llvm-set-atomic-sync-scope-id inst (%184-device-sync-scope module))
+  (crisp.llvm-bindings::llvm-set-alignment inst (%195-atomic-alignment elem-type))
+  inst)
+
+(defun %195-build-atomic-load (builder module ptr llvm-type elem-type)
+  "Endeavour 195.  `load atomic LLVM-TYPE, PTR syncscope(\"device\") monotonic` -- atomic-load."
+  (log:debug "195 atomic-load: ~a element" elem-type)
+  (%195-make-relaxed-device (llvm-build-load2 builder llvm-type ptr "atomic_load") module elem-type))
+
+(defun %195-build-atomic-store (builder module ptr val elem-type)
+  "Endeavour 195.  `store atomic VAL, PTR syncscope(\"device\") monotonic` -- atomic-store!."
+  (log:debug "195 atomic-store!: ~a element" elem-type)
+  (%195-make-relaxed-device (llvm-build-store builder val ptr) module elem-type))
+
 (defmethod generate-node-ir ((node semantic-atomic-rmw) builder module var-env
                               di-builder di-scope location-map)
   "Generates IR for atomic RMW operations (atomic-add!, atomic-sub!, etc.).
@@ -4088,7 +4112,9 @@ Returns the old value at the target location (fetch-and-op semantics).
 LLVM AtomicRMWBinOp enum: xchg=0 add=1 sub=2 max=7 min=8 umax=9 umin=10
                            fadd=11 fsub=12 fmax=13 fmin=14
 Endeavour 184: RELAXED (monotonic) at DEVICE scope -- see %184-device-sync-scope.  Ordering is
-never implied by an atomic; it comes only from an explicit mem-fence."
+never implied by an atomic; it comes only from an explicit mem-fence.
+Endeavour 195: op :load (atomic-load) and :store (atomic-store!) ride on this node too (D-195-5); they
+become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store, at the same order and scope."
   (let* ((target-aref     (semantic-atomic-rmw-target-node node))
          (delta-node      (semantic-atomic-rmw-delta-node node))
          (op              (semantic-atomic-rmw-op node))
@@ -4102,10 +4128,24 @@ never implied by an atomic; it comes only from an explicit mem-fence."
     ;; Get the GEP pointer from the target aref (3rd return value)
     (multiple-value-bind (aref-val aref-loc ptr)
         (generate-node-ir target-aref builder module var-env di-builder di-scope location-map)
-      (declare (ignore aref-val aref-loc))
+      (declare (ignore aref-loc))
       (unless ptr
-        (error "Compiler error in atomic RMW: target ~a did not produce an address pointer"
-               target-aref))
+        (error "Compiler error in atomic ~(~a~): target ~a did not produce an address pointer"
+               op target-aref))
+      ;; Endeavour 195: atomic-load / atomic-store! -- no RMW opcode, no delta to combine.  The aref's
+      ;; own plain load (AREF-VAL) is dead; it is used only for its LLVM type.
+      (case op
+        (:load
+         (return-from generate-node-ir
+           (values (%195-build-atomic-load builder module ptr (llvm-type-of aref-val)
+                                           (semantic-aref-type target-aref))
+                   nil)))
+        (:store
+         (let* ((store-type (semantic-aref-type target-aref))
+                (raw (generate-node-ir delta-node builder module var-env di-builder di-scope location-map))
+                (val (extract-primary-value builder raw store-type)))
+           (%195-build-atomic-store builder module ptr val store-type)
+           (return-from generate-node-ir (values val nil)))))
 
       ;; Compute the delta value
       (let* ((delta-raw (generate-node-ir delta-node builder module var-env
