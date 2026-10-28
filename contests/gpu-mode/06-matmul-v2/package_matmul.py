@@ -259,7 +259,7 @@ def cpp_for_kernel(spec: KernelSpec) -> tuple[str, str]:
              "    return {regs, maxthr, sshared, local};",
              "}",
              "",
-             f"void run_{k}(torch::Tensor A, torch::Tensor B, torch::Tensor C) {{",
+             f"void run_{k}_grid(torch::Tensor A, torch::Tensor B, torch::Tensor C, int64_t gx_, int64_t gy_) {{",
              f'    if (!fn_{k}) throw std::runtime_error("{k}: not loaded");',
              "    const uint64_t M = A.size(0), K = A.size(1), N = C.size(1);",
              "    (void)M; (void)K; (void)N;"]
@@ -282,11 +282,17 @@ def cpp_for_kernel(spec: KernelSpec) -> tuple[str, str]:
     # the grid tiles the OUTPUT C: x <- rows, y <- cols (the endeavour 143 convention)
     lines += [f"    const uint64_t RC = C.size(0), CC = C.size(1);",
               f"    unsigned gx = (unsigned)((RC + {tm_} - 1) / {tm_}), gy = (unsigned)((CC + {tn_} - 1) / {tn_});",
+              # a smaller grid makes the tile-stride kernel walk several tiles per CTA (diagnostics only)
+              "    if (gx_ > 0) gx = (unsigned)gx_;",
+              "    if (gy_ > 0) gy = (unsigned)gy_;",
               f"    ck(drv.launchKernel(fn_{k}, gx, gy, 1, {spec.block}, 1, 1, {spec.smem}, nullptr, kp, nullptr),"
               f' "launch {k}");',
-              "}", ""]
+              "}",
+              f"void run_{k}(torch::Tensor A, torch::Tensor B, torch::Tensor C) {{ run_{k}_grid(A, B, C, 0, 0); }}",
+              ""]
     decl = (f"void load_{k}(const std::string& ptx);\nstd::vector<int64_t> info_{k}();\n"
-            f"void run_{k}(torch::Tensor A, torch::Tensor B, torch::Tensor C);")
+            f"void run_{k}(torch::Tensor A, torch::Tensor B, torch::Tensor C);\n"
+            f"void run_{k}_grid(torch::Tensor A, torch::Tensor B, torch::Tensor C, int64_t gx_, int64_t gy_);")
     return "\n".join(lines), decl
 
 
@@ -304,7 +310,8 @@ def make_submission(out_name: str, title: str, kernels: dict[str, KernelSpec], d
     cuda_src = CPP_PRELUDE + "\n" + "\n".join(cpp_for_kernel(s)[0] for s in kernels.values())
     cpp_decl = "#include <torch/extension.h>\n#include <string>\n#include <vector>\n" + \
         "\n".join(cpp_for_kernel(s)[1] for s in kernels.values())
-    fns = [f for s in kernels.values() for f in (f"load_{s.key}", f"info_{s.key}", f"run_{s.key}")]
+    fns = [f for s in kernels.values()
+           for f in (f"load_{s.key}", f"info_{s.key}", f"run_{s.key}", f"run_{s.key}_grid")]
     ptx_consts = "\n".join(f'PTX_{s.key.upper()} = r"""{s.ptx}"""' for s in kernels.values())
     crisp_srcs = "\n#\n".join(f"# --- {name} ---\n{commented(HERE / name)}" for name in show)
     py = f'''#!POPCORN leaderboard matmul_v2

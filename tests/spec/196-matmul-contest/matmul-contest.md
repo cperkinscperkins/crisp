@@ -275,3 +275,40 @@ The field is cuBLAS-speed; most entries call it.
 - B: `b.t().contiguous()` in the wrapper (agreed); wgmma transB=1 is on scramble.md.
 - Per GPU: H100 wgmma (`2wg_deep`, sm_90a); B200 TMA + mma.sync (sm_100, compiles); A100/L4 after (b).
 - tcgen05 (B200) is a separate future endeavour (scramble.md).
+
+## H100 follow-up: where the 2wg_deep kernel's time goes (2026-10-28)
+
+`popcorn --profile` produced no NCU report (even for pure torch: "No kernels were profiled",
+CUPTI_ERROR_MULTIPLE_SUBSCRIBERS) -- so timing probes instead: hand-edited PTX arms, side by side in one
+diag submission.  Builders: `contests/gpu-mode/06-matmul-v2/build_diag_h100_probe{,2,3}.py` (every rewrite
+asserts its match counts; checked arms zero C first).
+
+| arm (us) | 4096x5120x4096 | 2048x3072x2048 | what |
+|---|---:|---:|---|
+| kernel | 304-310 | 80-83 | as shipped |
+| w1 | 309.1 (vs 310.1) | 81.9 (vs 82.6) | wgmma wait depth 1, previous-slot release -- **nothing** |
+| noepi | 232-238 | 52-55 | epilogue stores predicated off (timing floor) |
+| **pk** | **251.8** (vs 304.4), exact | **60.2** (vs 80.7), exact | each half pair -> one `st.global.b32` |
+| pers | 299.6 (vs 303.7), exact | 79.9 (vs 79.9) | same PTX, grid 32x4 / 8x12: tile-stride walks 5 / 2 tiles |
+| **pk + pers** | **244.0**, exact | **57.5**, exact | both |
+| torch (cuBLAS) | 225-229 | 39-41 | |
+
+- **The epilogue was 23% of the kernel** (72 us): 128 scalar `st.global.b16` per thread, not overlapped with
+  anything (1 CTA/SM, 196 KB smem).  The accumulator layout gives each thread adjacent column PAIRS, and
+  the lowering (`%wgmma-store-rewrite-origin`) emits them as separate element `set!`s with INT index math;
+  LLVM's store vectorizer cannot pair them (the column is `or base, 1` sign-extended, and it cannot prove
+  C is 4-byte aligned anyway).  Packing recovers 73% of it.  The fp32-output benchmark kernels store the
+  same way (pairs of `st.global.f32`), so packing should lift section 2's H100 numbers too -- unmeasured.
+- **Wait depth is not the problem** (my prior said it was).  The mainloop alone (noepi) is within 3-6% of
+  cuBLAS's whole call.
+- **Persistence** is worth 3% once the stores are packed; a launcher-only change (tile-stride already walks).
+- Minor: the ring slot is `__crisp_idiv_floor_ulong_qr` = `x & 3` behind a non-inlined `.func` call on
+  every k-step -- the BMG noinline-int-helper policy (BUG 120) applies on PTX too.  Not measured.
+
+Projection for the scored case: pk + pers + Crisp transpose ~283 us (v2: 340); add transB ~244 us.
+#1 is 205, median 221.  The probe PTX is hand-edited, so it is not an entry: the entry waits for the
+compiler to emit packed stores.
+
+Proposed order (for discussion): (1) packed pair stores in the wgmma and mma.sync accumulator store
+lowerings (with a uniform alignment check + scalar fallback); (2) persistent launch in the packager;
+(3) wgmma transB; (4) later: stmatrix + TMA-store epilogue for the last ~12-20 us, then the mainloop.
