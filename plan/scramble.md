@@ -184,6 +184,18 @@ OPEN
 - [ ] test offsets/strides really SET by hoisting code (needs a .cpp fixture?) (L543)
 - [ ] double check branding on storage handles (L549)
 - [ ] no-sroa? (L557)
+- [ ] wgmma transB=1 for 16-bit operands: accept an MN-major (K N) B tile in wgmma-accumulate-via-tile.
+      Today *wgmma-16-trans* pins (0 0) and src/mma.lisp refuses (K N) B; the f16/bf16 hardware reads
+      it with transB=1 (CUTLASS GMMA::Major::MN), but the SMEM descriptor LBO/SBO meaning changes for
+      MN-major, so it is not just flipping the bit.  tf32 has no transpose -- keep refusing there.
+      Found 2026-10-27 on matmul_v2 (GPU MODE): its b is (K N) contiguous in N, the plain `a @ b`
+      layout.  First contest entry transposes B in the wrapper instead (~25 us tax on H100).
+- [ ] tcgen05 lowering (B200/B300, sm_100a) -- its own endeavour.  wgmma is sm_90a only, so today
+      B200 falls back to mma.sync.  Surface mostly fits the wgmma forms; new pieces: TMEM accumulator
+      (compiler-managed alloc/dealloc), single-thread issue, completion via tcgen05.commit -> mbarrier
+      (needs an :on-complete / commit form -- the one real semantic change), TMEM->reg epilogue in
+      store-tile-at, an accumulator ring for epilogue overlap; later cta_group::2.  popcorn B200 test
+      and benchmark modes are free, so the matmul_v2 contest is the dev test bed.
 
 ### Autodiff
 - [ ] def-function with &out param in sub-function differentiation (L436)

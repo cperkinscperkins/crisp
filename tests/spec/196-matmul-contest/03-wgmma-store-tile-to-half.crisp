@@ -1,0 +1,24 @@
+;; Endeavour 196 rung 03 -- (store-tile (to-half D) C ...) on a wgmma accumulator (H100).
+;;
+;; Same overload as rung 01, on the other accumulator kind.  The wgmma store is its own rewrite
+;; (%wgmma-store-rewrite-origin: per-lane set!s over the m64xN fragment), so it needs the
+;; conversion threaded separately -- this rung pins that it was.  Grid-index spelling.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-store-to-half
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_store_to_half (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))
+        (B-tile (make-scratch-matrix half (64 64)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 64) D A-tile B-tile :swizzle :128b)
+    (store-tile (to-half D) C (0 0))))

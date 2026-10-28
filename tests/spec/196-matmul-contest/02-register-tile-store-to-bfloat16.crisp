@@ -1,0 +1,27 @@
+;; Endeavour 196 rung 02 -- the bfloat16 twin of rung 01: (store-tile (to-bfloat16 C-tile) C ...).
+;;
+;; to-half and to-bfloat16 are the two narrowing conversions a 16-bit MMA needs on the way out;
+;; the overload is one mechanism with the conversion as a parameter, so both are pinned.  The
+;; validator wants cvt.rn.bf16 (or the packed .bf16x2 form), 16-bit global stores, no f32 store.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --hardware-profile=h100] : validate-ptx-store-to-bfloat16
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel store_to_bf16 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((A-tile (make-scratch-matrix bfloat16 (16 16)))
+        (B-tile (make-scratch-matrix bfloat16 (16 8)))
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-bfloat16 C-tile) C (grid-y grid-x)))))

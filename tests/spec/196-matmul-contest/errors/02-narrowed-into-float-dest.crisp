@@ -1,0 +1,21 @@
+;; CHECK-FAIL: "storing a half into an element of type float"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
+;;
+;; Endeavour 196 (D-196-1).  (to-half D) converts D's elements to half; the destination must then be
+;; a half matrix.  Storing those halves into a FLOAT matrix is refused by set!'s ordinary rule (an
+;; element holds exactly its own type) -- the conversion is not a hint the store may undo.
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel wrong_dest_width (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))
+        (B-tile (make-scratch-matrix half (64 64)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 64) D A-tile B-tile :swizzle :128b)
+    (store-tile (to-half D) C (0 0))))

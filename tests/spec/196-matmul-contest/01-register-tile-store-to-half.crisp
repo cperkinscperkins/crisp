@@ -1,0 +1,38 @@
+;; Endeavour 196 rung 01 -- (store-tile (to-half C-tile) C ...) on the mma.sync register tile.
+;;
+;; WHAT THIS PINS.  A 16-bit GEMM accumulates in f32 and almost always WRITES 16-bit (torch's
+;; `a @ b` on fp16 returns fp16; GPU MODE matmul_v2 checks exactly that).  Before 196 the store
+;; refused: the register-tile store rewrites to per-element set!s, and set! will not narrow a
+;; float into a half element ("an element holds exactly its own type").  That rule stays.  The
+;; conversion is written by the author, on the SOURCE: (to-half C-tile) is the tile with every
+;; element converted by to-half (round-to-nearest-even), fused into the store -- no half copy of
+;; the tile is ever materialized.
+;;
+;; THE VALIDATOR IS TWO-SIDED: the f32->f16 convert is present and round-to-nearest (cvt.rn), the
+;; global stores are 16-bit, and NO f32 global store remains (an f32 store into a half matrix
+;; would be a silent layout/width bug the numbers might not catch at small sizes).
+;;
+;; Metal: GPU MODE matmul_v2 (popcorn), see matmul-contest.md -- the round-to-nearest-even
+;; result is bit-exact against cuBLAS there.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --hardware-profile=h100] : validate-ptx-store-to-half
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel store_to_half (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix half (16 16)))
+        (B-tile (make-scratch-matrix half (16 8)))
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

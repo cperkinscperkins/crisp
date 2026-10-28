@@ -122,3 +122,296 @@
 ;;;;                                  (src/mma.lisp)
 
 (in-package :crisp.compiler)
+
+;;;; ==========================================================================================
+;;;; ENDEAVOUR 196 (matmul contest gaps) -- (a): a narrowing conversion on an MMA store SOURCE.
+;;;;
+;;;;   (store-tile    (to-half D) C (BTY BTX))       (store-tile    (to-bfloat16 D) C ...)
+;;;;   (store-tile-at (to-half D) C (ROW COL))       (store-fragment (to-half F) C (TY TX))
+;;;;
+;;;; D is an f32 accumulator (register tile or wgmma accumulator).  The conversion is fused into
+;;;; the per-lane store: every element read (%extract-struct-member ...) is wrapped in the
+;;;; conversion before its set!, so no half copy of the tile exists.  set! keeps its rule that an
+;;;; element holds exactly its own type -- the author writes the conversion, on the source.
+;;;; ==========================================================================================
+
+;; src/mma.lisp (new helper, before analyze-store-fragment)
+(defun %196-peel-store-conversion (src)
+  "Endeavour 196.  If SRC is (to-half X) or (to-bfloat16 X), return (values X CONVERT-SYMBOL);
+   otherwise (values SRC NIL).  Only these two narrowing conversions are peeled: they are the two a
+   16-bit MMA needs on the way out (f32 accumulator -> fp16 / bf16 output).  Anything else is left
+   for the ordinary analysis, which refuses a conversion of a whole accumulator."
+  (if (and (consp src) (symbolp (first src)) (= (length src) 2)
+           (member (symbol-name (first src)) '("TO-HALF" "TO-BFLOAT16") :test #'string=))
+      (values (second src) (first src))
+      (values src nil)))
+
+;; src/mma.lisp (new helper, before analyze-store-fragment)
+(defun %196-wrap-conversion (convert form)
+  "Endeavour 196.  (CONVERT FORM) when CONVERT is non-NIL, else FORM unchanged."
+  (if convert (list convert form) form))
+
+;; src/mma.lisp
+(defun analyze-store-fragment (expr env context location)
+  "P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR
+   (accumulator, row-major); else the NVIDIA per-lane writes.
+
+   Endeavour 196: FRAG may be (to-half F) / (to-bfloat16 F).  The conversion wraps each element
+   read in the per-lane writes, so it costs one cvt per element at the store and nothing else.
+   NVIDIA only: on SPIR-V the store is one CooperativeMatrixStoreKHR of the whole fragment, which
+   would need the fragment converted first (OpFConvert on a cooperative matrix) -- not built."
+  ;; Endeavour 165 (2b-ii): an optional 4th argument carries the ELEMENT TYPE, supplied by
+  ;; the store-tile walks (which know it) and defaulting to FLOAT for a hand-written
+  ;; store-fragment.  The alternative -- inferring it from the fragment's own type -- would mean
+  ;; analyzing FRAG once to ask, then again inside the rewritten form, and analyzing a form twice
+  ;; is not safe in general.
+  (destructuring-bind (frag-in dest tile-id &optional (elem 'float)) (cdr expr)
+    (multiple-value-bind (frag convert) (%196-peel-store-conversion frag-in)
+      (log:debug "196 store-fragment: convert=~a elem=~a target=~a" convert elem *target-backend*)
+      (let ((ty (first tile-id)) (tx (second tile-id)))
+        (if (eq *target-backend* :spirv)
+            (progn
+              (when convert
+                (error 'crisp-compiler-error
+                       :message (format nil "store-fragment / store-tile: (~(~a~) TILE) as a store source is not supported on SPIR-V yet.  The SPIR-V store is one CooperativeMatrixStoreKHR of the whole fragment, so the fragment would have to be converted first (OpFConvert on a cooperative matrix).  It is supported on PTX." convert)
+                       :source-location location))
+              ;; C(accumulator) = MxN; layout from the dest tensor's :contiguous-term.
+              (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                (declare (ignore sk))
+                (let ((dnode (analyze-expression dest env context (append location '(2)))))
+                  (make-semantic-coop-op
+                   :type 'void :kind :store
+                   :value-node  (analyze-expression frag env context (append location '(1)))
+                   :tensor-node dnode
+                   :rows sm :cols sn :use 2 :layout (%coop-layout-of dnode)
+                   :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
+                   :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
+                   :source-location location))))
+            (flet ((elt-of (i) (%196-wrap-conversion convert `(%extract-struct-member frag-val ,i))))
+              (if (eql (%mma-elem-bits elem) 64)
+                  ;; fp64 m8n8k4 C/D, decoded from CuTe MMA_Traits<SM80_8x8x4_F64F64F64F64_TN>:
+                  ;; CLayout = Layout<Shape<Shape<_4,_8>,_2>, Stride<Stride<_16,_1>,_8>> gives
+                  ;; m = lane/4 and n = 2*(lane%4) + v for v in {0,1}.  Same column scheme as the
+                  ;; tf32 fragment below (two adjacent columns at 2*(lane%4)); it differs only in
+                  ;; having ONE row per lane instead of the g / g+8 pair, over a tile 8 rows tall.
+                  (analyze-expression
+                   `(let ((frag-val ,frag))
+                      (let ((lane (to-int (warp-lane))))
+                        (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                          (let ((row (+ (* ,ty 8) g)) (col (+ (* ,tx 8) t2)))
+                            (set! (~ ,dest row col)       ,(elt-of 0))
+                            (set! (~ ,dest row (+ col 1)) ,(elt-of 1))))))
+                   env context location)
+                  (analyze-expression
+                   `(let ((frag-val ,frag))
+                      (let ((lane (to-int (warp-lane))))
+                        (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                          (let ((row (+ (* ,ty 16) g)) (col (+ (* ,tx 8) t2)))
+                            (set! (~ ,dest row col)             ,(elt-of 0))
+                            (set! (~ ,dest row (+ col 1))       ,(elt-of 1))
+                            (set! (~ ,dest (+ row 8) col)       ,(elt-of 2))
+                            (set! (~ ,dest (+ row 8) (+ col 1)) ,(elt-of 3))))))
+                   env context location))))))))
+
+;; src/mma.lisp (new helper, before %explode-rewrite-body-form)
+(defun %196-convert-store-fragment-sources (form convert)
+  "Endeavour 196.  Wrap the FRAG argument of every (store-fragment FRAG ...) in FORM with
+   (CONVERT FRAG).  Applied to %emit-per-frag-store's expansion, which is the only producer of
+   store-fragment forms there, so the per-fragment store logic (static arms, 2-D warp grid) is
+   reused untouched rather than copied with a conversion parameter threaded through it."
+  (cond
+    ((not (consp form)) form)
+    ((and (symbolp (first form)) (string= (symbol-name (first form)) "STORE-FRAGMENT"))
+     (list* (first form) (list convert (second form)) (cddr form)))
+    (t (mapcar (lambda (f) (%196-convert-store-fragment-sources f convert)) form))))
+
+;; src/mma.lisp -- WRAPPER around %explode-rewrite-body-form.  FOLD: add the clause to the original's
+;; COND right after its STORE-TILE clause and drop *196-orig-explode-rewrite-body-form*.
+;; Wrapped via fdefinition per the let/funcall wrapper trap.
+(defvar *196-orig-explode-rewrite-body-form* (fdefinition '%explode-rewrite-body-form))
+(defun %explode-rewrite-body-form (form tiles)
+  "Endeavour 196 wrapper: (store-tile (to-half V) DEST (BTY BTX)) on an exploded register tile V
+   expands exactly as (store-tile V DEST ...) does, with every emitted store-fragment's FRAG wrapped
+   in the conversion.  Every other form goes to the original, which recurses back through this
+   name."
+  (if (and (consp form) (symbolp (first form)) (%head-name-eq (first form) "STORE-TILE")
+           (= (length form) 4))
+      (multiple-value-bind (v convert) (%196-peel-store-conversion (second form))
+        (if (and convert (assoc v tiles))
+            (progn
+              (log:debug "196 explode: store-tile (~a ~a) -> per-fragment stores" convert v)
+              (%196-convert-store-fragment-sources
+               (%emit-per-frag-store (third form) (fourth form) (assoc v tiles))
+               convert))
+            (funcall *196-orig-explode-rewrite-body-form* form tiles)))
+      (funcall *196-orig-explode-rewrite-body-form* form tiles)))
+
+;; src/mma.lisp
+(defun %wgmma-store-rewrite-origin (tile dest row-origin col-origin n &optional convert)
+  "Store the m64xN wgmma accumulator TILE into DEST with its top-left element at
+   (ROW-ORIGIN COL-ORIGIN), both absolute element indices.
+
+   Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows
+   [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8
+   group contributes the standard mma m16n8 C fragment at rows r0 and r0+8.
+
+   Both origins are coerced with TO-INT.  The lane arithmetic is INT throughout (wgw and rlo come
+   from to-int of warp-id / warp-lane), so a ULONG origin -- which is what any tile-stride grid
+   binding produces, e.g. (* grid-y (to-ulong 128)) -- would otherwise fail to type-check with
+   \"Cannot operate on ULONG and INT\".  The grid-index caller has always passed an INT for the same
+   reason; this makes the absolute spelling accept either.
+
+   ENDEAVOUR 154: emission order is ROW-MAJOR.  The natural loop is j-outer, which interleaves r0
+   and r8 and writes the tile column-strip by column-strip -- 32 passes revisiting the same two
+   rows.  Emitting all of row r0 and then all of row r8 lets each WARP lay down a full contiguous
+   row (4 lanes x 2 floats x n8 groups) before moving on.  Pure reordering: same stores, same
+   values, same addresses.  Measured on an H100 NVL, interleaved, 3 reps: +1.5% at 2048, +0.7% at
+   4096, +0.5% at 1024, neutral at 256/512, nothing regressing.
+
+   ENDEAVOUR 196: optional CONVERT (TO-HALF / TO-BFLOAT16 symbol) wraps every element read, for
+   (store-tile (to-half D) C ...) -- an f32 accumulator stored into a 16-bit matrix."
+  (let* ((to-int (intern "TO-INT" (find-package :crisp-language)))
+         (n8 (floor n 8)))
+    (flet ((elt-of (i) (%196-wrap-conversion convert `(%extract-struct-member wgv ,i))))
+      `(let ((wgv ,tile))
+         (let ((wgw (rem (,to-int (warp-id)) 4))
+               (lane (,to-int (warp-lane))))
+           (let ((rlo (/ lane 4)) (col (* (rem lane 4) 2)))
+             (let ((r0 (+ (+ (,to-int ,row-origin) (* wgw 16)) rlo)))
+               (let ((r8 (+ r0 8))
+                     (c0 (+ (,to-int ,col-origin) col)))
+                 (progn
+                   ,@(append
+                      (loop for j below n8
+                            for base = (* j 4)
+                            append (list
+                                    `(set! (~ ,dest r0 (+ c0 ,(* 8 j)))         ,(elt-of (+ base 0)))
+                                    `(set! (~ ,dest r0 (+ (+ c0 ,(* 8 j)) 1))   ,(elt-of (+ base 1)))))
+                      (loop for j below n8
+                            for base = (* j 4)
+                            append (list
+                                    `(set! (~ ,dest r8 (+ c0 ,(* 8 j)))         ,(elt-of (+ base 2)))
+                                    `(set! (~ ,dest r8 (+ (+ c0 ,(* 8 j)) 1))   ,(elt-of (+ base 3)))))))))))))))
+
+;; src/mma.lisp
+(defun %wgmma-store-rewrite (tile dest tile-id n &optional convert)
+  "Store the m64xN wgmma accumulator TILE to DEST at grid tile-id (BTY BTX).  warp w (within the
+   warpgroup) -> rows [16w,16w+16); per n8 group the standard mma m16n8 C fragment.  (= wgmma_ref.cu.)
+
+   ENDEAVOUR 154: a thin caller of %wgmma-store-rewrite-origin with the TILE-GRID origin
+   (bty*64, btx*N).  Behaviour is unchanged -- deliberately, since addressing a tile by grid index
+   only identifies a 64-row tile when ONE warpgroup owns it.  Two cooperating warpgroups use
+   store-tile-at with explicit origins instead.
+
+   ENDEAVOUR 196: optional CONVERT is passed through (see %wgmma-store-rewrite-origin)."
+  (let ((to-int (intern "TO-INT" (find-package :crisp-language))))
+    (%wgmma-store-rewrite-origin
+     tile dest
+     `(* (,to-int ,(first tile-id)) 64)
+     `(* (,to-int ,(second tile-id)) ,n)
+     n
+     convert)))
+
+;; src/mma.lisp (new helper, before analyze-store-tile-mma)
+(defun %196-refuse-converted-non-accumulator (op convert src-type location)
+  "Endeavour 196.  (store-tile (to-half X) ...) where X is not an MMA accumulator: refuse here,
+   naming the rule, rather than let the generic store analyze (to-half X) as a scalar cast of a
+   whole tile (which fails later with an unrelated message)."
+  (error 'crisp-compiler-error
+         :message (let ((*print-pretty* nil)) (format nil "~(~a~): (~(~a~) X) as a store source needs X to be an MMA accumulator (a register tile or a wgmma accumulator), whose f32 elements are converted as they are stored.  X here is ~a.  To convert a scratch or global tile, convert its elements where they are written." op convert src-type))
+         :source-location location))
+
+;; src/mma.lisp
+(defun analyze-store-tile-mma (expr env context location)
+  "store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.
+   Endeavour 196: the source may be (to-half TILE) / (to-bfloat16 TILE) for either accumulator kind.
+   (An exploded register tile never reaches here -- %explode-rewrite-body-form handles it -- so the
+   register-tile branch below is the un-exploded path.)"
+  (multiple-value-bind (src convert) (%196-peel-store-conversion (second expr))
+    (let* ((src-node (analyze-expression src env context (append location '(1))))
+           (src-type (semantic-node-type src-node)))
+      (log:debug "196 store-tile: src-type=~a convert=~a" src-type convert)
+      (cond
+        ((%wgmma-acc-type-p src-type)
+         (let ((n (second (gethash src-type *wgmma-acc-dims*))))
+           (analyze-expression (%wgmma-store-rewrite src (third expr) (fourth expr) n convert)
+                               env context location)))
+        ((%register-tile-type-p src-type)
+         (destructuring-bind (m n &optional (elem 'float)) (gethash src-type *register-tile-dims*)
+           (let* ((tile    src)
+                  (dest    (third expr))
+                  (tile-id (fourth expr))
+                  (to-int-sym (intern "TO-INT" (find-package :crisp-language)))
+                  (bty (list to-int-sym (first tile-id)))
+                  (btx (list to-int-sym (second tile-id)))
+                  (fmn (%acc-frag-mn elem))
+                  (m-frags (floor m (car fmn))) (n-frags (floor n (cdr fmn))))
+             (analyze-expression
+              `(let ((tv ,tile))
+                 (progn
+                   ,@(loop for mi below m-frags
+                           append (loop for nj below n-frags
+                                        for idx = (+ (* mi n-frags) nj)
+                                        collect `(store-fragment ,(%196-wrap-conversion
+                                                                   convert
+                                                                   `(%extract-struct-member tv ,idx))
+                                                                 ,dest
+                                                                 ((+ (* ,bty ,m-frags) ,mi)
+                                                                  (+ (* ,btx ,n-frags) ,nj))
+                                                                 ,elem)))))
+              env context location))))
+        (convert
+         (%196-refuse-converted-non-accumulator "store-tile" convert src-type location))
+        (t
+         (analyze-store-tile-expression expr env context location))))))
+
+;; src/mma.lisp
+(defun analyze-store-tile-at-mma (expr env context location)
+  "store-tile-at overload: wgmma-accumulator at an absolute (ROW COL) origin, OR delegate to the
+   ordinary cooperative store-tile-at path.
+
+   ENDEAVOUR 154.  %wgmma-store-rewrite computes its row base as `bty * 64`, the wgmma
+   instruction's fixed M, which silently bakes in ONE WARPGROUP: with a second consumer warpgroup
+   the row base is unchanged and both would write the SAME 64 rows.  A cooperative 128x256 tile
+   (two warpgroups splitting M, sharing one B tile) was therefore not expressible -- store-tile-at
+   looked like the escape hatch but had no wgmma overload and fell through to the cooperative
+   element-loop path.  The two-warpgroup kernel now writes its row offsets explicitly:
+
+     (:consumer0 ... (store-tile-at D C ((* grid-y 128)        (* grid-x 256))))
+     (:consumer1 ... (store-tile-at D C ((+ (* grid-y 128) 64) (* grid-x 256))))
+
+   It does NOT infer the warpgroup count.  Deriving it from the tile-stride tile shape (M/64) was
+   considered and rejected as UNDER-DETERMINED: a 128-row tile served by ONE warpgroup looping over
+   two row halves is a legal kernel the same rule would silently mis-address.
+
+   Dispatches on the SOURCE TYPE before the generic path runs, exactly as analyze-store-tile-mma
+   does -- which also keeps the wgmma store out of %warp-spec-check-block-only, whose
+   workgroup-collective deadlock rationale does not apply to a warpgroup-private accumulator spill
+   (and which store-tile already bypasses for the same reason).
+
+   ENDEAVOUR 196: the source may be (to-half D) / (to-bfloat16 D); the conversion is fused into
+   each element store.  A converted source that is not a wgmma accumulator is refused.
+
+   Spec: tests/spec/154-nvidia-perf/02-wgmma-store-at-origin.crisp (validate-ptx-wgmma-store-direct)
+         tests/spec/154-nvidia-perf/03-wgmma-two-warpgroups.crisp  (the cooperative kernel)
+         tests/spec/196-matmul-contest/04-wgmma-store-tile-at-to-half.crisp."
+  (multiple-value-bind (src convert) (%196-peel-store-conversion (second expr))
+    (let* ((src-node (analyze-expression src env context (append location '(1))))
+           (src-type (semantic-node-type src-node)))
+      (log:debug "196 store-tile-at: src-type=~a convert=~a" src-type convert)
+      (cond
+        ((%wgmma-acc-type-p src-type)
+         (let ((n      (second (gethash src-type *wgmma-acc-dims*)))
+               (origin (fourth expr)))
+           (unless (and (listp origin) (= (length origin) 2))
+             (error 'crisp-compiler-error
+                    :message (format nil "store-tile-at: a wgmma accumulator needs a 2-D (ROW COL) element origin, got ~S.  The accumulator is a 64xN matrix; its origin is where its top-left element lands in the destination." origin)
+                    :source-location location))
+           (analyze-expression
+            (%wgmma-store-rewrite-origin src (third expr)
+                                         (first origin) (second origin) n convert)
+            env context location)))
+        (convert
+         (%196-refuse-converted-non-accumulator "store-tile-at" convert src-type location))
+        (t
+         (analyze-store-tile-at-expression expr env context location))))))
