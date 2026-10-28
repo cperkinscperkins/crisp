@@ -2655,6 +2655,10 @@
       (%ad-prune-dead-scratch (%ad-replay-finish final flat-anf)))))
 
 
+(defvar *195-ad-param-types* nil
+  "Endeavour 195.  Alist (PARAM-SYM . TYPE-SPEC) of the kernel being differentiated, bound around
+   generate-backward-walk so a VJP can ask a place's element type (the VJP context carries none).")
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                         &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
@@ -2679,7 +2683,11 @@
   ;; (C (op-cos-approx X)) hands it to the ordinary per-op rules: dx = cos(x)*s_adj - sin(x)*c_adj.
   (setf flat-anf (%hw-split-sincos-bindings flat-anf))
   (let ((*ad-barrier-ring-syms* (%ad-collect-barrier-ring-syms flat-anf))
-        (*ad-view-alias-map*    (%ad-collect-view-aliases flat-anf)))
+        (*ad-view-alias-map*    (%ad-collect-view-aliases flat-anf))
+        ;; Endeavour 195: the kernel's parameter types, for the atomic-store! VJP (the VJP
+        ;; context carries none).
+        (*195-ad-param-types*   (append (mapcar #'cons inputs input-types)
+                                        (mapcar #'cons outputs output-types))))
   (let* ((record-temp-entries (%gbw-record-temp-entries flat-anf kernel-pkg))
          (record-param-field-adjs-ht (%gbw-record-field-adjs-table record-temp-entries)))
     (let ((*record-param-field-adjs* record-param-field-adjs-ht)
@@ -5602,7 +5610,9 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                    (cond
                      ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
                                            "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
-                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!"
+                                           ;; Endeavour 195
+                                           "ATOMIC-STORE!")
                                       :test #'string=))
                       (let ((s (%ad-replay-place-sym (second f))))
                         (when s (pushnew s acc))))
@@ -5656,7 +5666,9 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
                      ;; a write: skip the place, walk only the value operands
                      ((and op (member op '("SET!" "ATOMIC-ADD!" "ATOMIC-SUB!" "ATOMIC-MIN!"
                                            "ATOMIC-MAX!" "ATOMIC-EXCHANGE!" "ATOMIC-CAS!"
-                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!")
+                                           "%ATOMIC-CAS-OK!" "ATOMIC-BINOP!" "ATOMIC-OP!"
+                                           ;; Endeavour 195
+                                           "ATOMIC-STORE!")
                                       :test #'string=))
                       ;; an index expression inside the place IS read; walk the place's
                       ;; subscripts but not its head symbol.
@@ -7088,3 +7100,67 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 (eval-when (:load-toplevel :execute)
   (register-vjp "REDUCE-WARP" (function %175-vjp-reduce-warp))
   (register-vjp "REDUCE-WORKGROUP" (function %175-vjp-reduce-workgroup)))
+
+
+;;; Endeavour 195 -- atomic-load / atomic-store! backward rules (D-195-7).  The place's element
+;;; type comes from *195-ad-param-types*, bound by generate-backward-walk.
+
+(defun %195-elem-category-of-type (type-spec)
+  "Endeavour 195.  :INTEGER or :FLOAT for the element of a storage-handle (or bare scalar) TYPE-SPEC,
+   else NIL."
+  (let* ((canonical (ignore-errors (canonicalize-type-specifier type-spec)))
+         (elem (cond ((and (consp canonical) (symbolp (first canonical))
+                           (member (symbol-name (first canonical)) '("TENSOR" "CELL") :test #'string-equal))
+                      (second canonical))
+                     ((symbolp type-spec) type-spec)))
+         (info (and elem (symbolp elem)
+                    (or (gethash elem *crisp-types*)
+                        (let ((cc (find-symbol (symbol-name elem) :crisp.compiler)))
+                          (and cc (gethash cc *crisp-types*)))))))
+    (and info (case (crisp-type-category info)
+                ((:signed-int :unsigned-int) :integer)
+                (:float :float)))))
+
+(defun %195-place-elem-category (place ctx)
+  "Endeavour 195.  :INTEGER / :FLOAT for the element of PLACE ((~ SYM ...)), from the kernel's
+   parameter types or, for scratch, the element type named by SYM's make-scratch-* binding in the
+   flat ANF.  NIL when it cannot tell."
+  (let ((sym (%ad-replay-place-sym place)))
+    (when sym
+      (let ((param (assoc sym *195-ad-param-types*)))
+        (if param
+            (%195-elem-category-of-type (cdr param))
+            (let ((binding (find-if (lambda (b)
+                                      (and (consp b) (eq (first b) sym) (consp (second b))
+                                           (symbolp (first (second b)))
+                                           (eql 0 (search "MAKE-SCRATCH-" (symbol-name (first (second b)))))))
+                                    (getf ctx :flat-anf))))
+              (and binding (%195-elem-category-of-type (second (second binding))))))))))
+
+(defun %195-vjp-atomic-load (form ctx)
+  "Backward rule for atomic-load (endeavour 195, D-195-7): refuse, for EVERY element type.
+
+   An atomic load exists to read a value that some other thread -- or an earlier statement of this
+   one -- published.  Neither reaches the backward pass.  Cross-thread dataflow has no adjoint path
+   at all.  And the backward kernel is a separate launch that replays the forward's BINDINGS but not
+   its STATEMENTS, so a replayed atomic-load reads whatever the memory holds by then, not what the
+   forward saw.  That holds for an integer flag too, whose value can steer the float computation."
+  (declare (ignore ctx))
+  (log:debug "195 VJP atomic-load: refused (~s)" form)
+  (error "atomic-load is not differentiable.  It reads a value that another thread, or an earlier statement, published, and neither is visible to the backward pass: cross-thread dataflow has no adjoint path, and the backward kernel is a separate launch that replays the forward's bindings but not its statements, so a re-executed atomic-load would read whatever the memory holds by then.  That is true of an integer flag as well -- its value can steer the float computation.  Crisp refuses rather than differentiate against a value it cannot reproduce.  If this kernel is genuinely forward-only, mark it SKIP-WITH[--differentiate]."))
+
+(defun %195-vjp-atomic-store (form ctx)
+  "Backward rule for atomic-store! (endeavour 195, D-195-7).  An INTEGER element: inert -- there is no
+   derivative to carry, just as for atomic-inc!.  Anything else: refuse.  A float atomic-store! exists
+   to hand a value to another thread, and that cross-thread dataflow is invisible to the backward walk;
+   differentiating it as a plain set! would be a silently wrong gradient for whoever reads it."
+  (let ((category (%195-place-elem-category (second form) ctx)))
+    (log:debug "195 VJP atomic-store! into ~s: element ~s" (second form) category)
+    (if (eq category :integer)
+        :inert
+        (error "atomic-store! of a ~a element is not differentiable.  A floating-point atomic store exists to hand a value to another thread, and that cross-thread dataflow is invisible to the backward pass -- differentiating it as a plain set! would give whoever reads it a silently wrong gradient.  (An integer atomic-store! is accepted: it carries no derivative.)  If this kernel is genuinely forward-only, mark it SKIP-WITH[--differentiate]."
+               (if (eq category :float) "floating-point" "non-integer")))))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ATOMIC-LOAD"   (function %195-vjp-atomic-load))
+  (register-vjp "ATOMIC-STORE!" (function %195-vjp-atomic-store)))

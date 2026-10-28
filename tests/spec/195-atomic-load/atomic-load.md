@@ -127,13 +127,20 @@ Probe: `put_temp_files_here/195/probe.ll`.  The sync scope is set with `LLVMSetA
 
 ## Status / log
 
-**Not folded.**  Everything is in the overlays (the 195 chunk at the end of
-`overlays/crisp-compiler-overlay.lisp`, with its fold-back map at the top; `LLVMSetAtomicSyncScopeID`
-in `crisp-llvm-bindings-overlay.lisp`; the validators in `spec-runner-overlay.lisp`).  The overlay
-chunk was built by script from the src functions it replaces (`put_temp_files_here/195/build_overlay.py`),
-so a fold-back diff shows only the 195 lines.  One src edit no overlay can make: the docstring of the
-`semantic-atomic-rmw` struct (`src/semantic.lisp`) should list ops `:load` / `:store`.
-reference.md / call graph / globals / specials are to be regenerated at the fold.
+**FOLDED 2026-10-27**, after review of D-195-1..9.  All three overlays (compiler, llvm-bindings,
+spec-runner) are empty; their headers list where each piece went.  The fold was scripted
+(`put_temp_files_here/195/fold/fold.py`: verbatim form copies, bottom-up edits, CRLF kept), so the src
+diff of each replaced form is exactly its 195 lines.  Only the last copy of `%195-vjp-atomic-store` was
+taken.  The `register-ops-analyzers` wrapper became one call at its end.  The `generate-backward-walk`
+wrapper became a third binding in that function's existing outer LET; the script asserts that LET encloses
+the whole body.  The `semantic-atomic-rmw` docstring now lists `:load` / `:store`.  specials (adds
+`*195-AD-PARAM-TYPES*`), reference.md, the call graph and the globals matrices were regenerated.
+Post-fold suites, overlays empty: unit 392/392, E2E 1587/1587, negative 387/387.  Every overlay
+definition is defined exactly once in src; no `*195-orig-*` remains.
+Two SBCL crashes during the post-fold E2E runs, both in foreign (driver) code:
+- The first run segfaulted mid-run in the L0 host run of `178/01-reduce-vec-sum-metal`.  That spec then
+  passed alone (178: 24/24) and in the full rerun.
+- The rerun printed its 1587/1587 summary, then took a memory fault at process exit.
 
 ### Verified (2026-10-27)
 - 195 specs: 11/11 in the default pass and 11/11 in the differentiate pass (spec 06's VERIFY-AUTODIFF on

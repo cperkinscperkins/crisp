@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-27T06:05:57.640198Z
+Generated on 2026-10-28T02:52:51.594144Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2310,6 +2310,54 @@ Generated on 2026-10-27T06:05:57.640198Z
 
 
 ---
+### DEFUN `%195-CHECK-ATOMIC-ACCESS-ELEM`
+- **Args**: `(OP-NAME ELEM-TYPE LOCATION)`
+
+  > Endeavour 195 D-195-4.  Refuse an atomic-load / atomic-store! whose element is not a 32- or 64-bit  >    scalar -- int, uint, long, ulong, float or double.  An atomic load or store is one machine word.
+
+
+---
+### DEFUN `%195-CHECK-ARITY`
+- **Args**: `(OP-NAME EXPR EXPECTED LOCATION)`
+
+  > Endeavour 195.  EXPR must have exactly EXPECTED arguments.
+
+
+---
+### DEFUN `%195-ANALYZE-ATOMIC-PLACE`
+- **Args**: `(OP-NAME EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 195.  Analyse the PLACE of an atomic-load / atomic-store! (EXPR's second element) and  >    return its semantic-aref.  >   >    The place is analysed in WRITE access mode for BOTH operators (D-195-9).  A plain read of an &out  >    parameter is refused, and every atomic RMW is exempt from that because it analyses its place in  >    write mode.  The arrays a kernel publishes into and polls are its &outs, so atomic-load needs the  >    same exemption or it could not replace an (atomic-add! place 0) poll.
+
+
+---
+### DEFUN `%195-CHECK-STORE-VALUE-TYPE`
+- **Args**: `(TARGET-NODE VALUE-NODE LOCATION)`
+
+  > Endeavour 195.  atomic-store! obeys set!'s element rule (186, BUG 059): an element holds exactly its  >    own type.  Reuses %check-element-store-type and renames the operator in its message.
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-LOAD-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-load place) -- endeavour 195.  A RELAXED, DEVICE-scope atomic read of PLACE that  >    returns its value.  Not a read-modify-write: PTX ld.relaxed.gpu, SPIR-V OpAtomicLoad.  Represented  >    as a semantic-atomic-rmw with op :load and no delta (D-195-5).
+
+
+---
+### DEFUN `ANALYZE-ATOMIC-STORE!-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (atomic-store! place value) -- endeavour 195.  A RELAXED, DEVICE-scope atomic write of  >    VALUE to PLACE.  Not an exchange (that is atomic-xchg!): its type is void, like set! (D-195-3).  >    PTX st.relaxed.gpu, SPIR-V OpAtomicStore.  A semantic-atomic-rmw with op :store; the value rides  >    in the delta slot.
+
+
+---
+### DEFUN `REGISTER-195-ATOMIC-ACCESS-ANALYZERS`
+
+  > Endeavour 195.  Registers atomic-load / atomic-store! under both packages, like the 082 atomics.
+
+
+---
 ### DEFUN `ANALYZE-MOD-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
@@ -3640,7 +3688,7 @@ Generated on 2026-10-27T06:05:57.640198Z
 ---
 ### DEFPARAMETER `*ANF-ATOMIC-OP-NAMES*`
 
-  > The place-writing atomic operators, normalized by %anf-normalize-atomic.
+  > The place-taking atomic operators, normalized by %anf-normalize-atomic.
 
 
 ---
@@ -4638,6 +4686,12 @@ Generated on 2026-10-27T06:05:57.640198Z
               ANY-OUTPUT-DOUBLE KERNEL-PKG)`
 
   > The backward AST: one LET binding every adjoint the walk named (zeroed at its type) and the paired  >    <var>_ADJ scratch for each make-scratch-* / make-register-tile binding, around BACKWARD-FORMS (which  >    were pushed, so they are reversed here).  Then the Endeavour 146 ring-adjoint fixup, the  >    Endeavour 149 top-level primal replay, and dead-scratch pruning.
+
+
+---
+### DEFVAR `*195-AD-PARAM-TYPES*`
+
+  > Endeavour 195.  Alist (PARAM-SYM . TYPE-SPEC) of the kernel being differentiated, bound around  >    generate-backward-walk so a VJP can ask a place's element type (the VJP context carries none).
 
 
 ---
@@ -5650,6 +5704,34 @@ Generated on 2026-10-27T06:05:57.640198Z
 
 
 ---
+### DEFUN `%195-ELEM-CATEGORY-OF-TYPE`
+- **Args**: `(TYPE-SPEC)`
+
+  > Endeavour 195.  :INTEGER or :FLOAT for the element of a storage-handle (or bare scalar) TYPE-SPEC,  >    else NIL.
+
+
+---
+### DEFUN `%195-PLACE-ELEM-CATEGORY`
+- **Args**: `(PLACE CTX)`
+
+  > Endeavour 195.  :INTEGER / :FLOAT for the element of PLACE ((~ SYM ...)), from the kernel's  >    parameter types or, for scratch, the element type named by SYM's make-scratch-* binding in the  >    flat ANF.  NIL when it cannot tell.
+
+
+---
+### DEFUN `%195-VJP-ATOMIC-LOAD`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for atomic-load (endeavour 195, D-195-7): refuse, for EVERY element type.  >   >    An atomic load exists to read a value that some other thread -- or an earlier statement of this  >    one -- published.  Neither reaches the backward pass.  Cross-thread dataflow has no adjoint path  >    at all.  And the backward kernel is a separate launch that replays the forward's BINDINGS but not  >    its STATEMENTS, so a replayed atomic-load reads whatever the memory holds by then, not what the  >    forward saw.  That holds for an integer flag too, whose value can steer the float computation.
+
+
+---
+### DEFUN `%195-VJP-ATOMIC-STORE`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for atomic-store! (endeavour 195, D-195-7).  An INTEGER element: inert -- there is no  >    derivative to carry, just as for atomic-inc!.  Anything else: refuse.  A float atomic-store! exists  >    to hand a value to another thread, and that cross-thread dataflow is invisible to the backward walk;  >    differentiating it as a plain set! would be a silently wrong gradient for whoever reads it.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
 
 ### DEFUN `%COOP-LENGTH`
@@ -6573,6 +6655,34 @@ Generated on 2026-10-27T06:05:57.640198Z
 - **Args**: `(MODULE)`
 
   > The sync-scope ID of "device" in MODULE's context -- the scope every Crisp atomic uses (184).  >    DEVICE is the floor, not a preference: fence-fence synchronisation with a relaxed atomic needs the  >    atomic's scope to include the fences' (mem-fence is device scope on both backends).  Spelled  >    "device" because both NVPTX and llvm-spirv honour it; llvm-spirv silently turns "agent" into  >    CrossDevice.
+
+
+---
+### DEFUN `%195-ATOMIC-ALIGNMENT`
+- **Args**: `(ELEM-TYPE)`
+
+  > Endeavour 195.  The byte alignment of an atomic access to an ELEM-TYPE element (its own size).  LLVM  >    requires an explicit alignment on every atomic load and store.
+
+
+---
+### DEFUN `%195-MAKE-RELAXED-DEVICE`
+- **Args**: `(INST MODULE ELEM-TYPE)`
+
+  > Endeavour 195.  Turn the plain load / store INST into an atomic one: monotonic (relaxed) at the  >    "device" sync scope -- the 184 rule -- aligned to its own size.
+
+
+---
+### DEFUN `%195-BUILD-ATOMIC-LOAD`
+- **Args**: `(BUILDER MODULE PTR LLVM-TYPE ELEM-TYPE)`
+
+  > Endeavour 195.  `load atomic LLVM-TYPE, PTR syncscope("device") monotonic` -- atomic-load.
+
+
+---
+### DEFUN `%195-BUILD-ATOMIC-STORE`
+- **Args**: `(BUILDER MODULE PTR VAL ELEM-TYPE)`
+
+  > Endeavour 195.  `store atomic VAL, PTR syncscope("device") monotonic` -- atomic-store!.
 
 
 ---
@@ -13057,7 +13167,7 @@ Generated on 2026-10-27T06:05:57.640198Z
 ---
 ### DEFSTRUCT `SEMANTIC-ATOMIC-RMW`
 
-  > Represents an atomic read-modify-write operation (atomic-add!, atomic-sub!, etc.).  > Returns the value at the location BEFORE the modification (fetch-and-op semantics).  > OP is a keyword: :add :sub :min :max :xchg.  > DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1).
+  > Represents an atomic read-modify-write operation (atomic-add!, atomic-sub!, etc.).  > Returns the value at the location BEFORE the modification (fetch-and-op semantics).  > OP is a keyword: :add :sub :min :max :xchg, or :load / :store (endeavour 195).  > DELTA-NODE is the value to apply; nil is not used (inc!/dec! use a literal 1).  > Endeavour 195 (D-195-5): :load is atomic-load -- no delta, TYPE is the element type;  > :store is atomic-store! -- DELTA-NODE is the value stored, TYPE is void.  Neither is a  > read-modify-write: they lower to `load atomic` / `store atomic`.
 
 
 ---
