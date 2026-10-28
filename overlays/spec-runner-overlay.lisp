@@ -102,3 +102,80 @@
       ((plusp bad)
        (format *error-output* "FAIL: ~a of ~a cp.async.wait_group not followed by a CTA barrier~%" bad waits) nil)
       (t t))))
+
+;; tests/run-specs.lisp -- Endeavour 197.
+(defun %197-validate-ptx-store-packed (ptx-string packed-needles scalar-needle label)
+  "Endeavour 197.  An MMA accumulator store that PACKS its column pairs: at least one of
+   PACKED-NEEDLES (the pair store) is present AND SCALAR-NEEDLE (the per-element store) is still
+   present -- the fallback branch under the %pair-ok-p guard.  A kernel with only packed stores has
+   lost its guard; one with only scalar stores did not pack."
+  (flet ((n-of (needle)
+           (loop with start = 0
+                 for pos = (search needle ptx-string :start2 start)
+                 while pos
+                 count t
+                 do (setf start (1+ pos)))))
+    (let ((n-packed (loop for p in packed-needles sum (n-of p)))
+          (n-scalar (n-of scalar-needle)))
+      (log:info "197 ~a: packed=~a scalar=~a" label n-packed n-scalar)
+      (cond
+        ((zerop n-packed)
+         (format *error-output* "FAIL: ~a: no packed pair store (~{~a~^ / ~})~%" label packed-needles) nil)
+        ((zerop n-scalar)
+         (format *error-output* "FAIL: ~a: no scalar ~a -- the unaligned fallback is gone~%" label scalar-needle) nil)
+        (t t)))))
+
+;; tests/run-specs.lisp -- Endeavour 197.
+(defun validate-ptx-store-packed-half (file ptx-string)
+  "Endeavour 197: f32 accumulator -> half matrix, stored as 4-byte pairs, still converted
+   round-to-nearest with no f32 store (the 196 checks)."
+  (declare (ignore file))
+  (and (%196-validate-ptx-store-narrowed ptx-string "f16" "to-half")
+       (%197-validate-ptx-store-packed ptx-string '("st.global.v2.b16" "st.global.b32") "st.global.b16"
+                                       "packed half")))
+
+;; tests/run-specs.lisp -- Endeavour 197.
+(defun validate-ptx-store-packed-bfloat16 (file ptx-string)
+  "Endeavour 197: the bf16 twin of validate-ptx-store-packed-half."
+  (declare (ignore file))
+  (and (%196-validate-ptx-store-narrowed ptx-string "bf16" "to-bfloat16")
+       (%197-validate-ptx-store-packed ptx-string '("st.global.v2.b16" "st.global.b32") "st.global.b16"
+                                       "packed bfloat16")))
+
+;; tests/run-specs.lisp -- Endeavour 197.
+(defun validate-ptx-store-packed-float (file ptx-string)
+  "Endeavour 197: f32 accumulator -> float matrix, stored as st.global.v2.f32 pairs."
+  (declare (ignore file))
+  (%197-validate-ptx-store-packed ptx-string '("st.global.v2.f32") "st.global.f32" "packed float"))
+
+;; tests/run-specs.lisp -- Endeavour 197 (supersedes the copy above: SCALAR-NEEDLES is a list, since
+;; NVPTX prints a float store bit-typed -- st.global.b32 / st.global.v2.b32, not .f32).
+(defun %197-validate-ptx-store-packed (ptx-string packed-needles scalar-needles label)
+  "Endeavour 197.  An MMA accumulator store that PACKS its column pairs: at least one of
+   PACKED-NEEDLES (the pair store) is present AND one of SCALAR-NEEDLES (the per-element store) is
+   still present -- the fallback branch under the %pair-ok-p guard.  A kernel with only packed
+   stores has lost its guard; one with only scalar stores did not pack."
+  (flet ((n-of (needle)
+           (loop with start = 0
+                 for pos = (search needle ptx-string :start2 start)
+                 while pos
+                 count t
+                 do (setf start (1+ pos)))))
+    (let ((n-packed (loop for p in packed-needles sum (n-of p)))
+          (n-scalar (loop for s in (if (listp scalar-needles) scalar-needles (list scalar-needles))
+                          sum (n-of s))))
+      (log:info "197 ~a: packed=~a scalar=~a" label n-packed n-scalar)
+      (cond
+        ((zerop n-packed)
+         (format *error-output* "FAIL: ~a: no packed pair store (~{~a~^ / ~})~%" label packed-needles) nil)
+        ((zerop n-scalar)
+         (format *error-output* "FAIL: ~a: no scalar store -- the unaligned fallback is gone~%" label) nil)
+        (t t)))))
+
+;; tests/run-specs.lisp -- Endeavour 197 (supersedes the copy above).
+(defun validate-ptx-store-packed-float (file ptx-string)
+  "Endeavour 197: f32 accumulator -> float matrix, stored as 8-byte pairs (st.global.v2.b32, which
+   NVPTX prints for <2 x float>; .v2.f32 accepted too) with the scalar fallback still present."
+  (declare (ignore file))
+  (%197-validate-ptx-store-packed ptx-string '("st.global.v2.b32" "st.global.v2.f32")
+                                  '("st.global.b32" "st.global.f32") "packed float"))

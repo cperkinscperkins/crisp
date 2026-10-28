@@ -821,3 +821,328 @@
                               sym (second sym))
              :source-location nil)
       (funcall *196-orig-tlc-bwd-adj-name* sym inputs outputs local-adj-fn kernel-pkg)))
+
+;;;; ======================================================================
+;;;; ENDEAVOUR 197 -- packed accumulator stores.
+;;;; The H100 2wg_deep epilogue was 23% of the kernel (72 of 310 us at 4096x5120x4096): one scalar
+;;;; st.global per accumulator element.  Each thread owns adjacent column PAIRS, so the lowering now
+;;;; stores a pair as one <2 x T> store, guarded by one per-thread run-time check.
+;;;; See tests/spec/197-packed-stores/packed-stores.md.
+;;;;   * new structs     -> semantic-store-pair, semantic-pair-ok-p (src/semantic.lisp)
+;;;;   * wrappers        -> semantic-node-type, semantic-node-source-location (src/analysis/core.lisp):
+;;;;                        fold as two clauses in each etypecase, then drop the defvars
+;;;;   * analyzers       -> analyze-%store-pair-expression, analyze-%pair-ok-p-expression
+;;;;                        (src/analysis/control.lisp); registered by register-197-pair-store-analyzers,
+;;;;                        called at the end of register-control-analyzers
+;;;;   * codegen         -> two generate-node-ir methods (src/codegen.lisp)
+;;;;   * lowering        -> %wgmma-store-rewrite-origin (src/mma.lisp)
+;;;; ======================================================================
+
+;; src/semantic.lisp
+(defstruct semantic-store-pair
+  "Endeavour 197.  (%store-pair P0 P1 LO HI): LO and HI stored as ONE <2 x T> store at P0's element
+   address, aligned to two elements.  Only legal under a (%pair-ok-p P0 P1) guard -- the lowering
+   that emits it always puts it there.  P1 is analysed only for the fallback (see the analyzer)."
+  place-node  ;; semantic aref node: the first element
+  lo-node     ;; value stored at P0
+  hi-node     ;; value stored at the element after P0
+  elem-bytes  ;; 2, 4 or 8
+  type
+  source-location)
+
+;; src/semantic.lisp
+(defstruct semantic-pair-ok-p
+  "Endeavour 197.  (%pair-ok-p P0 P1) -> int 1 when P1's address is exactly one element past P0's AND
+   P0 is aligned to two elements, else 0.  Address arithmetic on the two element pointers, so it
+   covers the strides and the tensor's base offset without either being visible to Crisp."
+  place0-node
+  place1-node
+  elem-bytes
+  type
+  source-location)
+
+;; src/analysis/core.lisp -- FOLD: add the two clauses to semantic-node-type's etypecase
+(defvar *197-orig-semantic-node-type* (fdefinition 'semantic-node-type))
+(defun semantic-node-type (node)
+  "Returns the Crisp type of a semantic node.
+   Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p."
+  (typecase node
+    (semantic-store-pair (semantic-store-pair-type node))
+    (semantic-pair-ok-p  (semantic-pair-ok-p-type node))
+    (t (funcall *197-orig-semantic-node-type* node))))
+
+;; src/analysis/core.lisp -- FOLD: add the two clauses to semantic-node-source-location's etypecase
+(defvar *197-orig-semantic-node-source-location* (fdefinition 'semantic-node-source-location))
+(defun semantic-node-source-location (node)
+  "Returns the source location of a semantic node.
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p."
+  (typecase node
+    (semantic-store-pair (semantic-store-pair-source-location node))
+    (semantic-pair-ok-p  (semantic-pair-ok-p-source-location node))
+    (t (funcall *197-orig-semantic-node-source-location* node))))
+
+;; src/analysis/control.lisp
+(defun %197-pair-elem-bytes (elem-type)
+  "Endeavour 197.  Bytes per element for a packable element type (2, 4 or 8), else NIL.  NIL turns
+   %pair-ok-p into a constant 0 and %store-pair into two plain set!s."
+  (case elem-type
+    ((short ushort half bfloat16) 2)
+    ((int uint float) 4)
+    ((long ulong double) 8)
+    (t nil)))
+
+;; src/analysis/control.lisp
+(defun analyze-%pair-ok-p-expression (expr env context location)
+  "Analyzer for (%pair-ok-p P0 P1), P0 / P1 aref forms naming adjacent elements of one storage.
+   Type int (like a comparison).  An element type that cannot be packed analyses to the literal 0,
+   so the guarded pair branch is dead and the scalar branch runs."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error :message "%pair-ok-p: expects two aref forms" :source-location location))
+  (let* ((p0 (analyze-expression (second expr) env context (append location '(1))))
+         (p1 (analyze-expression (third expr) env context (append location '(2))))
+         (bytes (%197-pair-elem-bytes (semantic-node-type p0))))
+    (log:debug "197 %pair-ok-p: elem-type=~a bytes=~a" (semantic-node-type p0) bytes)
+    (if (and bytes (semantic-aref-p p0) (semantic-aref-p p1))
+        (make-semantic-pair-ok-p :place0-node p0 :place1-node p1 :elem-bytes bytes
+                                 :type 'int :source-location location)
+        (make-semantic-literal :value-type 'int :value 0 :source-location location))))
+
+;; src/analysis/control.lisp
+(defun analyze-%store-pair-expression (expr env context location)
+  "Analyzer for (%store-pair P0 P1 LO HI): one <2 x T> store when LO and HI already have P0's element
+   type and that type packs; otherwise exactly (progn (set! P0 LO) (set! P1 HI)), so conversions
+   and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1)."
+  (unless (= (length expr) 5)
+    (error 'crisp-compiler-error :message "%store-pair: expects (%store-pair P0 P1 LO HI)"
+           :source-location location))
+  (destructuring-bind (p0-form p1-form lo-form hi-form) (rest expr)
+    (let* ((p0 (analyze-expression p0-form env context (append location '(1))))
+           (elem (semantic-node-type p0))
+           (bytes (%197-pair-elem-bytes elem))
+           (lo (analyze-expression lo-form env context (append location '(3))))
+           (hi (analyze-expression hi-form env context (append location '(4)))))
+      (if (and bytes (semantic-aref-p p0)
+               (equal (semantic-node-type lo) elem) (equal (semantic-node-type hi) elem))
+          (make-semantic-store-pair :place-node p0 :lo-node lo :hi-node hi :elem-bytes bytes
+                                    :type 'nil :source-location location)
+          (progn
+            (log:debug "197 %store-pair: falling back to two set!s (elem ~a, lo ~a, hi ~a)"
+                       elem (semantic-node-type lo) (semantic-node-type hi))
+            (analyze-expression `(progn (set! ,p0-form ,lo-form) (set! ,p1-form ,hi-form))
+                                env context location))))))
+
+;; src/analysis/control.lisp
+(defun register-197-pair-store-analyzers ()
+  "Endeavour 197.  Registers %store-pair and %pair-ok-p (internal forms of the accumulator store
+   lowering) in both packages, like the other % forms in register-control-analyzers."
+  (dolist (entry (list (cons "%STORE-PAIR" #'analyze-%store-pair-expression)
+                       (cons "%PAIR-OK-P"  #'analyze-%pair-ok-p-expression)))
+    (let ((sym-cl (intern (car entry) (find-package :crisp-language)))
+          (sym-cc (intern (car entry) (find-package :crisp.compiler))))
+      (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
+      (unless (eq sym-cl sym-cc)
+        (setf (gethash sym-cc *expression-analyzers*) (cdr entry))))))
+
+;; src/analysis/control.lisp -- FOLD: call (register-197-pair-store-analyzers) at the end of
+;; register-control-analyzers, then drop the defvar
+(defvar *197-orig-register-control-analyzers* (fdefinition 'register-control-analyzers))
+(defun register-control-analyzers ()
+  "Registers the control-flow analyzers.  Endeavour 197: plus %store-pair / %pair-ok-p."
+  (funcall *197-orig-register-control-analyzers*)
+  (register-197-pair-store-analyzers))
+
+;; src/codegen.lisp
+(defun %197-aref-element-pointer (aref-node builder module var-env di-builder di-scope location-map what)
+  "Endeavour 197.  The element address of an aref node: its third return value (the loaded r-value
+   is dead and opt removes it -- the %cp-async-copy-elem idiom)."
+  (multiple-value-bind (v ign ptr)
+      (generate-node-ir aref-node builder module var-env di-builder di-scope location-map)
+    (declare (ignore v ign))
+    (unless ptr
+      (error "~a: aref did not yield an element pointer (~a)" what aref-node))
+    ptr))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-pair-ok-p) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 197.  i32 (p1 - p0 == bytes) & ((p0 & (2*bytes - 1)) == 0), zero-extended like a comparison."
+  (let* ((bytes (semantic-pair-ok-p-elem-bytes node))
+         (i64 (llvm-int64-type))
+         (p0 (%197-aref-element-pointer (semantic-pair-ok-p-place0-node node) builder module var-env
+                                         di-builder di-scope location-map "%pair-ok-p"))
+         (p1 (%197-aref-element-pointer (semantic-pair-ok-p-place1-node node) builder module var-env
+                                         di-builder di-scope location-map "%pair-ok-p"))
+         (a0 (llvm-build-ptr-to-int builder p0 i64 "pair_a0"))
+         (a1 (llvm-build-ptr-to-int builder p1 i64 "pair_a1"))
+         (adjacent (llvm-build-icmp builder +llvm-int-eq+ (llvm-build-sub builder a1 a0 "pair_gap")
+                                    (llvm-const-int i64 bytes nil) "pair_adjacent"))
+         (aligned (llvm-build-icmp builder +llvm-int-eq+
+                                   (crisp.llvm-bindings::llvm-build-and builder a0 (llvm-const-int i64 (1- (* 2 bytes)) nil)
+                                                   "pair_misalign")
+                                   (llvm-const-int i64 0 nil) "pair_aligned"))
+         (ok (crisp.llvm-bindings::llvm-build-and builder adjacent aligned "pair_ok")))
+    (log:debug "197 codegen %pair-ok-p: elem-bytes=~a" bytes)
+    (values (llvm-build-zext builder ok (llvm-int32-type) "pair_ok_ext") nil)))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-store-pair) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 197.  insertelement LO, HI into <2 x T>; one store at P0, aligned to 2 x elem-bytes
+   (NVPTX: st.global.b32 for a half / bf16 pair, st.global.v2.f32 for float, v2.f64 for double)."
+  (let* ((bytes (semantic-store-pair-elem-bytes node))
+         (ptr (%197-aref-element-pointer (semantic-store-pair-place-node node) builder module var-env
+                                          di-builder di-scope location-map "%store-pair"))
+         (lo-node (semantic-store-pair-lo-node node))
+         (hi-node (semantic-store-pair-hi-node node))
+         (lo (extract-primary-value builder (generate-node-ir lo-node builder module var-env
+                                                              di-builder di-scope location-map)
+                                    (semantic-node-type lo-node)))
+         (hi (extract-primary-value builder (generate-node-ir hi-node builder module var-env
+                                                              di-builder di-scope location-map)
+                                    (semantic-node-type hi-node)))
+         (vec-ty (llvm-vector-type (llvm-type-of lo) 2))
+         (i32 (llvm-int32-type))
+         (v (llvm-build-insert-element builder (llvm-get-undef vec-ty) lo (llvm-const-int i32 0 nil) "pair_lo"))
+         (v (llvm-build-insert-element builder v hi (llvm-const-int i32 1 nil) "pair_hi"))
+         (st (llvm-build-store builder v ptr)))
+    (crisp.llvm-bindings::llvm-set-alignment st (* 2 bytes))
+    (log:debug "197 codegen %store-pair: <2 x ~a-byte> align ~a" bytes (* 2 bytes))
+    (values nil nil)))
+
+;; src/mma.lisp
+(defun %wgmma-store-rewrite-origin (tile dest row-origin col-origin n &optional convert)
+  "Store the m64xN wgmma accumulator TILE into DEST with its top-left element at
+   (ROW-ORIGIN COL-ORIGIN), both absolute element indices.
+
+   Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows
+   [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8
+   group contributes the standard mma m16n8 C fragment at rows r0 and r0+8.
+
+   Both origins are coerced with TO-INT.  The lane arithmetic is INT throughout (wgw and rlo come
+   from to-int of warp-id / warp-lane), so a ULONG origin -- which is what any tile-stride grid
+   binding produces, e.g. (* grid-y (to-ulong 128)) -- would otherwise fail to type-check with
+   \"Cannot operate on ULONG and INT\".  The grid-index caller has always passed an INT for the same
+   reason; this makes the absolute spelling accept either.
+
+   ENDEAVOUR 154: emission order is ROW-MAJOR.  The natural loop is j-outer, which interleaves r0
+   and r8 and writes the tile column-strip by column-strip -- 32 passes revisiting the same two
+   rows.  Emitting all of row r0 and then all of row r8 lets each WARP lay down a full contiguous
+   row (4 lanes x 2 floats x n8 groups) before moving on.  Pure reordering: same stores, same
+   values, same addresses.  Measured on an H100 NVL, interleaved, 3 reps: +1.5% at 2048, +0.7% at
+   4096, +0.5% at 1024, neutral at 256/512, nothing regressing.
+
+   ENDEAVOUR 196: optional CONVERT (TO-HALF / TO-BFLOAT16 symbol) wraps every element read, for
+   (store-tile (to-half D) C ...) -- an f32 accumulator stored into a 16-bit matrix.
+
+   ENDEAVOUR 197: each thread's elements come in adjacent column PAIRS (c, c+1), so a pair is one
+   (%store-pair ...) -- a single <2 x T> store -- under ONE (%pair-ok-p ...) test of the thread's
+   first pair.  One test covers them all: every other pair is 8k columns and/or 8 rows away, i.e. a
+   multiple of 2 elements on both axes once the first pair is adjacent (unit last stride) and
+   2-element aligned.  When the test fails (an odd column origin, an unaligned base, a strided last
+   dimension) the original scalar stores run.  H100, 4096x5120x4096 fp16: 304 -> 252 us."
+  (let* ((to-int (intern "TO-INT" (find-package :crisp-language)))
+         (if-sym (intern "IF" (find-package :crisp-language)))
+         (n8 (floor n 8)))
+    (flet ((elt-of (i) (%196-wrap-conversion convert `(%extract-struct-member wgv ,i))))
+      (flet ((pairs (row base-offset)
+               (loop for j below n8
+                     for base = (+ (* j 4) base-offset)
+                     collect `(%store-pair (~ ,dest ,row (+ c0 ,(* 8 j)))
+                                           (~ ,dest ,row (+ (+ c0 ,(* 8 j)) 1))
+                                           ,(elt-of base) ,(elt-of (1+ base)))))
+             (scalars (row base-offset)
+               (loop for j below n8
+                     for base = (+ (* j 4) base-offset)
+                     append (list
+                             `(set! (~ ,dest ,row (+ c0 ,(* 8 j)))       ,(elt-of base))
+                             `(set! (~ ,dest ,row (+ (+ c0 ,(* 8 j)) 1)) ,(elt-of (1+ base)))))))
+        `(let ((wgv ,tile))
+           (let ((wgw (rem (,to-int (warp-id)) 4))
+                 (lane (,to-int (warp-lane))))
+             (let ((rlo (/ lane 4)) (col (* (rem lane 4) 2)))
+               (let ((r0 (+ (+ (,to-int ,row-origin) (* wgw 16)) rlo)))
+                 (let ((r8 (+ r0 8))
+                       (c0 (+ (,to-int ,col-origin) col)))
+                   (,if-sym (%pair-ok-p (~ ,dest r0 c0) (~ ,dest r0 (+ c0 1)))
+                     (progn ,@(pairs 'r0 0) ,@(pairs 'r8 2))
+                     (progn ,@(scalars 'r0 0) ,@(scalars 'r8 2))))))))))))
+
+;; src/mma.lisp -- Endeavour 197: analyze-store-fragment packs each lane's column pairs (NVIDIA)
+(defun analyze-store-fragment (expr env context location)
+  "P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR
+   (accumulator, row-major); else the NVIDIA per-lane writes.
+
+   Endeavour 196: FRAG may be (to-half F) / (to-bfloat16 F).  The conversion wraps each element
+   read in the per-lane writes, so it costs one cvt per element at the store and nothing else.
+   NVIDIA only: on SPIR-V the store is one CooperativeMatrixStoreKHR of the whole fragment, which
+   would need the fragment converted first (OpFConvert on a cooperative matrix) -- not built.
+
+   Endeavour 197: each lane's elements are adjacent column PAIRS (col, col+1), so on NVIDIA a pair
+   is one (%store-pair ...) under a per-fragment (%pair-ok-p ...) of the lane's first pair; the
+   scalar set!s are the fallback branch (odd origin, unaligned base, strided last dimension).  The
+   row+8 pair shares the guard: 8 rows move the address by 8 x the row stride, an even number of
+   elements."
+  ;; Endeavour 165 (2b-ii): an optional 4th argument carries the ELEMENT TYPE, supplied by
+  ;; the store-tile walks (which know it) and defaulting to FLOAT for a hand-written
+  ;; store-fragment.  The alternative -- inferring it from the fragment's own type -- would mean
+  ;; analyzing FRAG once to ask, then again inside the rewritten form, and analyzing a form twice
+  ;; is not safe in general.
+  (destructuring-bind (frag-in dest tile-id &optional (elem 'float)) (cdr expr)
+    (multiple-value-bind (frag convert) (%196-peel-store-conversion frag-in)
+      (log:debug "196 store-fragment: convert=~a elem=~a target=~a" convert elem *target-backend*)
+      (let ((ty (first tile-id)) (tx (second tile-id)))
+        (if (eq *target-backend* :spirv)
+            (progn
+              (when convert
+                (error 'crisp-compiler-error
+                       :message (format nil "store-fragment / store-tile: (~(~a~) TILE) as a store source is not supported on SPIR-V yet.  The SPIR-V store is one CooperativeMatrixStoreKHR of the whole fragment, so the fragment would have to be converted first (OpFConvert on a cooperative matrix).  It is supported on PTX." convert)
+                       :source-location location))
+              ;; C(accumulator) = MxN; layout from the dest tensor's :contiguous-term.
+              (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                (declare (ignore sk))
+                (let ((dnode (analyze-expression dest env context (append location '(2)))))
+                  (make-semantic-coop-op
+                   :type 'void :kind :store
+                   :value-node  (analyze-expression frag env context (append location '(1)))
+                   :tensor-node dnode
+                   :rows sm :cols sn :use 2 :layout (%coop-layout-of dnode)
+                   :ty (analyze-expression `(to-int ,ty) env context (append location '(3)))
+                   :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
+                   :source-location location))))
+            (let ((if-sym (intern "IF" (find-package :crisp-language))))
+            (flet ((elt-of (i) (%196-wrap-conversion convert `(%extract-struct-member frag-val ,i))))
+              (if (eql (%mma-elem-bits elem) 64)
+                  ;; fp64 m8n8k4 C/D, decoded from CuTe MMA_Traits<SM80_8x8x4_F64F64F64F64_TN>:
+                  ;; CLayout = Layout<Shape<Shape<_4,_8>,_2>, Stride<Stride<_16,_1>,_8>> gives
+                  ;; m = lane/4 and n = 2*(lane%4) + v for v in {0,1}.  Same column scheme as the
+                  ;; tf32 fragment below (two adjacent columns at 2*(lane%4)); it differs only in
+                  ;; having ONE row per lane instead of the g / g+8 pair, over a tile 8 rows tall.
+                  (analyze-expression
+                   `(let ((frag-val ,frag))
+                      (let ((lane (to-int (warp-lane))))
+                        (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                          (let ((row (+ (* ,ty 8) g)) (col (+ (* ,tx 8) t2)))
+                            (,if-sym (%pair-ok-p (~ ,dest row col) (~ ,dest row (+ col 1)))
+                              (%store-pair (~ ,dest row col) (~ ,dest row (+ col 1)) ,(elt-of 0) ,(elt-of 1))
+                              (progn
+                                (set! (~ ,dest row col)       ,(elt-of 0))
+                                (set! (~ ,dest row (+ col 1)) ,(elt-of 1))))))))
+                   env context location)
+                  (analyze-expression
+                   `(let ((frag-val ,frag))
+                      (let ((lane (to-int (warp-lane))))
+                        (let ((g (/ lane 4)) (t2 (* 2 (rem lane 4))))
+                          (let ((row (+ (* ,ty 16) g)) (col (+ (* ,tx 8) t2)))
+                            (,if-sym (%pair-ok-p (~ ,dest row col) (~ ,dest row (+ col 1)))
+                              (progn
+                                (%store-pair (~ ,dest row col) (~ ,dest row (+ col 1))
+                                             ,(elt-of 0) ,(elt-of 1))
+                                (%store-pair (~ ,dest (+ row 8) col) (~ ,dest (+ row 8) (+ col 1))
+                                             ,(elt-of 2) ,(elt-of 3)))
+                              (progn
+                                (set! (~ ,dest row col)             ,(elt-of 0))
+                                (set! (~ ,dest row (+ col 1))       ,(elt-of 1))
+                                (set! (~ ,dest (+ row 8) col)       ,(elt-of 2))
+                                (set! (~ ,dest (+ row 8) (+ col 1)) ,(elt-of 3))))))))
+                   env context location)))))))))
