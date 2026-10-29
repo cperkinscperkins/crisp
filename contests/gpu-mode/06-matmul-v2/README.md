@@ -59,7 +59,7 @@ longer regenerates them.  v4 = the transB kernel on H100, and the 4-warp kernel 
 
 | GPU | submission | public us | rank | #1 us |
 |---|---|---:|---|---:|
-| H100 | `crisp_matmul_v4.py` (968463) | 253.7 (secret 255.9) | 36 / 43 | 205 |
+| H100 | `crisp_matmul_v5.py` (968487) | 229.8 (secret 228.7) | 29 / 43 | 205 |
 | A100 | `crisp_matmul_v3.py` | 4961.6 | 59 / 60 | 596 |
 | L4 | `crisp_matmul_v3.py` | 7117.0 | 25 / 25 | 1990 |
 | B200 | -- | -- | every job (ours and a pure-torch probe) hit the runner's hard timeout | 92 |
