@@ -1,0 +1,31 @@
+;; Endeavour 196 rung 06 -- the register fit-check charges a :warps-distributed tile PER WARP (D-196-10).
+;;
+;; A 128x128 f32 accumulator is 128 m16n8 fragments = 512 registers if one thread held it all, and the
+;; fit-check refused it on exactly that count -- although :warps '(true true true true) spreads it over a
+;; 2x2 warp grid and each thread allocates a quarter: 32 fragments, 128 registers.  So a multi-warp
+;; register tile could never be larger than a single warp could hold, which is the point of
+;; distributing it.  This is the A100 / L4 matmul_v2 kernel shape (contests/gpu-mode/06-matmul-v2).
+;; The undistributed 128x128 tile is still refused (errors/03).
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-fp16-sync-mma
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel four_warp_tile (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (128 16)))
+        (B-tile (make-scratch-matrix half (16 128)))
+        (C-tile (make-register-tile float (128 128) 0.0 :warps '(true true true true)))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

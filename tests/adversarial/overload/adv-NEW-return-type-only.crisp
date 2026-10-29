@@ -1,4 +1,8 @@
-;; TEST-EXPECT: PASS
+;; TEST-EXPECT: FAIL
+
+
+;; Crisp doesn't support overloading on return type (only). 
+;; maybe error message could be better.
 
 (def-type cell-float (cell float :address-space :global))
 (def-type cell-int (cell int :address-space :global))
@@ -11,7 +15,7 @@
   (declare #'(float => int))
   42)
 
-(def-kernel overload_ret_type (in_val &out out_f &out out_i)
-  (declare #'(float &out cell-float &out cell-int => nil))
+(def-kernel overload_ret_type (in_val &out out_f out_i)
+  (declare #'(float &out cell-float cell-int => nil))
   (set! (~ out_f) (ret-type-only in_val))
   (set! (~ out_i) (ret-type-only in_val)))

@@ -1,0 +1,35 @@
+;; Endeavour 198 rung 01 -- a (K N) B tile read by wgmma with transB=1: (... :b-major :mn).
+;;
+;; WHY.  The natural matmul layout -- b (K N), N-contiguous, the plain `a @ b` of GPU MODE matmul_v2 --
+;; is Major::MN for wgmma.  Until 198 Crisp read B only as (N K), so the H100 entry ran a 39 us transpose
+;; kernel first.  The 16-bit wgmma reads MN-major B directly with transB=1; the SMEM descriptor changes
+;; meaning with it (CUTLASS make_gmma_desc<Major::MN>, B128): LBO is the stride between 64-wide N atoms
+;; (= one TMA box, 64 K rows x 128 B = 8192), SBO the stride between 8-row K groups (1024), and the k16
+;; slice advances 16 rows = 2048 bytes instead of 32.
+;;
+;; THE TMA HALF.  A :128b-swizzled TMA box is at most 128 bytes wide; this (64 128) half B tile is 256,
+;; so load-tile issues it as two 64x64 boxes, the second 8192 bytes on and 64 columns over, both on the
+;; one mbarrier (expect_tx unchanged: the whole tile).  The hoist encodes box (64 64).
+;;
+;; THE VALIDATOR: every wgmma carries transB=1, the MN-major B descriptor (LBO 8192) is present, and
+;; there are 3 TMA copies (A, and B's two boxes).  Metal: GPU MODE matmul_v2 on H100, the 128x256
+;; contest kernel with this B (see wgmma-transb.md) -- bit-exact against cuBLAS.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma-transb
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_b_mn_fp16 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))      ; (M K)
+        (B-tile (make-scratch-matrix half (64 128)))     ; (K N) -- Major::MN
+        (D      (make-wgmma-accumulator float (64 128) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 128 64) D A-tile B-tile :swizzle :128b :b-major :mn)
+    (store-tile-at D C (0 0))))

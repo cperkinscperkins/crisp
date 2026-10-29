@@ -1,0 +1,12 @@
+;; CHECK-FAIL: ":b-major must be :k"
+;; Endeavour 198 -- :b-major takes :k (B is (N K), the default) or :mn (B is (K N)); anything else is
+;; refused by name rather than silently read as the default.
+(declaim (precision fast))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e198_four (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))
+        (B-tile (make-scratch-matrix half (64 64)))
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 64) D A-tile B-tile :swizzle :128b :b-major :row)
+    (set! (~ C 0 0) 1.0)))

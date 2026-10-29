@@ -1224,12 +1224,171 @@
                                      op-name)
                     :source-location location)))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 196 -- the Ampere cp.async load-tile, vectorized (16-byte chunks)
+;;;; See tests/spec/196-matmul-contest/matmul-contest.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %196-expand-async-load-tile-vec-form (expr location vec &optional static-dims)
+  "Endeavour 196.  Like %expand-async-load-tile-at-form, but the LAST tile dimension is walked in
+   chunks of VEC elements (VEC x element-size = 16 bytes), each chunk one (%cp-async-copy-elem tile src 16).
+
+   A uniform run-time test VOK picks the vector nest or the original per-element nest:
+     - source and tile have stride 1 in the last dimension,
+     - every other source / tile stride is a multiple of VEC,
+     - the origin's last coordinate is a multiple of VEC.
+   Each thread's chunk starts at a multiple of VEC within the tile, so together these make every
+   chunk 16-byte aligned on both sides -- ASSUMING the tensors' base addresses (pointer + offsets)
+   are 16-byte aligned, which no Crisp form can test (D-196-8).
+
+   A chunk that is not wholly inside the tile and the source is copied element by element, with the
+   identity for out-of-bounds elements -- the same contract as the scalar path.
+
+   Thread mapping (like the scalar nest): dims 0..n-2 stride by the local work size, the last dim
+   strides by VEC x its local work size, thread lid starting at lid x VEC.
+
+   STATIC-DIMS, when the tile's shape is a compile-time literal (a make-scratch-matrix / -ring binding),
+   replaces the run-time extents~ reads: the chunk walk divides and takes remainders by the tile
+   extents, and a 64-bit divide by a VARIABLE costs dozens of instructions per chunk, where a divide by
+   a literal power of two is a shift.  (A100: the flattened walk on run-time extents made the 1-warp
+   kernel 6.8 -> 9.6 ms.)"
+  (let* ((src-form (second expr))
+         (tile-form (third expr))
+         (origin-list (fourth expr))
+         (key-args (nthcdr 4 expr))
+         (identity-form (%extract-key-arg key-args :identity 0))
+         (n (length origin-list))
+         (last (1- n))
+         (cl (find-package :crisp-language))
+         (s (lambda (name) (intern name cl)))
+         (src (gensym "SRC")) (tile (gensym "TILE")) (ident (gensym "IDENT")) (vok (gensym "VOK"))
+         (orig (loop for i below n collect (gensym (format nil "ORIG~A" i))))
+         (tc   (loop for i below n collect (gensym (format nil "TLC~A" i))))
+         (te   (loop for i below n collect (gensym (format nil "TE~A" i))))
+         (ge   (loop for i below n collect (gensym (format nil "GE~A" i))))
+         (lid  (loop for i below n collect (gensym (format nil "LID~A" i))))
+         (lws  (loop for i below n collect (gensym (format nil "LWS~A" i))))
+         (uvec (list (funcall s "TO-ULONG") vec)))
+    (labels ((sym (name) (funcall s name))
+             (u (x) (list (sym "TO-ULONG") x))
+             (stride (tensor k) (list (sym "~") (list (sym "STRIDES~") tensor) k))
+             (src-coords (last-coord)
+               (loop for k below n
+                     collect (list (sym "+") (nth k orig) (if (= k last) last-coord (nth k tc)))))
+             (tile-aref (last-coord)
+               (list* (sym "~") tile (loop for k below n collect (if (= k last) last-coord (nth k tc)))))
+             (src-aref (last-coord) (list* (sym "~") src (src-coords last-coord)))
+             (in-bounds (last-coord)
+               (%tlc-all-in-bounds-form n (src-coords last-coord) ge (sym "<") (sym "AND")))
+             (one-elem (last-coord)
+               ;; per-element: async when in bounds (sync for <4-byte elements), identity otherwise
+               (list (sym "IF") (in-bounds last-coord)
+                     (list (sym "%CP-ASYNC-COPY-ELEM") (tile-aref last-coord) (src-aref last-coord))
+                     (list (sym "SET!") (tile-aref last-coord) ident))))
+      (let* ((tcl (nth last tc)) (tel (nth last te))
+             (chunk-end (list (sym "+") tcl uvec))
+             (whole-chunk-ok
+               (list (sym "AND")
+                     (list (sym "<=") chunk-end tel)
+                     (%tlc-all-in-bounds-form
+                      n (src-coords (list (sym "+") tcl (u (1- vec)))) ge (sym "<") (sym "AND"))))
+             (chunk
+               (list (sym "IF") whole-chunk-ok
+                     (list (sym "%CP-ASYNC-COPY-ELEM") (tile-aref tcl) (src-aref tcl) 16)
+                     (cons (sym "PROGN")
+                           (loop for j below vec
+                                 for cj = (if (zerop j) tcl (list (sym "+") tcl (u j)))
+                                 collect (list (sym "WHEN") (list (sym "<") cj tel) (one-elem cj))))))
+             ;; FLATTENED chunk walk: every thread of the workgroup takes chunks q = LIN, LIN+NT, ...
+             ;; over all TE0 x .. x TE(n-2) x NCH chunks, row-major, so consecutive threads take
+             ;; consecutive 16-byte chunks of a row (coalesced) and no thread idles because a tile
+             ;; dimension is shorter than the workgroup (a 16-row B slice under 128 threads).
+             (nch (gensym "NCH")) (tot (gensym "TOT")) (lin (gensym "LIN")) (nt (gensym "NT"))
+             (qb (gensym "QB")) (q (gensym "Q"))
+             (rests (loop for k below n collect (gensym "R")))
+             (mul (lambda (forms) (reduce (lambda (x y) (list (sym "*") x y)) forms)))
+             (decomp-bindings
+               (append
+                (list (list tcl (list (sym "*") (list (sym "REM") q nch) uvec)))
+                (when (> n 1)
+                  (list (list (nth (- n 2) rests) (list (sym "/") q nch))))
+                (loop for k from (- n 2) downto 0
+                      append (list (list (nth k tc) (list (sym "REM") (nth k rests) (nth k te))))
+                      when (> k 0)
+                        append (list (list (nth (1- k) rests) (list (sym "/") (nth k rests) (nth k te)))))))
+             (vec-nest
+               (list (sym "LET")
+                     (list (list nch (list (sym "/") (list (sym "+") tel (u (1- vec))) uvec))
+                           (list lin (u (list (sym "GET-LOCAL-LINEAR-ID"))))
+                           (list nt (funcall mul lws))
+                           (list tot (funcall mul (append (butlast te) (list nch)))))
+                     (list (sym "DOTIMES") (list qb tot nt)
+                           (list (sym "LET") (list (list q (list (sym "+") qb lin)))
+                                 (list (sym "WHEN") (list (sym "<") q tot)
+                                       (list (sym "LET") decomp-bindings chunk))))))
+             (scalar-nest (%tlc-coop-loop-skeleton n tile nil tc te lid lws (one-elem tcl) cl))
+             (vok-form
+               (cons (sym "AND")
+                     (append
+                      (list (list (sym "=") (stride src last) (u 1))
+                            (list (sym "=") (stride tile last) (u 1))
+                            (list (sym "=") (list (sym "REM") (nth last orig) uvec) (u 0)))
+                      (loop for k below last
+                            append (list (list (sym "=") (list (sym "REM") (stride src k) uvec) (u 0))
+                                         (list (sym "=") (list (sym "REM") (stride tile k) uvec) (u 0)))))))
+             (bindings
+               (append
+                (list (list src src-form)
+                      (list tile tile-form)
+                      (list ident (list (sym "%ELEMENT-OF-CAST") tile identity-form)))
+                (loop for i below n collect (list (nth i orig) (u (nth i origin-list))))
+                (loop for i below n collect (list (nth i te)
+                                                  (if static-dims
+                                                      (u (nth i static-dims))
+                                                      (list (sym "~") (list (sym "EXTENTS~") tile) i))))
+                (loop for i below n collect (list (nth i ge) (list (sym "~") (list (sym "EXTENTS~") src) i)))
+                (loop for i below n collect (list (nth i lid) (list (sym "GET-LOCAL-ID") i)))
+                (loop for i below n collect (list (nth i lws) (list (sym "GET-LOCAL-WORK-SIZE") i))))))
+        (declare (ignorable location))
+        (log:debug "196 vectorized load-tile: n=~a vec=~a" n vec)
+        (list (sym "LET") bindings
+              (list (sym "LET") (list (list vok vok-form))
+                    (list (sym "PROGN")
+                          (list (sym "IF") vok vec-nest scalar-nest)
+                          (list (sym "%CP-ASYNC-COMMIT")))))))))
+
+(defun %196-static-tile-dims (tile-form rank)
+  "Endeavour 196.  The compile-time (ROWS COLS) of TILE-FORM -- a scratch-matrix binding or a ring-get of
+   a scratch-matrix ring -- from *mma-scratch-tile-dims* (published by the enclosing LET), or NIL."
+  (let* ((sym (cond ((symbolp tile-form) tile-form)
+                    ((and (consp tile-form) (symbolp (first tile-form))
+                          (string= (symbol-name (first tile-form)) "RING-GET")
+                          (symbolp (second tile-form)))
+                     (second tile-form))))
+         (dims (and sym (cdr (assoc sym *mma-scratch-tile-dims*)))))
+    (and dims (= (length dims) rank) (every #'integerp dims) dims)))
+
+(defun %196-cp-async-vec-width (tile-form env context location)
+  "Endeavour 196.  Elements per 16-byte cp.async chunk for TILE-FORM's element type (8 for half /
+   bfloat16, 4 for float / int, 2 for double / long, 16 for char), or NIL when the element type is
+   unknown.  Analysing TILE-FORM here is a pure read: it is a variable or a ring-get."
+  (let* ((node (analyze-expression tile-form env context location))
+         (elem (get-array-element-type (semantic-node-type node))))
+    (case elem
+      ((char uchar) 16)
+      ((short ushort half bfloat16) 8)
+      ((int uint float) 4)
+      ((long ulong double) 2)
+      (t nil))))
+
 (defun analyze-load-tile-at-expression (expr env context location)
   "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
    Rejects placement inside a thread-divergent conditional. If :barrier is provided
    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
    codegen via %expand-load-tile-at-form.
-   Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type)."
+   Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).
+   Endeavour 196: a :linear barrier on PTX without :transpose takes the VECTORIZED cp.async nest
+   (%196-expand-async-load-tile-vec-form, 16-byte chunks); with :transpose the per-element one."
   ;; Endeavour 192: the cache hint comes from the tensor's type; a per-operation :cache is refused.
   (%refuse-per-operation-cache "load-tile-at" (nthcdr 4 expr) location)
   ;; Endeavor 139: inside a warp-spec block, %warp-spec-check-block-only (after mode resolution)
@@ -1257,8 +1416,15 @@
                              env context location))
         ((and barrier-form (eq mode :linear) (eq *target-backend* :ptx))
          ;; Endeavor 136 (Chapter 1): cooperative cp.async copy + commit_group.
-         (analyze-expression (%expand-async-load-tile-at-form expr location)
-                             env context location))
+         ;; Endeavour 196: vectorized (16-byte chunks) unless :transpose reorders the walk.
+         (let ((vec (and (null (%extract-key-arg key-args :transpose nil))
+                         (%196-cp-async-vec-width (third expr) env context (append location '(2))))))
+           (log:debug "196 load-tile-at :linear PTX: vec=~a" vec)
+           (analyze-expression (if vec
+                                   (%196-expand-async-load-tile-vec-form
+                                    expr location vec (%196-static-tile-dims (third expr) (length (fourth expr))))
+                                   (%expand-async-load-tile-at-form expr location))
+                               env context location)))
         ((and barrier-form (eq mode :linear) (eq *target-backend* :spirv)
               (<= (length (fourth expr)) 2))
          ;; Endeavor 136 (Chapter 1, SPV): 1D -> one OpGroupAsyncCopy; 2D -> per-row.
@@ -1333,14 +1499,87 @@
         (setf (gethash node *tma-copy-ws-leader*) t))
       node)))
 
-(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 198 -- a :128b TMA box wider than 128 bytes is issued as several boxes
+;;;; See tests/spec/198-wgmma-transb/wgmma-transb.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *198-tma-copy-split* (make-hash-table :test 'eq)
+  "Endeavour 198.  TMA tile-copy node -> (:count C :inner E :box-bytes B) when the copy is issued as C
+   boxes E elements wide (a :128b-swizzled tile wider than 128 bytes).  Absent = one copy.")
+
+(defun %198-elem-bytes (elem)
+  "Endeavour 198.  Bytes of a TMA element type, or NIL."
+  (case (if (listp elem) (first elem) elem)
+    ((char uchar) 1)
+    ((short ushort half bfloat16) 2)
+    ((int uint float) 4)
+    ((long ulong double) 8)
+    (t nil)))
+
+(defun %198-swizzle-128b-p (swizzle)
+  "Endeavour 198.  True for the :128b swizzle keyword (any package)."
+  (and swizzle (symbolp swizzle) (string-equal (symbol-name swizzle) "128B")))
+
+(defun %198-tma-split (dims elem-bytes)
+  "Endeavour 198.  For a :128b-swizzled TMA tile of DIMS whose innermost extent is wider than 128 bytes:
+   (:count C :inner E :box-bytes B), E = 128 / ELEM-BYTES elements per box, C boxes.  NIL when no
+   split is needed.  Refuses an innermost extent that is not a whole number of boxes."
+  (let* ((last (car (last dims)))
+         (inner (and elem-bytes (floor 128 elem-bytes))))
+    (when (and inner (> (* last elem-bytes) 128))
+      (unless (zerop (rem last inner))
+        (error 'crisp-compiler-error
+               :message (format nil "load-tile :swizzle :128b: the tile's innermost extent ~a (~a bytes) is wider than one 128-byte swizzle box, so it is loaded as boxes of ~a elements -- but ~a is not a multiple of ~a." last (* last elem-bytes) inner last inner)))
+      (list :count (floor last inner)
+            :inner inner
+            :box-bytes (* inner elem-bytes (reduce #'* (butlast dims)))))))
+
+(defun %198-tile-static-dims (tile-form rank context)
+  "Endeavour 198.  TILE-FORM's static dims for the TMA box split: the enclosing let's published dims
+   (%196-static-tile-dims), else *scratch-tile-dims* -- the table resolve-tma-descriptors narrows the
+   descriptor box from, so the copy and the descriptor cannot disagree.  A ring's entry carries the
+   slot count first; the last RANK dims are the tile."
+  (or (%196-static-tile-dims tile-form rank)
+      (let* ((sym (cond ((symbolp tile-form) tile-form)
+                        ((and (consp tile-form) (symbolp (first tile-form))
+                              (string= (symbol-name (first tile-form)) "RING-GET")
+                              (symbolp (second tile-form)))
+                         (second tile-form))))
+             (fn (and context (compiler-context-current-compiling-function context)))
+             (info (and sym fn (gethash (cons fn sym) *scratch-tile-dims*)))
+             (dims (getf info :box-dims)))
+        (and dims (>= (length dims) rank) (every #'integerp dims) (last dims rank)))))
+
+(defun %analyze-nvvm-tma-load-tile-at-multicast (expr env context location)
   "Endeavor 152 wrapper: builds the copy node as before, then tags it as a multicast when the
    enclosing load-tile validated one.  Wrapped rather than copied -- this adds two lines to a
-   45-line analyzer."
+   45-line analyzer.
+
+   Endeavour 198: %analyze-nvvm-tma-load-tile-at (below) tags a wide :128b load with its box split."
   (let ((node (%analyze-nvvm-tma-load-tile-at-base expr env context location)))
     (when (and node *multicast-cluster-dims*)
       (log:info "load-tile: tagging TMA copy node as multicast across ~a" *multicast-cluster-dims*)
       (setf (gethash node *tma-copy-multicast*) *multicast-cluster-dims*))
+    node))
+
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 152 wrapper (multicast tag), plus Endeavour 198: a :128b load of a tile wider than 128
+   bytes is tagged with its box split, which codegen issues as one copy per box."
+  (let* ((node (%analyze-nvvm-tma-load-tile-at-multicast expr env context location))
+         (tile-form (third expr))
+         (swizzle (%extract-key-arg (nthcdr 4 expr) :swizzle nil)))
+    (when (and node (semantic-nvvm-tma-tile-copy-p node) (%198-swizzle-128b-p swizzle))
+      (let* ((rank (length (fourth expr)))
+             (dims (%198-tile-static-dims tile-form rank context))
+             (bytes (semantic-nvvm-tma-tile-copy-elem-bytes node)))
+        (if dims
+            (let ((split (%198-tma-split dims bytes)))
+              (when split
+                (log:info "198 load-tile ~a: ~a x ~a-element boxes (~a bytes apart)"
+                          tile-form (getf split :count) (getf split :inner) (getf split :box-bytes))
+                (setf (gethash node *198-tma-copy-split*) split)))
+            (log:warn "198 load-tile ~a :swizzle :128b: no static tile dims, so one TMA copy is issued; if the tile is wider than 128 bytes its descriptor box will not match" tile-form))))
     node))
 
 (defun %expand-spirv-async-load-tile-at-form (expr location)
@@ -1420,24 +1659,46 @@
      :source-location location)))
 
 (defun analyze-%cp-async-copy-elem-expression (expr env context location)
-  "Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref>) — one non-blocking cp.async of a
-   single element, dst (SLM) <- src (global).  Both operands are aref forms; codegen grabs
-   each element's address (the aref's 3rd return value) and emits cp.async.ca.shared.global."
-  (let* ((dst-node (analyze-expression (second expr) env context (append location '(1))))
-         (src-node (analyze-expression (third expr) env context (append location '(2))))
+  "Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref> [BYTES]) — one non-blocking cp.async,
+   dst (SLM) <- src (global).  Both operands are aref forms; codegen grabs each element's address
+   (the aref's 3rd return value) and emits cp.async.ca.shared.global.
+
+   Endeavour 196: optional BYTES (4, 8 or 16) copies that many bytes starting at the element -- the
+   vectorized load-tile passes 16 for a whole chunk.  BYTES must be a multiple of the element size.
+   Without BYTES an element under 4 bytes (half, bfloat16, char ...) cannot be a cp.async at all, so it
+   is analysed as the SYNCHRONOUS copy (set! dst src): the per-element fallback of a 16-bit tile stays
+   correct instead of being refused."
+  (let* ((bytes-arg (fourth expr))
+         (dst-node (analyze-expression (second expr) env context (append location '(1))))
          (elem-type (semantic-node-type dst-node))
-         (elem-bytes (case (if (listp elem-type) (first elem-type) elem-type)
-                       ((int uint float) 4)
-                       ((long ulong double) 8)
-                       (t (error 'crisp-compiler-error
-                            :message (format nil "%cp-async-copy-elem: element type ~S needs 4 or 8 bytes" elem-type)
-                            :source-location location)))))
-    (make-semantic-cp-async-copy-elem
-     :dst-aref-node dst-node
-     :src-aref-node src-node
-     :elem-bytes elem-bytes
-     :type 'nil
-     :source-location location)))
+         (elem (if (listp elem-type) (first elem-type) elem-type))
+         (elem-size (case elem
+                      ((char uchar) 1)
+                      ((short ushort half bfloat16) 2)
+                      ((int uint float) 4)
+                      ((long ulong double) 8)
+                      (t nil))))
+    (log:debug "196 cp-async-copy-elem: elem=~a size=~a bytes=~a" elem elem-size bytes-arg)
+    (cond
+      ((null elem-size)
+       (error 'crisp-compiler-error
+              :message (format nil "%cp-async-copy-elem: element type ~S has no cp.async size" elem-type)
+              :source-location location))
+      ((and (null bytes-arg) (< elem-size 4))
+       (analyze-expression (list (intern "SET!" (find-package :crisp-language)) (second expr) (third expr))
+                           env context location))
+      (t
+       (let ((bytes (or bytes-arg elem-size)))
+         (unless (and (member bytes '(4 8 16)) (zerop (mod bytes elem-size)))
+           (error 'crisp-compiler-error
+                  :message (format nil "%cp-async-copy-elem: ~a bytes is not a cp.async size (4, 8, 16) that is a multiple of the ~a-byte element ~S" bytes elem-size elem)
+                  :source-location location))
+         (make-semantic-cp-async-copy-elem
+          :dst-aref-node dst-node
+          :src-aref-node (analyze-expression (third expr) env context (append location '(2)))
+          :elem-bytes bytes
+          :type 'nil
+          :source-location location))))))
 
 (defun analyze-%cp-async-commit-expression (expr env context location)
   "Analyzer for (%cp-async-commit) — emits cp.async.commit_group."
@@ -1468,10 +1729,12 @@
   (analyze-expression (%expand-store-tile-at-form expr location)
                       env context location))
 
-(defun analyze-await-expression (expr env context location)
+(defun analyze-await-expression-base (expr env context location)
   "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is
-   (initial-phase ring-count) so codegen can inject the multi-lap flipping parity."
+   (initial-phase ring-count) so codegen can inject the multi-lap flipping parity.
+
+   Endeavour 196: analyze-await-expression (below) adds the workgroup barrier after a cp.async wait."
   (unless (= (length expr) 2)
     (error 'crisp-compiler-error
       :message (format nil "await: expected (await BARRIER), got ~S" expr)
@@ -1505,6 +1768,19 @@
         :source-location location))
       (t
        (analyze-expression nil env context location)))))
+
+(defun analyze-await-expression (expr env context location)
+  "Endeavour 196 wrapper: a cp.async await (a :linear barrier on PTX) outside a warp-specialized block
+   becomes wait_group + sync-workgroup, so every thread sees every thread's copies.  See D-196-11."
+  (let ((node (analyze-await-expression-base expr env context location)))
+    (if (and (semantic-nvvm-cp-async-wait-p node) (not *in-warp-spec-block*))
+        (let ((sync (analyze-expression (list (intern "SYNC-WORKGROUP" (find-package :crisp-language)))
+                                        env context location)))
+          (log:debug "196 await: cp.async wait_group + sync-workgroup")
+          (make-semantic-progn :type (semantic-node-type sync)
+                               :body (list node sync)
+                               :source-location location))
+        node)))
 
 (defun %if-missing-else-is-false-p (expr then-node)
   "BUG 092.  True when the IF form EXPR has no else, or a NIL else, and its THEN branch THEN-NODE
@@ -5355,11 +5631,75 @@
   (%mmts-scan-sections args))
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 197 -- the %store-pair / %pair-ok-p analyzers
+;;;; See tests/spec/197-packed-stores/packed-stores.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %197-pair-elem-bytes (elem-type)
+  "Endeavour 197.  Bytes per element for a packable element type (2, 4 or 8), else NIL.  NIL turns
+   %pair-ok-p into a constant 0 and %store-pair into two plain set!s."
+  (case elem-type
+    ((short ushort half bfloat16) 2)
+    ((int uint float) 4)
+    ((long ulong double) 8)
+    (t nil)))
+
+(defun analyze-%pair-ok-p-expression (expr env context location)
+  "Analyzer for (%pair-ok-p P0 P1), P0 / P1 aref forms naming adjacent elements of one storage.
+   Type int (like a comparison).  An element type that cannot be packed analyses to the literal 0,
+   so the guarded pair branch is dead and the scalar branch runs."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error :message "%pair-ok-p: expects two aref forms" :source-location location))
+  (let* ((p0 (analyze-expression (second expr) env context (append location '(1))))
+         (p1 (analyze-expression (third expr) env context (append location '(2))))
+         (bytes (%197-pair-elem-bytes (semantic-node-type p0))))
+    (log:debug "197 %pair-ok-p: elem-type=~a bytes=~a" (semantic-node-type p0) bytes)
+    (if (and bytes (semantic-aref-p p0) (semantic-aref-p p1))
+        (make-semantic-pair-ok-p :place0-node p0 :place1-node p1 :elem-bytes bytes
+                                 :type 'int :source-location location)
+        (make-semantic-literal :value-type 'int :value 0 :source-location location))))
+
+(defun analyze-%store-pair-expression (expr env context location)
+  "Analyzer for (%store-pair P0 P1 LO HI): one <2 x T> store when LO and HI already have P0's element
+   type and that type packs; otherwise exactly (progn (set! P0 LO) (set! P1 HI)), so conversions
+   and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1)."
+  (unless (= (length expr) 5)
+    (error 'crisp-compiler-error :message "%store-pair: expects (%store-pair P0 P1 LO HI)"
+           :source-location location))
+  (destructuring-bind (p0-form p1-form lo-form hi-form) (rest expr)
+    (let* ((p0 (analyze-expression p0-form env context (append location '(1))))
+           (elem (semantic-node-type p0))
+           (bytes (%197-pair-elem-bytes elem))
+           (lo (analyze-expression lo-form env context (append location '(3))))
+           (hi (analyze-expression hi-form env context (append location '(4)))))
+      (if (and bytes (semantic-aref-p p0)
+               (equal (semantic-node-type lo) elem) (equal (semantic-node-type hi) elem))
+          (make-semantic-store-pair :place-node p0 :lo-node lo :hi-node hi :elem-bytes bytes
+                                    :type 'nil :source-location location)
+          (progn
+            (log:debug "197 %store-pair: falling back to two set!s (elem ~a, lo ~a, hi ~a)"
+                       elem (semantic-node-type lo) (semantic-node-type hi))
+            (analyze-expression `(progn (set! ,p0-form ,lo-form) (set! ,p1-form ,hi-form))
+                                env context location))))))
+
+(defun register-197-pair-store-analyzers ()
+  "Endeavour 197.  Registers %store-pair and %pair-ok-p (internal forms of the accumulator store
+   lowering) in both packages, like the other % forms in register-control-analyzers."
+  (dolist (entry (list (cons "%STORE-PAIR" #'analyze-%store-pair-expression)
+                       (cons "%PAIR-OK-P"  #'analyze-%pair-ok-p-expression)))
+    (let ((sym-cl (intern (car entry) (find-package :crisp-language)))
+          (sym-cc (intern (car entry) (find-package :crisp.compiler))))
+      (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
+      (unless (eq sym-cl sym-cc)
+        (setf (gethash sym-cc *expression-analyzers*) (cdr entry))))))
+
 (defun register-control-analyzers ()
   "Registers all control flow expression analyzers, including loop-vector-stride,
    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,
    and (111 Phase 1a) load-tile-at / store-tile-at.
-   Endeavor 113: also registers request-load-tile-at and await-request."
+   Endeavor 113: also registers request-load-tile-at and await-request.
+   Endeavour 197: also %store-pair / %pair-ok-p."
   (def-expression-analyzer function analyze-function-literal)
   (def-expression-analyzer common-lisp:function analyze-function-literal)
   (def-expression-analyzer funcall analyze-funcall-expression)
@@ -5576,7 +5916,9 @@
     (dolist (sym wrapped)
       (setf (gethash sym *expression-analyzers*)
             (%rfl-wrap-stride-analyzer (symbol-name sym) (gethash sym *expression-analyzers*))))
-    (log:debug "184: return-from-loop registered; stride analysers wrapped: ~a" wrapped)))
+    (log:debug "184: return-from-loop registered; stride analysers wrapped: ~a" wrapped))
+  ;; Endeavour 197: %store-pair / %pair-ok-p.
+  (register-197-pair-store-analyzers))
 
 ;;;; ============================================================================================
 ;;;; Folded in from overlays/crisp-compiler-overlay.lisp on 2026-08-26.

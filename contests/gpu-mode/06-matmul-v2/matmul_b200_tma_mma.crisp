@@ -1,0 +1,24 @@
+;; matmul_v2 -- B200 (sm_100): no wgmma (that is sm_90a only; Blackwell's tensor-core instruction is
+;; tcgen05, not yet in Crisp), so the TMA-fed register-resident mma.sync kernel (benchmark Ch4).
+;; One warp per 64x64 output tile; K walked 16 at a time; B is the contest's (K N) row-major b,
+;; loaded by TMA as (16 64) boxes.
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel matmul_b200 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix half (64 16)))
+        (B-tile (make-scratch-matrix half (16 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :block)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0)) (fill-tile C-tile 0.0))
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

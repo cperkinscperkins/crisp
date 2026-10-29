@@ -36,6 +36,13 @@ The values form a ladder, each rung strictly more capable than the one below it:
   `commit_group`/`wait_group` need no object at all, so the barrier is a *phantom* and the
   compiler emits a constant; on SPIR-V it owns a `target("spirv.Event")` slot that the async
   copies chain through.
+  On PTX the copy moves **16-byte chunks** (8 halves, 4 floats) spread over every thread of the
+  workgroup when a run-time check finds the tile and source contiguous and chunk-aligned, else
+  element by element — so `half` / `bfloat16` tiles work (a 2-byte element alone is not a legal
+  `cp.async` size, and is copied synchronously at the edges).  It assumes the tensor's base
+  address is 16-byte aligned.  `await` on a `:linear` barrier is `cp.async.wait_group` **plus a
+  workgroup barrier**: `wait_group` covers only the calling thread's own copies, and every thread
+  reads chunks other threads copied (endeavour 196).
 - `:block` — `CuTensorMap` (TMA) on PTX.  A bulk descriptor-driven 2D copy global→SLM,
   completing on a **workgroup-local** mbarrier (`mbarrier.arrive.expect_tx.shared::cta` /
   `mbarrier.try_wait.parity.shared::cta`).  **NVIDIA sm_90+ only.**  On an older NVIDIA arch it

@@ -1,0 +1,25 @@
+;; matmul_v2 -- B (K N) -> BT (N K), for the H100 wgmma kernel, which reads B K-major.
+;;
+;; torch's `b.t()` copy took 160 us of a 462 us call at 4096x5120 (a strided element copy).  This is
+;; the textbook tiled transpose: 256 threads move a 64x64 tile.  Consecutive threads walk a ROW of B on
+;; the way in and a row of BT on the way out, so both global sides are coalesced; the tile is padded to
+;; 65 columns so the column-wise shared-memory writes do not all land in one bank.
+;; Shapes must be multiples of 64 (the dispatch guarantees it).
+(def-type h-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel transpose_b (B &out BT)
+  (declare #'(h-mat &out h-mat) (local-size :set-to 256))
+  (let ((tile (make-scratch-matrix half (64 65))))
+    (tile-stride BT (64 64) (gy gx)
+      (let ((n0 (* gy 64ul))
+            (k0 (* gx 64ul))
+            (c  (rem (get-local-id 0) 64ul))
+            (r0 (/ (get-local-id 0) 64ul)))
+        (dotimes (s 16)
+          (let ((r (+ r0 (* (to-ulong s) 4ul))))
+            (set! (~ tile c r) (~ B (+ k0 r) (+ n0 c)))))
+        (sync-workgroup)
+        (dotimes (s 16)
+          (let ((r (+ r0 (* (to-ulong s) 4ul))))
+            (set! (~ BT (+ n0 r) (+ k0 c)) (~ tile r c))))
+        (sync-workgroup)))))

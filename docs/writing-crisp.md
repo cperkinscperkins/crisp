@@ -280,6 +280,36 @@ For speed, use the tensor-core / XMX paths (register tiles and `mma`), async til
 specialization — chapters 57-60, and the tuned kernels in `performance/matmul-bmg/` and the matmul
 benchmarks.  These need `--hardware-profile`.
 
+**16-bit output.**  A 16-bit MMA accumulates in `float`, and an element holds exactly its own type, so
+storing the accumulator into a `half` / `bfloat16` matrix is refused.  Put the conversion on the store's
+SOURCE: `(store-tile (to-half C-tile) C (grid-y grid-x))`, `(store-tile-at (to-half D) C (row col))`, or
+`to-bfloat16`.  It works on register tiles and wgmma accumulators, PTX only (endeavour 196).  Each
+element is converted (round-to-nearest-even) as it is stored -- no half copy of the tile is made -- and
+`(to-half X)` is legal there only when X is an MMA accumulator.
+
+**Async loads without TMA (A100 / L4).**  `load-tile ... :barrier bar` with a plain `(make-async-barrier)`
+lowers to `cp.async`.  It copies the tile's last dimension in 16-byte chunks (8 halves, 4 floats) when a
+run-time check finds the layout contiguous and chunk-aligned, else element by element -- so 16-bit tiles
+work too.  It assumes the tensor's base address is 16-byte aligned (any allocation is).
+
+**wgmma with a row-major B (H100).**  `wgmma-accumulate-via-tile` reads B as `(N K)` by default.  For
+the plain `a @ b` layout -- B `(K N)`, N-contiguous -- stage a `(K N)` tile and add `:b-major :mn`:
+`(wgmma-accumulate-via-tile (64 256 64) D A-tile B-tile :swizzle :128b :b-major :mn)`.  Needs a `half` /
+`bfloat16` B, `:swizzle :128b`, and N a multiple of 64 (endeavour 198).  No transpose kernel needed.
+
+**Accumulator stores are packed.**  `store-tile` / `store-tile-at` of a register tile or wgmma
+accumulator writes each thread's adjacent column pair as one store when a run-time check finds the pair
+contiguous and aligned (the normal case), else element by element (endeavour 197).
+
+**Store a wgmma accumulator through the TMA (H100).**  Add `:via :tma`:
+`(store-tile-at (to-half D) C (row col) :via :tma)`.  Each warp stages its rows in shared memory with
+`stmatrix` and one lane issues TMA stores, so the stores leave as full 128-byte lines and finish
+asynchronously -- on the H100 matmul it is 11% of the whole kernel (endeavour 199).  Rules: the source is
+a wgmma accumulator converted with `to-half` / `to-bfloat16`, C is a `:row-major` kernel parameter of
+that element type, N is a multiple of 64, and the kernel declares `(local-size :set-to N)`.  The compiler
+adds a staging buffer of 16 KB per warpgroup (+1 KB) to the kernel's shared memory -- leave room for it
+under the 227 KB limit.
+
 ---
 
 ## 11. Automatic differentiation

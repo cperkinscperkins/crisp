@@ -5368,7 +5368,7 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
           ((> width 64) (llvm-build-trunc builder val i64 "off_i64"))
           (t            (llvm-build-zext  builder val i64 "off_i64")))))
 
-(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1
+(defun %gen-nvvm-tma-bulk-tensor-g2s-2d-base (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1
                                          &optional (mcast-mask 0) (mcast-p nil))
   "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,
    cachehint, flag_mcast, flag_cachehint).
@@ -5376,7 +5376,9 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
    Endeavor 152: the intrinsic ALREADY carried the multicast operands -- an i16 destination
    mask and an i1 enable flag -- which Endeavor 137 passed as immarg 0.  Multicast is therefore
    plumbing those two, not a new instruction: with the flag set the emitted PTX gains
-   `.multicast::cluster` and the ctaMask operand."
+   `.multicast::cluster` and the ctaMask operand.
+
+   Endeavour 198: %gen-nvvm-tma-bulk-tensor-g2s-2d (below) issues one of these per box."
   (let* ((fn-name  "llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d")
          (void     (llvm-void-type))
          (i8       (llvm-int8-type))
@@ -5418,6 +5420,30 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
       (cffi:foreign-free args)
       (cffi:foreign-free param-types)
       call)))
+
+(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1
+                                         &optional (mcast-mask 0) (mcast-p nil))
+  "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d (see the original).
+   Endeavour 198: under *198-current-tma-split*, C copies -- box j to DST + j*BOX-BYTES at x COORD0 +
+   j*INNER.  All C land on the same mbarrier, whose expect_tx already counts the whole tile."
+  (let ((split *198-current-tma-split*))
+    (if (null split)
+        (%gen-nvvm-tma-bulk-tensor-g2s-2d-base builder module dst-smem-ptr mbar-ptr
+                 tensormap-ptr coord0 coord1 mcast-mask mcast-p)
+        (let ((i32 (llvm-int32-type)) (i8 (llvm-int8-type)))
+          (log:debug "198 codegen: TMA copy as ~a boxes" (getf split :count))
+          (dotimes (j (getf split :count))
+            (let ((dst (if (zerop j) dst-smem-ptr
+                           (let ((idx (cffi:foreign-alloc :pointer :count 1)))
+                             (setf (cffi:mem-aref idx :pointer 0)
+                                   (llvm-const-int i32 (* j (getf split :box-bytes)) nil))
+                             (llvm-build-in-bounds-gep2 builder i8 dst-smem-ptr idx 1
+                                                        (format nil "tma_box~d" j)))))
+                  (x (if (zerop j) coord0
+                         (llvm-build-add builder coord0 (llvm-const-int i32 (* j (getf split :inner)) nil)
+                                         (format nil "tma_x~d" j)))))
+              (%gen-nvvm-tma-bulk-tensor-g2s-2d-base builder module dst mbar-ptr
+                       tensormap-ptr x coord1 mcast-mask mcast-p)))))))
 
 (defun %gen-nvvm-tma-mbar-global (module &optional (count 1))
   "Creates a fresh per-CTA SLM mbarrier object: a module-level addrspace(3) global with an undef
@@ -5510,6 +5536,229 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
                 (llvm-position-builder-at-end builder cont)
                 complete)
               (crisp.llvm-bindings::llvm-build-or builder complete (llvm-build-zext builder dead i32 "died_i32") "done_or_died"))))))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 197 -- packed accumulator stores: %pair-ok-p and %store-pair codegen
+;;;; See tests/spec/197-packed-stores/packed-stores.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %197-aref-element-pointer (aref-node builder module var-env di-builder di-scope location-map what)
+  "Endeavour 197.  The element address of an aref node: its third return value (the loaded r-value
+   is dead and opt removes it -- the %cp-async-copy-elem idiom)."
+  (multiple-value-bind (v ign ptr)
+      (generate-node-ir aref-node builder module var-env di-builder di-scope location-map)
+    (declare (ignore v ign))
+    (unless ptr
+      (error "~a: aref did not yield an element pointer (~a)" what aref-node))
+    ptr))
+
+(defmethod generate-node-ir ((node semantic-pair-ok-p) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 197.  i32 (p1 - p0 == bytes) & ((p0 & (2*bytes - 1)) == 0), zero-extended like a comparison."
+  (let* ((bytes (semantic-pair-ok-p-elem-bytes node))
+         (i64 (llvm-int64-type))
+         (p0 (%197-aref-element-pointer (semantic-pair-ok-p-place0-node node) builder module var-env
+                                         di-builder di-scope location-map "%pair-ok-p"))
+         (p1 (%197-aref-element-pointer (semantic-pair-ok-p-place1-node node) builder module var-env
+                                         di-builder di-scope location-map "%pair-ok-p"))
+         (a0 (llvm-build-ptr-to-int builder p0 i64 "pair_a0"))
+         (a1 (llvm-build-ptr-to-int builder p1 i64 "pair_a1"))
+         (adjacent (llvm-build-icmp builder +llvm-int-eq+ (llvm-build-sub builder a1 a0 "pair_gap")
+                                    (llvm-const-int i64 bytes nil) "pair_adjacent"))
+         (aligned (llvm-build-icmp builder +llvm-int-eq+
+                                   (crisp.llvm-bindings::llvm-build-and builder a0 (llvm-const-int i64 (1- (* 2 bytes)) nil)
+                                                   "pair_misalign")
+                                   (llvm-const-int i64 0 nil) "pair_aligned"))
+         (ok (crisp.llvm-bindings::llvm-build-and builder adjacent aligned "pair_ok")))
+    (log:debug "197 codegen %pair-ok-p: elem-bytes=~a" bytes)
+    (values (llvm-build-zext builder ok (llvm-int32-type) "pair_ok_ext") nil)))
+
+(defmethod generate-node-ir ((node semantic-store-pair) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 197.  insertelement LO, HI into <2 x T>; one store at P0, aligned to 2 x elem-bytes
+   (NVPTX: st.global.b32 for a half / bf16 pair, st.global.v2.f32 for float, v2.f64 for double)."
+  (let* ((bytes (semantic-store-pair-elem-bytes node))
+         (ptr (%197-aref-element-pointer (semantic-store-pair-place-node node) builder module var-env
+                                          di-builder di-scope location-map "%store-pair"))
+         (lo-node (semantic-store-pair-lo-node node))
+         (hi-node (semantic-store-pair-hi-node node))
+         (lo (extract-primary-value builder (generate-node-ir lo-node builder module var-env
+                                                              di-builder di-scope location-map)
+                                    (semantic-node-type lo-node)))
+         (hi (extract-primary-value builder (generate-node-ir hi-node builder module var-env
+                                                              di-builder di-scope location-map)
+                                    (semantic-node-type hi-node)))
+         (vec-ty (llvm-vector-type (llvm-type-of lo) 2))
+         (i32 (llvm-int32-type))
+         (v (llvm-build-insert-element builder (llvm-get-undef vec-ty) lo (llvm-const-int i32 0 nil) "pair_lo"))
+         (v (llvm-build-insert-element builder v hi (llvm-const-int i32 1 nil) "pair_hi"))
+         (st (llvm-build-store builder v ptr)))
+    (crisp.llvm-bindings::llvm-set-alignment st (* 2 bytes))
+    (log:debug "197 codegen %store-pair: <2 x ~a-byte> align ~a" bytes (* 2 bytes))
+    (values nil nil)))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 199 -- (store-tile-at ... :via :tma) codegen: stmatrix staging + TMA stores
+;;;; See tests/spec/199-tma-store/tma-store.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %199-asm (builder arg-types args asm constraints)
+  "Endeavour 199.  A void, side-effecting inline-PTX statement; a memory clobber is always added (these
+   write or order shared memory LLVM cannot see)."
+  (%build-inline-asm-call builder (llvm-void-type) arg-types args asm
+                          (if (string= constraints "") "~{memory}"
+                              (concatenate 'string constraints ",~{memory}"))))
+
+(defun %199-linear-tid (builder module one-d-p)
+  "Endeavour 199.  The thread's linear index in its block: tid.x, or x + ntid.x * (y + ntid.y * z)."
+  (if one-d-p
+      (%gen-nvvm-read-tid-x builder module)
+      (let ((x  (%gen-nvvm-read-tid-x builder module))
+            (y  (%gen-nvvm-read-tid-y builder module))
+            (z  (%gen-nvvm-read-tid-z builder module))
+            (nx (%gen-nvvm-read-ntid-x builder module))
+            (ny (%gen-nvvm-read-ntid-y builder module)))
+        (llvm-build-add builder x
+                        (llvm-build-mul builder nx
+                                        (llvm-build-add builder y (llvm-build-mul builder ny z "tid_zy") "tid_yz")
+                                        "tid_xyz")
+                        "tid_lin"))))
+
+(defun %199-stage-base-i32 (builder var-env node)
+  "Endeavour 199.  The staging buffer's shared address (i32) from its implicit scratch record: the
+   record's first field, descended through nested structs (the storage handle) to the data pointer."
+  (let* ((stage (semantic-wgmma-tma-store-stage node))
+         (spec  (semantic-wgmma-tma-store-stage-spec node))
+         (slot  (gethash stage var-env)))
+    (unless slot
+      (error "store-tile-at :via :tma: missing implicit staging argument ~a (var-env keys ~s)"
+             stage (alexandria:hash-table-keys var-env)))
+    (let* ((sty (ensure-struct-llvm-type (mangle-template-struct-name (first spec) (rest spec))))
+           (v   (llvm-build-load2 builder sty slot "tma_stage_rec")))
+      (loop repeat 4
+            for kind = (crisp.llvm-bindings::llvm-get-type-kind (llvm-type-of v))
+            do (log:debug "199 staging record: type kind ~a" kind)
+               (cl:cond
+                 ((= kind crisp.llvm-bindings::+llvm-pointer-type-kind+)
+                  (return-from %199-stage-base-i32
+                    (llvm-build-ptr-to-int builder v (llvm-int32-type) "tma_stage_addr")))
+                 ((= kind crisp.llvm-bindings::+llvm-struct-type-kind+)
+                  (setf v (llvm-build-extract-value builder v 0 "tma_stage_field")))
+                 (t (cl:return))))
+      (error "store-tile-at :via :tma: no data pointer at the head of the staging record ~a" spec))))
+
+(defmethod generate-node-ir ((node semantic-wgmma-tma-store) builder module var-env
+                             di-builder di-scope location-map)
+  "Endeavour 199.  Per warp: the 16 rows it owns, one pair of 64-column boxes at a time --
+     cvt pairs to f16x2 / bf16x2 -> stmatrix.x4 into its 4 KB staging slice (two 16x64 boxes laid out
+     as SWIZZLE_128B: 16-byte chunk c of row r lives at chunk c ^ (r mod 8)) -> fence.proxy.async,
+     bar.warp.sync -> lane 0: one TMA store per box, commit.
+   Lane 0 waits for the slice's reads before it is rewritten and once at the end.
+
+   stmatrix.x4 lane addressing: lanes 8k..8k+7 give the 8 row addresses of matrix k; matrix order is
+   (n8 block j, rows 0-7), (j, rows 8-15), (j+1, rows 0-7), (j+1, rows 8-15), and each register is the
+   thread's m16n8 C fragment pair (row lane/4, columns 2(lane mod 4), +1) -- the wgmma accumulator layout,
+   member 4j + 2h and 4j + 2h + 1 for n8 block j and row half h."
+  (let* ((i32   (llvm-int32-type))
+         (i64   (llvm-int64-type))
+         (n     (semantic-wgmma-tma-store-n node))
+         (boxes (floor n 64))
+         (bf16-p (string= (symbol-name (semantic-wgmma-tma-store-element node)) "BFLOAT16"))
+         (h16   (if bf16-p (crisp.llvm-bindings::llvm-bfloat-type) (crisp.llvm-bindings::llvm-half-type)))
+         (v2f   (llvm-vector-type (llvm-float-type) 2))
+         (v2h   (llvm-vector-type h16 2))
+         (tile-node (semantic-wgmma-tma-store-tile-node node))
+         (wgv   (extract-primary-value builder
+                                       (generate-node-ir tile-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type tile-node)))
+         (row-node (semantic-wgmma-tma-store-row-node node))
+         (col-node (semantic-wgmma-tma-store-col-node node))
+         (row0  (extract-primary-value builder
+                                       (generate-node-ir row-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type row-node)))
+         (col0  (extract-primary-value builder
+                                       (generate-node-ir col-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type col-node)))
+         (desc  (%tma-lookup-descriptor-ptr builder var-env (semantic-wgmma-tma-store-dest-sym node)
+                                            (llvm-pointer-type (llvm-int8-type) 1))))
+    (unless desc
+      (error "store-tile-at :via :tma: no CUtensorMap descriptor for ~a in var-env"
+             (semantic-wgmma-tma-store-dest-sym node)))
+    (flet ((k (v) (llvm-const-int i32 v nil)))
+      (let* ((tmap  (llvm-build-ptr-to-int
+                     builder (llvm-build-addrspace-cast builder desc (llvm-pointer-type (llvm-int8-type) 0)
+                                                        "tma_store_map")
+                     i64 "tma_store_map_i64"))
+             (tid   (%199-linear-tid builder module (semantic-wgmma-tma-store-one-d-p node)))
+             (lane  (crisp.llvm-bindings::llvm-build-and builder tid (k 31) "tma_lane"))
+             (warp  (crisp.llvm-bindings::llvm-build-l-shr builder tid (k 5) "tma_warp"))
+             (wq    (crisp.llvm-bindings::llvm-build-and builder warp (k 3) "tma_wq"))
+             (stage (%199-stage-base-i32 builder var-env node))
+             (align (crisp.llvm-bindings::llvm-build-and builder (llvm-build-add builder stage (k 1023) "stage_pad")
+                                    (k #xFFFFFC00) "stage_1k"))
+             (base  (llvm-build-add builder align
+                                    (llvm-build-mul builder warp (k *199-stage-bytes-per-warp*) "slice_off")
+                                    "tma_slice"))
+             (y     (llvm-build-add builder row0 (crisp.llvm-bindings::llvm-build-shl builder wq (k 4) "wq16") "tma_y"))
+             (i     (crisp.llvm-bindings::llvm-build-and builder lane (k 7) "sm_i"))
+             (h     (crisp.llvm-bindings::llvm-build-and builder (crisp.llvm-bindings::llvm-build-l-shr builder lane (k 3) "l3") (k 1) "sm_h"))
+             (dj    (crisp.llvm-bindings::llvm-build-l-shr builder lane (k 4) "sm_dj"))
+             (rowoff (crisp.llvm-bindings::llvm-build-shl builder
+                                     (llvm-build-add builder (crisp.llvm-bindings::llvm-build-shl builder h (k 3) "h8") i "sm_r")
+                                     (k 7) "sm_rowoff"))
+             (addr  (make-array '(2 4)))
+             (packed (make-hash-table :test 'equal)))
+        ;; stmatrix lane addresses: box b of the slice, 16-byte chunk (2m + dj) of row (8h + i), swizzled
+        (dotimes (m 4)
+          (let* ((chunk (crisp.llvm-bindings::llvm-build-xor builder (llvm-build-add builder dj (k (* 2 m)) "sm_c") i "sm_cx"))
+                 (off   (llvm-build-add builder (crisp.llvm-bindings::llvm-build-shl builder chunk (k 4) "sm_c16") rowoff "sm_off"))
+                 (a0    (llvm-build-add builder base off "sm_a0")))
+            (setf (aref addr 0 m) a0
+                  (aref addr 1 m) (llvm-build-add builder a0 (k 2048) "sm_a1"))))
+        ;; each n8 block j, row half h: members 4j+2h, 4j+2h+1 -> one 16-bit pair in an i32
+        (dotimes (j (floor n 8))
+          (dotimes (hh 2)
+            (let* ((lo (llvm-build-extract-value builder wgv (+ (* 4 j) (* 2 hh)) "acc_lo"))
+                   (hi (llvm-build-extract-value builder wgv (+ (* 4 j) (* 2 hh) 1) "acc_hi"))
+                   (v  (llvm-build-insert-element builder (llvm-get-undef v2f) lo (k 0) "acc_pair_lo"))
+                   (v  (llvm-build-insert-element builder v hi (k 1) "acc_pair"))
+                   (c  (llvm-build-fp-trunc builder v v2h "acc_cvt")))
+              (setf (gethash (cons j hh) packed) (llvm-build-bit-cast builder c i32 "acc_b32")))))
+        (loop for p from 0 below (ceiling boxes 2)
+              do (when (plusp p)
+                   (%199-asm builder (list i32) (list lane)
+                             "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+                   (%199-asm builder nil nil "bar.warp.sync -1;" ""))
+                 (loop for b from (* 2 p) below (min boxes (+ (* 2 p) 2))
+                       for bl = (- b (* 2 p))
+                       do (loop for j from (* 8 b) below (+ (* 8 b) 8) by 2
+                                do (%199-asm builder (list i32 i32 i32 i32 i32)
+                                             (list (aref addr bl (floor (mod j 8) 2))
+                                                   (gethash (cons j 0) packed) (gethash (cons j 1) packed)
+                                                   (gethash (cons (1+ j) 0) packed) (gethash (cons (1+ j) 1) packed))
+                                             "stmatrix.sync.aligned.m8n8.x4.shared.b16 [$0], {$1, $2, $3, $4};"
+                                             "r,r,r,r,r")))
+                 (%199-asm builder nil nil "fence.proxy.async.shared::cta;" "")
+                 (%199-asm builder nil nil "bar.warp.sync -1;" "")
+                 (loop for b from (* 2 p) below (min boxes (+ (* 2 p) 2))
+                       for bl = (- b (* 2 p))
+                       do (%199-asm builder (list i32 i64 i32 i32 i32)
+                                    (list lane tmap
+                                          (llvm-build-add builder col0 (k (* 64 b)) "tma_x")
+                                          y
+                                          (if (zerop bl) base (llvm-build-add builder base (k 2048) "tma_src")))
+                                    "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [$1, {$2, $3}], [$4]; }"
+                                    "r,l,r,r,r"))
+                 (%199-asm builder (list i32) (list lane)
+                           "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.commit_group; }" "r"))
+        (%199-asm builder (list i32) (list lane)
+                  "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+        (%199-asm builder nil nil "bar.warp.sync -1;" "")
+        (log:debug "199 codegen :via :tma: N=~a boxes=~a ~a" n boxes (if bf16-p "bf16" "f16"))
+        (values nil nil)))))
 
 (defun %tma-lookup-descriptor-ptr (builder var-env src-name glob-ptr-type)
   "Endeavor 137 Phase 2b: reconstruct the CUtensorMap descriptor implicit-arg name
@@ -5888,6 +6137,22 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
   (%gen-nvvm-cp-async-wait-group builder module
                                  (max 0 (semantic-nvvm-cp-async-wait-group-count node)))
   (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 198 -- a wide :128b TMA load issues one copy per box
+;;;; See tests/spec/198-wgmma-transb/wgmma-transb.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *198-current-tma-split* nil
+  "Endeavour 198.  Bound by the :around method on semantic-nvvm-tma-tile-copy to that node's split
+   plist, read by %gen-nvvm-tma-bulk-tensor-g2s-2d.")
+
+(defmethod generate-node-ir :around ((node semantic-nvvm-tma-tile-copy) builder module var-env
+                                     di-builder di-scope location-map)
+  "Endeavour 198: expose this copy's box split to %gen-nvvm-tma-bulk-tensor-g2s-2d."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*198-current-tma-split* (gethash node *198-tma-copy-split*)))
+    (call-next-method)))
 
 (defmethod generate-node-ir ((node semantic-nvvm-tma-tile-copy) builder module var-env
                               di-builder di-scope location-map)

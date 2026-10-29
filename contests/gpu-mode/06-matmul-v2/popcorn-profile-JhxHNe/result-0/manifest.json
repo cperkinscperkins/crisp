@@ -1,0 +1,28 @@
+{
+  "gpu": "H100",
+  "leaderboard": "matmul_v2",
+  "profile_metadata": {
+    "benchmark_specs": {
+      "7": {
+        "k": 4096,
+        "m": 4096,
+        "n": 5120,
+        "seed": 123456
+      }
+    },
+    "capture_options": {
+      "benchmark_index": 7,
+      "ncu_launch_count": 3
+    },
+    "config_sha256": "b591d0e7bda50f8b8c1d2954992e3ae10c0e589410262b38184f0d772fe921ce"
+  },
+  "system": {
+    "cpu": "GenuineIntel",
+    "device_count": 1,
+    "gpu": "NVIDIA H100 80GB HBM3",
+    "hostname": "modal",
+    "platform": "Linux-4.19.0-gvisor-x86_64-with-glibc2.39",
+    "runtime": "CUDA",
+    "torch": "2.12.0+cu130"
+  }
+}

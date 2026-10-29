@@ -1,0 +1,38 @@
+;; Endeavour 196 rung 05 -- the Ampere cp.async load-tile accepts 16-bit tiles, in 16-byte chunks.
+;;
+;; WHAT THIS PINS.  On sm_80 / sm_89 (A100, L4) there is no TMA; `load-tile ... :barrier BAR` with the
+;; default (:linear) barrier lowers to cp.async.  It was one cp.async per ELEMENT, and PTX cp.async
+;; moves only 4, 8 or 16 bytes, so a half tile was refused ("element type HALF needs 4 or 8 bytes") --
+;; no 16-bit Crisp matmul above Ch2 existed for Ampere / Ada.  Now the last tile dimension is walked in
+;; 16-byte chunks (8 halves) when a uniform run-time layout test allows it (D-196-7); edge chunks and
+;; the fallback walk copy element by element, synchronously for a 2-byte element.
+;;
+;; THE VALIDATOR IS TWO-SIDED: a 16-byte cp.async is present, and the fp16 m16n8k16 MMA is too (the
+;; tile reached the tensor cores as half, not via some widened path).
+;;
+;; B is the contest's (K N) row-major b: the cooperative copy is layout-agnostic and its contiguous
+;; dimension matches the tile's, so it vectorizes.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-cp-async-16
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel cp_async_half (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix half (64 16)))
+        (B-tile (make-scratch-matrix half (16 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (when (= grid-k (to-ulong 0)) (fill-tile C-tile 0.0))
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

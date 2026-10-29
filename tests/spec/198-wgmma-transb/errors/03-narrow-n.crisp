@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "needs N to be a multiple of 64"
+;; Endeavour 198 -- an MN-major B narrower than one swizzle atom (64 16-bit elements = 128 bytes) is
+;; refused: its 128-byte-swizzled rows would be only partly filled.
+(declaim (precision fast))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e198_three (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))
+        (B-tile (make-scratch-matrix half (64 32)))
+        (D (make-wgmma-accumulator float (64 32) 0.0)))
+    (wgmma-accumulate-via-tile (64 32 64) D A-tile B-tile :swizzle :128b :b-major :mn)
+    (set! (~ C 0 0) 1.0)))

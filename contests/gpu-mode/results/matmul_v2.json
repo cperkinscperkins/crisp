@@ -1,0 +1,283 @@
+{
+  "problem": "matmul_v2",
+  "title": "GPU MODE Challenge 06: Matmul (fp16 C = A B, 4096x5120x4096 scored)",
+  "leaderboard_id": 540,
+  "leaderboard_url": "https://www.gpumode.com/leaderboard/540?tab=rankings",
+  "crisp_commit": "0e648a7f",
+  "workload": {
+    "description": "C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS.",
+    "total_flops": 171798691840
+  },
+  "gpu_specs": {
+    "B200": {
+      "arch": "Blackwell (sm_100)",
+      "sm_count": 148,
+      "hbm_peak_gbps": 8000.0
+    },
+    "H100": {
+      "arch": "Hopper (sm_90)",
+      "sm_count": 132,
+      "hbm_peak_gbps": 3350.0
+    },
+    "A100": {
+      "arch": "Ampere (sm_80)",
+      "sm_count": 108,
+      "hbm_peak_gbps": 2039.0
+    },
+    "L4": {
+      "arch": "Ada Lovelace (sm_89)",
+      "sm_count": 58,
+      "hbm_peak_gbps": 300.0
+    }
+  },
+  "standings": {
+    "H100": {
+      "captured_at": "2026-10-28T09:51:04Z",
+      "user_name": "cperkinscperkins",
+      "rank": 41,
+      "total_entrants": 43,
+      "file_name": "crisp_matmul_v2.py",
+      "crisp_file": "06-matmul-v2/matmul_h100_2wg_deep.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v2.py",
+      "hardware_profile": null,
+      "public_score_us": 340.26,
+      "secret_score_us": 341.17,
+      "submission_id": 968314,
+      "top1_score_us": 204.96,
+      "top1_user": "zachw113",
+      "median_score_us": 220.94
+    },
+    "A100": {
+      "captured_at": "2026-10-28T09:51:04Z",
+      "user_name": "cperkinscperkins",
+      "rank": 59,
+      "total_entrants": 60,
+      "file_name": "crisp_matmul_v3.py",
+      "crisp_file": "06-matmul-v2/matmul_ampere_4w.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v3.py",
+      "hardware_profile": "h100",
+      "public_score_us": 4961.62,
+      "secret_score_us": 4959.4,
+      "submission_id": 968318,
+      "top1_score_us": 595.63,
+      "top1_user": "WGX11",
+      "median_score_us": 696.32
+    },
+    "L4": {
+      "captured_at": "2026-10-28T09:51:04Z",
+      "user_name": "cperkinscperkins",
+      "rank": 25,
+      "total_entrants": 25,
+      "file_name": "crisp_matmul_v3.py",
+      "crisp_file": "06-matmul-v2/matmul_ampere_4w.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v3.py",
+      "hardware_profile": "h100",
+      "public_score_us": 7116.96,
+      "secret_score_us": 7134.11,
+      "submission_id": 968319,
+      "top1_score_us": 1989.62,
+      "top1_user": "Fridolin Haugg",
+      "median_score_us": 2255.19
+    }
+  },
+  "kernels": [
+    {
+      "step": "0",
+      "key": "crisp_matmul_beauty",
+      "crisp_file": "06-matmul-v2/matmul_beauty.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_beauty.py",
+      "strategy": "Beauty: one portable 13-line tensor-core kernel -- matrix-multiply-tile-stride, one warp per 16x8 tile, mma.sync m16n8k16, (store-tile (to-half C-tile) ...)",
+      "registers": null,
+      "hardware_profile": "h100"
+    },
+    {
+      "step": "1",
+      "key": "crisp_matmul_v1",
+      "crisp_file": "06-matmul-v2/matmul_h100_2wg_deep.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v1.py",
+      "strategy": "H100: 2wg_deep (2 consumer warpgroups, wgmma m64n256k16, 4-deep TMA ring) after torch `b.t()` copy; A100/L4: 1-warp 64x64 mma.sync, vectorized cp.async (first cut)",
+      "registers": null,
+      "hardware_profile": null
+    },
+    {
+      "step": "2",
+      "key": "crisp_matmul_v2",
+      "crisp_file": "06-matmul-v2/matmul_h100_2wg_deep.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v2.py",
+      "strategy": "H100: 2wg_deep after a Crisp tiled transpose of B (`transpose_b.crisp`, 39 us; torch's `b.t()` copy was 160 us)",
+      "registers": null,
+      "hardware_profile": null
+    },
+    {
+      "step": "3",
+      "key": "crisp_matmul_v3",
+      "crisp_file": "06-matmul-v2/matmul_ampere_4w.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v3.py",
+      "strategy": "A100/L4/B200: 4-warp 128x128 register tile (:warps), flattened 16-byte cp.async walk, await + bar.sync; H100 as v2",
+      "registers": null,
+      "hardware_profile": "h100"
+    }
+  ],
+  "runs": [
+    {
+      "timestamp": "2026-10-28T08:50:09Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_matmul_v1",
+      "file_name": "crisp_matmul_v1.py",
+      "mode": "benchmark",
+      "submission_id": 968301,
+      "benchmark_mean_us": 465.0,
+      "benchmark_std_us": 0.3,
+      "benchmark_best_us": 465.0,
+      "benchmark_worst_us": 466.0,
+      "per_case_us": [
+        465.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-28T07:57:15Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_matmul_v1",
+      "file_name": "crisp_matmul_v1.py",
+      "mode": "benchmark",
+      "submission_id": 968311,
+      "benchmark_mean_us": 6780.0,
+      "benchmark_std_us": 4.0,
+      "benchmark_best_us": 6780.0,
+      "benchmark_worst_us": 6790.0,
+      "per_case_us": [
+        6780.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-28T07:57:15Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_matmul_v2",
+      "file_name": "crisp_matmul_v2.py",
+      "mode": "leaderboard",
+      "submission_id": 968314,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 340.26,
+      "secret_score_us": 341.17
+    },
+    {
+      "timestamp": "2026-10-28T08:38:14Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_matmul_beauty",
+      "file_name": "crisp_matmul_beauty.py",
+      "mode": "benchmark",
+      "submission_id": 968316,
+      "benchmark_mean_us": 86000.0,
+      "benchmark_std_us": 20.0,
+      "benchmark_best_us": 86000.0,
+      "benchmark_worst_us": 86000.0,
+      "per_case_us": [
+        86000.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-28T09:39:55Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_matmul_v3",
+      "file_name": "crisp_matmul_v3.py",
+      "mode": "leaderboard",
+      "submission_id": 968318,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 4961.62,
+      "secret_score_us": 4959.4
+    },
+    {
+      "timestamp": "2026-10-28T09:39:55Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_matmul_v3",
+      "file_name": "crisp_matmul_v3.py",
+      "mode": "leaderboard",
+      "submission_id": 968319,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 7116.96,
+      "secret_score_us": 7134.11
+    },
+    {
+      "timestamp": "2026-10-29T01:30:05Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_matmul_v4",
+      "file_name": "crisp_matmul_v4.py",
+      "mode": "leaderboard",
+      "submission_id": 968463,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 253.74,
+      "secret_score_us": 255.92
+    },
+    {
+      "timestamp": "2026-10-29T05:49:36Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_matmul_v5",
+      "file_name": "crisp_matmul_v5.py",
+      "mode": "leaderboard",
+      "submission_id": 968487,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 229.79,
+      "secret_score_us": 228.67
+    }
+  ],
+  "ablation_size_label": "scored case: 4096x5120x4096 (ranking_by LAST)",
+  "takeaways": [
+    "**The check is bit-exact, so only tensor cores qualify:** `eval.py` re-checks every benchmark input at rtol 1e-5, and with fp16 outputs near 1024 that is an exact match against cuBLAS. A probe (no Crisp) found `mma.sync` m16n8k16 with f32 accumulation summed in K order matches cuBLAS on **all 21M outputs** on H100, A100 and L4, while an IEEE fp32 FMA loop misses 3.7-7% by one ulp. Every Crisp kernel here is a tensor-core kernel with no split-K -- including the small-shape fallback.",
+    "**The field is cuBLAS:** #1 / median on 2026-10-27 were H100 205 / 221 us, B200 92 / 114, A100 596 / 683, L4 1990 / 2255 -- most entries call `torch.matmul`. Crisp entries rank H100 41/43, A100 59/60, L4 25/25.",
+    "**H100 -- the kernel is the benchmark suite's, the transpose was the surprise:** wgmma reads B K-major and the contest's `b` is (K N) N-contiguous. A per-arm diagnostic on the scored case: the 2wg_deep kernel 306-309 us (~560 TFLOPS, matching the suite's 545 at 4096^3), torch's `b.t()` copy **160 us**. A tiled Crisp transpose (`transpose_b.crisp`, coalesced both sides through a 64x65 shared tile) takes **39 us**: 462 -> 340 us. wgmma transB (on `plan/scramble.md`) would remove it.",
+    "**TMA multicast does not help 2wg_deep:** a 2x2-cluster multicast variant was correct and slower (366 vs 309 us); the two-warpgroup tile already reuses each TMA load twice.",
+    "**A100 / L4 needed compiler work (endeavour 196):** the Ampere `cp.async` load-tile refused 16-bit tiles (cp.async moves 4/8/16 bytes) -- it now copies 16-byte chunks spread over every thread; the register fit-check refused a 4-warp distributed tile; and `await` on a cp.async barrier lacked the CTA barrier after `wait_group` (2.8% wrong outputs once tiles were shared across warps). A100 6.78 -> 4.96 ms. The remaining gap is operand fragments read from shared memory one 2-byte element at a time (no `ldmatrix`).",
+    "**Packaging:** a TMA kernel takes 65 parameters, more than an inline `asm` statement accepts, so this entry loads the PTX through the CUDA driver API (`dlopen` libcuda, `cuModuleLoadDataEx`) with the launch ABI read out of the CUDA hoist. `CU_JIT_THREADS_PER_BLOCK` stands in for `__launch_bounds__`; without it the 288-thread wgmma block failed to launch.",
+    "**B200:** Blackwell has no wgmma (its instruction is tcgen05 -- a future endeavour), so the B200 path is the same 4-warp `mma.sync` kernel. Every B200 submission of ours hit the runner's hard timeout (~1570 s), including a plain-CUDA probe with no Crisp in it; no B200 score yet."
+  ],
+  "beauty_entry": {
+    "crisp_file": "06-matmul-v2/matmul_beauty.crisp",
+    "py_file": "06-matmul-v2/crisp_matmul_beauty.py",
+    "kernel_key": "beauty",
+    "sloc": 13,
+    "title": "One Portable Tensor-Core Kernel",
+    "description": "13-line Crisp matmul that runs unchanged on B200, H100, A100 and L4 and is bit-exact against cuBLAS: `matrix-multiply-tile-stride` walks output tiles and K, `load-tile` stages A and B slices, `mma-accumulate-via-tile` accumulates in f32 on the tensor cores, and `(store-tile (to-half C-tile) ...)` rounds to fp16 as it stores",
+    "idioms": [
+      "matrix-multiply-tile-stride: output-tile walk + K walk + epilogue in one form",
+      "make-register-tile: an f32 accumulator that lives in registers",
+      "mma-accumulate-via-tile (16 8 16): fp16 tensor-core MMA from staged shared-memory tiles",
+      "(store-tile (to-half C-tile) C ...): fused round-to-nearest narrowing on the store (endeavour 196)"
+    ],
+    "scores": {
+      "H100": {
+        "score_us": 86000.0,
+        "public_score_us": null,
+        "secret_score_us": null,
+        "benchmark_mean_us": 86000.0,
+        "mode": "benchmark",
+        "submission_id": 968316
+      }
+    }
+  }
+}

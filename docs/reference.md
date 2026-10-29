@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-28T02:52:51.594144Z
+Generated on 2026-10-29T07:53:42.818689Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -353,10 +353,31 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `%196-EXPAND-ASYNC-LOAD-TILE-VEC-FORM`
+- **Args**: `(EXPR LOCATION VEC &OPTIONAL STATIC-DIMS)`
+
+  > Endeavour 196.  Like %expand-async-load-tile-at-form, but the LAST tile dimension is walked in  >    chunks of VEC elements (VEC x element-size = 16 bytes), each chunk one (%cp-async-copy-elem tile src 16).  >   >    A uniform run-time test VOK picks the vector nest or the original per-element nest:  >      - source and tile have stride 1 in the last dimension,  >      - every other source / tile stride is a multiple of VEC,  >      - the origin's last coordinate is a multiple of VEC.  >    Each thread's chunk starts at a multiple of VEC within the tile, so together these make every  >    chunk 16-byte aligned on both sides -- ASSUMING the tensors' base addresses (pointer + offsets)  >    are 16-byte aligned, which no Crisp form can test (D-196-8).  >   >    A chunk that is not wholly inside the tile and the source is copied element by element, with the  >    identity for out-of-bounds elements -- the same contract as the scalar path.  >   >    Thread mapping (like the scalar nest): dims 0..n-2 stride by the local work size, the last dim  >    strides by VEC x its local work size, thread lid starting at lid x VEC.  >   >    STATIC-DIMS, when the tile's shape is a compile-time literal (a make-scratch-matrix / -ring binding),  >    replaces the run-time extents~ reads: the chunk walk divides and takes remainders by the tile  >    extents, and a 64-bit divide by a VARIABLE costs dozens of instructions per chunk, where a divide by  >    a literal power of two is a shift.  (A100: the flattened walk on run-time extents made the 1-warp  >    kernel 6.8 -> 9.6 ms.)
+
+
+---
+### DEFUN `%196-STATIC-TILE-DIMS`
+- **Args**: `(TILE-FORM RANK)`
+
+  > Endeavour 196.  The compile-time (ROWS COLS) of TILE-FORM -- a scratch-matrix binding or a ring-get of  >    a scratch-matrix ring -- from *mma-scratch-tile-dims* (published by the enclosing LET), or NIL.
+
+
+---
+### DEFUN `%196-CP-ASYNC-VEC-WIDTH`
+- **Args**: `(TILE-FORM ENV CONTEXT LOCATION)`
+
+  > Endeavour 196.  Elements per 16-byte cp.async chunk for TILE-FORM's element type (8 for half /  >    bfloat16, 4 for float / int, 2 for double / long, 16 for char), or NIL when the element type is  >    unknown.  Analysing TILE-FORM here is a pure read: it is a variable or a ring-get.
+
+
+---
 ### DEFUN `ANALYZE-LOAD-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.  >    Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).
+  > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.  >    Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).  >    Endeavour 196: a :linear barrier on PTX without :transpose takes the VECTORIZED cp.async nest  >    (%196-expand-async-load-tile-vec-form, 16-byte chunks); with :transpose the per-element one.
 
 
 ---
@@ -367,10 +388,51 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFVAR `*198-TMA-COPY-SPLIT*`
+
+  > Endeavour 198.  TMA tile-copy node -> (:count C :inner E :box-bytes B) when the copy is issued as C  >    boxes E elements wide (a :128b-swizzled tile wider than 128 bytes).  Absent = one copy.
+
+
+---
+### DEFUN `%198-ELEM-BYTES`
+- **Args**: `(ELEM)`
+
+  > Endeavour 198.  Bytes of a TMA element type, or NIL.
+
+
+---
+### DEFUN `%198-SWIZZLE-128B-P`
+- **Args**: `(SWIZZLE)`
+
+  > Endeavour 198.  True for the :128b swizzle keyword (any package).
+
+
+---
+### DEFUN `%198-TMA-SPLIT`
+- **Args**: `(DIMS ELEM-BYTES)`
+
+  > Endeavour 198.  For a :128b-swizzled TMA tile of DIMS whose innermost extent is wider than 128 bytes:  >    (:count C :inner E :box-bytes B), E = 128 / ELEM-BYTES elements per box, C boxes.  NIL when no  >    split is needed.  Refuses an innermost extent that is not a whole number of boxes.
+
+
+---
+### DEFUN `%198-TILE-STATIC-DIMS`
+- **Args**: `(TILE-FORM RANK CONTEXT)`
+
+  > Endeavour 198.  TILE-FORM's static dims for the TMA box split: the enclosing let's published dims  >    (%196-static-tile-dims), else *scratch-tile-dims* -- the table resolve-tma-descriptors narrows the  >    descriptor box from, so the copy and the descriptor cannot disagree.  A ring's entry carries the  >    slot count first; the last RANK dims are the tile.
+
+
+---
+### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT-MULTICAST`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavor 152 wrapper: builds the copy node as before, then tags it as a multicast when the  >    enclosing load-tile validated one.  Wrapped rather than copied -- this adds two lines to a  >    45-line analyzer.  >   >    Endeavour 198: %analyze-nvvm-tma-load-tile-at (below) tags a wide :128b load with its box split.
+
+
+---
 ### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 152 wrapper: builds the copy node as before, then tags it as a multicast when the  >    enclosing load-tile validated one.  Wrapped rather than copied -- this adds two lines to a  >    45-line analyzer.
+  > Endeavor 152 wrapper (multicast tag), plus Endeavour 198: a :128b load of a tile wider than 128  >    bytes is tagged with its box split, which codegen issues as one copy per box.
 
 
 ---
@@ -391,7 +453,7 @@ Generated on 2026-10-28T02:52:51.594144Z
 ### DEFUN `ANALYZE-%CP-ASYNC-COPY-ELEM-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref>) — one non-blocking cp.async of a  >    single element, dst (SLM) <- src (global).  Both operands are aref forms; codegen grabs  >    each element's address (the aref's 3rd return value) and emits cp.async.ca.shared.global.
+  > Analyzer for (%cp-async-copy-elem <dst-aref> <src-aref> [BYTES]) — one non-blocking cp.async,  >    dst (SLM) <- src (global).  Both operands are aref forms; codegen grabs each element's address  >    (the aref's 3rd return value) and emits cp.async.ca.shared.global.  >   >    Endeavour 196: optional BYTES (4, 8 or 16) copies that many bytes starting at the element -- the  >    vectorized load-tile passes 16 for a whole chunk.  BYTES must be a multiple of the element size.  >    Without BYTES an element under 4 bytes (half, bfloat16, char ...) cannot be a cp.async at all, so it  >    is analysed as the SYNCHRONOUS copy (set! dst src): the per-element fallback of a 16-bit tile stays  >    correct instead of being refused.
 
 
 ---
@@ -409,10 +471,17 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `ANALYZE-AWAIT-EXPRESSION-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.  >    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is  >    (initial-phase ring-count) so codegen can inject the multi-lap flipping parity.  >   >    Endeavour 196: analyze-await-expression (below) adds the workgroup barrier after a cp.async wait.
+
+
+---
 ### DEFUN `ANALYZE-AWAIT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.  >    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is  >    (initial-phase ring-count) so codegen can inject the multi-lap flipping parity.
+  > Endeavour 196 wrapper: a cp.async await (a :linear barrier on PTX) outside a warp-specialized block  >    becomes wait_group + sync-workgroup, so every thread sees every thread's copies.  See D-196-11.
 
 
 ---
@@ -1244,9 +1313,36 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `%197-PAIR-ELEM-BYTES`
+- **Args**: `(ELEM-TYPE)`
+
+  > Endeavour 197.  Bytes per element for a packable element type (2, 4 or 8), else NIL.  NIL turns  >    %pair-ok-p into a constant 0 and %store-pair into two plain set!s.
+
+
+---
+### DEFUN `ANALYZE-%PAIR-OK-P-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%pair-ok-p P0 P1), P0 / P1 aref forms naming adjacent elements of one storage.  >    Type int (like a comparison).  An element type that cannot be packed analyses to the literal 0,  >    so the guarded pair branch is dead and the scalar branch runs.
+
+
+---
+### DEFUN `ANALYZE-%STORE-PAIR-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%store-pair P0 P1 LO HI): one <2 x T> store when LO and HI already have P0's element  >    type and that type packs; otherwise exactly (progn (set! P0 LO) (set! P1 HI)), so conversions  >    and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1).
+
+
+---
+### DEFUN `REGISTER-197-PAIR-STORE-ANALYZERS`
+
+  > Endeavour 197.  Registers %store-pair and %pair-ok-p (internal forms of the accumulator store  >    lowering) in both packages, like the other % forms in register-control-analyzers.
+
+
+---
 ### DEFUN `REGISTER-CONTROL-ANALYZERS`
 
-  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-at / store-tile-at.  >    Endeavor 113: also registers request-load-tile-at and await-request.
+  > Registers all control flow expression analyzers, including loop-vector-stride,  >    tensor-stride, grid-stride, tile-stride, hardware-stride, workgroup-stride,  >    and (111 Phase 1a) load-tile-at / store-tile-at.  >    Endeavor 113: also registers request-load-tile-at and await-request.  >    Endeavour 197: also %store-pair / %pair-ok-p.
 
 
 ---
@@ -1643,9 +1739,21 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `RESOLVE-TMA-DESCRIPTORS-BASE`
+
+  > Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,  >    carrying the :swizzle marking from *tma-descriptor-info*.  >   >    Endeavours 198 / 199: the original resolution; %resolve-tma-load-descriptors narrows its wide :128b boxes and resolve-tma-descriptors adds the TMA STORE descriptors.
+
+
+---
+### DEFUN `%RESOLVE-TMA-LOAD-DESCRIPTORS`
+
+  > Resolve every CUtensorMap descriptor to (:describes :element-type :rank :box-dims :layout :swizzle).  >    Endeavour 198: a :128b box wider than 128 bytes is narrowed to 128 bytes (the hardware limit);  >    the load issues one copy per box (%198-tma-split).
+
+
+---
 ### DEFUN `RESOLVE-TMA-DESCRIPTORS`
 
-  > Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,  >    carrying the :swizzle marking from *tma-descriptor-info*.
+  > Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,  >    carrying the :swizzle marking from *tma-descriptor-info*.  Endeavour 198: a :128b box wider than  >    128 bytes is narrowed to 64-column boxes.  >   >    Endeavour 199: a STORE descriptor (:store-box in its info) has no tile to resolve -- its box is the  >    store box and its element type the conversion's.  Store entries are held back from the load  >    resolution (which would warn 'unresolved') and resolved here: describes through the carrier chain,  >    then the fixed box.  The TMA store writes row-major boxes, so a :col-major destination is refused.
 
 
 ---
@@ -1685,6 +1793,13 @@ Generated on 2026-10-28T02:52:51.594144Z
 - **Args**: `(ARGS)`
 
   > Scan-pass resolution of a (make-async-barrier &key mode) form's :mode WITHOUT the Pass-2  >    gating/validation.  Explicit :mode wins; otherwise arch-automatic — :block on a TMA-capable  >    NVIDIA arch (sm_90+), else :linear.  Used to decide at scan time whether a :block load-tile  >    needs a CUtensorMap descriptor implicit arg (Endeavor 137 Phase 2b).
+
+
+---
+### DEFUN `%199-SCAN-REGISTER-TMA-STORE`
+- **Args**: `(ARGS)`
+
+  > Endeavour 199, pass 1.  (store-tile-at SRC DEST ORIGIN :via :tma) with SRC a (to-half X) /  >    (to-bfloat16 X): register DEST's CUtensorMap descriptor (marked :store-box, so resolution gives it  >    the store box instead of looking for a tile) and the function's staging buffer, an implicit LOCAL  >    scratch vector of half.  Both once per function.  The staging size is a placeholder here: analysis  >    knows the kernel's local-size and sets it (16 KB per warpgroup).  Anything malformed is left for  >    analysis to refuse with a message.
 
 
 ---
@@ -2004,14 +2119,14 @@ Generated on 2026-10-28T02:52:51.594144Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
+  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.
+  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
 
 
 ---
@@ -4426,7 +4541,7 @@ Generated on 2026-10-28T02:52:51.594144Z
 ### DEFUN `%TLC-BWD-ADJ-NAME`
 - **Args**: `(SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)`
 
-  > Returns the backward-pass adjoint for a forward tile argument SYM:  >      - SYM in INPUTS or OUTPUTS   → <SYM>_GRAD  (kernel param)  >      - other symbol (let-bound)   → <SYM>_ADJ   (direct intern; NOT via local-adj-fn, which  >        would add the sym to the adjoint-map and make the wrapping let scalar-initialize it —  >        wrong for a tensor adjoint.  The auto-allocated <var>_ADJ make-scratch-* binding is the  >        only initializer needed.)  >      - a VIEW form (ring-get R i) → the same view of R's adjoint, (ring-get <R-adj> i).  >   >    The view case is endeavor 138's rings.  ring-get is a pure view selector — address  >    arithmetic, no side effects — so slot i of the adjoint ring IS the adjoint of slot i, and  >    recursing on the ring lets the ordinary %load-tile-at-bwd / %store-tile-at-bwd edges apply  >    with no new machinery.  Recursion (rather than a single level) costs nothing and keeps the  >    rule true for a view of a view.  >   >    Anything else is a compound target we have no adjoint rule for.  That now raises a message  >    naming the form instead of letting symbol-name signal `The value (RING-GET ...) is not of  >    type SYMBOL`, which told the user nothing about what to do.
+  > Returns the backward-pass adjoint for a forward tile argument SYM:  >      - SYM in INPUTS or OUTPUTS   → <SYM>_GRAD  (kernel param)  >      - other symbol (let-bound)   → <SYM>_ADJ   (direct intern; NOT via local-adj-fn, which  >        would add the sym to the adjoint-map and make the wrapping let scalar-initialize it —  >        wrong for a tensor adjoint.  The auto-allocated <var>_ADJ make-scratch-* binding is the  >        only initializer needed.)  >      - a VIEW form (ring-get R i) → the same view of R's adjoint, (ring-get <R-adj> i).  >   >    The view case is endeavor 138's rings.  ring-get is a pure view selector — address  >    arithmetic, no side effects — so slot i of the adjoint ring IS the adjoint of slot i, and  >    recursing on the ring lets the ordinary %load-tile-at-bwd / %store-tile-at-bwd edges apply  >    with no new machinery.  Recursion (rather than a single level) costs nothing and keeps the  >    rule true for a view of a view.  >   >    Anything else is a compound target we have no adjoint rule for.  That now raises a message  >    naming the form instead of letting symbol-name signal `The value (RING-GET ...) is not of  >    type SYMBOL`, which told the user nothing about what to do.  >   >    Endeavour 196: a converted tile as a store source is refused (D-196-12).
 
 
 ---
@@ -5294,7 +5409,7 @@ Generated on 2026-10-28T02:52:51.594144Z
 ### DEFUN `%MMA-VJP-MMA-ADMISSIBLE-P`
 - **Args**: `(MT NT KT)`
 
-  > T when the MMA fast path can realise the backward: both backward accumulators (Mt x Kt and  >    Kt x Nt) must decompose into whole hardware accumulator fragments.  This is a PERFORMANCE  >    predicate — declining it selects the scalar lowering, never an error.
+  > T when the MMA fast path can realise the backward: both backward accumulators (Mt x Kt and  >    Kt x Nt) must decompose into whole hardware accumulator fragments.  This is a PERFORMANCE  >    predicate — declining it selects the scalar lowering, never an error.  >   >    Endeavour 199: and both must FIT the per-thread register budget  >    (%mma-ad-accumulator-fits-registers-p, the predicate endeavour 163 gave the dC adjoint), because  >    %mma-via-tile-backward mints them as register tiles.  A 64x128 wgmma's dB (64 x 128 = 256  >    registers) used to reach make-register-tile's fit check and fail the whole backward.
 
 
 ---
@@ -6977,11 +7092,19 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D-BASE`
+- **Args**: `(BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1
+              &OPTIONAL (MCAST-MASK 0) (MCAST-P NIL))`
+
+  > Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,  >    cachehint, flag_mcast, flag_cachehint).  >   >    Endeavor 152: the intrinsic ALREADY carried the multicast operands -- an i16 destination  >    mask and an i1 enable flag -- which Endeavor 137 passed as immarg 0.  Multicast is therefore  >    plumbing those two, not a new instruction: with the flag set the emitted PTX gains  >    `.multicast::cluster` and the ctaMask operand.  >   >    Endeavour 198: %gen-nvvm-tma-bulk-tensor-g2s-2d (below) issues one of these per box.
+
+
+---
 ### DEFUN `%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D`
 - **Args**: `(BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1
               &OPTIONAL (MCAST-MASK 0) (MCAST-P NIL))`
 
-  > Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d(dst_smem, mbar, tensormap, x, y, mcast,  >    cachehint, flag_mcast, flag_cachehint).  >   >    Endeavor 152: the intrinsic ALREADY carried the multicast operands -- an i16 destination  >    mask and an i1 enable flag -- which Endeavor 137 passed as immarg 0.  Multicast is therefore  >    plumbing those two, not a new instruction: with the flag set the emitted PTX gains  >    `.multicast::cluster` and the ctaMask operand.
+  > Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d (see the original).  >    Endeavour 198: under *198-current-tma-split*, C copies -- box j to DST + j*BOX-BYTES at x COORD0 +  >    j*INNER.  All C land on the same mbarrier, whose expect_tx already counts the whole tile.
 
 
 ---
@@ -7024,6 +7147,35 @@ Generated on 2026-10-28T02:52:51.594144Z
 - **Args**: `(BUILDER MBAR-ADDR-I32 PHASE-I32)`
 
   > Inline PTX: try_wait.parity -> i32 (1 if the barrier's phase flipped, else 0).  Wrapped so  >    the caller can spin in an LLVM loop (no label in the asm).  >    Endeavour 193: in a module that can die, each spin also checks the die record.  A may-die waiter  >    unwinds (flag + return); any other waiter leaves the wait (returns 1).  A dead producer would  >    otherwise hang its consumers (H100 probe, put_temp_files_here/logging-probes/FINDINGS.md).
+
+
+---
+### DEFUN `%197-AREF-ELEMENT-POINTER`
+- **Args**: `(AREF-NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP
+              WHAT)`
+
+  > Endeavour 197.  The element address of an aref node: its third return value (the loaded r-value  >    is dead and opt removes it -- the %cp-async-copy-elem idiom).
+
+
+---
+### DEFUN `%199-ASM`
+- **Args**: `(BUILDER ARG-TYPES ARGS ASM CONSTRAINTS)`
+
+  > Endeavour 199.  A void, side-effecting inline-PTX statement; a memory clobber is always added (these  >    write or order shared memory LLVM cannot see).
+
+
+---
+### DEFUN `%199-LINEAR-TID`
+- **Args**: `(BUILDER MODULE ONE-D-P)`
+
+  > Endeavour 199.  The thread's linear index in its block: tid.x, or x + ntid.x * (y + ntid.y * z).
+
+
+---
+### DEFUN `%199-STAGE-BASE-I32`
+- **Args**: `(BUILDER VAR-ENV NODE)`
+
+  > Endeavour 199.  The staging buffer's shared address (i32) from its implicit scratch record: the  >    record's first field, descended through nested structs (the storage handle) to the data pointer.
 
 
 ---
@@ -7108,6 +7260,12 @@ Generated on 2026-10-28T02:52:51.594144Z
 - **Args**: `(BUILDER MODULE EVENTS-AS4-PTR)`
 
   > Emit call wait_group_events(1, events) -> void.  Lowers to OpGroupWaitEvents.
+
+
+---
+### DEFVAR `*198-CURRENT-TMA-SPLIT*`
+
+  > Endeavour 198.  Bound by the :around method on semantic-nvvm-tma-tile-copy to that node's split  >    plist, read by %gen-nvvm-tma-bulk-tensor-g2s-2d.
 
 
 ---
@@ -11978,7 +12136,7 @@ Generated on 2026-10-28T02:52:51.594144Z
 ### DEFUN `ANALYZE-STORE-FRAGMENT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR  >    (accumulator, row-major); else the NVIDIA per-lane writes.
+  > P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR  >    (accumulator, row-major); else the NVIDIA per-lane writes.  >   >    Endeavour 196: FRAG may be (to-half F) / (to-bfloat16 F).  The conversion wraps each element  >    read in the per-lane writes, so it costs one cvt per element at the store and nothing else.  >    NVIDIA only: on SPIR-V the store is one CooperativeMatrixStoreKHR of the whole fragment, which  >    would need the fragment converted first (OpFConvert on a cooperative matrix) -- not built.  >   >    Endeavour 197: each lane's elements are adjacent column PAIRS (col, col+1), so on NVIDIA a pair  >    is one (%store-pair ...) under a per-fragment (%pair-ok-p ...) of the lane's first pair; the  >    scalar set!s are the fallback branch (odd origin, unaligned base, strided last dimension).  The  >    row+8 pair shares the guard: 8 rows move the address by 8 x the row stride, an even number of  >    elements.
 
 
 ---
@@ -12131,7 +12289,7 @@ Generated on 2026-10-28T02:52:51.594144Z
 ### DEFUN `ANALYZE-STORE-TILE-MMA`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.
+  > store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.  >    Endeavour 196: the source may be (to-half TILE) / (to-bfloat16 TILE) for either accumulator kind.  >    (An exploded register tile never reaches here -- %explode-rewrite-body-form handles it -- so the  >    register-tile branch below is the un-exploded path.)
 
 
 ---
@@ -12204,10 +12362,51 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `%196-PEEL-STORE-CONVERSION`
+- **Args**: `(SRC)`
+
+  > Endeavour 196.  If SRC is (to-half X) or (to-bfloat16 X), return (values X CONVERT-SYMBOL);  >    otherwise (values SRC NIL).  Only these two narrowing conversions are peeled: they are the two a  >    16-bit MMA needs on the way out (f32 accumulator -> fp16 / bf16 output).  Anything else is left  >    for the ordinary analysis, which refuses a conversion of a whole accumulator.
+
+
+---
+### DEFUN `%196-WRAP-CONVERSION`
+- **Args**: `(CONVERT FORM)`
+
+  > Endeavour 196.  (CONVERT FORM) when CONVERT is non-NIL, else FORM unchanged.
+
+
+---
+### DEFUN `%196-CONVERT-STORE-FRAGMENT-SOURCES`
+- **Args**: `(FORM CONVERT)`
+
+  > Endeavour 196.  Wrap the FRAG argument of every (store-fragment FRAG ...) in FORM with  >    (CONVERT FRAG).  Applied to %emit-per-frag-store's expansion, which is the only producer of  >    store-fragment forms there, so the per-fragment store logic (static arms, 2-D warp grid) is  >    reused untouched rather than copied with a conversion parameter threaded through it.
+
+
+---
+### DEFUN `%196-REFUSE-CONVERTED-NON-ACCUMULATOR`
+- **Args**: `(OP CONVERT SRC-TYPE LOCATION)`
+
+  > Endeavour 196.  (store-tile (to-half X) ...) where X is not an MMA accumulator: refuse here,  >    naming the rule, rather than let the generic store analyze (to-half X) as a scalar cast of a  >    whole tile (which fails later with an unrelated message).
+
+
+---
+### DEFVAR `*196-TILE-WARP-SHARES*`
+
+  > Endeavour 196.  ((M N ELEM N-TRUE) ...) for the register tiles of the LET being exploded, so the fit  >    check can charge a :warps-distributed tile per warp.  Bound by the %explode-register-tiles wrapper.
+
+
+---
+### DEFUN `%196-TILE-WARP-SHARES`
+- **Args**: `(BINDINGS LOCATION)`
+
+  > Endeavour 196.  For each (V (make-register-tile ELEM (M N) INIT ... :warps MASK)) binding, (M N ELEM  >    N-TRUE); N-TRUE is 1 without :warps.
+
+
+---
 ### DEFUN `%REGISTER-TILE-FIT-CHECK`
 - **Args**: `(M N LOCATION &OPTIONAL (ELEM 'FLOAT))`
 
-  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque  >    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is  >    separate (Phase 4).  Else: (M/fr)x(N/fc) accumulator fragments x regs-per-fragment <=  >    :max-registers-per-thread.  >   >    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since  >    :max-registers-per-thread may be a scalar OR a list of selectable modes.  >   >    Endeavour 165 (BUG 058): also refuses a tile too SMALL to hold one fragment.  A tile that  >    overflows the register budget and a tile that holds nothing are the same kind of mistake and  >    are named by the same function, at compile time, rather than discovered as a spill or as an  >    empty kernel.  >   >    Endeavour 165 (2b-i): takes ELEM so both bounds use the element type's own fragment geometry.  >    Inert while %acc-frag-mn answers 16x8 for everything.
+  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque  >    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is  >    separate (Phase 4).  Else: (M/fr)x(N/fc) accumulator fragments x regs-per-fragment <=  >    :max-registers-per-thread.  >   >    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since  >    :max-registers-per-thread may be a scalar OR a list of selectable modes.  >   >    Endeavour 165 (BUG 058): also refuses a tile too SMALL to hold one fragment.  A tile that  >    overflows the register budget and a tile that holds nothing are the same kind of mistake and  >    are named by the same function, at compile time, rather than discovered as a spill or as an  >    empty kernel.  >   >    Endeavour 165 (2b-i): takes ELEM so both bounds use the element type's own fragment geometry.  >    Inert while %acc-frag-mn answers 16x8 for everything.  >   >    Endeavour 196 (D-196-10): a tile distributed over N-TRUE warps (:warps) costs each thread  >    ceil(fragments / N-TRUE) fragments -- the share it actually allocates -- looked up in  >    *196-tile-warp-shares* by (M N ELEM).
 
 
 ---
@@ -12340,17 +12539,31 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `%EXPLODE-REWRITE-BODY-FORM-BASE`
+- **Args**: `(FORM TILES)`
+
+  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /  >    map-elements! / %map-elements-vjp! references to any exploded tile in TILES with  >    per-fragment progns; otherwise recurse structurally.  >   >    Endeavour 196: %explode-rewrite-body-form (below) handles a converted store-tile source.
+
+
+---
 ### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
 - **Args**: `(FORM TILES)`
 
-  > Recursively rewrite body FORM: replace via-tile / store-tile / fill-tile / load-tile /  >    map-elements! / %map-elements-vjp! references to any exploded tile in TILES with  >    per-fragment progns; otherwise recurse structurally.
+  > Endeavour 196 wrapper: (store-tile (to-half V) DEST (BTY BTX)) on an exploded register tile V  >    expands exactly as (store-tile V DEST ...) does, with every emitted store-fragment's FRAG wrapped  >    in the conversion.  Every other form goes to the original, which recurses back through this  >    name.
+
+
+---
+### DEFUN `%EXPLODE-REGISTER-TILES-BASE`
+- **Args**: `(LET-EXPR &OPTIONAL LOCATION CONTEXT)`
+
+  > Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in  >    LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the  >    body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register  >    FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.  >    Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp  >    allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions  >    to reconstruct each warp's logical fragment range).  >    Endeavor 145 P3a: also publishes the LET's SLM scratch-tile shapes in *mma-scratch-tile-dims* so  >    the accumulate expansion can walk K within a staged tile.  >   >    Endeavour 196: %explode-register-tiles (below) publishes each tile's warp share around it.
 
 
 ---
 ### DEFUN `%EXPLODE-REGISTER-TILES`
 - **Args**: `(LET-EXPR &OPTIONAL LOCATION CONTEXT)`
 
-  > Source->source: explode any (V (make-register-tile T (M N) INIT &key warps)) binding in  >    LET-EXPR into per-fragment (V$Fi (make-register-fragment 16 8 INIT)) bindings, and rewrite the  >    body's via-tile/store-tile/fill-tile references to V into per-fragment progns.  Runs the register  >    FIT-CHECK per tile.  A no-op (returns LET-EXPR unchanged) when no register-tile binding is present.  >    Endeavor 139 (decision A): :warps distributes the tile across its participating warps — each warp  >    allocates only nfrags/#true fragments (the entry carries n-true/first-true for the emit functions  >    to reconstruct each warp's logical fragment range).  >    Endeavor 145 P3a: also publishes the LET's SLM scratch-tile shapes in *mma-scratch-tile-dims* so  >    the accumulate expansion can walk K within a staged tile.
+  > Endeavour 196 wrapper: publishes each register tile's warp share for %register-tile-fit-check, then  >    runs the original.
 
 
 ---
@@ -12403,10 +12616,64 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFPARAMETER `*199-STAGE-BYTES-PER-WARP*`
+
+  > Endeavour 199.  Staging shared memory per warp: two 16-row x 64-column 16-bit boxes (2 KB each).
+
+
+---
+### DEFPARAMETER `*199-STORE-BOX*`
+
+  > Endeavour 199.  The TMA store box (rows cols): one warp's 16 rows x 64 16-bit columns = 128 bytes  >    wide, the most a SWIZZLE_128B box may be.
+
+
+---
+### DEFUN `%199-STAGE-NAME`
+- **Args**: `(FN)`
+
+  > Endeavour 199.  The implicit-arg name of FN's TMA-store staging buffer.
+
+
+---
+### DEFUN `%199-DESCRIPTOR-NAME`
+- **Args**: `(DEST FN)`
+
+  > Endeavour 199.  DEST's CUtensorMap descriptor in FN -- the name %tma-lookup-descriptor-ptr rebuilds.
+
+
+---
+### DEFUN `%199-TYPE-SYMBOL`
+- **Args**: `(NAME)`
+
+  > Endeavour 199.  The Crisp type symbol NAME ("HALF", "BFLOAT16") as Crisp source spells it.
+
+
+---
+### DEFUN `%199-CONVERT-ELEMENT`
+- **Args**: `(CONVERT)`
+
+  > Endeavour 199.  The 16-bit element type a peeled conversion (TO-HALF / TO-BFLOAT16) produces.
+
+
+---
+### DEFUN `%199-VIA-TMA-P`
+- **Args**: `(KEYS)`
+
+  > Endeavour 199.  T when the option plist KEYS says :via :tma.
+
+
+---
+### DEFUN `%199-ANALYZE-TMA-STORE`
+- **Args**: `(EXPR SRC CONVERT ENV CONTEXT LOCATION)`
+
+  > Endeavour 199.  (store-tile-at (CONVERT SRC) DEST (ROW COL) :via :tma) -> semantic-wgmma-tma-store.  >    Refused with a message naming the rule: a non-PTX target, a source that is not a wgmma accumulator,  >    no 16-bit conversion (stmatrix moves 16-bit elements), N not a multiple of 64 (one 128-byte box),  >    a destination that is not a symbol or whose element type is not the conversion's, no compile-time  >    local-size (the staging buffer is sized from it), or no pass-1 registration (single-pass, helper).
+
+
+---
 ### DEFUN `ANALYZE-STORE-TILE-AT-MMA`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > store-tile-at overload: wgmma-accumulator at an absolute (ROW COL) origin, OR delegate to the  >    ordinary cooperative store-tile-at path.  >   >    ENDEAVOUR 154.  %wgmma-store-rewrite computes its row base as `bty * 64`, the wgmma  >    instruction's fixed M, which silently bakes in ONE WARPGROUP: with a second consumer warpgroup  >    the row base is unchanged and both would write the SAME 64 rows.  A cooperative 128x256 tile  >    (two warpgroups splitting M, sharing one B tile) was therefore not expressible -- store-tile-at  >    looked like the escape hatch but had no wgmma overload and fell through to the cooperative  >    element-loop path.  The two-warpgroup kernel now writes its row offsets explicitly:  >   >      (:consumer0 ... (store-tile-at D C ((* grid-y 128)        (* grid-x 256))))  >      (:consumer1 ... (store-tile-at D C ((+ (* grid-y 128) 64) (* grid-x 256))))  >   >    It does NOT infer the warpgroup count.  Deriving it from the tile-stride tile shape (M/64) was  >    considered and rejected as UNDER-DETERMINED: a 128-row tile served by ONE warpgroup looping over  >    two row halves is a legal kernel the same rule would silently mis-address.  >   >    Dispatches on the SOURCE TYPE before the generic path runs, exactly as analyze-store-tile-mma  >    does -- which also keeps the wgmma store out of %warp-spec-check-block-only, whose  >    workgroup-collective deadlock rationale does not apply to a warpgroup-private accumulator spill  >    (and which store-tile already bypasses for the same reason).  >   >    Spec: tests/spec/154-nvidia-perf/02-wgmma-store-at-origin.crisp (validate-ptx-wgmma-store-direct)  >          tests/spec/154-nvidia-perf/03-wgmma-two-warpgroups.crisp  (the cooperative kernel).
+  > store-tile-at overload: wgmma-accumulator at an absolute (ROW COL) origin, OR delegate to the  >    ordinary cooperative store-tile-at path.  >   >    ENDEAVOUR 154.  %wgmma-store-rewrite computes its row base as `bty * 64`, the wgmma  >    instruction's fixed M, which silently bakes in ONE WARPGROUP: with a second consumer warpgroup  >    the row base is unchanged and both would write the SAME 64 rows.  A cooperative 128x256 tile  >    (two warpgroups splitting M, sharing one B tile) was therefore not expressible -- store-tile-at  >    looked like the escape hatch but had no wgmma overload and fell through to the cooperative  >    element-loop path.  The two-warpgroup kernel now writes its row offsets explicitly:  >   >      (:consumer0 ... (store-tile-at D C ((* grid-y 128)        (* grid-x 256))))  >      (:consumer1 ... (store-tile-at D C ((+ (* grid-y 128) 64) (* grid-x 256))))  >   >    It does NOT infer the warpgroup count.  Deriving it from the tile-stride tile shape (M/64) was  >    considered and rejected as UNDER-DETERMINED: a 128-row tile served by ONE warpgroup looping over  >    two row halves is a legal kernel the same rule would silently mis-address.  >   >    Dispatches on the SOURCE TYPE before the generic path runs, exactly as analyze-store-tile-mma  >    does -- which also keeps the wgmma store out of %warp-spec-check-block-only, whose  >    workgroup-collective deadlock rationale does not apply to a warpgroup-private accumulator spill  >    (and which store-tile already bypasses for the same reason).  >   >    ENDEAVOUR 196: the source may be (to-half D) / (to-bfloat16 D); the conversion is fused into  >    each element store.  A converted source that is not a wgmma accumulator is refused.  >   >    ENDEAVOUR 199: options after the origin.  :via :tma sends the accumulator through staging shared  >    memory and TMA stores (%199-analyze-tma-store); any other :via value is refused.  Without :via  >    nothing changes.  >   >    Spec: tests/spec/154-nvidia-perf/02-wgmma-store-at-origin.crisp (validate-ptx-wgmma-store-direct)  >          tests/spec/154-nvidia-perf/03-wgmma-two-warpgroups.crisp  (the cooperative kernel)  >          tests/spec/196-matmul-contest/04-wgmma-store-tile-at-to-half.crisp  >          tests/spec/199-tma-store/.
 
 
 ---
@@ -12502,24 +12769,31 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `ANALYZE-WGMMA-ACCUMULATE-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension  >    (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)  >    AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle.  >   >    Endeavour 160: the per-node *wgmma-node-swizzle* entry gains a third element, the operand  >    element type.  Codegen cannot recover it -- %emit-nvvm-wgmma receives an f32 accumulator type  >    and raw SMEM pointers, with no fragment record to probe -- so it has to be recorded here.  >   >    Endeavour 198: analyze-wgmma-accumulate (below) records :b-major in *wgmma-node-swizzle*.
+
+
+---
 ### DEFUN `ANALYZE-WGMMA-ACCUMULATE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (wgmma-accumulate D A B [:swizzle MODE :k K]).  a/b -> (~ tile 0 [0]) with one 0 per tile dimension  >    (rank-aware) so codegen's 3rd value is the addrspace(3) base — works for flat VECTOR tiles (scatter)  >    AND MATRIX tiles (swizzle / Step-0 forms), independent of :swizzle.  >   >    Endeavour 160: the per-node *wgmma-node-swizzle* entry gains a third element, the operand  >    element type.  Codegen cannot recover it -- %emit-nvvm-wgmma receives an f32 accumulator type  >    and raw SMEM pointers, with no fragment record to probe -- so it has to be recorded here.
+  > (wgmma-accumulate D A B [:swizzle MODE :k K :b-major :mn]) -- see the original.  >    Endeavour 198: the *wgmma-node-swizzle* entry gains a 4th element, B-MAJOR (:k or :mn).
 
 
 ---
 ### DEFUN `%CHECK-WGMMA-OPERANDS`
-- **Args**: `(SHAPE A B LOCATION ELEM SWIZZLE)`
+- **Args**: `(SHAPE A B LOCATION ELEM SWIZZLE &OPTIONAL (B-MAJOR K))`
 
-  > Refuse a wgmma whose staged A or B tile is not the shape the instruction will read.  >   >    THE RULE.  A is (M K) and B is (N K) -- both K-major.  This is not inferred from which  >    kernels happen to verify; it is what CUTLASS declares for every tf32 GMMA trait in  >    third_party/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp:  >        FrgTypeA = FrgTypeB = GMMA::smem_desc<GMMA::Major::K>  >        ALayout  = ABLayout<64, 8>      BLayout = ABLayout<64, 8>  >    and the tf32 SS atoms exist ONLY in the _TN form (16 of them, no other suffix) because tf32  >    wgmma carries no transpose immediate.  >   >    WHY B GETS TWO DIFFERENT MESSAGES.  At 16 bits the ISA genuinely offers both orientations --  >    the bf16/f16 traits are templated <GMMA::Major tnspA, GMMA::Major tnspB> where tf32's are  >    hardcoded -- so a (K N) B operand is Major::MN and is legal HARDWARE with transB=1.  Crisp  >    pins transA/transB to (0 0) via *wgmma-16-trans*, so at 16 bits the refusal is a fact about  >    THIS COMPILER, and saying 'B must be (N K)' there would be a false claim about the hardware  >    that sends the reader to fix the wrong thing.  >   >    UNRESOLVABLE EXTENTS ARE NOT AN ERROR.  %mma-operand-extent returns NIL when a tile's shape is  >    not compile-time known, and a wgmma operand is frequently (ring-get RING SLOT).  Refusing on  >    NIL would reject the working pipelined kernels -- chapter 7, sec2_top, sec3, sec4 -- so an  >    unknown extent skips silently, exactly as %mma-k-steps treats its own NIL.  >   >    K IS THE PER-SLICE K, not the K-block: under :swizzle the staged tile spans several slices, so  >    its K extent is the block and only A-vs-B agreement is checkable there.
+  > Refuse a wgmma whose staged A or B tile is not the shape the instruction will read.  >   >    THE RULE.  A is (M K) and B is (N K) -- both K-major.  This is not inferred from which  >    kernels happen to verify; it is what CUTLASS declares for every tf32 GMMA trait in  >    third_party/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp:  >        FrgTypeA = FrgTypeB = GMMA::smem_desc<GMMA::Major::K>  >        ALayout  = ABLayout<64, 8>      BLayout = ABLayout<64, 8>  >    and the tf32 SS atoms exist ONLY in the _TN form (16 of them, no other suffix) because tf32  >    wgmma carries no transpose immediate.  >   >    ENDEAVOUR 198: at 16 bits B may instead be (K N) -- Major::MN, read with transB=1 -- when the  >    kernel says so with :b-major :mn (B-MAJOR here).  A (K N) B without it is refused with a message  >    naming the keyword; tf32 keeps refusing, because its wgmma has no transpose immediate.  >   >    UNRESOLVABLE EXTENTS ARE NOT AN ERROR.  %mma-operand-extent returns NIL when a tile's shape is  >    not compile-time known, and a wgmma operand is frequently (ring-get RING SLOT).  Refusing on  >    NIL would reject the working pipelined kernels -- chapter 7, sec2_top, sec3, sec4 -- so an  >    unknown extent skips silently, exactly as %mma-k-steps treats its own NIL.  >   >    K IS THE PER-SLICE K, not the K-block: under :swizzle the staged tile spans several slices, so  >    its K extent is the block and only A-vs-B agreement is checkable there.
 
 
 ---
 ### DEFUN `ANALYZE-WGMMA-ACCUMULATE-VIA-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b]) -> (set! D (wgmma-accumulate D A B  >    :swizzle MODE :k K)).  K rule is swizzle- AND element-aware (see %check-wgmma-shape).  >   >    Endeavour 160: the A tile's element type is resolved here and passed to the shape check, so a  >    tf32 kernel asking for K=16 is still refused while a bf16 one is accepted.  >   >    Endeavour 161: the OPERAND SHAPES are checked too.  Order matters -- the shape check runs  >    first, so a kernel that is wrong about both its triple and its tiles still reports the triple,  >    which is what tests/spec/140-wgmma/errors/01-03 assert.
+  > (wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b] [:b-major :k | :mn]) -> (set! D  >    (wgmma-accumulate D A B :swizzle :128b :k K [:b-major :mn])).  K rule is swizzle- AND  >    element-aware (see %check-wgmma-shape).  >   >    Endeavour 160: the A tile's element type is resolved here and passed to the shape check, so a  >    tf32 kernel asking for K=16 is still refused while a bf16 one is accepted.  >   >    Endeavour 161: the OPERAND SHAPES are checked too.  Order matters -- the shape check runs  >    first, so a kernel that is wrong about both its triple and its tiles still reports the triple,  >    which is what tests/spec/140-wgmma/errors/01-03 assert.  >   >    Endeavour 198: :b-major :mn declares B as (K N), read with transB=1.  It needs a 16-bit element  >    (tf32 wgmma has no transpose), :swizzle :128b (the MN-major descriptor is built for the 128-byte  >    swizzle atom: 64 N x 8 K), and N a multiple of 64 (one atom wide).
 
 
 ---
@@ -12557,33 +12831,40 @@ Generated on 2026-10-28T02:52:51.594144Z
 
 
 ---
+### DEFUN `%198-WGMMA-MAKE-DESC-MN`
+- **Args**: `(BUILDER BASE-PTR KSLICE-BYTE-OFF LBO-BYTES)`
+
+  > Endeavour 198.  The 64-bit SMEM descriptor for an MN-MAJOR 16-bit operand under the 128-byte  >    swizzle (CUTLASS make_gmma_desc<Major::MN>, LayoutType::B128): the canonical layout is  >    ((8 elems x 8, m) , (8 K rows, k)) -- 64 MN elements per 128-byte row, 8 rows per 1024-byte  >    swizzle atom.  LBO = the stride between 64-wide MN atoms = one TMA box (K-block rows x 128 B,  >    LBO-BYTES); SBO = the stride between 8-row K groups = 1024 B; swizzle bits = 1 (128B).  The k16  >    slice advances 16 rows = KSLICE-BYTE-OFF (kk*2048).  start = ((addr+off)>>4)&0x3FFF at [0:13].
+
+
+---
 ### DEFUN `%EMIT-WGMMA-MMA-ONLY`
 - **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF
-              &OPTIONAL ELEM)`
+              &OPTIONAL ELEM B-MN-LBO)`
 
-  > Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no  >    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice  >    sequence, not once per slice; see %emit-nvvm-wgmma.  >   >    N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)  >    advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is  >    the same at both widths, which is why the descriptor build is untouched.  Returns the new D.
+  > Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no  >    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice  >    sequence, not once per slice; see %emit-nvvm-wgmma.  >   >    N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)  >    advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is  >    the same at both widths, which is why the descriptor build is untouched.  Returns the new D.  >   >    Endeavour 198: B-MN-LBO non-NIL means B is MN-major: its descriptor is %198-wgmma-make-desc-mn  >    (LBO = B-MN-LBO bytes), its slice advances 16 rows of 128 bytes (kk*2048 = KSLICE-OFF*64), and  >    the instruction carries transB=1 (*wgmma-16-trans* bound to (0 1)).
 
 
 ---
 ### DEFUN `%EMIT-NVVM-WGMMA`
 - **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P
-              (K 8) ELEM)`
+              (K 8) ELEM (B-MAJOR K))`
 
-  > Emit the wgmma accumulate as ONE GROUP: a fence before the first slice, K/KPS slices, then one  >    commit_group + wait_group.  See the original for why the fence/commit/wait triple is emitted  >    once per GROUP rather than once per slice (endeavour 154, worth 4-11%).  >   >    Endeavour 160: KPS -- the K covered by one instruction -- is 8 at 32 bits and 16 at 16 bits.  >    The per-slice BYTE advance stays kk*32 either way, because a tf32 k8 slice and a bf16 k16 slice  >    occupy the same 32 bytes.  That is why %wgmma-make-desc is untouched by this endeavour.
+  > Emit the wgmma accumulate as ONE GROUP: a fence before the first slice, K/KPS slices, then one  >    commit_group + wait_group.  See the original for why the fence/commit/wait triple is emitted  >    once per GROUP rather than once per slice (endeavour 154, worth 4-11%).  >   >    Endeavour 160: KPS -- the K covered by one instruction -- is 8 at 32 bits and 16 at 16 bits.  >    The per-slice BYTE advance stays kk*32 either way, because a tf32 k8 slice and a bf16 k16 slice  >    occupy the same 32 bytes.  That is why %wgmma-make-desc is untouched by this endeavour.  >   >    Endeavour 198: B-MAJOR :mn passes the MN-major B's LBO -- one TMA box, K rows x 128 bytes -- to  >    every slice (see %emit-wgmma-mma-only).
 
 
 ---
 ### DEFUN `%WGMMA-STORE-REWRITE-ORIGIN`
-- **Args**: `(TILE DEST ROW-ORIGIN COL-ORIGIN N)`
+- **Args**: `(TILE DEST ROW-ORIGIN COL-ORIGIN N &OPTIONAL CONVERT)`
 
-  > Store the m64xN wgmma accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN), both absolute element indices.  >   >    Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows  >    [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8  >    group contributes the standard mma m16n8 C fragment at rows r0 and r0+8.  >   >    Both origins are coerced with TO-INT.  The lane arithmetic is INT throughout (wgw and rlo come  >    from to-int of warp-id / warp-lane), so a ULONG origin -- which is what any tile-stride grid  >    binding produces, e.g. (* grid-y (to-ulong 128)) -- would otherwise fail to type-check with  >    "Cannot operate on ULONG and INT".  The grid-index caller has always passed an INT for the same  >    reason; this makes the absolute spelling accept either.  >   >    ENDEAVOUR 154: emission order is ROW-MAJOR.  The natural loop is j-outer, which interleaves r0  >    and r8 and writes the tile column-strip by column-strip -- 32 passes revisiting the same two  >    rows.  Emitting all of row r0 and then all of row r8 lets each WARP lay down a full contiguous  >    row (4 lanes x 2 floats x n8 groups) before moving on.  Pure reordering: same stores, same  >    values, same addresses.  Measured on an H100 NVL, interleaved, 3 reps: +1.5% at 2048, +0.7% at  >    4096, +0.5% at 1024, neutral at 256/512, nothing regressing.
+  > Store the m64xN wgmma accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN), both absolute element indices.  >   >    Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows  >    [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8  >    group contributes the standard mma m16n8 C fragment at rows r0 and r0+8.  >   >    Both origins are coerced with TO-INT.  The lane arithmetic is INT throughout (wgw and rlo come  >    from to-int of warp-id / warp-lane), so a ULONG origin -- which is what any tile-stride grid  >    binding produces, e.g. (* grid-y (to-ulong 128)) -- would otherwise fail to type-check with  >    "Cannot operate on ULONG and INT".  The grid-index caller has always passed an INT for the same  >    reason; this makes the absolute spelling accept either.  >   >    ENDEAVOUR 154: emission order is ROW-MAJOR.  The natural loop is j-outer, which interleaves r0  >    and r8 and writes the tile column-strip by column-strip -- 32 passes revisiting the same two  >    rows.  Emitting all of row r0 and then all of row r8 lets each WARP lay down a full contiguous  >    row (4 lanes x 2 floats x n8 groups) before moving on.  Pure reordering: same stores, same  >    values, same addresses.  Measured on an H100 NVL, interleaved, 3 reps: +1.5% at 2048, +0.7% at  >    4096, +0.5% at 1024, neutral at 256/512, nothing regressing.  >   >    ENDEAVOUR 196: optional CONVERT (TO-HALF / TO-BFLOAT16 symbol) wraps every element read, for  >    (store-tile (to-half D) C ...) -- an f32 accumulator stored into a 16-bit matrix.  >   >    ENDEAVOUR 197: each thread's elements come in adjacent column PAIRS (c, c+1), so a pair is one  >    (%store-pair ...) -- a single <2 x T> store -- under ONE (%pair-ok-p ...) test of the thread's  >    first pair.  One test covers them all: every other pair is 8k columns and/or 8 rows away, i.e. a  >    multiple of 2 elements on both axes once the first pair is adjacent (unit last stride) and  >    2-element aligned.  When the test fails (an odd column origin, an unaligned base, a strided last  >    dimension) the original scalar stores run.  H100, 4096x5120x4096 fp16: 304 -> 252 us.
 
 
 ---
 ### DEFUN `%WGMMA-STORE-REWRITE`
-- **Args**: `(TILE DEST TILE-ID N)`
+- **Args**: `(TILE DEST TILE-ID N &OPTIONAL CONVERT)`
 
-  > Store the m64xN wgmma accumulator TILE to DEST at grid tile-id (BTY BTX).  warp w (within the  >    warpgroup) -> rows [16w,16w+16); per n8 group the standard mma m16n8 C fragment.  (= wgmma_ref.cu.)  >   >    ENDEAVOUR 154: a thin caller of %wgmma-store-rewrite-origin with the TILE-GRID origin  >    (bty*64, btx*N).  Behaviour is unchanged -- deliberately, since addressing a tile by grid index  >    only identifies a 64-row tile when ONE warpgroup owns it.  Two cooperating warpgroups use  >    store-tile-at with explicit origins instead.
+  > Store the m64xN wgmma accumulator TILE to DEST at grid tile-id (BTY BTX).  warp w (within the  >    warpgroup) -> rows [16w,16w+16); per n8 group the standard mma m16n8 C fragment.  (= wgmma_ref.cu.)  >   >    ENDEAVOUR 154: a thin caller of %wgmma-store-rewrite-origin with the TILE-GRID origin  >    (bty*64, btx*N).  Behaviour is unchanged -- deliberately, since addressing a tile by grid index  >    only identifies a 64-row tile when ONE warpgroup owns it.  Two cooperating warpgroups use  >    store-tile-at with explicit origins instead.  >   >    ENDEAVOUR 196: optional CONVERT is passed through (see %wgmma-store-rewrite-origin).
 
 
 ---
@@ -13372,6 +13653,24 @@ Generated on 2026-10-28T02:52:51.594144Z
 ### DEFSTRUCT `SEMANTIC-ATOMIC-CAS`
 
   > Represents (atomic-cas! location expected desired).  > Returns the value at the location BEFORE the attempt (see the header for why not a boolean).
+
+
+---
+### DEFSTRUCT `SEMANTIC-STORE-PAIR`
+
+  > Endeavour 197.  (%store-pair P0 P1 LO HI): LO and HI stored as ONE <2 x T> store at P0's element  >    address, aligned to two elements.  Only legal under a (%pair-ok-p P0 P1) guard -- the lowering  >    that emits it always puts it there.  P1 is analysed only for the fallback (see the analyzer).
+
+
+---
+### DEFSTRUCT `SEMANTIC-PAIR-OK-P`
+
+  > Endeavour 197.  (%pair-ok-p P0 P1) -> int 1 when P1's address is exactly one element past P0's AND  >    P0 is aligned to two elements, else 0.  Address arithmetic on the two element pointers, so it  >    covers the strides and the tensor's base offset without either being visible to Crisp.
+
+
+---
+### DEFSTRUCT `SEMANTIC-WGMMA-TMA-STORE`
+
+  > Endeavour 199.  (store-tile-at (to-half D) C (ROW COL) :via :tma): the m64xN wgmma accumulator D,  >    converted to 16 bits, written to C at (ROW COL) through staging shared memory and TMA stores.
 
 
 ---

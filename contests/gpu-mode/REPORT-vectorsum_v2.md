@@ -1,17 +1,17 @@
 # GPU MODE Contest Report: `vectorsum_v2`
 
-> Generated from [`results/vectorsum_v2.json`](results/vectorsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/544?tab=rankings](https://www.gpumode.com/leaderboard/544?tab=rankings) (Crisp commit `01ce81a5`).
+> Generated from [`results/vectorsum_v2.json`](results/vectorsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/544?tab=rankings](https://www.gpumode.com/leaderboard/544?tab=rankings) (Crisp commit `0e648a7f`).
 
 **Workload:** Sum reduction of 1D float32 tensor across 6 benchmark sizes from 1,638,400 to 52,428,800 elements.
 
 ## § 1 — Official Leaderboard Standings
 
-| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
+| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#37** / 81 | **49.69 µs** | — | 4.22 TB/s | 74.5% (`37.03 µs`) | [`crisp_vectorsum_lastman_wg_occ1.py`](02-vectorsum-v2/crisp_vectorsum_lastman_wg_occ1.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg.crisp)) | — | `2026-10-26 07:45` |
-| **H100** | Hopper (sm_90) | **#32** / 67 | **82.81 µs** | 82.68 µs | 2.53 TB/s | 82.0% (`67.92 µs`) | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | — | `2026-10-26 07:45` |
-| **A100** | Ampere (sm_80) | **#64** / 115 | **144.77 µs** | 146.15 µs | 1.45 TB/s | 69.9% (`101.24 µs`) | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | — | `2026-10-26 07:45` |
-| **L4** | Ada Lovelace (sm_89) | **#11** / 43 | **866.51 µs** | 866.30 µs | 242.0 GB/s | 79.9% (`692.02 µs`) | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | — | `2026-10-26 07:45` |
+| **B200** | Blackwell (sm_100) | **#37** / 82 | **49.69 µs** | — | 4.22 TB/s | 74.5% (`37.03 µs`) | [`crisp_vectorsum_lastman_wg_occ1.py`](02-vectorsum-v2/crisp_vectorsum_lastman_wg_occ1.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg.crisp)) | — | `2026-10-28 09:51` |
+| **H100** | Hopper (sm_90) | **#32** / 68 | **82.81 µs** | 82.68 µs | 2.53 TB/s | 82.0% (`67.92 µs`) | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | — | `2026-10-28 09:51` |
+| **A100** | Ampere (sm_80) | **#64** / 117 | **144.77 µs** | 146.15 µs | 1.45 TB/s | 69.9% (`101.24 µs`) | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | — | `2026-10-28 09:51` |
+| **L4** | Ada Lovelace (sm_89) | **#11** / 44 | **866.51 µs** | 866.30 µs | 242.0 GB/s | 79.9% (`692.02 µs`) | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | — | `2026-10-28 09:51` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -34,7 +34,7 @@
 
 
 
-| GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
+| GPU | Architecture | Beauty Score | Achieved BW / TFLOPS | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
 |---|---|---:|---:|---:|---:|---|---|---:|
 | **B200** | Blackwell (sm_100) | **66.61 µs** | 3.15 TB/s | **55.6%** (`37.03 µs`) | 74.6% (`49.69 µs`) | [`crisp_vectorsum_lastman_wg_occ1.py`](02-vectorsum-v2/crisp_vectorsum_lastman_wg_occ1.py) | `leaderboard` | `#965751` |
 | **H100** | Hopper (sm_90) | **93.85 µs** | 2.23 TB/s | **72.4%** (`67.92 µs`) | 88.2% (`82.81 µs`) | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) | `leaderboard` | `#965749` |

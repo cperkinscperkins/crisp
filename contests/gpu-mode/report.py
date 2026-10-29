@@ -155,6 +155,17 @@ def format_bw(total_bytes: int, us: float | None) -> str:
     return f"{gbps:.1f} GB/s"
 
 
+def format_rate(workload: Dict[str, Any], us: float | None) -> str:
+    """Achieved rate for the scored case: TFLOPS for a compute-bound problem (workload has total_flops,
+    e.g. matmul_v2), else bandwidth from total_traffic_bytes."""
+    flops = workload.get("total_flops")
+    if flops:
+        if not us or us <= 0:
+            return "—"
+        return f"{flops / (us * 1e-6) / 1e12:.0f} TFLOPS"
+    return format_bw(workload.get("total_traffic_bytes", 0), us)
+
+
 def render_problem_report(p: Dict[str, Any]) -> str:
     prob = p["problem"]
     title = p.get("title", prob)
@@ -181,7 +192,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
     # Section 1: Official Leaderboard Standings
     L.append("## § 1 — Official Leaderboard Standings\n")
     L.append(
-        "| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |"
+        "| GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |"
     )
     L.append("|---|---|---:|---:|---:|---:|---:|---|---|---|")
 
@@ -196,7 +207,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
         sec_us = st.get("secret_score_us")
         pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
         sec_str = f"{sec_us:.2f} µs" if sec_us is not None else "—"
-        bw_str = format_bw(total_bytes, pub_us)
+        bw_str = format_rate(wl, pub_us)
         top1_us = st.get("top1_score_us")
         pct_top1 = f"{(top1_us / pub_us) * 100.0:.1f}% (`{top1_us:.2f} µs`)" if (top1_us and pub_us) else "—"
         crisp_f = st.get("crisp_file", "")
@@ -239,7 +250,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
             L.append("\n")
 
         L.append(
-            "| GPU | Architecture | Beauty Score | Achieved BW | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |"
+            "| GPU | Architecture | Beauty Score | Achieved BW / TFLOPS | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |"
         )
         L.append("|---|---|---:|---:|---:|---:|---|---|---:|")
 
@@ -252,7 +263,7 @@ def render_problem_report(p: Dict[str, Any]) -> str:
             arch = spec.get("arch", "—")
             b_us = b_info.get("score_us")
             b_score_str = f"**{b_us:.2f} µs**" if b_us is not None else "—"
-            bw_str = format_bw(total_bytes, b_us) if b_us else "—"
+            bw_str = format_rate(wl, b_us) if b_us else "—"
 
             st = standings.get(gpu, {})
             top1_us = st.get("top1_score_us")
@@ -401,7 +412,7 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
 
     L.append("## Headline Standings Across Hardware\n")
     L.append(
-        "| Contest | GPU | Rank | Public Score | Secret Score | Achieved BW | % of #1 | Winning Crisp Kernel | Captured (UTC) |"
+        "| Contest | GPU | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 | Winning Crisp Kernel | Captured (UTC) |"
     )
     L.append("|---|---|---:|---:|---:|---:|---:|---|---|")
     for p in problems:
@@ -417,7 +428,7 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
             sec_us = st.get("secret_score_us")
             pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
             sec_str = f"{sec_us:.2f} µs" if sec_us is not None else "—"
-            bw_str = format_bw(total_bytes, pub_us)
+            bw_str = format_rate(p.get("workload", {}), pub_us)
             top1_us = st.get("top1_score_us")
             pct_str = f"**{(top1_us / pub_us) * 100.0:.1f}%**" if (top1_us and pub_us) else "—"
             crisp_f = st.get("crisp_file", "")

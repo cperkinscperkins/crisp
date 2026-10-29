@@ -1462,9 +1462,18 @@
 
    Anything else is a compound target we have no adjoint rule for.  That now raises a message
    naming the form instead of letting symbol-name signal `The value (RING-GET ...) is not of
-   type SYMBOL`, which told the user nothing about what to do."
+   type SYMBOL`, which told the user nothing about what to do.
+
+   Endeavour 196: a converted tile as a store source is refused (D-196-12)."
   (declare (ignore local-adj-fn))
   (cond
+   ;; Endeavour 196 (D-196-12): a converted tile -- (to-half D), (to-bfloat16 D) -- as a store source
+   ;; is refused by name until the accumulator backward sees through the conversion.
+   ((%ad-widening-conversion-form-p sym)
+    (error 'crisp-compiler-error
+           :message (format nil "--differentiate: ~(~s~) as a store source is not differentiable yet.  Its adjoint is ~(~a~)'s (a precision cast is the identity on value), but the accumulator backward does not yet see through the conversion (endeavour 196, D-196-12).  The forward kernel compiles without --differentiate."
+                            sym (second sym))
+           :source-location nil))
    ;; A VIEW FORM.  Endeavor 146 generalises 138's ring case: the rule was never about rings,
    ;; it is about pure view constructors, all of which take the base storage handle first and
    ;; carry only address arithmetic after it.  So rebuild the same view over the base's
@@ -5311,13 +5320,27 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 (defun %mma-vjp-mma-admissible-p (mt nt kt)
   "T when the MMA fast path can realise the backward: both backward accumulators (Mt x Kt and
    Kt x Nt) must decompose into whole hardware accumulator fragments.  This is a PERFORMANCE
-   predicate — declining it selects the scalar lowering, never an error."
+   predicate — declining it selects the scalar lowering, never an error.
+
+   Endeavour 199: and both must FIT the per-thread register budget
+   (%mma-ad-accumulator-fits-registers-p, the predicate endeavour 163 gave the dC adjoint), because
+   %mma-via-tile-backward mints them as register tiles.  A 64x128 wgmma's dB (64 x 128 = 256
+   registers) used to reach make-register-tile's fit check and fail the whole backward."
   (multiple-value-bind (sm sn sk) (%spv-mma-shape)
     (declare (ignore sk))
-    (and (plusp sm) (plusp sn)
-         (zerop (mod kt (lcm sm sn)))
-         (zerop (mod mt sm))
-         (zerop (mod nt sn)))))
+    (let ((decomposes (and (plusp sm) (plusp sn)
+                           (zerop (mod kt (lcm sm sn)))
+                           (zerop (mod mt sm))
+                           (zerop (mod nt sn)))))
+      (cl:cond
+        ((not decomposes) nil)
+        ((and (%mma-ad-accumulator-fits-registers-p (list mt kt))
+              (%mma-ad-accumulator-fits-registers-p (list kt nt)))
+         t)
+        (t
+         (log:info "199 MMA backward Mt=~a Nt=~a Kt=~a: dA (~ax~a) or dB (~ax~a) exceeds the register budget -> scalar lowering"
+                   mt nt kt mt kt kt nt)
+         nil)))))
 
 ;;; ===================================================================
 ;;; VJP for the FRAGMENT-level MMA chain  (133/02, 133/10, 132/02 — "hello mma")

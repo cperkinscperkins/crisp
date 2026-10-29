@@ -1,4 +1,8 @@
-;; CHECK-FAIL: "pins transA/transB"
+;; CHECK-FAIL: "say so with :b-major :mn"
+;; ENDEAVOUR 198 UPDATE: transB=1 now exists -- (wgmma-accumulate-via-tile ... :b-major :mn) reads a
+;; (K N) B.  This kernel still fails, because it does not SAY :b-major :mn (and a square tile could not
+;; be told apart by shape), so the message now names the keyword instead of the pinned (0 0) pair.  The
+;; history below is why the message was always about the compiler, never the hardware.
 ;; Endeavour 161 - a transposed B at 16 bits is refused too, but for a DIFFERENT reason, and the
 ;; message must say which.
 ;;

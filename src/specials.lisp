@@ -39,6 +39,11 @@
           *194-LOOP*
           *194-LOOP-LEVEL*
           *195-AD-PARAM-TYPES*
+          *196-TILE-WARP-SHARES*
+          *198-CURRENT-TMA-SPLIT*
+          *198-TMA-COPY-SPLIT*
+          *199-STAGE-BYTES-PER-WARP*
+          *199-STORE-BOX*
           *AD-ANY-OUTPUT-DOUBLE*
           *AD-BARRIER-RING-SYMS*
           *AD-INLINING-FNS*

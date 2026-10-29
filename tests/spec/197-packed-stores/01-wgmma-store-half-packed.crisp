@@ -1,0 +1,32 @@
+;; Endeavour 197 rung 01 -- a wgmma accumulator stored to half lands as PAIRS: one 4-byte store per
+;; adjacent column pair (st.global.v2.b16), not one 2-byte store per element.
+;;
+;; WHY.  The H100 contest kernel spent 72 of 310 us in this epilogue (scored case 4096x5120x4096):
+;; 128 scalar st.global.b16 per thread.  Each thread's accumulator elements come in column pairs
+;; (c, c+1); a hand-packed PTX probe took the kernel to 252 us, bit-exact.
+;;
+;; THE GUARD.  The pair store is only legal when the pair is adjacent in memory and aligned to two
+;; elements -- unknowable at compile time (base offset, strides).  So the lowering tests the thread's
+;; first pair once, (%pair-ok-p ...), and keeps the scalar stores as the fallback branch.  The
+;; validator wants BOTH: packed stores present, scalar stores still present (the fallback), and no
+;; f32 store.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-store-packed-half
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_store_half_packed (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))
+        (B-tile (make-scratch-matrix half (64 64)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 64) D A-tile B-tile :swizzle :128b)
+    (store-tile-at (to-half D) C (0 0))))

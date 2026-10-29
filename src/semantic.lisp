@@ -638,3 +638,44 @@ Returns the value at the location BEFORE the attempt (see the header for why not
   ;; flag LLVM already computed is made available directly.
   (result-mode :old)
   source-location)
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 197 / 199 -- the packed-store and TMA-store nodes
+;;;; See tests/spec/197-packed-stores/packed-stores.md, tests/spec/199-tma-store/tma-store.md.
+;;;; ----------------------------------------------------------------------
+
+(defstruct semantic-store-pair
+  "Endeavour 197.  (%store-pair P0 P1 LO HI): LO and HI stored as ONE <2 x T> store at P0's element
+   address, aligned to two elements.  Only legal under a (%pair-ok-p P0 P1) guard -- the lowering
+   that emits it always puts it there.  P1 is analysed only for the fallback (see the analyzer)."
+  place-node  ;; semantic aref node: the first element
+  lo-node     ;; value stored at P0
+  hi-node     ;; value stored at the element after P0
+  elem-bytes  ;; 2, 4 or 8
+  type
+  source-location)
+
+(defstruct semantic-pair-ok-p
+  "Endeavour 197.  (%pair-ok-p P0 P1) -> int 1 when P1's address is exactly one element past P0's AND
+   P0 is aligned to two elements, else 0.  Address arithmetic on the two element pointers, so it
+   covers the strides and the tensor's base offset without either being visible to Crisp."
+  place0-node
+  place1-node
+  elem-bytes
+  type
+  source-location)
+
+(defstruct semantic-wgmma-tma-store
+  "Endeavour 199.  (store-tile-at (to-half D) C (ROW COL) :via :tma): the m64xN wgmma accumulator D,
+   converted to 16 bits, written to C at (ROW COL) through staging shared memory and TMA stores."
+  tile-node     ;; the accumulator (an f32 struct of N/2 members per thread)
+  row-node      ;; INT row origin
+  col-node      ;; INT column origin
+  n             ;; accumulator N (a multiple of 64)
+  element       ;; HALF or BFLOAT16 (the conversion)
+  dest-sym      ;; C: names the CUtensorMap descriptor C_TENSORMAP_FROM_FN
+  stage         ;; implicit-arg name of the staging scratch vector
+  stage-spec    ;; its canonical tensor type
+  one-d-p       ;; T when the kernel's local-size is 1-D (tid.x is the linear thread index)
+  type
+  source-location)

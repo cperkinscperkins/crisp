@@ -4426,3 +4426,24 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX: export AS-BITS from crisp.compiler and import it into crisp-language like as-ulong et al.
         (a defpackage change: cannot be done from an overlay).  Then a spec for both (as-bits ulong 1.5d) and
         (as-bits double ...).
+
+[ ] 143 A LET BINDING NAMED `T` (OR ANY CL SYMBOL) FAILS WITH A PACKAGE-LOCK ERROR, NOT A CRISP ERROR.
+        Found 2026-10-28 (matmul_v2 transpose kernel, endeavour 196).
+            (let ((T (make-scratch-matrix half (64 64)))) ...)
+        dies with "Lock on package COMMON-LISP violated when interning T_FROM_TRANSPOSE_B_1 while in package
+        CRISP-LANGUAGE".  Pass 1 names the implicit scratch argument <binding>_FROM_<kernel>_<n> and interns it
+        in the binding symbol's package -- which for `T` is COMMON-LISP.
+        WORKAROUND: name it anything else (`tile`).
+        LIKELY FIX: intern the implicit-argument name in crisp-language explicitly, or refuse a binding that is a
+        CL constant (T, NIL) with a Crisp message naming the binding.
+
+[ ] 144 CHECK-FAIL-FLAGS ON A CRLF SPEC CARRY A TRAILING CR INTO THE LAST FLAG.
+        Found 2026-10-28 (endeavour 196).  tests/run-error-specs.lisp read-check-fail-flags splits the header on
+        spaces and trims only spaces, so on a CRLF file the last token keeps its \r.  Observed: a spec ending
+        `--hardware-profile=h100` failed with 'Hardware profile "h100" not found ... Known profiles: BMG H100'
+        (the name was "h100\r"); the same flags typed in a shell compile fine.  The 196 specs are LF now.
+        UNVERIFIED and worth checking: what `--ir-target=spv\r` or `--differentiate\r` does -- a flag the CLI
+        does not recognise is silently ignored, so a CRLF negative spec whose LAST flag is the target could be
+        passing on the default target (CHECK-FAIL would then pin the wrong refusal).
+        LIKELY FIX: trim #\Return (and tabs) in read-check-fail-flags; the spec runner's own directive readers
+        may want the same look.
