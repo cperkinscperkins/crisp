@@ -25,7 +25,8 @@ one ulp.  So every kernel here is a tensor-core kernel with no split-K -- includ
 | `build_diag_h100.py`, `build_diag_h100_mc.py`, `build_diag_ampere.py` | | per-arm timing diagnostics (write `diag_*_sub.py`; submit with `--mode test`, the table comes back as the error) |
 | `submit.sh FILE GPU MODE LOG` | | popcorn submit that waits out the 6-tests/hour rate limit |
 | `transpose_b.crisp` | (v2/v3) | B (K N) -> (N K) for wgmma: 39 us, vs 160 us for torch's `b.t()` copy; v4 needs none |
-| `matmul_h100_2wg_transb.crisp` | H100 | the v4 kernel: 2wg_deep with B staged (K N), `:b-major :mn` wgmma (transB) |
+| `matmul_h100_2wg_transb.crisp` | (v4) | 2wg_deep with B staged (K N), `:b-major :mn` wgmma (transB) |
+| `matmul_h100_2wg_tma.crisp` | H100 | the v5 kernel: transB + both accumulator stores `:via :tma` (stmatrix + TMA store, endeavour 199) |
 | `matmul_ampere_4w.crisp` | A100, L4, B200 | the v3 kernel: 128x128 register tile over a 2x2 warp grid |
 | `matmul_h100_2wg_mc.crisp` | H100 | TMA-multicast variant -- correct, slower (366 vs 309 us); not used |
 
@@ -44,14 +45,15 @@ buffer for a K-major wgmma (39 us).  v4 reads it as given: `matmul_h100_2wg_tran
 ## Usage
 
 ```
-python package_matmul.py                               # build crisp_matmul_v4.py and crisp_matmul_beauty.py
-python package_matmul.py crisp_matmul_v4.py H100 test  # build, then submit one
+python package_matmul.py                               # build crisp_matmul_v5.py and crisp_matmul_beauty.py
+python package_matmul.py crisp_matmul_v5.py H100 test  # build, then submit one
 python build_diag_h100.py                              # writes diag_h100_sub.py
 ```
 
-`crisp_matmul_v1.py`, `crisp_matmul_v2.py` and `crisp_matmul_v3.py` are the submissions as ranked /
-benchmarked; `build_all` no longer regenerates them.  v4 = the transB kernel on H100, and the 4-warp kernel
-with packed stores (endeavour 197) everywhere else.
+`crisp_matmul_v1.py` .. `crisp_matmul_v4.py` are the submissions as ranked / benchmarked; `build_all` no
+longer regenerates them.  v4 = the transB kernel on H100, and the 4-warp kernel with packed stores
+(endeavour 197) everywhere else.  v5 = v4 with the H100 kernel's epilogue through stmatrix + TMA stores
+(endeavour 199: 255.5 -> 228.0 us at the scored case, bit-exact; diag 968483, test 968484).
 
 ## Results (2026-10-28, ranked)
 

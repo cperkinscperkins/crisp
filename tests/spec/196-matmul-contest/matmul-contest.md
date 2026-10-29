@@ -312,3 +312,28 @@ compiler to emit packed stores.
 Proposed order (for discussion): (1) packed pair stores in the wgmma and mma.sync accumulator store
 lowerings (with a uniform alignment check + scalar fallback); (2) persistent launch in the packager;
 (3) wgmma transB; (4) later: stmatrix + TMA-store epilogue for the last ~12-20 us, then the mainloop.
+
+### Probe 4: stmatrix + TMA-store epilogue (2026-10-28, popcorn 968478)
+
+`contests/gpu-mode/06-matmul-v2/build_diag_h100_probe4.py`, on the ranked v4 transB kernel.  Hand-edited
+PTX: each consumer's epilogue (the guarded block of 64 `st.global.v2.b16`) becomes, per warp and per
+128-column half of its 16 x 256 slab: 8 `stmatrix.x4` into a 4 KB 128B-swizzled staging buffer (two
+16 x 64 boxes), `fence.proxy.async` + `bar.warp.sync`, then lane 0 issues two `cp.async.bulk.tensor`
+stores through a C tensor map (box {64, 16}, SWIZZLE_128B) and commits.  Warp-level syncs only; staging
+= 8 warps x 4 KB after the ring (smem 230400 of 232448).  The exit block waits `wait_group.read 0`.
+
+| us | 4096x5120x4096 | 2048x3072x2048 |
+|---|---:|---:|
+| tb (v4 as ranked) | 257.6 | 62.1 |
+| **tbe** (TMA-store epilogue) | **229.6**, exact | **51.5**, exact |
+| tb_pers | 253.0 | 60.1 |
+| tbe_pers | 228.7, exact | 47.8, exact |
+| torch (cuBLAS) | 221.7 | 40.1 |
+
+- **-28 us (11%)**, bit-exact first run; 96.5% of cuBLAS's whole call.  Would rank ~29/43 (the board from
+  #10 to #28 is 218.7-227.4).  Below the old "noepi" floor (232-238) -- that arm kept the scalar store
+  code, and with it the spills: ptxas (12.4, `--maxntid 288`) gives the v4 kernel 168 regs + **480 B
+  spill stores**; the probe 166 regs, **0 spills**.
+- **Persistence adds ~1 us** at the scored case once the store is asynchronous (7% at 2048).  The
+  non-persistent CTA exits after the staging is read; the writes drain under the next CTA's prologue.
+- So the TMA-store epilogue does not need persistent launch first.

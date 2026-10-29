@@ -64,6 +64,31 @@ split a 128-row tile).  The accumulator is `float`; to write a `half` / `bfloat1
 source — `(store-tile-at (to-half D) C (row col))` — and each element is rounded to nearest-even as it is
 stored (endeavour 196).
 
+**Storing through the TMA: `:via :tma`.**  The direct store writes each thread's column pairs straight to
+global memory, and the whole warpgroup waits on it.  `(store-tile-at (to-half D) C (row col) :via :tma)`
+sends the accumulator out the way it came in (endeavour 199): each warp converts its 16 rows to 16-bit
+pairs, writes them with `stmatrix` into a 4 KB staging slice laid out as two 128-byte-swizzled 16×64
+boxes, and one lane issues a TMA store per box through a tensor map of C.  The writes complete
+asynchronously; a warp waits only for its slice to be *read* before reusing it.  On the H100 matmul
+kernel (4096×5120×4096 fp16) it took the call from 255 to 228 µs, bit-exact.
+
+```
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat) (local-size :set-to 288))
+  ...
+        (:consumer0 ...
+          (store-tile-at (to-half D0) C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256))) :via :tma))
+  ...)
+```
+
+The compiler owns the staging buffer: one per kernel, 16 KB per full warpgroup of the declared
+`local-size` plus 1 KB of alignment, allocated after the kernel's own scratch (count it against the
+shared-memory budget — 227 KB on H100).  `:via :tma` needs a wgmma accumulator converted with
+`to-half` / `to-bfloat16` (`stmatrix` moves 16-bit elements) into a matching `:row-major` destination
+that is a kernel parameter, N a multiple of 64 (one 128-byte box), and a compile-time
+`(local-size :set-to N)`; anything else is refused with a message naming the rule.  Without `:via` the
+store is the direct one.
+
 By default wgmma reads B **K-major**: declare B `(N K)`, i.e. a `(K N)` matrix that is `:col-major`.  A
 row-major `(K N)` B (PyTorch's plain `a @ b`) is read as it is with `:b-major :mn` (endeavour 198): stage
 B as a `(K N)` tile and the 16-bit wgmma reads it with transB=1.  `:mn` needs a `half` / `bfloat16`

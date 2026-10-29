@@ -197,8 +197,11 @@ OPEN
       Today :tile-shape launches one block per tile, and a 1-D :strided grid under N-D tile-stride
       serialises an axis (the L0 7.6x trap).  Probe: 3% on the H100 contest kernel once stores were packed
       (endeavour 197 doc).  Also the natural home for tile rasterisation (L2 reuse).  Endeavour 197 step 2.
-- [ ] stmatrix + TMA-store epilogue for wgmma accumulators: the packed-store epilogue still costs ~20 us
-      of 255 on the H100 contest kernel (noepi floor 232).  Endeavour 197 step 4.
+- [x] stmatrix + TMA-store epilogue for wgmma accumulators -- DONE, endeavour 199:
+      `(store-tile-at (to-half D) C (r c) :via :tma)`; H100 contest kernel 255.5 -> 228.0 us, exact
+      (tests/spec/199-tma-store/tma-store.md).  Persistence measured at only ~1 us on top of it.
+- [ ] `:via :tma` for an f32 C (the benchmark suite's wgmma kernels): stmatrix is b16-only, so it needs a
+      st.shared.v2.f32 staging write with its own swizzle.  D-199-5.
 - [ ] ldmatrix for load-fragment-a / -b on PTX.  The mma.sync path reads every operand fragment from
       shared memory one 2-byte element at a time (ld.shared.b16 + packing; no ldmatrix anywhere).  The
       A100 matmul_v2 entry (4-warp, vectorized cp.async) is 4.7 ms vs cuBLAS 0.67 ms.  ldmatrix.x4 for A

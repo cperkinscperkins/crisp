@@ -397,6 +397,9 @@ H100_2WG = dict(key="h100_2wg", crisp="matmul_h100_2wg_deep.crisp", arch="sm_90a
 # endeavour 198: the same kernel reading the contest's (K N) b directly (wgmma transB) -- no transpose
 H100_TRANSB = dict(key="h100tb", crisp="matmul_h100_2wg_transb.crisp", arch="sm_90a", tile=(128, 256),
                    k_step=64, b_layout="row")
+# endeavour 199: transB + the accumulator stored through stmatrix + TMA (store-tile-at ... :via :tma)
+H100_TMA = dict(key="h100tma", crisp="matmul_h100_2wg_tma.crisp", arch="sm_90a", tile=(128, 256),
+                k_step=64, b_layout="row")
 AMPERE = dict(key="ampere", crisp="matmul_ampere_cp_async.crisp", arch="sm_80", tile=(64, 64), k_step=16,
               b_layout="row", profile="h100")
 AMPERE4W = dict(key="ampere4w", crisp="matmul_ampere_4w.crisp", arch="sm_80", tile=(128, 128), k_step=16,
@@ -410,8 +413,8 @@ B200_TMA = dict(key="b200", crisp="matmul_b200_tma_mma.crisp", arch="sm_100", ti
 
 # One dispatch for every GPU: the fast kernel when the device and shape fit it, else the small one.
 DISPATCH_ALL = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
-        _load("h100tb", PTX_H100TB)
-        _mod.run_h100tb(a, b, c)
+        _load("h100tma", PTX_H100TMA)
+        _mod.run_h100tma(a, b, c)
     elif _CAP[0] in (8, 10) and M % 128 == 0 and N % 128 == 0 and K % 16 == 0:
         _load("ampere4w", PTX_AMPERE4W)
         _mod.run_ampere4w(a, b, c)
@@ -423,15 +426,15 @@ DISPATCH_ALL = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K 
 def build_all() -> None:
     print("Building matmul_v2 kernels ...")
     ks = {"small": build_kernel(KernelSpec(**SMALL)),
-          "h100tb": build_kernel(KernelSpec(**H100_TRANSB)),
+          "h100tma": build_kernel(KernelSpec(**H100_TMA)),
           "ampere4w": build_kernel(KernelSpec(**AMPERE4W))}
-    # v4 (endeavours 197 + 198): packed accumulator stores, and the H100 kernel reads b as given
-    # (wgmma transB) -- no transpose.  v3 (crisp_matmul_v3.py) is kept as submitted.
+    # v5 (endeavour 199): the H100 kernel stores its accumulators :via :tma (stmatrix + TMA store).
+    # v4 (197 + 198: packed stores, transB) and v3 are kept as submitted.
     make_submission(
-        "crisp_matmul_v4.py",
-        "matmul_v2 v4: H100 wgmma 2wg_deep with transB (b read as given); A100 / L4 / B200 4-warp cp.async + mma.sync",
+        "crisp_matmul_v5.py",
+        "matmul_v2 v5: H100 wgmma 2wg_deep, transB, stmatrix + TMA-store epilogue; A100 / L4 / B200 4-warp cp.async + mma.sync",
         ks, DISPATCH_ALL,
-        ["matmul_h100_2wg_transb.crisp", "matmul_ampere_4w.crisp", "matmul_small_mma.crisp"])
+        ["matmul_h100_2wg_tma.crisp", "matmul_ampere_4w.crisp", "matmul_small_mma.crisp"])
     # The beauty entry: one portable 13-line kernel for every GPU and shape.
     beauty = build_kernel(KernelSpec(key="beauty", crisp="matmul_beauty.crisp", arch="sm_80", tile=(16, 8),
                                      k_step=16, b_layout="row", profile="h100"))

@@ -219,3 +219,55 @@
   "Endeavour 198 rung 02: (64 256) bf16 B in a ring, four TMA boxes -- see %198-validate-ptx-wgmma-transb."
   (declare (ignore file))
   (%198-validate-ptx-wgmma-transb ptx-string 5 "transB bf16 ring"))
+
+;; tests/run-specs.lisp -- Endeavour 199.
+(defun %199-validate-ptx-tma-store (ptx-string want-stmatrix want-tma cvt-needle label)
+  "Endeavour 199.  A wgmma accumulator stored :via :tma: exactly WANT-STMATRIX stmatrix.x4 and
+   WANT-TMA shared->global TMA stores (one per 64-column box), at least one bulk commit, read-wait and
+   async-proxy fence, 4 CVT-NEEDLE pair conversions per stmatrix, and no st.global at all."
+  (flet ((n-of (needle)
+           (loop with start = 0
+                 for pos = (search needle ptx-string :start2 start)
+                 while pos
+                 count t
+                 do (setf start (1+ pos)))))
+    (let ((n-stm (n-of "stmatrix.sync.aligned.m8n8.x4.shared.b16"))
+          (n-tma (n-of "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group"))
+          (n-commit (n-of "cp.async.bulk.commit_group"))
+          (n-wait (n-of "cp.async.bulk.wait_group.read 0"))
+          (n-fence (n-of "fence.proxy.async.shared::cta"))
+          (n-cvt (n-of cvt-needle))
+          (n-st (n-of "st.global")))
+      (log:info "199 ~a: stmatrix=~a tma-store=~a commit=~a wait-read=~a fence=~a cvt=~a st.global=~a"
+                label n-stm n-tma n-commit n-wait n-fence n-cvt n-st)
+      (cond
+        ((/= n-stm want-stmatrix)
+         (format *error-output* "FAIL: ~a: ~a stmatrix.x4, expected ~a~%" label n-stm want-stmatrix) nil)
+        ((/= n-tma want-tma)
+         (format *error-output* "FAIL: ~a: ~a TMA stores, expected ~a (one per 64-column box)~%" label n-tma want-tma) nil)
+        ((or (zerop n-commit) (zerop n-wait) (zerop n-fence))
+         (format *error-output* "FAIL: ~a: commit=~a wait_group.read=~a fence.proxy.async=~a (each needed)~%"
+                 label n-commit n-wait n-fence) nil)
+        ((/= n-cvt (* 4 want-stmatrix))
+         (format *error-output* "FAIL: ~a: ~a ~a, expected ~a~%" label n-cvt cvt-needle (* 4 want-stmatrix)) nil)
+        ((plusp n-st)
+         (format *error-output* "FAIL: ~a: ~a st.global -- the accumulator went out element by element~%" label n-st) nil)
+        (t t)))))
+
+;; tests/run-specs.lisp -- Endeavour 199.
+(defun validate-ptx-tma-store-half (file ptx-string)
+  "Endeavour 199 rung 01: 64x128 half, one warpgroup -- 8 stmatrix, 2 TMA stores."
+  (declare (ignore file))
+  (%199-validate-ptx-tma-store ptx-string 8 2 "cvt.rn.f16x2.f32" "tma store half"))
+
+;; tests/run-specs.lisp -- Endeavour 199.
+(defun validate-ptx-tma-store-two-warpgroups (file ptx-string)
+  "Endeavour 199 rung 02: two warpgroups x 64x256 bf16 -- 32 stmatrix, 8 TMA stores."
+  (declare (ignore file))
+  (%199-validate-ptx-tma-store ptx-string 32 8 "cvt.rn.bf16x2.f32" "tma store two warpgroups bf16"))
+
+;; tests/run-specs.lisp -- Endeavour 199.
+(defun validate-ptx-tma-store-one-box (file ptx-string)
+  "Endeavour 199 rung 03: 64x64 half, one box -- 4 stmatrix, 1 TMA store."
+  (declare (ignore file))
+  (%199-validate-ptx-tma-store ptx-string 4 1 "cvt.rn.f16x2.f32" "tma store one box"))

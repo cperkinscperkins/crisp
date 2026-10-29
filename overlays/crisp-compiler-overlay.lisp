@@ -1559,3 +1559,683 @@
                 (setf (gethash node *198-tma-copy-split*) split)))
             (log:warn "198 load-tile ~a :swizzle :128b: no static tile dims, so one TMA copy is issued; if the tile is wider than 128 bytes its descriptor box will not match" tile-form))))
     node))
+
+;;;; ==========================================================================================
+;;;; ENDEAVOUR 199 -- (store-tile-at (to-half D) C (ROW COL) :via :tma)
+;;;;
+;;;; A wgmma accumulator leaves through shared memory and the Tensor Memory Accelerator instead of
+;;;; 64 st.global.v2.b16 per thread.  Per warp (it owns 16 rows of the 64xN accumulator), per pair of
+;;;; 64-column boxes:
+;;;;   cvt.rn.f16x2 / bf16x2 pairs -> 8 stmatrix.x4 into its 4 KB staging slice (two 16x64 boxes,
+;;;;   128B-swizzled) -> fence.proxy.async + bar.warp.sync -> lane 0: one cp.async.bulk.tensor store
+;;;;   per box through a C tensor map (box {64, 16}, SWIZZLE_128B), commit.
+;;;; Lane 0 waits for the slice's READS (wait_group.read 0) before the slice is rewritten and once at
+;;;; the end of the store; the global writes drain asynchronously.  Warp-level syncs only.
+;;;;
+;;;;   * scan (pass 1)  -> registers C's CUtensorMap descriptor (C_TENSORMAP_FROM_FN, marked as a
+;;;;                       STORE descriptor) and the kernel's staging buffer (__TMA_STAGE_FROM_FN, an
+;;;;                       implicit LOCAL scratch vector the hoist allocates like any scratch tile)
+;;;;   * resolution     -> resolve-tma-descriptors wrapper: a store descriptor's box is (16 64)
+;;;;   * analysis       -> analyze-store-tile-at-mma parses :via; %199-analyze-tma-store sizes the
+;;;;                       staging buffer from the kernel's local-size (16 KB per warpgroup + 1 KB)
+;;;;   * codegen        -> generate-node-ir on semantic-wgmma-tma-store (inline PTX)
+;;;; H100 probe (popcorn 968478, hand-edited PTX of the v4 contest kernel): 257.6 -> 229.6 us, exact.
+;;;; See tests/spec/199-tma-store/tma-store.md.
+;;;; ==========================================================================================
+
+;; src/semantic.lisp
+(defstruct semantic-wgmma-tma-store
+  "Endeavour 199.  (store-tile-at (to-half D) C (ROW COL) :via :tma): the m64xN wgmma accumulator D,
+   converted to 16 bits, written to C at (ROW COL) through staging shared memory and TMA stores."
+  tile-node     ;; the accumulator (an f32 struct of N/2 members per thread)
+  row-node      ;; INT row origin
+  col-node      ;; INT column origin
+  n             ;; accumulator N (a multiple of 64)
+  element       ;; HALF or BFLOAT16 (the conversion)
+  dest-sym      ;; C: names the CUtensorMap descriptor C_TENSORMAP_FROM_FN
+  stage         ;; implicit-arg name of the staging scratch vector
+  stage-spec    ;; its canonical tensor type
+  one-d-p       ;; T when the kernel's local-size is 1-D (tid.x is the linear thread index)
+  type
+  source-location)
+
+;; src/analysis/core.lisp -- FOLD: add the clause to semantic-node-type's etypecase
+(defvar *199-orig-semantic-node-type* (fdefinition 'semantic-node-type))
+(defun semantic-node-type (node)
+  "Returns the Crisp type of a semantic node.
+   Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store."
+  (typecase node
+    (semantic-wgmma-tma-store (semantic-wgmma-tma-store-type node))
+    (t (funcall *199-orig-semantic-node-type* node))))
+
+;; src/analysis/core.lisp -- FOLD: add the clause to semantic-node-source-location's etypecase
+(defvar *199-orig-semantic-node-source-location* (fdefinition 'semantic-node-source-location))
+(defun semantic-node-source-location (node)
+  "Returns the source location of a semantic node.
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store."
+  (typecase node
+    (semantic-wgmma-tma-store (semantic-wgmma-tma-store-source-location node))
+    (t (funcall *199-orig-semantic-node-source-location* node))))
+
+;; src/mma.lisp
+(defparameter *199-stage-bytes-per-warp* 4096
+  "Endeavour 199.  Staging shared memory per warp: two 16-row x 64-column 16-bit boxes (2 KB each).")
+
+;; src/mma.lisp
+(defparameter *199-store-box* '(16 64)
+  "Endeavour 199.  The TMA store box (rows cols): one warp's 16 rows x 64 16-bit columns = 128 bytes
+   wide, the most a SWIZZLE_128B box may be.")
+
+;; src/mma.lisp
+(defun %199-stage-name (fn)
+  "Endeavour 199.  The implicit-arg name of FN's TMA-store staging buffer."
+  (intern (format nil "__TMA_STAGE_FROM_~a" fn) (find-package :crisp.compiler)))
+
+;; src/mma.lisp
+(defun %199-descriptor-name (dest fn)
+  "Endeavour 199.  DEST's CUtensorMap descriptor in FN -- the name %tma-lookup-descriptor-ptr rebuilds."
+  (intern (format nil "~a_TENSORMAP_FROM_~a" dest fn) (symbol-package dest)))
+
+;; src/mma.lisp
+(defun %199-type-symbol (name)
+  "Endeavour 199.  The Crisp type symbol NAME (\"HALF\", \"BFLOAT16\") as Crisp source spells it."
+  (or (find-symbol name :crisp-language) (intern name (find-package :crisp.compiler))))
+
+;; src/mma.lisp
+(defun %199-convert-element (convert)
+  "Endeavour 199.  The 16-bit element type a peeled conversion (TO-HALF / TO-BFLOAT16) produces."
+  (cond ((null convert) nil)
+        ((string= (symbol-name convert) "TO-HALF") (%199-type-symbol "HALF"))
+        (t (%199-type-symbol "BFLOAT16"))))
+
+;; src/mma.lisp
+(defun %199-via-tma-p (keys)
+  "Endeavour 199.  T when the option plist KEYS says :via :tma."
+  (and (evenp (length keys))
+       (let ((v (getf keys :via)))
+         (and v (symbolp v) (string-equal (symbol-name v) "TMA")))))
+
+;; src/analysis/core.lisp
+(defun %199-scan-register-tma-store (args)
+  "Endeavour 199, pass 1.  (store-tile-at SRC DEST ORIGIN :via :tma) with SRC a (to-half X) /
+   (to-bfloat16 X): register DEST's CUtensorMap descriptor (marked :store-box, so resolution gives it
+   the store box instead of looking for a tile) and the function's staging buffer, an implicit LOCAL
+   scratch vector of half.  Both once per function.  The staging size is a placeholder here: analysis
+   knows the kernel's local-size and sets it (16 KB per warpgroup).  Anything malformed is left for
+   analysis to refuse with a message."
+  (multiple-value-bind (src convert) (%196-peel-store-conversion (first args))
+    (declare (ignore src))
+    (let ((dest (second args))
+          (elem (%199-convert-element convert))
+          (fn   (compiler-context-scanning-function-name *compiler-context*)))
+      (when (and fn elem dest (symbolp dest))
+        (setf *scan-is-originator* t)
+        (let ((desc     (%199-descriptor-name dest fn))
+              (stage    (%199-stage-name fn))
+              (existing (gethash fn *implicit-arg-map*)))
+          (unless (find desc existing :key #'car)
+            (push (cons desc (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) dest))
+                  (gethash fn *implicit-arg-map*))
+            (setf (gethash desc *tma-descriptor-info*)
+                  (list :originator fn :describes-sym dest :tile-sym nil
+                        :store-box *199-store-box* :store-element elem :swizzle :128b))
+            (log:info "Pass 1: store-tile-at :via :tma into ~a -> CUtensorMap store descriptor ~a (~a, box ~a)"
+                      dest desc elem *199-store-box*))
+          (unless (find stage existing :key #'car)
+            (let ((spec (%scratch-tensor-canonical-spec 'make-scratch-vector
+                                                         (list (%199-type-symbol "HALF") 8192))))
+              (push (cons stage spec) (gethash fn *implicit-arg-map*))
+              (setf (gethash stage *implicit-scratch-size-expr-map*) 8704)
+              (log:info "Pass 1: store-tile-at :via :tma in ~a -> staging buffer ~a (~a)" fn stage spec))))))))
+
+;; src/analysis/core.lisp -- FOLD: a clause in the default scan-operator, next to the LOAD-TILE one
+(defmethod scan-operator :before ((op symbol) args)
+  "Endeavour 199.  A (store-tile-at ... :via :tma) on PTX registers its descriptor and staging buffer
+   (%199-scan-register-tma-store).  Matched by symbol-name, like the LOAD-TILE clause."
+  (when (and (string= (symbol-name op) "STORE-TILE-AT")
+             (eq *target-backend* :ptx)
+             (consp args) (>= (length args) 3)
+             (%199-via-tma-p (cdddr args)))
+    (%199-scan-register-tma-store args)))
+
+;; src/analysis/core.lisp
+(defvar *199-orig-resolve-tma-descriptors* (fdefinition 'resolve-tma-descriptors))
+(defun resolve-tma-descriptors ()
+  "Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,
+   carrying the :swizzle marking from *tma-descriptor-info*.  Endeavour 198: a :128b box wider than
+   128 bytes is narrowed to 64-column boxes.
+
+   Endeavour 199: a STORE descriptor (:store-box in its info) has no tile to resolve -- its box is the
+   store box and its element type the conversion's.  Store entries are held back from the load
+   resolution (which would warn 'unresolved') and resolved here: describes through the carrier chain,
+   then the fixed box.  The TMA store writes row-major boxes, so a :col-major destination is refused."
+  (let ((stores (loop for k being the hash-keys of *tma-descriptor-info* using (hash-value v)
+                      when (getf v :store-box) collect (cons k v))))
+    (dolist (s stores) (remhash (car s) *tma-descriptor-info*))
+    (unwind-protect (funcall *199-orig-resolve-tma-descriptors*)
+      (dolist (s stores) (setf (gethash (car s) *tma-descriptor-info*) (cdr s))))
+    (loop for kernel being the hash-keys of *implicit-arg-map*
+          when (%fn-is-kernel-p kernel)
+            do (dolist (entry (gethash kernel *implicit-arg-map*))
+                 (let* ((uname (car entry))
+                        (info  (cdr (assoc uname stores))))
+                   (when info
+                     (let ((d (%tma-resolve-ref kernel uname :describes)))
+                       (if (and d (eq (first d) :tensor))
+                           (let ((layout (%kernel-param-contiguous-term kernel (second d))))
+                             (unless (eq layout :row-major)
+                               (error 'crisp-compiler-error
+                                      :message (format nil "store-tile-at :via :tma: ~a is ~(~a~); the TMA store writes row-major boxes, so the destination must be :row-major." (second d) layout)
+                                      :source-location nil))
+                             (setf (gethash (cons kernel uname) *tma-resolved*)
+                                   (list :describes (second d)
+                                         :element-type (getf info :store-element)
+                                         :rank 2
+                                         :box-dims (getf info :store-box)
+                                         :layout layout
+                                         :swizzle :128b))
+                             (log:info "199 store descriptor ~a in ~a: ~a box ~a"
+                                       uname kernel (getf info :store-element) (getf info :store-box)))
+                           (log:warn "Endeavour 199: unresolved TMA store descriptor ~a in kernel ~a (describes=~a)"
+                                     uname kernel d)))))))))
+
+;; src/mma.lisp
+(defun %199-analyze-tma-store (expr src convert env context location)
+  "Endeavour 199.  (store-tile-at (CONVERT SRC) DEST (ROW COL) :via :tma) -> semantic-wgmma-tma-store.
+   Refused with a message naming the rule: a non-PTX target, a source that is not a wgmma accumulator,
+   no 16-bit conversion (stmatrix moves 16-bit elements), N not a multiple of 64 (one 128-byte box),
+   a destination that is not a symbol or whose element type is not the conversion's, no compile-time
+   local-size (the staging buffer is sized from it), or no pass-1 registration (single-pass, helper)."
+  (flet ((fail (fmt &rest args)
+           (error 'crisp-compiler-error
+                  :message (format nil "store-tile-at :via :tma: ~?" fmt args)
+                  :source-location location)))
+    (unless (eq *target-backend* :ptx)
+      (fail "the Tensor Memory Accelerator is NVIDIA sm_90 and later; this is a ~(~a~) compile." *target-backend*))
+    (let* ((src-node (analyze-expression src env context (append location '(1))))
+           (src-type (semantic-node-type src-node))
+           (dest     (third expr))
+           (origin   (fourth expr))
+           (fn       (compiler-context-current-compiling-function context)))
+      (unless (%wgmma-acc-type-p src-type)
+        (fail "the source must be a wgmma accumulator (make-wgmma-accumulator); ~a is ~a." src src-type))
+      (unless convert
+        (fail "stmatrix moves 16-bit elements, so the f32 accumulator needs a conversion: write (to-half ~a) or (to-bfloat16 ~a)." src src))
+      (unless (and dest (symbolp dest))
+        (fail "the destination must be the kernel's tensor parameter (its TMA descriptor is built for it), got ~s." dest))
+      (unless (and (listp origin) (= (length origin) 2))
+        (fail "needs a 2-D (ROW COL) element origin, got ~s." origin))
+      (let* ((n        (second (gethash src-type *wgmma-acc-dims*)))
+             (elem     (%199-convert-element convert))
+             (dims     (%declared-local-size-dims (compiler-context-declarations context)))
+             (threads  (and dims (reduce #'* dims)))
+             (wgs      (and threads (floor threads 128)))
+             (desc     (%199-descriptor-name dest fn))
+             (stage    (%199-stage-name fn))
+             (implicit (gethash fn *implicit-arg-map*))
+             (info     (gethash desc *tma-descriptor-info*))
+             (dest-node (analyze-expression dest env context (append location '(2))))
+             (dest-type (let ((ty (semantic-node-type dest-node)))
+                          (if (symbolp ty) (or (resolve-type-alias ty) ty) ty)))
+             (dest-elem (and (consp dest-type) (second dest-type)))
+             (to-int   (intern "TO-INT" (find-package :crisp-language))))
+        (log:debug "199 :via :tma: n=~a elem=~a dims=~a desc=~a stage=~a dest-type=~a"
+                   n elem dims desc stage dest-type)
+        (unless (and n (zerop (mod n 64)))
+          (fail "N must be a multiple of 64 (a TMA box is 64 16-bit columns = 128 bytes); this accumulator is 64x~a." n))
+        (unless (and wgs (plusp wgs))
+          (fail "needs the kernel's compile-time block size, (local-size :set-to N) with N at least 128: the staging buffer is 16 KB per warpgroup."))
+        (unless (and (find desc implicit :key #'car) (find stage implicit :key #'car))
+          (fail "its TMA descriptor and staging buffer are registered in pass 1, which did not see this store (single-pass compile, or a store outside the kernel body)."))
+        (unless (getf info :store-box)
+          (fail "~a is also loaded with a :block load-tile in this kernel; a tensor has one TMA descriptor, and a load's box is not the store's." dest))
+        (when (and dest-elem (symbolp dest-elem)
+                   (not (string= (symbol-name dest-elem) (symbol-name elem))))
+          (fail "the source is converted to ~(~a~) but ~a holds ~(~a~)." elem dest dest-elem))
+        (setf (gethash stage *implicit-scratch-size-expr-map*)
+              (/ (+ (* wgs 4 *199-stage-bytes-per-warp*) 1024) 2))
+        (log:info "199 store-tile-at :via :tma: 64x~a ~a into ~a; staging ~a = ~a warpgroups x 16 KB + 1 KB"
+                  n elem dest stage wgs)
+        (make-semantic-wgmma-tma-store
+         :tile-node src-node
+         :row-node (analyze-expression `(,to-int ,(first origin)) env context (append location '(3 0)))
+         :col-node (analyze-expression `(,to-int ,(second origin)) env context (append location '(3 1)))
+         :n n :element elem :dest-sym dest
+         :stage stage :stage-spec (cdr (find stage implicit :key #'car))
+         :one-d-p (every (lambda (d) (= d 1)) (rest dims))
+         :type 'nil :source-location location)))))
+
+;; src/mma.lisp
+(defun analyze-store-tile-at-mma (expr env context location)
+  "store-tile-at overload: wgmma-accumulator at an absolute (ROW COL) origin, OR delegate to the
+   ordinary cooperative store-tile-at path.
+
+   ENDEAVOUR 154.  %wgmma-store-rewrite computes its row base as `bty * 64`, the wgmma
+   instruction's fixed M, which silently bakes in ONE WARPGROUP: with a second consumer warpgroup
+   the row base is unchanged and both would write the SAME 64 rows.  A cooperative 128x256 tile
+   (two warpgroups splitting M, sharing one B tile) was therefore not expressible -- store-tile-at
+   looked like the escape hatch but had no wgmma overload and fell through to the cooperative
+   element-loop path.  The two-warpgroup kernel now writes its row offsets explicitly:
+
+     (:consumer0 ... (store-tile-at D C ((* grid-y 128)        (* grid-x 256))))
+     (:consumer1 ... (store-tile-at D C ((+ (* grid-y 128) 64) (* grid-x 256))))
+
+   It does NOT infer the warpgroup count.  Deriving it from the tile-stride tile shape (M/64) was
+   considered and rejected as UNDER-DETERMINED: a 128-row tile served by ONE warpgroup looping over
+   two row halves is a legal kernel the same rule would silently mis-address.
+
+   Dispatches on the SOURCE TYPE before the generic path runs, exactly as analyze-store-tile-mma
+   does -- which also keeps the wgmma store out of %warp-spec-check-block-only, whose
+   workgroup-collective deadlock rationale does not apply to a warpgroup-private accumulator spill
+   (and which store-tile already bypasses for the same reason).
+
+   ENDEAVOUR 196: the source may be (to-half D) / (to-bfloat16 D); the conversion is fused into
+   each element store.  A converted source that is not a wgmma accumulator is refused.
+
+   ENDEAVOUR 199: options after the origin.  :via :tma sends the accumulator through staging shared
+   memory and TMA stores (%199-analyze-tma-store); any other :via value is refused.  Without :via
+   nothing changes.
+
+   Spec: tests/spec/154-nvidia-perf/02-wgmma-store-at-origin.crisp (validate-ptx-wgmma-store-direct)
+         tests/spec/154-nvidia-perf/03-wgmma-two-warpgroups.crisp  (the cooperative kernel)
+         tests/spec/196-matmul-contest/04-wgmma-store-tile-at-to-half.crisp
+         tests/spec/199-tma-store/."
+  (let* ((keys (nthcdr 4 expr))
+         (via  (and (evenp (length keys)) (getf keys :via))))
+    (when via
+      (unless (%199-via-tma-p keys)
+        (error 'crisp-compiler-error
+               :message (format nil "store-tile-at: :via must be :tma, got ~s." via)
+               :source-location location))
+      (multiple-value-bind (src convert) (%196-peel-store-conversion (second expr))
+        (return-from analyze-store-tile-at-mma
+          (%199-analyze-tma-store expr src convert env context location)))))
+  (multiple-value-bind (src convert) (%196-peel-store-conversion (second expr))
+    (let* ((src-node (analyze-expression src env context (append location '(1))))
+           (src-type (semantic-node-type src-node)))
+      (log:debug "196 store-tile-at: src-type=~a convert=~a" src-type convert)
+      (cond
+        ((%wgmma-acc-type-p src-type)
+         (let ((n      (second (gethash src-type *wgmma-acc-dims*)))
+               (origin (fourth expr)))
+           (unless (and (listp origin) (= (length origin) 2))
+             (error 'crisp-compiler-error
+                    :message (format nil "store-tile-at: a wgmma accumulator needs a 2-D (ROW COL) element origin, got ~S.  The accumulator is a 64xN matrix; its origin is where its top-left element lands in the destination." origin)
+                    :source-location location))
+           (analyze-expression
+            (%wgmma-store-rewrite-origin src (third expr)
+                                         (first origin) (second origin) n convert)
+            env context location)))
+        (convert
+         (%196-refuse-converted-non-accumulator "store-tile-at" convert src-type location))
+        (t
+         (analyze-store-tile-at-expression expr env context location))))))
+
+;; src/codegen.lisp
+(defun %199-asm (builder arg-types args asm constraints)
+  "Endeavour 199.  A void, side-effecting inline-PTX statement; a memory clobber is always added (these
+   write or order shared memory LLVM cannot see)."
+  (%build-inline-asm-call builder (llvm-void-type) arg-types args asm
+                          (if (string= constraints "") "~{memory}"
+                              (concatenate 'string constraints ",~{memory}"))))
+
+;; src/codegen.lisp
+(defun %199-linear-tid (builder module one-d-p)
+  "Endeavour 199.  The thread's linear index in its block: tid.x, or x + ntid.x * (y + ntid.y * z)."
+  (if one-d-p
+      (%gen-nvvm-read-tid-x builder module)
+      (let ((x  (%gen-nvvm-read-tid-x builder module))
+            (y  (%gen-nvvm-read-tid-y builder module))
+            (z  (%gen-nvvm-read-tid-z builder module))
+            (nx (%gen-nvvm-read-ntid-x builder module))
+            (ny (%gen-nvvm-read-ntid-y builder module)))
+        (llvm-build-add builder x
+                        (llvm-build-mul builder nx
+                                        (llvm-build-add builder y (llvm-build-mul builder ny z "tid_zy") "tid_yz")
+                                        "tid_xyz")
+                        "tid_lin"))))
+
+;; src/codegen.lisp
+(defun %199-stage-base-i32 (builder var-env node)
+  "Endeavour 199.  The staging buffer's shared address (i32) from its implicit scratch record."
+  (let* ((stage (semantic-wgmma-tma-store-stage node))
+         (spec  (semantic-wgmma-tma-store-stage-spec node))
+         (slot  (gethash stage var-env)))
+    (unless slot
+      (error "store-tile-at :via :tma: missing implicit staging argument ~a (var-env keys ~s)"
+             stage (alexandria:hash-table-keys var-env)))
+    (let* ((sty (ensure-struct-llvm-type (mangle-template-struct-name (first spec) (rest spec))))
+           (rec (llvm-build-load2 builder sty slot "tma_stage_rec"))
+           (ptr (llvm-build-extract-value builder rec 0 "tma_stage_ptr")))
+      (unless (llvm-type-kind-is-pointer? (llvm-type-of ptr))
+        (error "store-tile-at :via :tma: staging record field 0 is not a pointer"))
+      (llvm-build-ptr-to-int builder ptr (llvm-int32-type) "tma_stage_addr"))))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-wgmma-tma-store) builder module var-env
+                             di-builder di-scope location-map)
+  "Endeavour 199.  Per warp: the 16 rows it owns, one pair of 64-column boxes at a time --
+     cvt pairs to f16x2 / bf16x2 -> stmatrix.x4 into its 4 KB staging slice (two 16x64 boxes laid out
+     as SWIZZLE_128B: 16-byte chunk c of row r lives at chunk c ^ (r mod 8)) -> fence.proxy.async,
+     bar.warp.sync -> lane 0: one TMA store per box, commit.
+   Lane 0 waits for the slice's reads before it is rewritten and once at the end.
+
+   stmatrix.x4 lane addressing: lanes 8k..8k+7 give the 8 row addresses of matrix k; matrix order is
+   (n8 block j, rows 0-7), (j, rows 8-15), (j+1, rows 0-7), (j+1, rows 8-15), and each register is the
+   thread's m16n8 C fragment pair (row lane/4, columns 2(lane mod 4), +1) -- the wgmma accumulator layout,
+   member 4j + 2h and 4j + 2h + 1 for n8 block j and row half h."
+  (let* ((i32   (llvm-int32-type))
+         (i64   (llvm-int64-type))
+         (n     (semantic-wgmma-tma-store-n node))
+         (boxes (floor n 64))
+         (bf16-p (string= (symbol-name (semantic-wgmma-tma-store-element node)) "BFLOAT16"))
+         (h16   (if bf16-p (crisp.llvm-bindings::llvm-bfloat-type) (crisp.llvm-bindings::llvm-half-type)))
+         (v2f   (llvm-vector-type (llvm-float-type) 2))
+         (v2h   (llvm-vector-type h16 2))
+         (tile-node (semantic-wgmma-tma-store-tile-node node))
+         (wgv   (extract-primary-value builder
+                                       (generate-node-ir tile-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type tile-node)))
+         (row-node (semantic-wgmma-tma-store-row-node node))
+         (col-node (semantic-wgmma-tma-store-col-node node))
+         (row0  (extract-primary-value builder
+                                       (generate-node-ir row-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type row-node)))
+         (col0  (extract-primary-value builder
+                                       (generate-node-ir col-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type col-node)))
+         (desc  (%tma-lookup-descriptor-ptr builder var-env (semantic-wgmma-tma-store-dest-sym node)
+                                            (llvm-pointer-type (llvm-int8-type) 1))))
+    (unless desc
+      (error "store-tile-at :via :tma: no CUtensorMap descriptor for ~a in var-env"
+             (semantic-wgmma-tma-store-dest-sym node)))
+    (flet ((k (v) (llvm-const-int i32 v nil)))
+      (let* ((tmap  (llvm-build-ptr-to-int
+                     builder (llvm-build-addrspace-cast builder desc (llvm-pointer-type (llvm-int8-type) 0)
+                                                        "tma_store_map")
+                     i64 "tma_store_map_i64"))
+             (tid   (%199-linear-tid builder module (semantic-wgmma-tma-store-one-d-p node)))
+             (lane  (llvm-build-and builder tid (k 31) "tma_lane"))
+             (warp  (llvm-build-l-shr builder tid (k 5) "tma_warp"))
+             (wq    (llvm-build-and builder warp (k 3) "tma_wq"))
+             (stage (%199-stage-base-i32 builder var-env node))
+             (align (llvm-build-and builder (llvm-build-add builder stage (k 1023) "stage_pad")
+                                    (k #xFFFFFC00) "stage_1k"))
+             (base  (llvm-build-add builder align
+                                    (llvm-build-mul builder warp (k *199-stage-bytes-per-warp*) "slice_off")
+                                    "tma_slice"))
+             (y     (llvm-build-add builder row0 (llvm-build-shl builder wq (k 4) "wq16") "tma_y"))
+             (i     (llvm-build-and builder lane (k 7) "sm_i"))
+             (h     (llvm-build-and builder (llvm-build-l-shr builder lane (k 3) "l3") (k 1) "sm_h"))
+             (dj    (llvm-build-l-shr builder lane (k 4) "sm_dj"))
+             (rowoff (llvm-build-shl builder
+                                     (llvm-build-add builder (llvm-build-shl builder h (k 3) "h8") i "sm_r")
+                                     (k 7) "sm_rowoff"))
+             (addr  (make-array '(2 4)))
+             (packed (make-hash-table :test 'equal)))
+        ;; stmatrix lane addresses: box b of the slice, 16-byte chunk (2m + dj) of row (8h + i), swizzled
+        (dotimes (m 4)
+          (let* ((chunk (llvm-build-xor builder (llvm-build-add builder dj (k (* 2 m)) "sm_c") i "sm_cx"))
+                 (off   (llvm-build-add builder (llvm-build-shl builder chunk (k 4) "sm_c16") rowoff "sm_off"))
+                 (a0    (llvm-build-add builder base off "sm_a0")))
+            (setf (aref addr 0 m) a0
+                  (aref addr 1 m) (llvm-build-add builder a0 (k 2048) "sm_a1"))))
+        ;; each n8 block j, row half h: members 4j+2h, 4j+2h+1 -> one 16-bit pair in an i32
+        (dotimes (j (floor n 8))
+          (dotimes (hh 2)
+            (let* ((lo (llvm-build-extract-value builder wgv (+ (* 4 j) (* 2 hh)) "acc_lo"))
+                   (hi (llvm-build-extract-value builder wgv (+ (* 4 j) (* 2 hh) 1) "acc_hi"))
+                   (v  (llvm-build-insert-element builder (llvm-get-undef v2f) lo (k 0) "acc_pair_lo"))
+                   (v  (llvm-build-insert-element builder v hi (k 1) "acc_pair"))
+                   (c  (llvm-build-fp-trunc builder v v2h "acc_cvt")))
+              (setf (gethash (cons j hh) packed) (llvm-build-bit-cast builder c i32 "acc_b32")))))
+        (loop for p from 0 below (ceiling boxes 2)
+              do (when (plusp p)
+                   (%199-asm builder (list i32) (list lane)
+                             "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+                   (%199-asm builder nil nil "bar.warp.sync -1;" ""))
+                 (loop for b from (* 2 p) below (min boxes (+ (* 2 p) 2))
+                       for bl = (- b (* 2 p))
+                       do (loop for j from (* 8 b) below (+ (* 8 b) 8) by 2
+                                do (%199-asm builder (list i32 i32 i32 i32 i32)
+                                             (list (aref addr bl (floor (mod j 8) 2))
+                                                   (gethash (cons j 0) packed) (gethash (cons j 1) packed)
+                                                   (gethash (cons (1+ j) 0) packed) (gethash (cons (1+ j) 1) packed))
+                                             "stmatrix.sync.aligned.m8n8.x4.shared.b16 [$0], {$1, $2, $3, $4};"
+                                             "r,r,r,r,r")))
+                 (%199-asm builder nil nil "fence.proxy.async.shared::cta;" "")
+                 (%199-asm builder nil nil "bar.warp.sync -1;" "")
+                 (loop for b from (* 2 p) below (min boxes (+ (* 2 p) 2))
+                       for bl = (- b (* 2 p))
+                       do (%199-asm builder (list i32 i64 i32 i32 i32)
+                                    (list lane tmap
+                                          (llvm-build-add builder col0 (k (* 64 b)) "tma_x")
+                                          y
+                                          (if (zerop bl) base (llvm-build-add builder base (k 2048) "tma_src")))
+                                    "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [$1, {$2, $3}], [$4]; }"
+                                    "r,l,r,r,r"))
+                 (%199-asm builder (list i32) (list lane)
+                           "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.commit_group; }" "r"))
+        (%199-asm builder (list i32) (list lane)
+                  "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+        (%199-asm builder nil nil "bar.warp.sync -1;" "")
+        (log:debug "199 codegen :via :tma: N=~a boxes=~a ~a" n boxes (if bf16-p "bf16" "f16"))
+        (values nil nil)))))
+
+
+;; src/mma.lisp -- Endeavour 199: instantiate the staging type; read the dest element through the mangled name
+(defun %199-analyze-tma-store (expr src convert env context location)
+  "Endeavour 199.  (store-tile-at (CONVERT SRC) DEST (ROW COL) :via :tma) -> semantic-wgmma-tma-store.
+   Refused with a message naming the rule: a non-PTX target, a source that is not a wgmma accumulator,
+   no 16-bit conversion (stmatrix moves 16-bit elements), N not a multiple of 64 (one 128-byte box),
+   a destination that is not a symbol or whose element type is not the conversion's, no compile-time
+   local-size (the staging buffer is sized from it), or no pass-1 registration (single-pass, helper)."
+  (flet ((fail (fmt &rest args)
+           (error 'crisp-compiler-error
+                  :message (format nil "store-tile-at :via :tma: ~?" fmt args)
+                  :source-location location)))
+    (unless (eq *target-backend* :ptx)
+      (fail "the Tensor Memory Accelerator is NVIDIA sm_90 and later; this is a ~(~a~) compile." *target-backend*))
+    (let* ((src-node (analyze-expression src env context (append location '(1))))
+           (src-type (semantic-node-type src-node))
+           (dest     (third expr))
+           (origin   (fourth expr))
+           (fn       (compiler-context-current-compiling-function context)))
+      (unless (%wgmma-acc-type-p src-type)
+        (fail "the source must be a wgmma accumulator (make-wgmma-accumulator); ~a is ~a." src src-type))
+      (unless convert
+        (fail "stmatrix moves 16-bit elements, so the f32 accumulator needs a conversion: write (to-half ~a) or (to-bfloat16 ~a)." src src))
+      (unless (and dest (symbolp dest))
+        (fail "the destination must be the kernel's tensor parameter (its TMA descriptor is built for it), got ~s." dest))
+      (unless (and (listp origin) (= (length origin) 2))
+        (fail "needs a 2-D (ROW COL) element origin, got ~s." origin))
+      (let* ((n        (second (gethash src-type *wgmma-acc-dims*)))
+             (elem     (%199-convert-element convert))
+             (dims     (%declared-local-size-dims (compiler-context-declarations context)))
+             (threads  (and dims (reduce #'* dims)))
+             (wgs      (and threads (floor threads 128)))
+             (desc     (%199-descriptor-name dest fn))
+             (stage    (%199-stage-name fn))
+             (implicit (gethash fn *implicit-arg-map*))
+             (info     (gethash desc *tma-descriptor-info*))
+             (dest-node (analyze-expression dest env context (append location '(2))))
+             (dest-type (let ((ty (semantic-node-type dest-node)))
+                          (cond ((consp ty) ty)
+                                ((and ty (symbolp ty))
+                                 (let ((parts (unmangle-template-struct-name ty)))
+                                   (if (consp parts) parts (resolve-type-alias ty))))
+                                (t ty))))
+             (dest-elem (and (consp dest-type) (second dest-type)))
+             (to-int   (intern "TO-INT" (find-package :crisp-language))))
+        (log:debug "199 :via :tma: n=~a elem=~a dims=~a desc=~a stage=~a dest-type=~a"
+                   n elem dims desc stage dest-type)
+        (unless (and n (zerop (mod n 64)))
+          (fail "N must be a multiple of 64 (a TMA box is 64 16-bit columns = 128 bytes); this accumulator is 64x~a." n))
+        (unless (and wgs (plusp wgs))
+          (fail "needs the kernel's compile-time block size, (local-size :set-to N) with N at least 128: the staging buffer is 16 KB per warpgroup."))
+        (unless (and (find desc implicit :key #'car) (find stage implicit :key #'car))
+          (fail "its TMA descriptor and staging buffer are registered in pass 1, which did not see this store (single-pass compile, or a store outside the kernel body)."))
+        (unless (getf info :store-box)
+          (fail "~a is also loaded with a :block load-tile in this kernel; a tensor has one TMA descriptor, and a load's box is not the store's." dest))
+        (when (and dest-elem (symbolp dest-elem)
+                   (not (string= (symbol-name dest-elem) (symbol-name elem))))
+          (fail "the source is converted to ~(~a~) but ~a holds ~(~a~)." elem dest dest-elem))
+        ;; the staging vector's tensor type is instantiated on demand, as analyze-scratch-tensor-expression
+        ;; does for a user's scratch tile -- pass 1 only named it
+        (unless (valid-parameterized-type-p (cdr (find stage implicit :key #'car)))
+          (fail "could not instantiate the staging buffer type ~a." (cdr (find stage implicit :key #'car))))
+        (setf (gethash stage *implicit-scratch-size-expr-map*)
+              (/ (+ (* wgs 4 *199-stage-bytes-per-warp*) 1024) 2))
+        (log:info "199 store-tile-at :via :tma: 64x~a ~a into ~a; staging ~a = ~a warpgroups x 16 KB + 1 KB"
+                  n elem dest stage wgs)
+        (make-semantic-wgmma-tma-store
+         :tile-node src-node
+         :row-node (analyze-expression `(,to-int ,(first origin)) env context (append location '(3 0)))
+         :col-node (analyze-expression `(,to-int ,(second origin)) env context (append location '(3 1)))
+         :n n :element elem :dest-sym dest
+         :stage stage :stage-spec (cdr (find stage implicit :key #'car))
+         :one-d-p (every (lambda (d) (= d 1)) (rest dims))
+         :type 'nil :source-location location)))))
+
+
+;; src/codegen.lisp -- Endeavour 199: the unexported bindings (and / shl / lshr / xor) package-qualified
+(defmethod generate-node-ir ((node semantic-wgmma-tma-store) builder module var-env
+                             di-builder di-scope location-map)
+  "Endeavour 199.  Per warp: the 16 rows it owns, one pair of 64-column boxes at a time --
+     cvt pairs to f16x2 / bf16x2 -> stmatrix.x4 into its 4 KB staging slice (two 16x64 boxes laid out
+     as SWIZZLE_128B: 16-byte chunk c of row r lives at chunk c ^ (r mod 8)) -> fence.proxy.async,
+     bar.warp.sync -> lane 0: one TMA store per box, commit.
+   Lane 0 waits for the slice's reads before it is rewritten and once at the end.
+
+   stmatrix.x4 lane addressing: lanes 8k..8k+7 give the 8 row addresses of matrix k; matrix order is
+   (n8 block j, rows 0-7), (j, rows 8-15), (j+1, rows 0-7), (j+1, rows 8-15), and each register is the
+   thread's m16n8 C fragment pair (row lane/4, columns 2(lane mod 4), +1) -- the wgmma accumulator layout,
+   member 4j + 2h and 4j + 2h + 1 for n8 block j and row half h."
+  (let* ((i32   (llvm-int32-type))
+         (i64   (llvm-int64-type))
+         (n     (semantic-wgmma-tma-store-n node))
+         (boxes (floor n 64))
+         (bf16-p (string= (symbol-name (semantic-wgmma-tma-store-element node)) "BFLOAT16"))
+         (h16   (if bf16-p (crisp.llvm-bindings::llvm-bfloat-type) (crisp.llvm-bindings::llvm-half-type)))
+         (v2f   (llvm-vector-type (llvm-float-type) 2))
+         (v2h   (llvm-vector-type h16 2))
+         (tile-node (semantic-wgmma-tma-store-tile-node node))
+         (wgv   (extract-primary-value builder
+                                       (generate-node-ir tile-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type tile-node)))
+         (row-node (semantic-wgmma-tma-store-row-node node))
+         (col-node (semantic-wgmma-tma-store-col-node node))
+         (row0  (extract-primary-value builder
+                                       (generate-node-ir row-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type row-node)))
+         (col0  (extract-primary-value builder
+                                       (generate-node-ir col-node builder module var-env
+                                                         di-builder di-scope location-map)
+                                       (semantic-node-type col-node)))
+         (desc  (%tma-lookup-descriptor-ptr builder var-env (semantic-wgmma-tma-store-dest-sym node)
+                                            (llvm-pointer-type (llvm-int8-type) 1))))
+    (unless desc
+      (error "store-tile-at :via :tma: no CUtensorMap descriptor for ~a in var-env"
+             (semantic-wgmma-tma-store-dest-sym node)))
+    (flet ((k (v) (llvm-const-int i32 v nil)))
+      (let* ((tmap  (llvm-build-ptr-to-int
+                     builder (llvm-build-addrspace-cast builder desc (llvm-pointer-type (llvm-int8-type) 0)
+                                                        "tma_store_map")
+                     i64 "tma_store_map_i64"))
+             (tid   (%199-linear-tid builder module (semantic-wgmma-tma-store-one-d-p node)))
+             (lane  (crisp.llvm-bindings::llvm-build-and builder tid (k 31) "tma_lane"))
+             (warp  (crisp.llvm-bindings::llvm-build-l-shr builder tid (k 5) "tma_warp"))
+             (wq    (crisp.llvm-bindings::llvm-build-and builder warp (k 3) "tma_wq"))
+             (stage (%199-stage-base-i32 builder var-env node))
+             (align (crisp.llvm-bindings::llvm-build-and builder (llvm-build-add builder stage (k 1023) "stage_pad")
+                                    (k #xFFFFFC00) "stage_1k"))
+             (base  (llvm-build-add builder align
+                                    (llvm-build-mul builder warp (k *199-stage-bytes-per-warp*) "slice_off")
+                                    "tma_slice"))
+             (y     (llvm-build-add builder row0 (crisp.llvm-bindings::llvm-build-shl builder wq (k 4) "wq16") "tma_y"))
+             (i     (crisp.llvm-bindings::llvm-build-and builder lane (k 7) "sm_i"))
+             (h     (crisp.llvm-bindings::llvm-build-and builder (crisp.llvm-bindings::llvm-build-l-shr builder lane (k 3) "l3") (k 1) "sm_h"))
+             (dj    (crisp.llvm-bindings::llvm-build-l-shr builder lane (k 4) "sm_dj"))
+             (rowoff (crisp.llvm-bindings::llvm-build-shl builder
+                                     (llvm-build-add builder (crisp.llvm-bindings::llvm-build-shl builder h (k 3) "h8") i "sm_r")
+                                     (k 7) "sm_rowoff"))
+             (addr  (make-array '(2 4)))
+             (packed (make-hash-table :test 'equal)))
+        ;; stmatrix lane addresses: box b of the slice, 16-byte chunk (2m + dj) of row (8h + i), swizzled
+        (dotimes (m 4)
+          (let* ((chunk (crisp.llvm-bindings::llvm-build-xor builder (llvm-build-add builder dj (k (* 2 m)) "sm_c") i "sm_cx"))
+                 (off   (llvm-build-add builder (crisp.llvm-bindings::llvm-build-shl builder chunk (k 4) "sm_c16") rowoff "sm_off"))
+                 (a0    (llvm-build-add builder base off "sm_a0")))
+            (setf (aref addr 0 m) a0
+                  (aref addr 1 m) (llvm-build-add builder a0 (k 2048) "sm_a1"))))
+        ;; each n8 block j, row half h: members 4j+2h, 4j+2h+1 -> one 16-bit pair in an i32
+        (dotimes (j (floor n 8))
+          (dotimes (hh 2)
+            (let* ((lo (llvm-build-extract-value builder wgv (+ (* 4 j) (* 2 hh)) "acc_lo"))
+                   (hi (llvm-build-extract-value builder wgv (+ (* 4 j) (* 2 hh) 1) "acc_hi"))
+                   (v  (llvm-build-insert-element builder (llvm-get-undef v2f) lo (k 0) "acc_pair_lo"))
+                   (v  (llvm-build-insert-element builder v hi (k 1) "acc_pair"))
+                   (c  (llvm-build-fp-trunc builder v v2h "acc_cvt")))
+              (setf (gethash (cons j hh) packed) (llvm-build-bit-cast builder c i32 "acc_b32")))))
+        (loop for p from 0 below (ceiling boxes 2)
+              do (when (plusp p)
+                   (%199-asm builder (list i32) (list lane)
+                             "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+                   (%199-asm builder nil nil "bar.warp.sync -1;" ""))
+                 (loop for b from (* 2 p) below (min boxes (+ (* 2 p) 2))
+                       for bl = (- b (* 2 p))
+                       do (loop for j from (* 8 b) below (+ (* 8 b) 8) by 2
+                                do (%199-asm builder (list i32 i32 i32 i32 i32)
+                                             (list (aref addr bl (floor (mod j 8) 2))
+                                                   (gethash (cons j 0) packed) (gethash (cons j 1) packed)
+                                                   (gethash (cons (1+ j) 0) packed) (gethash (cons (1+ j) 1) packed))
+                                             "stmatrix.sync.aligned.m8n8.x4.shared.b16 [$0], {$1, $2, $3, $4};"
+                                             "r,r,r,r,r")))
+                 (%199-asm builder nil nil "fence.proxy.async.shared::cta;" "")
+                 (%199-asm builder nil nil "bar.warp.sync -1;" "")
+                 (loop for b from (* 2 p) below (min boxes (+ (* 2 p) 2))
+                       for bl = (- b (* 2 p))
+                       do (%199-asm builder (list i32 i64 i32 i32 i32)
+                                    (list lane tmap
+                                          (llvm-build-add builder col0 (k (* 64 b)) "tma_x")
+                                          y
+                                          (if (zerop bl) base (llvm-build-add builder base (k 2048) "tma_src")))
+                                    "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [$1, {$2, $3}], [$4]; }"
+                                    "r,l,r,r,r"))
+                 (%199-asm builder (list i32) (list lane)
+                           "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.commit_group; }" "r"))
+        (%199-asm builder (list i32) (list lane)
+                  "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+        (%199-asm builder nil nil "bar.warp.sync -1;" "")
+        (log:debug "199 codegen :via :tma: N=~a boxes=~a ~a" n boxes (if bf16-p "bf16" "f16"))
+        (values nil nil)))))
+
+;; src/codegen.lisp -- Endeavour 199: the tensor record's pointer is nested (field 0 of field 0 ...)
+(defun %199-stage-base-i32 (builder var-env node)
+  "Endeavour 199.  The staging buffer's shared address (i32) from its implicit scratch record: the
+   record's first field, descended through nested structs (the storage handle) to the data pointer."
+  (let* ((stage (semantic-wgmma-tma-store-stage node))
+         (spec  (semantic-wgmma-tma-store-stage-spec node))
+         (slot  (gethash stage var-env)))
+    (unless slot
+      (error "store-tile-at :via :tma: missing implicit staging argument ~a (var-env keys ~s)"
+             stage (alexandria:hash-table-keys var-env)))
+    (let* ((sty (ensure-struct-llvm-type (mangle-template-struct-name (first spec) (rest spec))))
+           (v   (llvm-build-load2 builder sty slot "tma_stage_rec")))
+      (loop repeat 4
+            for kind = (crisp.llvm-bindings::llvm-get-type-kind (llvm-type-of v))
+            do (log:debug "199 staging record: type kind ~a" kind)
+               (cl:cond
+                 ((= kind crisp.llvm-bindings::+llvm-pointer-type-kind+)
+                  (return-from %199-stage-base-i32
+                    (llvm-build-ptr-to-int builder v (llvm-int32-type) "tma_stage_addr")))
+                 ((= kind crisp.llvm-bindings::+llvm-struct-type-kind+)
+                  (setf v (llvm-build-extract-value builder v 0 "tma_stage_field")))
+                 (t (cl:return))))
+      (error "store-tile-at :via :tma: no data pointer at the head of the staging record ~a" spec))))
