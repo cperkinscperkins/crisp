@@ -1,0 +1,29 @@
+;; Endeavour 197 rung 04 -- the mma.sync register tile packs too: (store-tile (to-half C-tile) C ...)
+;; stores each lane's column pairs as st.global.v2.b16.
+;;
+;; The m16n8 C fragment gives lane l the pairs (row, col/col+1) and (row+8, col/col+1).  The guard is
+;; per FRAGMENT here (one %pair-ok-p, two %store-pair), not per tile as on wgmma: the store-tile walk
+;; emits one store-fragment per fragment and each is lowered on its own.  Same validator as rung 01.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --hardware-profile=h100] : validate-ptx-store-packed-half
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel register_tile_store_half_packed (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix half (16 16)))
+        (B-tile (make-scratch-matrix half (16 8)))
+        (C-tile (make-register-tile float (16 8) 0.0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (sync-workgroup)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

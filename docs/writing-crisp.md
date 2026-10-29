@@ -292,6 +292,15 @@ lowers to `cp.async`.  It copies the tile's last dimension in 16-byte chunks (8 
 run-time check finds the layout contiguous and chunk-aligned, else element by element -- so 16-bit tiles
 work too.  It assumes the tensor's base address is 16-byte aligned (any allocation is).
 
+**wgmma with a row-major B (H100).**  `wgmma-accumulate-via-tile` reads B as `(N K)` by default.  For
+the plain `a @ b` layout -- B `(K N)`, N-contiguous -- stage a `(K N)` tile and add `:b-major :mn`:
+`(wgmma-accumulate-via-tile (64 256 64) D A-tile B-tile :swizzle :128b :b-major :mn)`.  Needs a `half` /
+`bfloat16` B, `:swizzle :128b`, and N a multiple of 64 (endeavour 198).  No transpose kernel needed.
+
+**Accumulator stores are packed.**  `store-tile` / `store-tile-at` of a register tile or wgmma
+accumulator writes each thread's adjacent column pair as one store when a run-time check finds the pair
+contiguous and aligned (the normal case), else element by element (endeavour 197).
+
 ---
 
 ## 11. Automatic differentiation

@@ -1146,3 +1146,416 @@
                                 (set! (~ ,dest (+ row 8) col)       ,(elt-of 2))
                                 (set! (~ ,dest (+ row 8) (+ col 1)) ,(elt-of 3))))))))
                    env context location)))))))))
+
+;;;; ======================================================================
+;;;; ENDEAVOUR 198 -- wgmma transB: a (K N) B tile read MN-major, (... :b-major :mn).
+;;;; The matmul_v2 contest's b is (K N) N-contiguous; until now wgmma read B only as (N K), so the
+;;;; H100 entry paid a 39 us transpose kernel.  Two pieces:
+;;;;   (1) TMA: a :128b-swizzled box is at most 128 bytes wide, and a (64 256) half tile is 512, so
+;;;;       the load is issued as 64-element-wide boxes, each landing one box-size further on.  A
+;;;;       geometry rule of load-tile, independent of wgmma.
+;;;;       -> resolve-tma-descriptors (src/analysis/core.lisp): narrows the recorded :box-dims
+;;;;       -> %analyze-nvvm-tma-load-tile-at (src/analysis/control.lisp): tags the copy with its split
+;;;;       -> generate-node-ir :around semantic-nvvm-tma-tile-copy + %gen-nvvm-tma-bulk-tensor-g2s-2d
+;;;;          (src/codegen.lisp): issue one copy per box
+;;;;   (2) wgmma: transB=1 and an MN-major B descriptor (LBO = one box, SBO = 8 K rows = 1024 B, the
+;;;;       k16 slice advancing 16 rows = 2048 B), from :b-major :mn on wgmma-accumulate-via-tile.
+;;;;       -> %check-wgmma-operands, analyze-wgmma-accumulate-via-tile, analyze-wgmma-accumulate,
+;;;;          generate-node-ir semantic-mma-accumulate, %emit-nvvm-wgmma, %emit-wgmma-mma-only (src/mma.lisp)
+;;;; See tests/spec/198-wgmma-transb/wgmma-transb.md.
+;;;; ======================================================================
+
+;; src/analysis/control.lisp (new, near *tma-copy-ws-leader*)
+(defvar *198-tma-copy-split* (make-hash-table :test 'eq)
+  "Endeavour 198.  TMA tile-copy node -> (:count C :inner E :box-bytes B) when the copy is issued as C
+   boxes E elements wide (a :128b-swizzled tile wider than 128 bytes).  Absent = one copy.")
+
+;; src/codegen.lisp (new)
+(defvar *198-current-tma-split* nil
+  "Endeavour 198.  Bound by the :around method on semantic-nvvm-tma-tile-copy to that node's split
+   plist, read by %gen-nvvm-tma-bulk-tensor-g2s-2d.")
+
+;; src/analysis/control.lisp (new helper)
+(defun %198-elem-bytes (elem)
+  "Endeavour 198.  Bytes of a TMA element type, or NIL."
+  (case (if (listp elem) (first elem) elem)
+    ((char uchar) 1)
+    ((short ushort half bfloat16) 2)
+    ((int uint float) 4)
+    ((long ulong double) 8)
+    (t nil)))
+
+;; src/analysis/control.lisp (new helper)
+(defun %198-swizzle-128b-p (swizzle)
+  "Endeavour 198.  True for the :128b swizzle keyword (any package)."
+  (and swizzle (symbolp swizzle) (string-equal (symbol-name swizzle) "128B")))
+
+;; src/analysis/control.lisp (new helper)
+(defun %198-tma-split (dims elem-bytes)
+  "Endeavour 198.  For a :128b-swizzled TMA tile of DIMS whose innermost extent is wider than 128 bytes:
+   (:count C :inner E :box-bytes B), E = 128 / ELEM-BYTES elements per box, C boxes.  NIL when no
+   split is needed.  Refuses an innermost extent that is not a whole number of boxes."
+  (let* ((last (car (last dims)))
+         (inner (and elem-bytes (floor 128 elem-bytes))))
+    (when (and inner (> (* last elem-bytes) 128))
+      (unless (zerop (rem last inner))
+        (error 'crisp-compiler-error
+               :message (format nil "load-tile :swizzle :128b: the tile's innermost extent ~a (~a bytes) is wider than one 128-byte swizzle box, so it is loaded as boxes of ~a elements -- but ~a is not a multiple of ~a." last (* last elem-bytes) inner last inner)))
+      (list :count (floor last inner)
+            :inner inner
+            :box-bytes (* inner elem-bytes (reduce #'* (butlast dims)))))))
+
+;; src/analysis/core.lisp -- FOLD: narrow box in resolve-tma-descriptors' :box-dims computation
+(defvar *198-orig-resolve-tma-descriptors* (fdefinition 'resolve-tma-descriptors))
+(defun resolve-tma-descriptors ()
+  "Resolve every CUtensorMap descriptor to (:describes :element-type :rank :box-dims :layout :swizzle).
+   Endeavour 198: a :128b box wider than 128 bytes is narrowed to 128 bytes (the hardware limit);
+   the load issues one copy per box (%198-tma-split)."
+  (prog1 (funcall *198-orig-resolve-tma-descriptors*)
+    (maphash (lambda (key info)
+               (let* ((box (getf info :box-dims))
+                      (split (and (eq (getf info :swizzle) :128b) box
+                                  (%198-tma-split box (%198-elem-bytes (getf info :element-type))))))
+                 (when split
+                   (let ((narrow (append (butlast box) (list (getf split :inner)))))
+                     (log:info "198 TMA descriptor ~a: box ~a -> ~a (~a boxes)" key box narrow (getf split :count))
+                     (setf (getf (gethash key *tma-resolved*) :box-dims) narrow)))))
+             *tma-resolved*)))
+
+;; src/analysis/control.lisp -- FOLD: the split tagging into %analyze-nvvm-tma-load-tile-at
+(defvar *198-orig-analyze-nvvm-tma-load-tile-at* (fdefinition '%analyze-nvvm-tma-load-tile-at))
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 152 wrapper (multicast tag), plus Endeavour 198: a :128b load of a tile wider than 128
+   bytes is tagged with its box split, which codegen issues as one copy per box."
+  (let* ((node (funcall *198-orig-analyze-nvvm-tma-load-tile-at* expr env context location))
+         (tile-form (third expr))
+         (swizzle (%extract-key-arg (nthcdr 4 expr) :swizzle nil)))
+    (when (and node (semantic-nvvm-tma-tile-copy-p node) (%198-swizzle-128b-p swizzle))
+      (let* ((rank (length (fourth expr)))
+             (dims (%196-static-tile-dims tile-form rank))
+             (bytes (semantic-nvvm-tma-tile-copy-elem-bytes node)))
+        (if dims
+            (let ((split (%198-tma-split dims bytes)))
+              (when split
+                (log:info "198 load-tile ~a: ~a x ~a-element boxes (~a bytes apart)"
+                          tile-form (getf split :count) (getf split :inner) (getf split :box-bytes))
+                (setf (gethash node *198-tma-copy-split*) split)))
+            (log:debug "198 load-tile ~a: no static dims; assuming one box" tile-form))))
+    node))
+
+;; src/codegen.lisp (new)
+(defmethod generate-node-ir :around ((node semantic-nvvm-tma-tile-copy) builder module var-env
+                                     di-builder di-scope location-map)
+  "Endeavour 198: expose this copy's box split to %gen-nvvm-tma-bulk-tensor-g2s-2d."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*198-current-tma-split* (gethash node *198-tma-copy-split*)))
+    (call-next-method)))
+
+;; src/codegen.lisp -- FOLD: the loop into %gen-nvvm-tma-bulk-tensor-g2s-2d
+(defvar *198-orig-gen-nvvm-tma-bulk-tensor-g2s-2d* (fdefinition '%gen-nvvm-tma-bulk-tensor-g2s-2d))
+(defun %gen-nvvm-tma-bulk-tensor-g2s-2d (builder module dst-smem-ptr mbar-ptr tensormap-ptr coord0 coord1
+                                         &optional (mcast-mask 0) (mcast-p nil))
+  "Emits @llvm.nvvm.cp.async.bulk.tensor.g2s.tile.2d (see the original).
+   Endeavour 198: under *198-current-tma-split*, C copies -- box j to DST + j*BOX-BYTES at x COORD0 +
+   j*INNER.  All C land on the same mbarrier, whose expect_tx already counts the whole tile."
+  (let ((split *198-current-tma-split*))
+    (if (null split)
+        (funcall *198-orig-gen-nvvm-tma-bulk-tensor-g2s-2d* builder module dst-smem-ptr mbar-ptr
+                 tensormap-ptr coord0 coord1 mcast-mask mcast-p)
+        (let ((i32 (llvm-int32-type)) (i8 (llvm-int8-type)))
+          (log:debug "198 codegen: TMA copy as ~a boxes" (getf split :count))
+          (dotimes (j (getf split :count))
+            (let ((dst (if (zerop j) dst-smem-ptr
+                           (let ((idx (cffi:foreign-alloc :pointer :count 1)))
+                             (setf (cffi:mem-aref idx :pointer 0)
+                                   (llvm-const-int i32 (* j (getf split :box-bytes)) nil))
+                             (llvm-build-in-bounds-gep2 builder i8 dst-smem-ptr idx 1
+                                                        (format nil "tma_box~d" j)))))
+                  (x (if (zerop j) coord0
+                         (llvm-build-add builder coord0 (llvm-const-int i32 (* j (getf split :inner)) nil)
+                                         (format nil "tma_x~d" j)))))
+              (funcall *198-orig-gen-nvvm-tma-bulk-tensor-g2s-2d* builder module dst mbar-ptr
+                       tensormap-ptr x coord1 mcast-mask mcast-p)))))))
+
+;; src/mma.lisp
+(defun %check-wgmma-operands (shape a b location elem swizzle &optional (b-major :k))
+  "Refuse a wgmma whose staged A or B tile is not the shape the instruction will read.
+
+   THE RULE.  A is (M K) and B is (N K) -- both K-major.  This is not inferred from which
+   kernels happen to verify; it is what CUTLASS declares for every tf32 GMMA trait in
+   third_party/cutlass/include/cute/atom/mma_traits_sm90_gmma.hpp:
+       FrgTypeA = FrgTypeB = GMMA::smem_desc<GMMA::Major::K>
+       ALayout  = ABLayout<64, 8>      BLayout = ABLayout<64, 8>
+   and the tf32 SS atoms exist ONLY in the _TN form (16 of them, no other suffix) because tf32
+   wgmma carries no transpose immediate.
+
+   ENDEAVOUR 198: at 16 bits B may instead be (K N) -- Major::MN, read with transB=1 -- when the
+   kernel says so with :b-major :mn (B-MAJOR here).  A (K N) B without it is refused with a message
+   naming the keyword; tf32 keeps refusing, because its wgmma has no transpose immediate.
+
+   UNRESOLVABLE EXTENTS ARE NOT AN ERROR.  %mma-operand-extent returns NIL when a tile's shape is
+   not compile-time known, and a wgmma operand is frequently (ring-get RING SLOT).  Refusing on
+   NIL would reject the working pipelined kernels -- chapter 7, sec2_top, sec3, sec4 -- so an
+   unknown extent skips silently, exactly as %mma-k-steps treats its own NIL.
+
+   K IS THE PER-SLICE K, not the K-block: under :swizzle the staged tile spans several slices, so
+   its K extent is the block and only A-vs-B agreement is checkable there."
+  (destructuring-bind (m n k) shape
+    (let ((a-r (%mma-operand-extent a nil :rows))
+          (a-c (%mma-operand-extent a nil :cols))
+          (b-r (%mma-operand-extent b nil :rows))
+          (b-c (%mma-operand-extent b nil :cols)))
+      ;; A must be (M K).  Under :swizzle the column extent is a K-block, so only M is fixed.
+      (when (and a-r (/= a-r m))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: A tile must be (M K) = (~a ~a) for shape ~a, but it is (~a ~a).  A is staged M-rows by K-columns, the same way mma-accumulate-via-tile stages it." m k shape a-r (or a-c '?))
+               :source-location location))
+      (when (and (not swizzle) a-c (/= a-c k))
+        (error 'crisp-compiler-error
+               :message (format nil "wgmma-accumulate-via-tile: A tile must be (M K) = (~a ~a) for shape ~a, but it is (~a ~a)." m k shape (or a-r '?) a-c)
+               :source-location location))
+      (if (eq b-major :mn)
+          ;; Endeavour 198: B is (K N).  Its column extent is N; its row extent is the K-block.
+          (progn
+            (when (and b-c (/= b-c n))
+              (error 'crisp-compiler-error
+                     :message (format nil "wgmma-accumulate-via-tile :b-major :mn: B tile must be (K N) = (~a ~a) for shape ~a, but it is (~a ~a)." k n shape (or b-r '?) b-c)
+                     :source-location location))
+            (when (and b-r (/= b-r k))
+              (error 'crisp-compiler-error
+                     :message (format nil "wgmma-accumulate-via-tile :b-major :mn: B tile must be (K N) = (~a ~a) for shape ~a -- its K extent is the K-block -- but it is (~a ~a)." k n shape b-r (or b-c '?))
+                     :source-location location)))
+          (progn
+            ;; B must be (N K).  This is where the two via-tile forms disagree, so say so.
+            (when (and b-r (/= b-r n))
+              (if (= (%wgmma-k-per-slice elem) 16)
+                  (error 'crisp-compiler-error
+                         :message (format nil "wgmma-accumulate-via-tile: B tile is (~a ~a), which is the Major::MN orientation.  The 16-bit wgmma reads that with transB=1: say so with :b-major :mn (it needs :swizzle :128b and N a multiple of 64), or declare B as (N K) = (~a ~a).  NOTE: mma-accumulate-via-tile takes B as (K N); the two via-tile forms differ here." b-r (or b-c '?) n k)
+                         :source-location location)
+                  (error 'crisp-compiler-error
+                         :message (format nil "wgmma-accumulate-via-tile: B tile must be (N K) = (~a ~a) for shape ~a, but it is (~a ~a).  wgmma reads its SMEM B operand K-major (CUTLASS GMMA::Major::K) and tf32 wgmma has no transpose immediate, so (K N) is not a layout this instruction can read.  NOTE: mma-accumulate-via-tile takes B as (K N); the two via-tile forms differ here." n k shape b-r (or b-c '?))
+                         :source-location location)))
+            (when (and (not swizzle) b-c (/= b-c k))
+              (error 'crisp-compiler-error
+                     :message (format nil "wgmma-accumulate-via-tile: B tile must be (N K) = (~a ~a) for shape ~a, but it is (~a ~a)." n k shape (or b-r '?) b-c)
+                     :source-location location)))))))
+
+;; src/mma.lisp
+(defun analyze-wgmma-accumulate-via-tile (expr env context location)
+  "(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b] [:b-major :k | :mn]) -> (set! D
+   (wgmma-accumulate D A B :swizzle :128b :k K [:b-major :mn])).  K rule is swizzle- AND
+   element-aware (see %check-wgmma-shape).
+
+   Endeavour 160: the A tile's element type is resolved here and passed to the shape check, so a
+   tf32 kernel asking for K=16 is still refused while a bf16 one is accepted.
+
+   Endeavour 161: the OPERAND SHAPES are checked too.  Order matters -- the shape check runs
+   first, so a kernel that is wrong about both its triple and its tiles still reports the triple,
+   which is what tests/spec/140-wgmma/errors/01-03 assert.
+
+   Endeavour 198: :b-major :mn declares B as (K N), read with transB=1.  It needs a 16-bit element
+   (tf32 wgmma has no transpose), :swizzle :128b (the MN-major descriptor is built for the 128-byte
+   swizzle atom: 64 N x 8 K), and N a multiple of 64 (one atom wide)."
+  (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+    (let* ((elem (%coop-elem-of (analyze-expression a env context (append location '(3)))))
+           (swz  (getf kwargs :swizzle))
+           (bm-raw (getf kwargs :b-major :k))
+           (b-major (if (and (symbolp bm-raw) (string-equal (symbol-name bm-raw) "MN")) :mn
+                        (if (and (symbolp bm-raw) (string-equal (symbol-name bm-raw) "K")) :k
+                            (error 'crisp-compiler-error
+                                   :message (format nil "wgmma-accumulate-via-tile: :b-major must be :k (B is (N K), the default) or :mn (B is (K N), read with transB=1), not ~s." bm-raw)
+                                   :source-location location)))))
+      (log:debug "198 wgmma-accumulate-via-tile: shape=~a elem=~a swizzle=~a b-major=~a" shape elem swz b-major)
+      (%check-wgmma-shape shape location swz elem)
+      (when (eq b-major :mn)
+        (unless (= (%wgmma-k-per-slice elem) 16)
+          (error 'crisp-compiler-error
+                 :message (format nil "wgmma-accumulate-via-tile :b-major :mn needs a 16-bit operand (half or bfloat16): tf32 wgmma has no transpose immediate, so a ~a B can only be read as (N K)." elem)
+                 :source-location location))
+        (unless (%198-swizzle-128b-p swz)
+          (error 'crisp-compiler-error
+                 :message "wgmma-accumulate-via-tile :b-major :mn needs :swizzle :128b -- the MN-major B descriptor is built for the 128-byte swizzle atom (64 N x 8 K) that a :128b TMA load lays down."
+                 :source-location location))
+        (unless (zerop (rem (second shape) 64))
+          (error 'crisp-compiler-error
+                 :message (format nil "wgmma-accumulate-via-tile :b-major :mn needs N to be a multiple of 64 (one 128-byte swizzle atom of 16-bit elements), but N is ~a." (second shape))
+                 :source-location location)))
+      (%check-wgmma-operands shape a b location elem swz b-major)
+      (analyze-expression `(set! ,d (wgmma-accumulate ,d ,a ,b :swizzle ,swz :k ,(third shape)
+                                                      ,@(when (eq b-major :mn) (list :b-major :mn))))
+                          env context location))))
+
+;; src/mma.lisp -- FOLD: append B-MAJOR as the 4th element of the *wgmma-node-swizzle* entry
+(defvar *198-orig-analyze-wgmma-accumulate* (fdefinition 'analyze-wgmma-accumulate))
+(defun analyze-wgmma-accumulate (expr env context location)
+  "(wgmma-accumulate D A B [:swizzle MODE :k K :b-major :mn]) -- see the original.
+   Endeavour 198: the *wgmma-node-swizzle* entry gains a 4th element, B-MAJOR (:k or :mn)."
+  (let* ((kwargs (nthcdr 4 expr))
+         (bm (getf kwargs :b-major))
+         (mn (and bm (symbolp bm) (string-equal (symbol-name bm) "MN")))
+         (node (funcall *198-orig-analyze-wgmma-accumulate* expr env context location)))
+    (let ((entry (gethash node *wgmma-node-swizzle*)))
+      (setf (gethash node *wgmma-node-swizzle*)
+            (append (subseq entry 0 (min 3 (length entry))) (list (if mn :mn :k)))))
+    node))
+
+;; src/mma.lisp
+(defmethod generate-node-ir ((node semantic-mma-accumulate)
+                             builder module var-env di-builder di-scope location-map)
+  "F-SPV / NVVM mma.sync + Endeavor 140 wgmma (dispatched by accumulator type; swizzle/k from table).
+   Endeavour 198: the table entry's 4th element (B-MAJOR) reaches %emit-nvvm-wgmma."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (let ((acc-type (semantic-mma-accumulate-type node)))
+      (if (%wgmma-acc-type-p acc-type)
+          (progn
+            ;; Endeavor 140 (precision): wgmma is tf32 by construction, so under a non-fast
+            ;; precision context the requested IEEE accuracy is silently NOT honored (results are
+            ;; tf32).  Warn.  *math-precision* here is the resolved effective precision at codegen
+            ;; — it already respects the full chain (force > with-precision > declaim > flag >
+            ;; default(:ieee)), the same value that stamps the fast-math flags in codegen.lisp.
+            ;; Endeavour 160: the tf32 precision warning is only true for a 32-bit operand.
+            ;; A bf16/fp16 wgmma is not silently downgrading anything -- the kernel ASKED for
+            ;; 16-bit inputs -- so firing it there would be noise that teaches the reader
+            ;; something untrue.
+            (unless (or (eq *math-precision* :fast)
+                        (eql (%mma-elem-bits (third (gethash node *wgmma-node-swizzle*))) 16))
+              (format *error-output*
+                      "WARNING: wgmma-accumulate-via-tile uses tf32 tensor cores, but math-precision is '~(~a~)' — the IEEE accuracy request is not honored (results are tf32). Use (with-precision (fast) ...), (declaim (precision fast)), or --math-precision=fast.~%"
+                      *math-precision*))
+          (destructuring-bind (&optional swizzle-mode (k 8) elem (b-major :k)) (gethash node *wgmma-node-swizzle*)
+            (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                  (swizzle-p (and swizzle-mode (string-equal (string swizzle-mode) "128B"))))
+              (multiple-value-bind (av al a-ptr) (gen (semantic-mma-accumulate-a-node node))
+                (declare (ignore av al))
+                (multiple-value-bind (bv bl b-ptr) (gen (semantic-mma-accumulate-b-node node))
+                  (declare (ignore bv bl))
+                  (unless (and a-ptr b-ptr)
+                    (error "wgmma: A/B (~ tile 0) did not yield an SMEM element pointer (a ~A b ~A)" a-ptr b-ptr))
+                  (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
+                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k elem b-major))))))
+          (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
+                (a-val (gen (semantic-mma-accumulate-a-node node)))
+                (b-val (gen (semantic-mma-accumulate-b-node node))))
+            (if (eq *target-backend* :spirv)
+                (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                  (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
+                (%emit-nvvm-mma builder module a-val b-val c-val)))))))
+
+;; src/mma.lisp (new, after %wgmma-make-desc)
+(defun %198-wgmma-make-desc-mn (builder base-ptr kslice-byte-off lbo-bytes)
+  "Endeavour 198.  The 64-bit SMEM descriptor for an MN-MAJOR 16-bit operand under the 128-byte
+   swizzle (CUTLASS make_gmma_desc<Major::MN>, LayoutType::B128): the canonical layout is
+   ((8 elems x 8, m) , (8 K rows, k)) -- 64 MN elements per 128-byte row, 8 rows per 1024-byte
+   swizzle atom.  LBO = the stride between 64-wide MN atoms = one TMA box (K-block rows x 128 B,
+   LBO-BYTES); SBO = the stride between 8-row K groups = 1024 B; swizzle bits = 1 (128B).  The k16
+   slice advances 16 rows = KSLICE-BYTE-OFF (kk*2048).  start = ((addr+off)>>4)&0x3FFF at [0:13]."
+  (let* ((i32 (llvm-int32-type)) (i64 (llvm-int64-type))
+         (const-val (logior (ash (floor lbo-bytes 16) 16) (ash (floor 1024 16) 32) (ash 1 62)))
+         (addr0 (llvm-build-ptr-to-int builder base-ptr i32 "wgmn_addr"))
+         (addr  (if (zerop kslice-byte-off) addr0
+                    (llvm-build-add builder addr0 (llvm-const-int i32 kslice-byte-off nil) "wgmn_addr_k")))
+         (sh    (crisp.llvm-bindings::llvm-build-l-shr builder addr (llvm-const-int i32 4 nil) "wgmn_sh"))
+         (msk   (crisp.llvm-bindings::llvm-build-and builder sh (llvm-const-int i32 #x3FFF nil) "wgmn_start"))
+         (st64  (llvm-build-zext builder msk i64 "wgmn_start64")))
+    (log:debug "198 MN-major B descriptor: LBO=~a SBO=1024 kslice-off=~a" lbo-bytes kslice-byte-off)
+    (crisp.llvm-bindings::llvm-build-or builder st64 (llvm-const-int i64 const-val nil) "wgmn_desc")))
+
+;; src/mma.lisp
+(defun %emit-wgmma-mma-only (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off
+                             &optional elem b-mn-lbo)
+  "Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no
+   wait_group.  Those are GROUP-level operations and belong once around the whole k-slice
+   sequence, not once per slice; see %emit-nvvm-wgmma.
+
+   N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)
+   advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is
+   the same at both widths, which is why the descriptor build is untouched.  Returns the new D.
+
+   Endeavour 198: B-MN-LBO non-NIL means B is MN-major: its descriptor is %198-wgmma-make-desc-mn
+   (LBO = B-MN-LBO bytes), its slice advances 16 rows of 128 bytes (kk*2048 = KSLICE-OFF*64), and
+   the instruction carries transB=1 (*wgmma-16-trans* bound to (0 1))."
+  (let* ((f32 (llvm-float-type)) (i64 (llvm-int64-type))
+         (nacc (floor n 2))
+         (descA (%wgmma-make-desc builder a-ptr swizzle-p kslice-off))
+         (descB (if b-mn-lbo
+                    (%198-wgmma-make-desc-mn builder b-ptr (* kslice-off 64) b-mn-lbo)
+                    (%wgmma-make-desc builder b-ptr swizzle-p kslice-off)))
+         (c-ops (loop for i below nacc collect
+                      (llvm-build-extract-value builder d-val i (format nil "wc~d" i))))
+         (asm-str     (let ((*wgmma-16-trans* (if b-mn-lbo (list (first *wgmma-16-trans*) 1) *wgmma-16-trans*)))
+                        (%wgmma-asm-string nacc n elem)))
+         (constraints (%wgmma-constraints nacc))
+         (ret-ty      (%wgmma-struct-of-floats module nacc))
+         (ptypes      (append (loop repeat nacc collect f32) (list i64 i64)))
+         (args        (append c-ops (list descA descB)))
+         (call        (%build-inline-asm-call builder ret-ty ptypes args asm-str constraints))
+         (agg         (llvm-get-undef (crisp-type-to-llvm-type acc-type module))))
+    (dotimes (i nacc)
+      (setf agg (llvm-build-insert-value builder agg
+                                         (llvm-build-extract-value builder call i (format nil "wo~d" i))
+                                         i (format nil "wr~d" i))))
+    agg))
+
+;; src/mma.lisp
+(defun %emit-nvvm-wgmma (builder module d-val a-ptr b-ptr acc-type n &optional swizzle-p (k 8) elem (b-major :k))
+  "Emit the wgmma accumulate as ONE GROUP: a fence before the first slice, K/KPS slices, then one
+   commit_group + wait_group.  See the original for why the fence/commit/wait triple is emitted
+   once per GROUP rather than once per slice (endeavour 154, worth 4-11%).
+
+   Endeavour 160: KPS -- the K covered by one instruction -- is 8 at 32 bits and 16 at 16 bits.
+   The per-slice BYTE advance stays kk*32 either way, because a tf32 k8 slice and a bf16 k16 slice
+   occupy the same 32 bytes.  That is why %wgmma-make-desc is untouched by this endeavour.
+
+   Endeavour 198: B-MAJOR :mn passes the MN-major B's LBO -- one TMA box, K rows x 128 bytes -- to
+   every slice (see %emit-wgmma-mma-only)."
+  (let* ((kps (%wgmma-k-per-slice elem))
+         (n-slices (if swizzle-p (max 1 (floor k kps)) 1))
+         (b-mn-lbo (and (eq b-major :mn) (* k 128))))
+    (unless swizzle-p
+      (%gen-nvvm-fence-proxy-async-shared builder)
+      (%ptx-barrier builder module))
+    (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.fence.sync.aligned;" "~{memory}")
+    (let ((cur-d d-val))
+      (dotimes (kk n-slices)
+        (setf cur-d (%emit-wgmma-mma-only builder module cur-d a-ptr b-ptr acc-type n swizzle-p
+                                          (* kk 32) elem b-mn-lbo)))
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.commit_group.sync.aligned;" "~{memory}")
+      (%build-inline-asm-call builder (llvm-void-type) nil nil "wgmma.wait_group.sync.aligned 0;" "~{memory}")
+      (values cur-d nil))))
+
+;; src/analysis/control.lisp (new helper) -- Endeavour 198
+(defun %198-tile-static-dims (tile-form rank context)
+  "Endeavour 198.  TILE-FORM's static dims for the TMA box split: the enclosing let's published dims
+   (%196-static-tile-dims), else *scratch-tile-dims* -- the table resolve-tma-descriptors narrows the
+   descriptor box from, so the copy and the descriptor cannot disagree.  A ring's entry carries the
+   slot count first; the last RANK dims are the tile."
+  (or (%196-static-tile-dims tile-form rank)
+      (let* ((sym (cond ((symbolp tile-form) tile-form)
+                        ((and (consp tile-form) (symbolp (first tile-form))
+                              (string= (symbol-name (first tile-form)) "RING-GET")
+                              (symbolp (second tile-form)))
+                         (second tile-form))))
+             (fn (and context (compiler-context-current-compiling-function context)))
+             (info (and sym fn (gethash (cons fn sym) *scratch-tile-dims*)))
+             (dims (getf info :box-dims)))
+        (and dims (>= (length dims) rank) (every #'integerp dims) (last dims rank)))))
+
+;; src/analysis/control.lisp -- supersedes the copy above (static dims now via %198-tile-static-dims)
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavor 152 wrapper (multicast tag), plus Endeavour 198: a :128b load of a tile wider than 128
+   bytes is tagged with its box split, which codegen issues as one copy per box."
+  (let* ((node (funcall *198-orig-analyze-nvvm-tma-load-tile-at* expr env context location))
+         (tile-form (third expr))
+         (swizzle (%extract-key-arg (nthcdr 4 expr) :swizzle nil)))
+    (when (and node (semantic-nvvm-tma-tile-copy-p node) (%198-swizzle-128b-p swizzle))
+      (let* ((rank (length (fourth expr)))
+             (dims (%198-tile-static-dims tile-form rank context))
+             (bytes (semantic-nvvm-tma-tile-copy-elem-bytes node)))
+        (if dims
+            (let ((split (%198-tma-split dims bytes)))
+              (when split
+                (log:info "198 load-tile ~a: ~a x ~a-element boxes (~a bytes apart)"
+                          tile-form (getf split :count) (getf split :inner) (getf split :box-bytes))
+                (setf (gethash node *198-tma-copy-split*) split)))
+            (log:warn "198 load-tile ~a :swizzle :128b: no static tile dims, so one TMA copy is issued; if the tile is wider than 128 bytes its descriptor box will not match" tile-form))))
+    node))

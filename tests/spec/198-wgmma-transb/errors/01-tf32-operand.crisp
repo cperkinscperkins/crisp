@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "needs a 16-bit operand"
+;; Endeavour 198 -- :b-major :mn on a tf32 wgmma is refused: tf32 wgmma has no transpose immediate
+;; (three trailing immediates, not five), so a float B can only ever be read as (N K).
+(declaim (precision fast))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e198_one (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (32 64)))
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b :b-major :mn)
+    (set! (~ C 0 0) 1.0)))

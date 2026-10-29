@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "needs :swizzle :128b"
+;; Endeavour 198 -- :b-major :mn without the 128-byte swizzle is refused: the MN-major descriptor is
+;; built for the 128-byte swizzle atom (64 N x 8 K) that a :128b TMA load lays down.
+(declaim (precision fast))
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e198_two (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 16)))
+        (B-tile (make-scratch-matrix half (16 64)))
+        (D (make-wgmma-accumulator float (64 64) 0.0)))
+    (wgmma-accumulate-via-tile (64 64 16) D A-tile B-tile :b-major :mn)
+    (set! (~ C 0 0) 1.0)))

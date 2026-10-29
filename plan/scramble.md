@@ -184,12 +184,21 @@ OPEN
 - [ ] test offsets/strides really SET by hoisting code (needs a .cpp fixture?) (L543)
 - [ ] double check branding on storage handles (L549)
 - [ ] no-sroa? (L557)
-- [ ] wgmma transB=1 for 16-bit operands: accept an MN-major (K N) B tile in wgmma-accumulate-via-tile.
+- [x] DONE 2026-10-28, endeavour 198 (`:b-major :mn`; tests/spec/198-wgmma-transb).  H100 scored case
+      290 -> 255 us, bit-exact.  Overlay unfolded.
+      wgmma transB=1 for 16-bit operands: accept an MN-major (K N) B tile in wgmma-accumulate-via-tile.
       Today *wgmma-16-trans* pins (0 0) and src/mma.lisp refuses (K N) B; the f16/bf16 hardware reads
       it with transB=1 (CUTLASS GMMA::Major::MN), but the SMEM descriptor LBO/SBO meaning changes for
       MN-major, so it is not just flipping the bit.  tf32 has no transpose -- keep refusing there.
       Found 2026-10-27 on matmul_v2 (GPU MODE): its b is (K N) contiguous in N, the plain `a @ b`
       layout.  First contest entry transposes B in the wrapper instead (~25 us tax on H100).
+- [ ] Persistent launch for tiled kernels: tile-stride over a 1-D grid walking the LINEARISED tile space
+      (tile t = blockIdx + k*gridDim -> (row, col)), so the hoist can launch residency-capped grids.
+      Today :tile-shape launches one block per tile, and a 1-D :strided grid under N-D tile-stride
+      serialises an axis (the L0 7.6x trap).  Probe: 3% on the H100 contest kernel once stores were packed
+      (endeavour 197 doc).  Also the natural home for tile rasterisation (L2 reuse).  Endeavour 197 step 2.
+- [ ] stmatrix + TMA-store epilogue for wgmma accumulators: the packed-store epilogue still costs ~20 us
+      of 255 on the H100 contest kernel (noepi floor 232).  Endeavour 197 step 4.
 - [ ] ldmatrix for load-fragment-a / -b on PTX.  The mma.sync path reads every operand fragment from
       shared memory one 2-byte element at a time (ld.shared.b16 + packing; no ldmatrix anywhere).  The
       A100 matmul_v2 entry (4-warp, vectorized cp.async) is 4.7 ms vs cuBLAS 0.67 ms.  ldmatrix.x4 for A

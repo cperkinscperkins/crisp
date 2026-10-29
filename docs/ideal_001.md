@@ -13486,7 +13486,7 @@ Two forms mirror the `make-register-tile` / `mma-accumulate-via-tile` pair:
 
 ```
 (make-wgmma-accumulator <elem> (64 N) <init>)          ; the D matrix — a warpgroup accumulator
-(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b])   ; D += A·B ; A, B are SMEM tiles
+(wgmma-accumulate-via-tile (64 N K) D A B [:swizzle :128b] [:b-major :k|:mn])   ; D += A·B ; A, B are SMEM tiles
 ```
 
 `make-wgmma-accumulator` mints (on demand) a `64×N` warpgroup accumulator record — `N/2` flat
@@ -13537,8 +13537,19 @@ split a 128-row tile).  The accumulator is `float`; to write a `half` / `bfloat1
 source — `(store-tile-at (to-half D) C (row col))` — and each element is rounded to nearest-even as it is
 stored (endeavour 196).
 
-wgmma reads B **K-major**: declare B `(N K)`, i.e. a `(K N)` matrix that is `:col-major`.  A row-major
-`(K N)` B (PyTorch's plain `a @ b`) is refused today; transpose it first.  Blackwell (sm_100) has no
+By default wgmma reads B **K-major**: declare B `(N K)`, i.e. a `(K N)` matrix that is `:col-major`.  A
+row-major `(K N)` B (PyTorch's plain `a @ b`) is read as it is with `:b-major :mn` (endeavour 198): stage
+B as a `(K N)` tile and the 16-bit wgmma reads it with transB=1.  `:mn` needs a `half` / `bfloat16`
+operand (tf32 wgmma has no transpose), `:swizzle :128b`, and N a multiple of 64:
+
+```
+(B-ring (make-scratch-matrix-ring half (64 256) :ring-count 4))     ; (K N)
+(load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot) :swizzle :128b)
+(wgmma-accumulate-via-tile (64 256 64) D A-tile (ring-get B-ring slot) :swizzle :128b :b-major :mn)
+```
+
+A `:128b` TMA box is at most 128 bytes wide, so a `(64 256)` half tile is loaded as four 64-column boxes;
+`load-tile` does that by itself.  Blackwell (sm_100) has no
 wgmma — its tensor-core instruction is `tcgen05`, not yet in Crisp — so B200 kernels use
 `mma-accumulate-via-tile`.
 

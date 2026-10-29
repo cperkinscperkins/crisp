@@ -179,3 +179,43 @@
   (declare (ignore file))
   (%197-validate-ptx-store-packed ptx-string '("st.global.v2.b32" "st.global.v2.f32")
                                   '("st.global.b32" "st.global.f32") "packed float"))
+
+;; tests/run-specs.lisp -- Endeavour 198.
+(defun %198-validate-ptx-wgmma-transb (ptx-string min-tma label)
+  "Endeavour 198.  A wgmma reading an MN-major (K N) B: every wgmma.mma_async carries transB=1 (the
+   last immediate), the MN-major B descriptor constant for a 64-row K-block is present (LBO 8192 enc 512,
+   SBO 1024 enc 64, 128B swizzle: 4611686293338849280), and at least MIN-TMA cp.async.bulk.tensor
+   copies are issued (A plus one per 64-wide B box)."
+  (flet ((n-of (needle)
+           (loop with start = 0
+                 for pos = (search needle ptx-string :start2 start)
+                 while pos
+                 count t
+                 do (setf start (1+ pos)))))
+    (let ((n-wg (n-of "wgmma.mma_async"))
+          (n-tb (n-of ", 1, 1, 1, 0, 1;"))
+          (n-desc (n-of "4611686293338849280"))
+          (n-tma (n-of "cp.async.bulk.tensor")))
+      (log:info "198 ~a: wgmma=~a transB=~a mn-desc=~a tma=~a" label n-wg n-tb n-desc n-tma)
+      (cond
+        ((zerop n-wg) (format *error-output* "FAIL: ~a: no wgmma.mma_async~%" label) nil)
+        ((/= n-tb n-wg)
+         (format *error-output* "FAIL: ~a: ~a of ~a wgmma carry transB=1~%" label n-tb n-wg) nil)
+        ((zerop n-desc)
+         (format *error-output* "FAIL: ~a: no MN-major B descriptor (LBO 8192 / SBO 1024 / 128B)~%" label) nil)
+        ((< n-tma min-tma)
+         (format *error-output* "FAIL: ~a: ~a TMA copies, expected at least ~a (A + one per B box)~%"
+                 label n-tma min-tma) nil)
+        (t t)))))
+
+;; tests/run-specs.lisp -- Endeavour 198.
+(defun validate-ptx-wgmma-transb (file ptx-string)
+  "Endeavour 198 rung 01: (64 128) half B, two TMA boxes -- see %198-validate-ptx-wgmma-transb."
+  (declare (ignore file))
+  (%198-validate-ptx-wgmma-transb ptx-string 3 "transB fp16"))
+
+;; tests/run-specs.lisp -- Endeavour 198.
+(defun validate-ptx-wgmma-transb-ring (file ptx-string)
+  "Endeavour 198 rung 02: (64 256) bf16 B in a ring, four TMA boxes -- see %198-validate-ptx-wgmma-transb."
+  (declare (ignore file))
+  (%198-validate-ptx-wgmma-transb ptx-string 5 "transB bf16 ring"))

@@ -1,0 +1,26 @@
+;; Endeavour 197 rung 02 -- the f32 twin of rung 01: a wgmma accumulator stored to a float matrix
+;; lands as st.global.v2.f32 pairs.  This is the benchmark suite's epilogue (section 2 H100 kernels
+;; store f32), so the packing reaches the benchmarks, not just the contest.
+;;
+;; No conversion here, so autodiff runs: the store-tile-at backward is the ordinary one.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-store-packed-float
+;; wgmma is tf32 -- declare fast so the tf32/precision warning stays silent (see 126-precision/20).
+(declaim (precision fast))
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_store_float_packed (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (64 32)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+    (store-tile-at D C (0 0))))

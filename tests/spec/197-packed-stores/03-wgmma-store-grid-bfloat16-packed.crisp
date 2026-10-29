@@ -1,0 +1,23 @@
+;; Endeavour 197 rung 03 -- the grid-index spelling (store-tile, not store-tile-at) with the bf16
+;; conversion.  %wgmma-store-rewrite delegates to the same lowering, so it packs too; pinned because
+;; it is the other entry point and the other 16-bit element type.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-store-packed-bfloat16
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_store_grid_bf16_packed (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix bfloat16 (64 64)))
+        (B-tile (make-scratch-matrix bfloat16 (64 64)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 64) D A-tile B-tile :swizzle :128b)
+    (store-tile (to-bfloat16 D) C (0 0))))
