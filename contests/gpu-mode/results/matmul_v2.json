@@ -214,6 +214,21 @@
       "per_case_us": null,
       "public_score_us": 7116.96,
       "secret_score_us": 7134.11
+    },
+    {
+      "timestamp": "2026-10-29T01:30:05Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_matmul_v4",
+      "file_name": "crisp_matmul_v4.py",
+      "mode": "leaderboard",
+      "submission_id": 968463,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 253.74,
+      "secret_score_us": 255.92
     }
   ],
   "ablation_size_label": "scored case: 4096x5120x4096 (ranking_by LAST)",
