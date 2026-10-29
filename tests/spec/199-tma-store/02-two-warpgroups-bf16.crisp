@@ -1,0 +1,60 @@
+;; Endeavour 199 rung 02 -- the contest geometry in bf16: two consumer warpgroups, each storing its own
+;; 64x256 accumulator :via :tma at an explicit origin, under tile-stride, with a producer warp.
+;;
+;; The staging buffer is ONE per kernel, sized from (local-size :set-to 288): floor(288 / 128) = 2 full
+;; warpgroups x 16 KB + 1 KB alignment pad.  Each warp's 4 KB slice is indexed by its warp number, so
+;; both warpgroups' stores share the buffer without touching each other's slices, and the next tile
+;; rewrites a slice only after lane 0's wait_group.read.  The producer warp holds no accumulator.
+;;
+;; THE VALIDATOR: per store 16 stmatrix.x4 and 4 TMA stores (N = 256 = four 64-column boxes, two per
+;; slice fill), so 32 and 8 in all; 128 cvt.rn.bf16x2.f32 (a bf16 conversion); no st.global.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma-store-two-warpgroups
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_tma_store_two_wg (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 288))          ; 2 consumer warpgroups (8 warps) + 1 producer warp
+  (let ((A0-ring (make-scratch-matrix-ring bfloat16 (64 64)  :ring-count 2))
+        (A1-ring (make-scratch-matrix-ring bfloat16 (64 64)  :ring-count 2))
+        (B-ring  (make-scratch-matrix-ring bfloat16 (256 64) :ring-count 2))
+        (D0      (make-wgmma-accumulator float (64 256) 0.0))
+        (D1      (make-wgmma-accumulator float (64 256) 0.0))
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 8 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 3 :initial-state :waiting)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer0 4 :consumer1 4 :producer 1)
+        (:consumer0
+          (set! D0 (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 64) D0 (ring-get A0-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at (to-bfloat16 D0) C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256))) :via :tma))
+        (:consumer1
+          (set! D1 (make-wgmma-accumulator float (64 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 64) D1 (ring-get A1-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at (to-bfloat16 D1) C ((+ (* grid-y (to-ulong 128)) (to-ulong 64)) (* grid-x (to-ulong 256)))
+                         :via :tma))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A0-ring slot) ((* grid-y (to-ulong 2)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile A (ring-get A1-ring slot) ((+ (* grid-y (to-ulong 2)) (to-ulong 1)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b))))))))

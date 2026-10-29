@@ -1,0 +1,9 @@
+;; CHECK-FAIL: "the source must be a wgmma accumulator"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
+;; Endeavour 199 -- :via :tma lowers the wgmma accumulator's register layout (stmatrix fragments); a
+;; scratch tile is not one.
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e199_seven (&out C)
+  (declare #'(&out c-mat) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((Tl (make-scratch-matrix float (64 64))))
+    (store-tile-at (to-half Tl) C (0 0) :via :tma)))

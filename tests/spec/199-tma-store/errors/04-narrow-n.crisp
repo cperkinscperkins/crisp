@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "N must be a multiple of 64"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
+;; Endeavour 199 -- a 64x32 accumulator is half of a 128-byte TMA box.
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e199_four (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))
+        (B-tile (make-scratch-matrix half (32 64)))
+        (D      (make-wgmma-accumulator float (64 32) 0.0)))
+    (wgmma-accumulate-via-tile (64 32 64) D A-tile B-tile :swizzle :128b)
+    (store-tile-at (to-half D) C (0 0) :via :tma)))
