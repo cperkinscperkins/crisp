@@ -137,6 +137,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (%RFL-WRAP-STRIDE-ANALYZER NAME ANALYZER)  analysis/control.lisp
 - - - - - - - - - - (%RFL-FREE-IN-FORMS-P FORMS)  analysis/control.lisp
 - - - - - - - - - - - (%RFL-HEAD-NAME FORM)  analysis/control.lisp
+- - - - - - - - - (REGISTER-197-PAIR-STORE-ANALYZERS)  analysis/control.lisp
 - - - - - - - - (REGISTER-STRUCT-ANALYZERS)  analysis/structs.lisp
 - - - - - - - - - (DEF-EXPRESSION-ANALYZER OPERATOR HANDLER-FN)  types/registry.lisp [See above]
 - - - - - - - - (REGISTER-MMA-ANALYZERS)  mma.lisp
@@ -252,6 +253,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%199-VIA-TMA-P KEYS)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%199-SCAN-REGISTER-TMA-STORE ARGS)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%196-PEEL-STORE-CONVERSION SRC)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%199-CONVERT-ELEMENT CONVERT)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%199-TYPE-SYMBOL NAME)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%199-DESCRIPTOR-NAME DEST FN)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%199-STAGE-NAME FN)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC-BASE OP ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - (%175-SCRATCH-ADDRESS-SPACE ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%199-TYPE-SYMBOL NAME)  mma.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (SCAN-OPERATOR (OP
                                                             (EQL
                                                              'MAKE-SCRATCH-TENSOR)) ARGS)  analysis/core.lisp [RECURSION]
@@ -266,11 +280,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - (%ARCH-NAME-STRING ARCH)  types/registry.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (RESOLVED-TARGET-ARCH)  types/registry.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%REGISTER-SCRATCH-TENSOR-IMPLICIT OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC-BASE OP ARGS)  analysis/structs.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (EXPAND-STORAGE-HANDLE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - (%175-SCRATCH-ADDRESS-SPACE ARGS)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
@@ -879,25 +889,41 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
                                                                                                    hw_tmp))  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%184-CALL-WITH-LOOP-EXIT-TARGET BUILDER THUNK)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%197-AREF-ELEMENT-POINTER AREF-NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP WHAT)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
+                                                                 SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
+- - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%TMA-LOOKUP-DESCRIPTOR-PTR BUILDER VAR-ENV SRC-NAME GLOB-PTR-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - (%199-LINEAR-TID BUILDER MODULE ONE-D-P)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-X BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Y BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Z BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-X BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Y BUILDER MODULE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%199-STAGE-BASE-I32 BUILDER VAR-ENV NODE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (ENSURE-STRUCT-LLVM-TYPE NAME)  structs.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (MANGLE-TEMPLATE-STRUCT-NAME NAME PARAMS)  mangling.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%199-ASM BUILDER ARG-TYPES ARGS ASM CONSTRAINTS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-EVENT-TYPE MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-MBAR-GLOBAL MODULE &OPTIONAL (COUNT
                                                                                          1))  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-X BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Y BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Z BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-X BUILDER MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Y BUILDER MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-TID-Z BUILDER MODULE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-INIT-SHARED BUILDER MODULE MBARRIER-PTR COUNT-VAL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBAR-SLOT-PTR BUILDER MBAR-BASE I)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%MODULE-HAS-CLUSTER-P)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-X BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Y BUILDER MODULE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-X BUILDER MODULE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Y BUILDER MODULE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-READ-NTID-Z BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-ASYNC-WORK-GROUP-COPY BUILDER MODULE DST-AS3 SRC-AS1 NUM-I64 EVENT-IN ELEM-TYPE)  codegen.lisp
@@ -918,7 +944,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-CP-ASYNC-WAIT-GROUP BUILDER MODULE N)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - (%TMA-LOOKUP-DESCRIPTOR-PTR BUILDER VAR-ENV SRC-NAME GLOB-PTR-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%COERCE-TO-I32 BUILDER VAL)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-EXPECT-TX BUILDER MBAR-ADDR-I32 TX-BYTES-I32)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
@@ -928,7 +953,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1 &OPTIONAL (MCAST-MASK
                                                                                                                                                           0) (MCAST-P
                                                                                                                                                               NIL))  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-TMA-BULK-TENSOR-G2S-2D-BASE BUILDER MODULE DST-SMEM-PTR MBAR-PTR TENSORMAP-PTR COORD0 COORD1 &OPTIONAL (MCAST-MASK
+                                                                                                                                                                 0) (MCAST-P
+                                                                                                                                                                     NIL))  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - (%GEN-MULTICAST-MASK-VALUE BUILDER MODULE PLAN)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%CLUSTER-AXIS-STRIDES DIMS)  analysis/control.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%PTX-READ-WARP-SREG BUILDER MODULE SREG-NAME)  codegen.lisp [See above]
@@ -1044,15 +1072,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-WGMMA BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N &OPTIONAL SWIZZLE-P (K
-                                                                                                                               8) ELEM)  mma.lisp
+                                                                                                                               8) ELEM (B-MAJOR
+                                                                                                                                        K))  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-PROXY-ASYNC-SHARED BUILDER)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (%PTX-BARRIER BUILDER MODULE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - (%EMIT-WGMMA-MMA-ONLY BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF &OPTIONAL ELEM)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - (%EMIT-WGMMA-MMA-ONLY BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF &OPTIONAL ELEM B-MN-LBO)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-MAKE-DESC BUILDER BASE-PTR &OPTIONAL SWIZZLE-P (KSLICE-BYTE-OFF
                                                                                                         0))  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - (%198-WGMMA-MAKE-DESC-MN BUILDER BASE-PTR KSLICE-BYTE-OFF LBO-BYTES)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-ASM-STRING NACC N &OPTIONAL ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-OPERAND-MNEMONIC ELEM)  mma.lisp
@@ -1334,17 +1364,24 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - (COMPILE-TOPLEVEL-FORM FORM LOCATION MODULE BUILDER DI-BUILDER DI-COMPILE-UNIT LOCATION-MAP)  analysis/core.lisp [See above]
 - - - - - - - - (WALK-CODE-FORMS FORMS VISITOR-FN)  analysis/core.lisp [See above]
 - - - - - - - (RESOLVE-TMA-DESCRIPTORS)  analysis/core.lisp
-- - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp
-- - - - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp
-- - - - - - - - - (%TMA-CLASSIFY FN SYM KIND)  analysis/core.lisp
-- - - - - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp
-- - - - - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
-- - - - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
-- - - - - - - - - (%TMA-DOWNSTREAM-CARRIER FN UNAME)  analysis/core.lisp
-- - - - - - - - - - (%FN-CARRIES-DESCRIPTOR-P FN-NAME UNAME)  analysis/core.lisp
-- - - - - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp [RECURSION]
-- - - - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp [See above]
-- - - - - - - - (%KERNEL-PARAM-CONTIGUOUS-TERM KERNEL SYM)  analysis/core.lisp
+- - - - - - - - (%RESOLVE-TMA-LOAD-DESCRIPTORS)  analysis/core.lisp
+- - - - - - - - - (RESOLVE-TMA-DESCRIPTORS-BASE)  analysis/core.lisp
+- - - - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp
+- - - - - - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp
+- - - - - - - - - - - (%TMA-CLASSIFY FN SYM KIND)  analysis/core.lisp
+- - - - - - - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp
+- - - - - - - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - - - (%TMA-DOWNSTREAM-CARRIER FN UNAME)  analysis/core.lisp
+- - - - - - - - - - - - (%FN-CARRIES-DESCRIPTOR-P FN-NAME UNAME)  analysis/core.lisp
+- - - - - - - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp [RECURSION]
+- - - - - - - - - - - (%FN-EXPLICIT-PARAMS FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - - - (%KERNEL-PARAM-CONTIGUOUS-TERM KERNEL SYM)  analysis/core.lisp
+- - - - - - - - - (%198-TMA-SPLIT DIMS ELEM-BYTES)  analysis/control.lisp
+- - - - - - - - - (%198-ELEM-BYTES ELEM)  analysis/control.lisp
+- - - - - - - - (%FN-IS-KERNEL-P FN-NAME)  analysis/core.lisp [See above]
+- - - - - - - - (%TMA-RESOLVE-REF FN UNAME KIND &OPTIONAL VISITED)  analysis/core.lisp [See above]
+- - - - - - - - (%KERNEL-PARAM-CONTIGUOUS-TERM KERNEL SYM)  analysis/core.lisp [See above]
 - - - - - - - (CHECK-FOR-RECURSION-CYCLES)  analysis/core.lisp
 - - - - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp
 - - - - - - - - - (DETECT-CYCLE-FROM-NODE NODE VISITED VISITING)  analysis/core.lisp [RECURSION]
@@ -1588,6 +1625,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%175-VJP-ATOMIC-LINEAR FORM CTX SIGN OP-NAME)  autodiff.lisp
 - - - (%175-ATOMIC-PLACE-PARTS PLACE)  autodiff.lisp
 - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp
+- - - - (%AD-WIDENING-CONVERSION-FORM-P EXPR)  autodiff.lisp [See above]
 - - - - (%AD-VIEW-CONSTRUCTOR-P FORM)  autodiff.lisp
 - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [RECURSION]
 
@@ -2040,6 +2078,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - - - - (%MMA-VJP-MMA-ADMISSIBLE-P MT NT KT)  autodiff.lisp
 - - - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
+- - - - - - (%MMA-AD-ACCUMULATOR-FITS-REGISTERS-P DIMS)  autodiff.lisp [See above]
 - - - - - (%TLC-BWD-ADJ-NAME SYM INPUTS OUTPUTS LOCAL-ADJ-FN KERNEL-PKG)  autodiff.lisp [See above]
 - - - - - (%AD-ADJ-ELEM FORWARD-ELEM CL-PKG)  autodiff.lisp
 - - - - - (%AD-ADJ-ZERO FORWARD-ELEM CL-PKG)  autodiff.lisp
@@ -2345,9 +2384,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%TYPE-ATOM-EQUAL-P A B)  types/validation.lisp
 - - - (VALID-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
+- (ANALYZE-%PAIR-OK-P-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%197-PAIR-ELEM-BYTES ELEM-TYPE)  analysis/control.lisp
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
 - (ANALYZE-%SPIRV-ASYNC-COPY-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-%STORE-PAIR-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%197-PAIR-ELEM-BYTES ELEM-TYPE)  analysis/control.lisp [See above]
 
 - (ANALYZE-%STORE-TILE-AT-BWD-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -2465,14 +2514,17 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ANALYZE-ATOMIC-RMW-EXPRESSION OP EXPR ENV CONTEXT LOCATION &KEY NO-DELTA)  analysis/ops.lisp [See above]
 
 - (ANALYZE-AWAIT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-AWAIT-EXPRESSION-BASE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp [See above]
+- - - (BARRIER-LOAD-COUNT-OF BARRIER-FORM)  analysis/control.lisp
+- - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
+- - - (BARRIER-INITIAL-PHASE-OF BARRIER-FORM)  analysis/control.lisp
+- - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
+- - - (BARRIER-RING-COUNT-OF BARRIER-FORM)  analysis/control.lisp
+- - - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp [See above]
-- - (BARRIER-LOAD-COUNT-OF BARRIER-FORM)  analysis/control.lisp
-- - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
-- - (BARRIER-INITIAL-PHASE-OF BARRIER-FORM)  analysis/control.lisp
-- - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
-- - (BARRIER-RING-COUNT-OF BARRIER-FORM)  analysis/control.lisp
-- - - (%BARRIER-RING-FORM-P FORM)  analysis/control.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (ANALYZE-BITCAST-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
@@ -2631,37 +2683,42 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (ANALYZE-LET-WITH-TILE-EXPLOSION EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%EXPLODE-REGISTER-TILES LET-EXPR &OPTIONAL LOCATION CONTEXT)  mma.lisp
-- - - (%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS BINDINGS)  mma.lisp
-- - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
-- - - (%WARP-GRID-FROM-BINDINGS BINDINGS CONTEXT LOCATION)  mma.lisp
+- - - (%196-TILE-WARP-SHARES BINDINGS LOCATION)  mma.lisp
 - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 - - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp
 - - - - (%WARP-MASK-UNQUOTE V)  mma.lisp
-- - - - (%FRAG-MN-FOR-OPERAND OPERAND &OPTIONAL ELEM)  mma.lisp
-- - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
-- - - - - (%ACC-FRAG-MN ELEM)  mma.lisp
-- - - - (%WARP-GRID-DIMS N-WARPS M-FRAGS N-FRAGS)  mma.lisp
-- - - (%REGISTER-TILE-ELEMS-FROM-BINDINGS BINDINGS)  mma.lisp
-- - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
-- - - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp
+- - - (%EXPLODE-REGISTER-TILES-BASE LET-EXPR &OPTIONAL LOCATION CONTEXT)  mma.lisp
+- - - - (%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS BINDINGS)  mma.lisp
 - - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
-- - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
-- - - (%FRAG-MN-FOR-OPERAND OPERAND &OPTIONAL ELEM)  mma.lisp [See above]
-- - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp [See above]
-- - - (%WARP-MASK-UNQUOTE V)  mma.lisp [See above]
-- - - (%REGISTER-TILE-FIT-CHECK M N LOCATION &OPTIONAL (ELEM 'FLOAT))  mma.lisp
-- - - - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
-- - - - (%REGISTER-TILE-DIMS-MUST-DIVIDE M N LOCATION &OPTIONAL (FR 16) (FC 8))  mma.lisp
-- - - - (%HP-REGISTERS-PER-THREAD-DEFAULT &OPTIONAL (PROFILE
-                                                     (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp [See above]
-- - - (%VALIDATE-WARP-MASK MASK NFRAGS N-WARPS M N LOCATION &OPTIONAL DIVISOR)  mma.lisp
-- - - - (%WARP-MASK-CONTIGUOUS-TRUE-P MASK)  mma.lisp
-- - - (%RESOLVE-WORKGROUP-WARP-COUNT CONTEXT)  mma.lisp
-- - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
-- - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
-- - - (%OPERAND-WARP-DIVISOR OPERAND)  mma.lisp
-- - - (%REGISTER-TILE-FRAG-SYMS VAR COUNT)  mma.lisp
-- - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp [See above]
+- - - - (%WARP-GRID-FROM-BINDINGS BINDINGS CONTEXT LOCATION)  mma.lisp
+- - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
+- - - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp [See above]
+- - - - - (%WARP-MASK-UNQUOTE V)  mma.lisp [See above]
+- - - - - (%FRAG-MN-FOR-OPERAND OPERAND &OPTIONAL ELEM)  mma.lisp
+- - - - - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
+- - - - - - (%ACC-FRAG-MN ELEM)  mma.lisp
+- - - - - (%WARP-GRID-DIMS N-WARPS M-FRAGS N-FRAGS)  mma.lisp
+- - - - (%REGISTER-TILE-ELEMS-FROM-BINDINGS BINDINGS)  mma.lisp
+- - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
+- - - - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp
+- - - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
+- - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
+- - - - (%FRAG-MN-FOR-OPERAND OPERAND &OPTIONAL ELEM)  mma.lisp [See above]
+- - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp [See above]
+- - - - (%WARP-MASK-UNQUOTE V)  mma.lisp [See above]
+- - - - (%REGISTER-TILE-FIT-CHECK M N LOCATION &OPTIONAL (ELEM 'FLOAT))  mma.lisp
+- - - - - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
+- - - - - (%REGISTER-TILE-DIMS-MUST-DIVIDE M N LOCATION &OPTIONAL (FR 16) (FC 8))  mma.lisp
+- - - - - (%HP-REGISTERS-PER-THREAD-DEFAULT &OPTIONAL (PROFILE
+                                                       (ACTIVE-HARDWARE-PROFILE)))  hardware-profile.lisp [See above]
+- - - - (%VALIDATE-WARP-MASK MASK NFRAGS N-WARPS M N LOCATION &OPTIONAL DIVISOR)  mma.lisp
+- - - - - (%WARP-MASK-CONTIGUOUS-TRUE-P MASK)  mma.lisp
+- - - - (%RESOLVE-WORKGROUP-WARP-COUNT CONTEXT)  mma.lisp
+- - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp [See above]
+- - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - (%OPERAND-WARP-DIVISOR OPERAND)  mma.lisp
+- - - - (%REGISTER-TILE-FRAG-SYMS VAR COUNT)  mma.lisp
+- - - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp [See above]
 - - (%EXPAND-MATMUL-TILE-STRIDE-REGISTER-FORMS LET-EXPR LOCATION)  mma.lisp
 - - - (%MMTS-REGISTER-DIMS-MAP BINDINGS)  mma.lisp [See above]
 - - (%MMA-SCRATCH-TILE-DIMS-FROM-BINDINGS BINDINGS)  mma.lisp [See above]
@@ -2740,10 +2797,16 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (ASYNC-BARRIER-MODE-OF BARRIER-FORM)  analysis/control.lisp [See above]
 - - - (%WARP-SPEC-CHECK-BLOCK-ONLY OP-NAME MODE LOCATION)  analysis/control.lisp
 - - - (%ANALYZE-NVVM-TMA-LOAD-TILE-AT EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - - - (%ANALYZE-NVVM-TMA-LOAD-TILE-AT-BASE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
-- - - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
-- - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - (%ANALYZE-NVVM-TMA-LOAD-TILE-AT-MULTICAST EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - - (%ANALYZE-NVVM-TMA-LOAD-TILE-AT-BASE EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
+- - - - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
+- - - - (%198-SWIZZLE-128B-P SWIZZLE)  analysis/control.lisp
+- - - - (%198-TILE-STATIC-DIMS TILE-FORM RANK CONTEXT)  analysis/control.lisp
+- - - - - (%196-STATIC-TILE-DIMS TILE-FORM RANK)  analysis/control.lisp
+- - - - (%198-TMA-SPLIT DIMS ELEM-BYTES)  analysis/control.lisp [See above]
 - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - - (%EXPAND-LOAD-TILE-AT-FORM EXPR LOCATION)  analysis/control.lisp
 - - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
@@ -2751,6 +2814,15 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%TLC-SOURCE-COORD-EXPRS N ORIGIN-SYMS TILE-COORD-SYMS PERM PLUS-SYM)  analysis/control.lisp [See above]
 - - - - (%TLC-ALL-IN-BOUNDS-FORM N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)  analysis/control.lisp [See above]
 - - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
+- - - (%196-CP-ASYNC-VEC-WIDTH TILE-FORM ENV CONTEXT LOCATION)  analysis/control.lisp
+- - - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - - (GET-ARRAY-ELEMENT-TYPE TYPE)  analysis/structs.lisp [See above]
+- - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (%196-EXPAND-ASYNC-LOAD-TILE-VEC-FORM EXPR LOCATION VEC &OPTIONAL STATIC-DIMS)  analysis/control.lisp
+- - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
+- - - - (%TLC-ALL-IN-BOUNDS-FORM N SRC-COORD-EXPRS GLOBAL-EXTENT-SYMS LT-SYM AND-SYM)  analysis/control.lisp [See above]
+- - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
+- - - (%196-STATIC-TILE-DIMS TILE-FORM RANK)  analysis/control.lisp [See above]
 - - - (%EXPAND-ASYNC-LOAD-TILE-AT-FORM EXPR LOCATION)  analysis/control.lisp
 - - - - (%EXTRACT-KEY-ARG KEY-ARGS KEYWORD DEFAULT)  analysis/control.lisp [See above]
 - - - - (%TLC-TRANSPOSE-PERMUTATION N TRANSPOSE-FORM LOCATION)  analysis/control.lisp [See above]
@@ -3046,9 +3118,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (ENSURE-BRANCH-COMPATIBILITY THEN-NODE ELSE-NODE LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-STORE-FRAGMENT EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - (%196-PEEL-STORE-CONVERSION SRC)  mma.lisp [See above]
 - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%196-WRAP-CONVERSION CONVERT FORM)  mma.lisp
 - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 
 - (ANALYZE-STORE-GLOBAL-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
@@ -3071,20 +3145,37 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - (%TLC-COOP-LOOP-SKELETON N TILE-SYM LOCAL-BINDINGS TILE-COORD-SYMS TILE-EXTENT-SYMS LID-SYMS LWS-SYMS INNER-FORM CL-PKG)  analysis/control.lisp [See above]
 
 - (ANALYZE-STORE-TILE-AT-MMA EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - (%199-VIA-TMA-P KEYS)  mma.lisp [See above]
+- - (%196-PEEL-STORE-CONVERSION SRC)  mma.lisp [See above]
+- - (%199-ANALYZE-TMA-STORE EXPR SRC CONVERT ENV CONTEXT LOCATION)  mma.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp [See above]
+- - - (%199-CONVERT-ELEMENT CONVERT)  mma.lisp [See above]
+- - - (%DECLARED-LOCAL-SIZE-DIMS DECLARATIONS)  analysis/core.lisp [See above]
+- - - (%199-DESCRIPTOR-NAME DEST FN)  mma.lisp [See above]
+- - - (%199-STAGE-NAME FN)  mma.lisp [See above]
+- - - (UNMANGLE-TEMPLATE-STRUCT-NAME SYMBOL)  mangling.lisp [See above]
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (VALID-PARAMETERIZED-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp [See above]
-- - (%WGMMA-STORE-REWRITE-ORIGIN TILE DEST ROW-ORIGIN COL-ORIGIN N)  mma.lisp
+- - (%WGMMA-STORE-REWRITE-ORIGIN TILE DEST ROW-ORIGIN COL-ORIGIN N &OPTIONAL CONVERT)  mma.lisp
+- - - (%196-WRAP-CONVERSION CONVERT FORM)  mma.lisp [See above]
+- - (%196-REFUSE-CONVERTED-NON-ACCUMULATOR OP CONVERT SRC-TYPE LOCATION)  mma.lisp
 - - (ANALYZE-STORE-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-STORE-TILE-MMA EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - (%196-PEEL-STORE-CONVERSION SRC)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp [See above]
-- - (%WGMMA-STORE-REWRITE TILE DEST TILE-ID N)  mma.lisp
-- - - (%WGMMA-STORE-REWRITE-ORIGIN TILE DEST ROW-ORIGIN COL-ORIGIN N)  mma.lisp [See above]
+- - (%WGMMA-STORE-REWRITE TILE DEST TILE-ID N &OPTIONAL CONVERT)  mma.lisp
+- - - (%WGMMA-STORE-REWRITE-ORIGIN TILE DEST ROW-ORIGIN COL-ORIGIN N &OPTIONAL CONVERT)  mma.lisp [See above]
 - - (%REGISTER-TILE-TYPE-P TYPE-NAME)  mma.lisp [See above]
 - - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
+- - (%196-REFUSE-CONVERTED-NON-ACCUMULATOR OP CONVERT SRC-TYPE LOCATION)  mma.lisp [See above]
 - - (ANALYZE-STORE-TILE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - - (ANALYZE-STORE-TILE-AT-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp [See above]
 
@@ -3167,18 +3258,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 
 - (ANALYZE-WGMMA-ACCUMULATE EXPR ENV CONTEXT LOCATION)  mma.lisp
-- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
-- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
-- - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
-- - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
-- - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp [See above]
-- - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
+- - (ANALYZE-WGMMA-ACCUMULATE-BASE EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (%GET-TENSOR-ARITY TYPE)  analysis/structs.lisp [See above]
+- - - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
+- - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp [See above]
+- - - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
 
 - (ANALYZE-WGMMA-ACCUMULATE-VIA-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
 - - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%CHECK-WGMMA-SHAPE SHAPE LOCATION &OPTIONAL SWIZZLE ELEM)  mma.lisp [See above]
-- - (%CHECK-WGMMA-OPERANDS SHAPE A B LOCATION ELEM SWIZZLE)  mma.lisp
+- - (%WGMMA-K-PER-SLICE ELEM)  mma.lisp [See above]
+- - (%198-SWIZZLE-128B-P SWIZZLE)  analysis/control.lisp [See above]
+- - (%CHECK-WGMMA-OPERANDS SHAPE A B LOCATION ELEM SWIZZLE &OPTIONAL (B-MAJOR K))  mma.lisp
 - - - (%MMA-OPERAND-EXTENT REF TILES WHICH)  mma.lisp
 - - - - (%RESOLVE-TILE-REF REF TILES)  mma.lisp
 - - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]

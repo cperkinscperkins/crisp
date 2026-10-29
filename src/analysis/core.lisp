@@ -840,9 +840,11 @@
                        nil)))
                 (t nil))))))))
 
-(defun resolve-tma-descriptors ()
+(defun resolve-tma-descriptors-base ()
   "Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,
-   carrying the :swizzle marking from *tma-descriptor-info*."
+   carrying the :swizzle marking from *tma-descriptor-info*.
+
+   Endeavours 198 / 199: the original resolution; %resolve-tma-load-descriptors narrows its wide :128b boxes and resolve-tma-descriptors adds the TMA STORE descriptors."
   (loop for kernel being the hash-keys of *implicit-arg-map*
         when (%fn-is-kernel-p kernel)
           do (dolist (entry (gethash kernel *implicit-arg-map*))
@@ -866,6 +868,60 @@
                        (t
                         (log:warn "Endeavor 137: unresolved CUtensorMap descriptor ~a in kernel ~a (describes=~a tile=~a)"
                                   uname kernel d til)))))))))
+
+(defun %resolve-tma-load-descriptors ()
+  "Resolve every CUtensorMap descriptor to (:describes :element-type :rank :box-dims :layout :swizzle).
+   Endeavour 198: a :128b box wider than 128 bytes is narrowed to 128 bytes (the hardware limit);
+   the load issues one copy per box (%198-tma-split)."
+  (prog1 (resolve-tma-descriptors-base)
+    (maphash (lambda (key info)
+               (let* ((box (getf info :box-dims))
+                      (split (and (eq (getf info :swizzle) :128b) box
+                                  (%198-tma-split box (%198-elem-bytes (getf info :element-type))))))
+                 (when split
+                   (let ((narrow (append (butlast box) (list (getf split :inner)))))
+                     (log:info "198 TMA descriptor ~a: box ~a -> ~a (~a boxes)" key box narrow (getf split :count))
+                     (setf (getf (gethash key *tma-resolved*) :box-dims) narrow)))))
+             *tma-resolved*)))
+
+(defun resolve-tma-descriptors ()
+  "Endeavor 137/140: resolve describes + box-dims through the carrier chain into *tma-resolved*,
+   carrying the :swizzle marking from *tma-descriptor-info*.  Endeavour 198: a :128b box wider than
+   128 bytes is narrowed to 64-column boxes.
+
+   Endeavour 199: a STORE descriptor (:store-box in its info) has no tile to resolve -- its box is the
+   store box and its element type the conversion's.  Store entries are held back from the load
+   resolution (which would warn 'unresolved') and resolved here: describes through the carrier chain,
+   then the fixed box.  The TMA store writes row-major boxes, so a :col-major destination is refused."
+  (let ((stores (loop for k being the hash-keys of *tma-descriptor-info* using (hash-value v)
+                      when (getf v :store-box) collect (cons k v))))
+    (dolist (s stores) (remhash (car s) *tma-descriptor-info*))
+    (unwind-protect (%resolve-tma-load-descriptors)
+      (dolist (s stores) (setf (gethash (car s) *tma-descriptor-info*) (cdr s))))
+    (loop for kernel being the hash-keys of *implicit-arg-map*
+          when (%fn-is-kernel-p kernel)
+            do (dolist (entry (gethash kernel *implicit-arg-map*))
+                 (let* ((uname (car entry))
+                        (info  (cdr (assoc uname stores))))
+                   (when info
+                     (let ((d (%tma-resolve-ref kernel uname :describes)))
+                       (if (and d (eq (first d) :tensor))
+                           (let ((layout (%kernel-param-contiguous-term kernel (second d))))
+                             (unless (eq layout :row-major)
+                               (error 'crisp-compiler-error
+                                      :message (format nil "store-tile-at :via :tma: ~a is ~(~a~); the TMA store writes row-major boxes, so the destination must be :row-major." (second d) layout)
+                                      :source-location nil))
+                             (setf (gethash (cons kernel uname) *tma-resolved*)
+                                   (list :describes (second d)
+                                         :element-type (getf info :store-element)
+                                         :rank 2
+                                         :box-dims (getf info :store-box)
+                                         :layout layout
+                                         :swizzle :128b))
+                             (log:info "199 store descriptor ~a in ~a: ~a box ~a"
+                                       uname kernel (getf info :store-element) (getf info :store-box)))
+                           (log:warn "Endeavour 199: unresolved TMA store descriptor ~a in kernel ~a (describes=~a)"
+                                     uname kernel d)))))))))
 
 ;; --- Generic Dependency Scanner ---
 
@@ -932,6 +988,13 @@
     (when (and (symbolp op)
                (member (symbol-name op) '("LOAD-TILE" "LOAD-TILE-AT") :test #'string-equal))
       (%scan-register-tma-descriptor args))
+    ;; Endeavour 199: a (store-tile-at ... :via :tma) on PTX registers its CUtensorMap store
+    ;; descriptor and the kernel's staging buffer.  Matched by symbol-name, like LOAD-TILE.
+    (when (and (symbolp op) (string= (symbol-name op) "STORE-TILE-AT")
+               (eq *target-backend* :ptx)
+               (consp args) (>= (length args) 3)
+               (%199-via-tma-p (cdddr args)))
+      (%199-scan-register-tma-store args))
     (when (and (symbolp op) (not (macro-function op)) (not (special-operator-p op)))
           (pushnew op *scan-callees*)
           ;; Endeavor 137: record this call site's explicit args so a descriptor's describes/tile
@@ -1067,6 +1130,43 @@
         (when (and (integerp n) (plusp n))
           (setf (gethash bname *async-barrier-ring-counts*) n)))))
   nil)
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 199 -- pass 1 of (store-tile-at ... :via :tma): the store descriptor and staging buffer
+;;;; See tests/spec/199-tma-store/tma-store.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %199-scan-register-tma-store (args)
+  "Endeavour 199, pass 1.  (store-tile-at SRC DEST ORIGIN :via :tma) with SRC a (to-half X) /
+   (to-bfloat16 X): register DEST's CUtensorMap descriptor (marked :store-box, so resolution gives it
+   the store box instead of looking for a tile) and the function's staging buffer, an implicit LOCAL
+   scratch vector of half.  Both once per function.  The staging size is a placeholder here: analysis
+   knows the kernel's local-size and sets it (16 KB per warpgroup).  Anything malformed is left for
+   analysis to refuse with a message."
+  (multiple-value-bind (src convert) (%196-peel-store-conversion (first args))
+    (declare (ignore src))
+    (let ((dest (second args))
+          (elem (%199-convert-element convert))
+          (fn   (compiler-context-scanning-function-name *compiler-context*)))
+      (when (and fn elem dest (symbolp dest))
+        (setf *scan-is-originator* t)
+        (let ((desc     (%199-descriptor-name dest fn))
+              (stage    (%199-stage-name fn))
+              (existing (gethash fn *implicit-arg-map*)))
+          (unless (find desc existing :key #'car)
+            (push (cons desc (list (intern "TENSOR-MAP" (find-package :crisp.compiler)) dest))
+                  (gethash fn *implicit-arg-map*))
+            (setf (gethash desc *tma-descriptor-info*)
+                  (list :originator fn :describes-sym dest :tile-sym nil
+                        :store-box *199-store-box* :store-element elem :swizzle :128b))
+            (log:info "Pass 1: store-tile-at :via :tma into ~a -> CUtensorMap store descriptor ~a (~a, box ~a)"
+                      dest desc elem *199-store-box*))
+          (unless (find stage existing :key #'car)
+            (let ((spec (%scratch-tensor-canonical-spec 'make-scratch-vector
+                                                         (list (%199-type-symbol "HALF") 8192))))
+              (push (cons stage spec) (gethash fn *implicit-arg-map*))
+              (setf (gethash stage *implicit-scratch-size-expr-map*) 8704)
+              (log:info "Pass 1: store-tile-at :via :tma in ~a -> staging buffer ~a (~a)" fn stage spec))))))))
 
 (defun %scan-register-tma-descriptor (args)
   "Endeavor 137/140: register a CUtensorMap descriptor for a :block load-tile's SRC; capture the
@@ -2678,8 +2778,13 @@ in single-pass mode."
 
 (defun semantic-node-type (node)
   "Returns the Crisp type of a semantic node.
-   Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*)."
+   Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store."
   (etypecase node
+    ;; Endeavours 197 / 199: the packed-store and TMA-store nodes.
+    (semantic-store-pair (semantic-store-pair-type node))
+    (semantic-pair-ok-p (semantic-pair-ok-p-type node))
+    (semantic-wgmma-tma-store (semantic-wgmma-tma-store-type node))
     (semantic-to-workgroup-uniform (semantic-to-workgroup-uniform-type node))
     (semantic-to-warp-uniform (semantic-to-warp-uniform-type node))
     (semantic-dotimes (semantic-dotimes-type node))
@@ -2758,8 +2863,13 @@ in single-pass mode."
 
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
-   Extended for 092-dotimes and 114 Phase B."
+   Extended for 092-dotimes and 114 Phase B.
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store."
   (etypecase node
+    ;; Endeavours 197 / 199: the packed-store and TMA-store nodes.
+    (semantic-store-pair (semantic-store-pair-source-location node))
+    (semantic-pair-ok-p (semantic-pair-ok-p-source-location node))
+    (semantic-wgmma-tma-store (semantic-wgmma-tma-store-source-location node))
     ;; Endeavor 122 (FFI) Pass 4: handle forms.
     (semantic-make-c-handle (semantic-make-c-handle-source-location node))
     (semantic-get-pointer (semantic-get-pointer-source-location node))
