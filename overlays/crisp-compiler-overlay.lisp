@@ -2239,3 +2239,47 @@
                   (setf v (llvm-build-extract-value builder v 0 "tma_stage_field")))
                  (t (cl:return))))
       (error "store-tile-at :via :tma: no data pointer at the head of the staging record ~a" spec))))
+
+;;;; ==========================================================================================
+;;;; ENDEAVOUR 199 (CI follow-up) -- an MMA backward whose operand accumulators do not fit the
+;;;; register budget takes the scalar lowering.
+;;;;
+;;;; CI (--differentiate) failed 198/01: "make-register-tile: a 64x128 accumulator tile needs 256
+;;;; registers/thread ... exceeding the register budget of 255".  The tile is B-TILE_BWACC, dB's
+;;;; register accumulator (Kt x Nt = 64 x 128) minted by %mma-via-tile-backward.  Endeavour 163 gave
+;;;; the dC adjoint a shared-memory fallback (%mma-ad-accumulator-fits-registers-p) but the two operand
+;;;; accumulators were never asked; %mma-vjp-mma-admissible-p checked only that the shapes decompose
+;;;; into fragments.  Pre-existing, not transB: the same kernel with a K-major B fails identically, a
+;;;; 64x64 accumulator differentiates, and 198/01 is the only differentiated 64x128 wgmma outside a
+;;;; ring (rings already take the scalar lowering).
+;;;;
+;;;; Fix (Chris): decline the MMA fast path when dA (Mt x Kt) or dB (Kt x Nt) would not fit, so the
+;;;; existing scalar lowering realises the same dA = dC.B^T, dB = A^T.dC.  The backward of an MMA is
+;;;; the same whatever the forward's optimisation; it must never fail on a storage choice.
+;;;; ==========================================================================================
+
+;; src/autodiff.lisp
+(defun %mma-vjp-mma-admissible-p (mt nt kt)
+  "T when the MMA fast path can realise the backward: both backward accumulators (Mt x Kt and
+   Kt x Nt) must decompose into whole hardware accumulator fragments.  This is a PERFORMANCE
+   predicate — declining it selects the scalar lowering, never an error.
+
+   Endeavour 199: and both must FIT the per-thread register budget
+   (%mma-ad-accumulator-fits-registers-p, the predicate endeavour 163 gave the dC adjoint), because
+   %mma-via-tile-backward mints them as register tiles.  A 64x128 wgmma's dB (64 x 128 = 256
+   registers) used to reach make-register-tile's fit check and fail the whole backward."
+  (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+    (declare (ignore sk))
+    (let ((decomposes (and (plusp sm) (plusp sn)
+                           (zerop (mod kt (lcm sm sn)))
+                           (zerop (mod mt sm))
+                           (zerop (mod nt sn)))))
+      (cl:cond
+        ((not decomposes) nil)
+        ((and (%mma-ad-accumulator-fits-registers-p (list mt kt))
+              (%mma-ad-accumulator-fits-registers-p (list kt nt)))
+         t)
+        (t
+         (log:info "199 MMA backward Mt=~a Nt=~a Kt=~a: dA (~ax~a) or dB (~ax~a) exceeds the register budget -> scalar lowering"
+                   mt nt kt mt kt kt nt)
+         nil)))))

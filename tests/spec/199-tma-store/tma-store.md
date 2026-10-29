@@ -49,6 +49,7 @@ Lane 0 runs `cp.async.bulk.wait_group.read 0` before a slice is rewritten and on
 | D-199-3 | Per-warp 16-row TMA boxes: only warp-level syncs, no warpgroup named barrier.  32 TMA stores per CTA tile (2 KB each) instead of 8 larger ones -- the probe measured this shape. |
 | D-199-4 | The final read-wait is at the end of each store, not at kernel exit: self-contained and independent of control flow.  It waits for a 4 KB shared-memory read, not for the global write.  Measured equal to the probe (which waited at exit): 228.0 vs 227.5 us. |
 | D-199-5 | 16-bit outputs only (stmatrix is b16).  An f32 C (the benchmark suite's kernels) keeps the direct store; a st.shared.v2 staging path for f32 is future work. |
+| D-199-7 | CI follow-up (198/01 under `--differentiate`): the MMA backward minted dB (Kt x Nt = 64 x 128) as a 256-register tile and failed the fit check.  Pre-existing -- a K-major 64x128 fails identically; endeavour 163 gave only dC a fallback.  `%mma-vjp-mma-admissible-p` now also asks `%mma-ad-accumulator-fits-registers-p` of dA and dB, so an oversized backward takes the existing scalar lowering (Chris: the backward of an MMA is the same whatever the forward's optimisation; it must not fail on a storage choice).  64x64 and ring (198/02) gradient PTX byte-identical. |
 | D-199-6 | The staging buffer is allocated FIRST in the dynamic window (it is pushed last onto the implicit-arg list); its size is a multiple of 1 KB, so the user's 128B-swizzled tiles stay 1 KB-aligned. |
 
 ## Rungs
