@@ -4,7 +4,7 @@
   "leaderboard_id": 541,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/541?tab=rankings",
   "directory": "05-prefixsum-v2",
-  "crisp_commit": "0e648a7f",
+  "crisp_commit": "832a2890",
   "workload": {
     "dtype": "float32",
     "sizes": [
@@ -52,7 +52,7 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-28T09:51:05Z",
+      "captured_at": "2026-10-30T06:19:44Z",
       "user_name": "cperkinscperkins",
       "rank": 15,
       "total_entrants": 34,
@@ -68,7 +68,7 @@
       "median_score_us": 483.66
     },
     "H100": {
-      "captured_at": "2026-10-28T09:51:05Z",
+      "captured_at": "2026-10-30T06:19:44Z",
       "user_name": "cperkinscperkins",
       "rank": 10,
       "total_entrants": 30,
@@ -84,10 +84,10 @@
       "median_score_us": 876.01
     },
     "A100": {
-      "captured_at": "2026-10-28T09:51:05Z",
+      "captured_at": "2026-10-30T06:19:44Z",
       "user_name": "cperkinscperkins",
       "rank": 21,
-      "total_entrants": 29,
+      "total_entrants": 30,
       "file_name": "crisp_prefixsum_packed_rfl.py",
       "crisp_file": "05-prefixsum-v2/prefixsum_packed_rfl.crisp",
       "py_file": "05-prefixsum-v2/crisp_prefixsum_packed_rfl.py",
@@ -97,10 +97,10 @@
       "submission_id": 967861,
       "top1_score_us": 922.11,
       "top1_user": "HariCharanK",
-      "median_score_us": 1414.03
+      "median_score_us": 1420.35
     },
     "L4": {
-      "captured_at": "2026-10-28T09:51:05Z",
+      "captured_at": "2026-10-30T06:19:44Z",
       "user_name": "cperkinscperkins",
       "rank": 13,
       "total_entrants": 24,

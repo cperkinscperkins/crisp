@@ -38,6 +38,10 @@ NEXT  (housekeeping-oct)
       BUG 124 option (b), the launcher + harnesses report registers / local bytes.  Exposed BUG 126 (AD of
       a cell-of-struct stores a float adjoint).  tests/spec/186-contest-fixes/contest-fixes.md.
       Open: re-measure the float4 kernel on H100 (the .nc effect + the new resource line).
+- [ ] matmul report is not up-to-date. winning entry on leaderboard is not in Reprot.
+     plus we added :via :tma support, but don't see ANY kernel using that 
+- [ ] matmul contest for GPU Mode needs B200 and teneg05? support ( follow up to wgmma )
+- [ ] benchmarks need above, plus incorporation of :via :tma and possibly other code changes introduced by matmul-contest branch.  And then rerun.
 
 
 OPEN
