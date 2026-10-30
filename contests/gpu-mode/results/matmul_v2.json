@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 06: Matmul (fp16 C = A B, 4096x5120x4096 scored)",
   "leaderboard_id": 540,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/540?tab=rankings",
-  "crisp_commit": "0e648a7f",
+  "crisp_commit": "832a2890",
   "workload": {
     "description": "C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS.",
     "total_flops": 171798691840
@@ -32,26 +32,26 @@
   },
   "standings": {
     "H100": {
-      "captured_at": "2026-10-28T09:51:04Z",
+      "captured_at": "2026-10-30T06:19:44Z",
       "user_name": "cperkinscperkins",
-      "rank": 41,
+      "rank": 29,
       "total_entrants": 43,
-      "file_name": "crisp_matmul_v2.py",
-      "crisp_file": "06-matmul-v2/matmul_h100_2wg_deep.crisp",
-      "py_file": "06-matmul-v2/crisp_matmul_v2.py",
+      "file_name": "crisp_matmul_v5.py",
+      "crisp_file": "06-matmul-v2/matmul_h100_2wg_tma.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v5.py",
       "hardware_profile": null,
-      "public_score_us": 340.26,
-      "secret_score_us": 341.17,
-      "submission_id": 968314,
+      "public_score_us": 229.79,
+      "secret_score_us": 228.67,
+      "submission_id": 968487,
       "top1_score_us": 204.96,
       "top1_user": "zachw113",
       "median_score_us": 220.94
     },
     "A100": {
-      "captured_at": "2026-10-28T09:51:04Z",
+      "captured_at": "2026-10-30T06:19:44Z",
       "user_name": "cperkinscperkins",
-      "rank": 59,
-      "total_entrants": 60,
+      "rank": 54,
+      "total_entrants": 55,
       "file_name": "crisp_matmul_v3.py",
       "crisp_file": "06-matmul-v2/matmul_ampere_4w.crisp",
       "py_file": "06-matmul-v2/crisp_matmul_v3.py",
@@ -61,10 +61,10 @@
       "submission_id": 968318,
       "top1_score_us": 595.63,
       "top1_user": "WGX11",
-      "median_score_us": 696.32
+      "median_score_us": 727.19
     },
     "L4": {
-      "captured_at": "2026-10-28T09:51:04Z",
+      "captured_at": "2026-10-30T06:19:44Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 25,
@@ -116,6 +116,24 @@
       "strategy": "A100/L4/B200: 4-warp 128x128 register tile (:warps), flattened 16-byte cp.async walk, await + bar.sync; H100 as v2",
       "registers": null,
       "hardware_profile": "h100"
+    },
+    {
+      "step": "4",
+      "key": "crisp_matmul_v4",
+      "crisp_file": "06-matmul-v2/matmul_h100_2wg_transb.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v4.py",
+      "strategy": "H100: 2wg_deep reading B as given (K N) via wgmma transB (:b-major :mn); transpose kernel gone (endeavour 198)",
+      "registers": null,
+      "hardware_profile": null
+    },
+    {
+      "step": "5",
+      "key": "crisp_matmul_v5",
+      "crisp_file": "06-matmul-v2/matmul_h100_2wg_tma.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v5.py",
+      "strategy": "H100: v4 with both accumulator stores (store-tile-at ... :via :tma) -- stmatrix + per-warp TMA store (endeavour 199)",
+      "registers": null,
+      "hardware_profile": null
     }
   ],
   "runs": [

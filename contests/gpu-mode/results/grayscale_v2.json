@@ -4,7 +4,7 @@
   "leaderboard_id": 538,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/538?tab=rankings",
   "directory": "03-grayscale-v2",
-  "crisp_commit": "0e648a7f",
+  "crisp_commit": "832a2890",
   "workload": {
     "dtype": "float32",
     "shape": [
@@ -44,10 +44,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-28T09:51:02Z",
+      "captured_at": "2026-10-30T06:19:36Z",
       "user_name": "cperkinscperkins",
-      "rank": 25,
-      "total_entrants": 48,
+      "rank": 24,
+      "total_entrants": 47,
       "file_name": "crisp_grayscale_direct_vec4.py",
       "crisp_file": "03-grayscale-v2/grayscale_direct_vec4.crisp",
       "py_file": "03-grayscale-v2/crisp_grayscale_direct_vec4.py",
@@ -56,11 +56,11 @@
       "secret_score_us": 605.34,
       "submission_id": 966635,
       "top1_score_us": 590.12,
-      "top1_user": "uno03270@gmail.com",
+      "top1_user": "Nebius Applied AI Team",
       "median_score_us": 601.52
     },
     "H100": {
-      "captured_at": "2026-10-28T09:51:02Z",
+      "captured_at": "2026-10-30T06:19:36Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 36,
@@ -76,10 +76,10 @@
       "median_score_us": 1371.36
     },
     "A100": {
-      "captured_at": "2026-10-28T09:51:02Z",
+      "captured_at": "2026-10-30T06:19:36Z",
       "user_name": "cperkinscperkins",
-      "rank": 29,
-      "total_entrants": 132,
+      "rank": 23,
+      "total_entrants": 126,
       "file_name": "crisp_grayscale_direct_vec4_nc.py",
       "crisp_file": "03-grayscale-v2/grayscale_direct_vec4_nc.crisp",
       "py_file": "03-grayscale-v2/crisp_grayscale_direct_vec4_nc.py",
@@ -89,10 +89,10 @@
       "submission_id": 966645,
       "top1_score_us": 2345.08,
       "top1_user": "HariCharanK",
-      "median_score_us": 10401.06
+      "median_score_us": 10403.15
     },
     "L4": {
-      "captured_at": "2026-10-28T09:51:02Z",
+      "captured_at": "2026-10-30T06:19:36Z",
       "user_name": "cperkinscperkins",
       "rank": 19,
       "total_entrants": 31,
