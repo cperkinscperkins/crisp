@@ -336,3 +336,182 @@
 ;; src/autodiff.lisp
 (eval-when (:load-toplevel :execute)
   (register-vjp "%CONSTRUCT-STRUCT" (function %200-vjp-construct-struct)))
+
+;;;; =============================================================================================
+;;;; Endeavour 201 -- ordered-workgroup-id + look-back-scan (phase 1: per-thread lanes, 32-bit values).
+;;;; Design: tests/spec/201-look-back-scan/look-back-scan.md.  Both are macros whose expansion owns its
+;;;; scratch (a LET of make-scratch-*, so Pass 1 names it <binding>_FROM_<fn>_<n>, unique per occurrence).
+;;;; look-back-scan hides a %while (the wait on an earlier tile); ANF keeps it unexpanded and it owns a VJP.
+;;;; FOLD: the macros go to src/macros.lisp and the two names are exported from crisp.compiler and
+;;;; imported into crisp-language (src/package.lisp) -- here they are defined on crisp-language symbols.
+;;;; =============================================================================================
+
+;; src/macros.lisp
+(defmacro crisp-language::ordered-workgroup-id ()
+  "(ordered-workgroup-id) -> ulong in [0, NT), NT the launch's workgroup count.  An in-order ticket: the
+   first workgroup to reach the call gets 0, so every workgroup with a smaller ticket has already
+   STARTED -- what makes a decoupled look-back deadlock-free.  Thread 0 takes the ticket from a global
+   counter and broadcasts it through a workgroup-local cell, so the form holds a barrier and is refused
+   under divergent control.  The workgroup that takes the LAST ticket puts the counter back to 0 (every
+   other workgroup has taken its ticket by then), so the next launch in the program starts at 0 again
+   even though global scratch is zeroed only once."
+  `(let ((ticket-counter (make-scratch-cell ulong :address-space :global))
+         (ticket-broadcast  (make-scratch-cell ulong)))
+     (when (= (get-local-linear-id) 0ul)
+       (let ((%owg-tk (atomic-add! (~ ticket-counter) 1ul)))
+         (set! (~ ticket-broadcast) %owg-tk)
+         (when (= %owg-tk (- (* (get-num-groups 0) (get-num-groups 1) (get-num-groups 2)) 1ul))
+           (atomic-store! (~ ticket-counter) 0ul))))
+     (sync-workgroup)
+     (~ ticket-broadcast)))
+
+;; src/macros.lisp
+(defmacro crisp-language::look-back-scan (value tile)
+  "(look-back-scan VALUE TILE) -> the EXCLUSIVE prefix of VALUE over the earlier tiles, per thread: thread i
+   of tile t gets sum over u < t of thread i's VALUE in tile u.  VALUE is a 32-bit uint, int or float;
+   TILE is the workgroup's (ordered-workgroup-id).  Every thread of the workgroup must call it -- a lane
+   left unpublished stalls every later tile -- so it starts with a sync-workgroup, which makes the
+   barrier checks refuse a divergent call site.
+
+   Decoupled look-back over one status word per thread in the grid (:match-global-size, global, zeroed
+   once): word = (tag << 32) | bits(value), tag = epoch*4+1 for a tile's own AGGREGATE, epoch*4+2 for its
+   INCLUSIVE prefix.  Tile 0 publishes inclusive at once; tile t publishes its aggregate, walks back
+   adding aggregates until it meets an inclusive word, then publishes its inclusive.  The wait for a
+   predecessor's word is the %while -- it ends only because every predecessor has started (the ticket's
+   order), which is why an author cannot write it and the compiler hides it here.
+
+   Relaunch: the epoch cell starts at 0.  The LAST tile, after every one of its lanes has published its
+   inclusive word (the second barrier), adds 1 -- by then every tile has read the epoch, since each
+   inclusive word in the chain was published after its tile read it.  The next launch's words carry new
+   tags, so the old words never match and nothing is re-zeroed.  One call per launch per occurrence:
+   inside a loop a fast tile would overwrite a slot a slow tile is still reading."
+  `(let ((%lbs-v   ,value)
+         (%lbs-t   ,tile)
+         (look-back-status  (make-scratch-vector ulong :match-global-size :address-space :global))
+         (look-back-epoch  (make-scratch-cell uint :address-space :global))
+         (%lbs-nt  (* (get-num-groups 0) (get-num-groups 1) (get-num-groups 2)))
+         (%lbs-ls  (* (get-local-work-size 0) (get-local-work-size 1) (get-local-work-size 2)))
+         (%lbs-lid (get-local-linear-id)))
+     (sync-workgroup)
+     (let ((%lbs-epoch (atomic-load (~ look-back-epoch)))
+           (%lbs-tag-a (to-ulong (+ (* %lbs-epoch 4u) 1u)))
+           (%lbs-tag-i (to-ulong (+ (* %lbs-epoch 4u) 2u)))
+           (%lbs-slot  (+ (* %lbs-t %lbs-ls) %lbs-lid))
+           (%lbs-excl  (crisp.compiler::%lbs-from-bits %lbs-v 0u)))
+       (if (= %lbs-t 0ul)
+           (atomic-store! (~ look-back-status %lbs-slot)
+                          (logior (ash %lbs-tag-i 32) (to-ulong (crisp.compiler::%lbs-to-bits %lbs-v))))
+           (let ((%lbs-pt   (- %lbs-t 1ul))
+                 (%lbs-done 0u))
+             (atomic-store! (~ look-back-status %lbs-slot)
+                            (logior (ash %lbs-tag-a 32) (to-ulong (crisp.compiler::%lbs-to-bits %lbs-v))))
+             (crisp.compiler::%while (= %lbs-done 0u)
+               (let ((%lbs-w   (atomic-load (~ look-back-status (+ (* %lbs-pt %lbs-ls) %lbs-lid))))
+                     (%lbs-tag (ash %lbs-w -32))
+                     (%lbs-c   (crisp.compiler::%lbs-from-bits %lbs-v (to-uint (logand %lbs-w 4294967295ul)))))
+                 (when (= %lbs-tag %lbs-tag-i)
+                   (set! %lbs-excl (+ %lbs-excl %lbs-c))
+                   (set! %lbs-done 1u))
+                 (when (= %lbs-tag %lbs-tag-a)
+                   (set! %lbs-excl (+ %lbs-excl %lbs-c))
+                   (set! %lbs-pt (- %lbs-pt 1ul)))))
+             (atomic-store! (~ look-back-status %lbs-slot)
+                            (logior (ash %lbs-tag-i 32)
+                                    (to-ulong (crisp.compiler::%lbs-to-bits (+ %lbs-excl %lbs-v)))))))
+       (sync-workgroup)
+       (when (and (= %lbs-t (- %lbs-nt 1ul)) (= %lbs-lid 0ul))
+         (atomic-add! (~ look-back-epoch) 1u))
+       %lbs-excl)))
+
+;; src/analysis/ops.lisp
+(defun %lbs-value-type-or-refuse (node what location)
+  "Endeavour 201.  NODE's single value type when it is one look-back-scan carries in a status word
+   (uint, int, float); otherwise a compiler error naming WHAT."
+  (let ((ty (get-single-value-type node)))
+    (unless (and (symbolp ty) (member (symbol-name ty) '("UINT" "INT" "FLOAT") :test #'string=))
+      (error 'crisp-compiler-error
+             :message (format nil "look-back-scan: ~a is ~a; a look-back-scan VALUE must be a 32-bit uint, int or float (it travels with a 32-bit tag in one 64-bit status word).  double is planned (endeavour 201 phase 3)." what ty)
+             :source-location location))
+    ty))
+
+;; src/analysis/ops.lisp
+(defun analyze-lbs-to-bits (expr env context location)
+  "Endeavour 201.  (%lbs-to-bits V) -> uint: V's 32 bits.  uint is itself; int and float are bitcast."
+  (let* ((node (analyze-expression (second expr) env context (append location '(1))))
+         (ty   (%lbs-value-type-or-refuse node "the VALUE" location)))
+    (log:debug "201 %lbs-to-bits: ~s of type ~s" (second expr) ty)
+    (if (string= (symbol-name ty) "UINT")
+        node
+        (make-semantic-bitcast :type 'uint :arg node :source-location location))))
+
+;; src/analysis/ops.lisp
+(defun analyze-lbs-from-bits (expr env context location)
+  "Endeavour 201.  (%lbs-from-bits WITNESS BITS) -> BITS (a uint) reinterpreted as WITNESS's type.  The
+   look-back-scan macro cannot see types; WITNESS (the scan's VALUE) supplies one.  WITNESS is analyzed
+   only for its type -- it is a variable reference, so nothing is evaluated twice."
+  (let* ((witness (analyze-expression (second expr) env context (append location '(1))))
+         (ty      (%lbs-value-type-or-refuse witness "the VALUE" location))
+         (bits    (analyze-expression (third expr) env context (append location '(2)))))
+    (log:debug "201 %lbs-from-bits: ~s as ~s" (third expr) ty)
+    (if (string= (symbol-name ty) "UINT")
+        bits
+        (make-semantic-bitcast :type ty :arg bits :source-location location))))
+
+;; src/analysis/ops.lisp
+(defun analyze-lbs-integer-adjoint (expr env context location)
+  "Endeavour 201, phase 1.  (%look-back-scan-integer-only V), emitted by look-back-scan's VJP into the
+   backward kernel.  An integer scan is gradient-inert and this is a no-op read of V; a FLOAT scan has a
+   real adjoint (a scan in the opposite tile order) that phase 1 does not emit, so refuse rather than
+   return a silently zero gradient."
+  (let* ((node (analyze-expression (second expr) env context (append location '(1))))
+         (ty   (%lbs-value-type-or-refuse node "the VALUE" location)))
+    (log:debug "201 look-back-scan backward: VALUE ~s is ~s" (second expr) ty)
+    (when (string= (symbol-name ty) "FLOAT")
+      (error 'crisp-compiler-error
+             :message "look-back-scan: a float VALUE is not differentiable yet.  Its adjoint is a look-back-scan in the opposite tile order (endeavour 201 phase 2); until then only an integer look-back-scan -- which carries no gradient -- may appear in a kernel compiled with --differentiate."
+             :source-location location))
+    node))
+
+;; src/analysis/control.lisp
+(defvar *201-orig-register-control-analyzers* (fdefinition 'register-control-analyzers))
+(defun register-control-analyzers ()
+  "Endeavour 201 wrapper: also registers the look-back-scan helpers (%lbs-to-bits, %lbs-from-bits,
+   %look-back-scan-integer-only).  Hooked here, not at top level, because initialize-compiler clears the
+   analyzer table.  FOLD: three more registrations at the end of register-control-analyzers."
+  (funcall *201-orig-register-control-analyzers*)
+  (setf (gethash (intern "%LBS-TO-BITS" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-lbs-to-bits)
+  (setf (gethash (intern "%LBS-FROM-BITS" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-lbs-from-bits)
+  (setf (gethash (intern "%LOOK-BACK-SCAN-INTEGER-ONLY" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-lbs-integer-adjoint)
+  (log:debug "201: look-back-scan helper analyzers registered"))
+
+;; src/anf-transform.lisp (FOLD: add to *anf-unexpanded-macros*)
+;; Unexpanded but NOT opaque: ANF lifts VALUE / TILE into temps like any call's arguments, and binds the
+;; call itself, so the backward walk sees (x (look-back-scan a b)) / (k (ordered-workgroup-id)).
+(pushnew 'crisp-language::look-back-scan *anf-unexpanded-macros*)
+(pushnew 'crisp-language::ordered-workgroup-id *anf-unexpanded-macros*)
+
+;; src/autodiff.lisp
+(defun %201-vjp-ordered-workgroup-id (form ctx)
+  "Backward rule for ordered-workgroup-id (endeavour 201): an integer ticket carries no gradient.  The
+   backward kernel replays the binding and so takes its own tickets from its own counter."
+  (declare (ignore ctx))
+  (log:debug "201 VJP ~s: inert" form)
+  :inert)
+
+;; src/autodiff.lisp
+(defun %201-vjp-look-back-scan (form ctx)
+  "Backward rule for look-back-scan (endeavour 201, phase 1).  The walk sees forms, not types, so it emits
+   (%look-back-scan-integer-only VALUE): a no-op for an integer VALUE (an integer scan is inert), a
+   compile error naming the gap for a float one (its adjoint, a scan in the opposite tile order, is
+   phase 2)."
+  (declare (ignore ctx))
+  (log:debug "201 VJP ~s: integer-only check on ~s" form (second form))
+  `(crisp.compiler::%look-back-scan-integer-only ,(second form)))
+
+;; src/autodiff.lisp
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ORDERED-WORKGROUP-ID" (function %201-vjp-ordered-workgroup-id))
+  (register-vjp "LOOK-BACK-SCAN"       (function %201-vjp-look-back-scan)))

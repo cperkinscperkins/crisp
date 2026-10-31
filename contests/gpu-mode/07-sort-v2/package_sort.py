@@ -61,29 +61,58 @@ def compile_crisp(crisp: str, arch: str = "sm_80", kernels=KERNELS) -> tuple[str
     return ptx, hoists
 
 
+SIZEOF = {"unsigned int": 4, "int": 4, "float": 4, "uint64_t": 8, "int64_t": 8, "double": 8}
+CELL_FIELDS = ("ptr", "size_bytes", "offset")
+
+
 def parse_abi(kernel: str, hoist: str) -> dict:
-    """{params: [int literal | [tensor, field]], smem, block} -- never hardcoded: the compiler orders the
-    scratch vectors first, in an order that is not the binding order."""
+    """{params: [int literal | [tensor, field] | ["@scratch", name, field]], scratch, smem, block} -- never
+    hardcoded: the compiler orders the scratch vectors first, in an order that is not the binding order.
+
+    Endeavour 201: the compiler's own GLOBAL scratch (a look-back's status words, a ticket counter, ...) is
+    not a caller tensor, so the runtime allocates it -- zeroed once, as the hoist does.  scratch maps its
+    name to {bytes: element size, n: fixed element count, or per: elements per WORKGROUP (n = groups * per)
+    for the grid-sized kinds, :match-num-workgroups (per 1) and :match-global-size (per = block)}."""
     m = re.search(r'cuModuleGetFunction\(&kernel,\s*module,\s*"(\w+)"\)', hoist)
     if m.group(1) != kernel:
         raise ValueError(f"hoist names {m.group(1)}, expected {kernel}")
     m = re.search(r"void\*\s+kernelParams\[\d+\]\s*=\s*\{(.*?)\};", hoist, flags=re.DOTALL)
     names = re.findall(r"&(\w+)", m.group(1))
     tensors = set(re.findall(r"CUdeviceptr\s+(\w+)_ptr;", hoist))
-    lits = dict(re.findall(r"uint64_t\s+(\w+)\s*=\s*(\d+)ULL\s*;", hoist))
+    lits = dict(re.findall(r"uint64_t\s+(\w+)\s*=\s*(\d+)(?:ULL)?\s*;", hoist))   # a local cell's offset has no ULL
+    # a workgroup-local cell's size: `uint64_t X_size_bytes = 1 * sizeof(uint64_t);`
+    sized = {nm: int(c) * SIZEOF[t] for nm, c, t in
+             re.findall(r"uint64_t\s+(\w+)\s*=\s*(\d+)\s*\*\s*sizeof\(([\w ]+)\)\s*;", hoist)}
+    scratch = {}
+    # a global scratch CELL: allocated and zeroed in the launcher; args ptr, size_bytes, offset
+    for b, c, t in re.findall(r"size_t\s+(\w+)_size\s*=\s*(\d+);\s*CUdeviceptr\s+\1_ptr;\s*"
+                              r"CUDA_CHECK\(cuMemAlloc\(&\1_ptr,\s*\1_size \* sizeof\(([\w ]+)\)\)\);", hoist):
+        scratch[b] = {"bytes": SIZEOF[t], "n": int(c)}
+    # a GRID-sized global scratch vector (181 / 201): sized at the launch anchor from gridX * gridY * gridZ
+    for b, per in re.findall(r"(\w+)_length = \(uint64_t\)gridX \* gridY \* gridZ(?: \* (\d+)ULL)?;", hoist):
+        eb = re.search(rf"{b}_byte_size = {b}_length \* (\d+)ULL;", hoist)
+        scratch[b] = {"bytes": int(eb.group(1)), "per": int(per or 1)}
     params = []
     for nm in names:
         t, _, f = nm.rpartition("_")
         if f in ("size",):                      # byte_size
             t, f = nm[: -len("_byte_size")], "byte_size"
-        if t in tensors and f in FIELDS:
+        cb = next((nm[: -len(cf) - 1] for cf in CELL_FIELDS if nm.endswith("_" + cf)), None)
+        if t in scratch and "per" in scratch[t] and f in FIELDS:      # before lits: its fields are 0ULL placeholders
+            params.append(["@scratch", t, f])
+        elif cb in scratch and "n" in scratch[cb]:
+            params.append(["@scratch", cb, nm[len(cb) + 1:]])
+        elif t in tensors and f in FIELDS:
             params.append([t, f])
         elif nm in lits:
             params.append(int(lits[nm]))
+        elif nm in sized:
+            params.append(sized[nm])
         else:
             raise ValueError(f"{kernel}: parameter {nm} is neither a runtime tensor field nor a literal")
     m = re.search(r"cuLaunchKernel\(kernel,\s*gridX,\s*gridY,\s*gridZ,\s*(\d+),\s*\d+,\s*\d+,\s*(\d+),", hoist)
-    return {"params": params, "block": int(m.group(1)), "smem": int(m.group(2)), "tensors": sorted(tensors)}
+    return {"params": params, "block": int(m.group(1)), "smem": int(m.group(2)), "tensors": sorted(tensors),
+            "scratch": scratch}
 
 
 def commented(path: Path) -> str:
@@ -122,15 +151,37 @@ def _init():
         _fn[k] = f
 
 
+_scr = {}            # the compiler's global scratch: (kernel, name) -> zeroed buffer, kept for the run
+_scr_old = []        # outgrown buffers stay alive -- a cached launch for fewer groups still points at them
+
+
+def _scratch(k, name, n, eb):
+    """A zeroed device buffer of N elements of EB bytes for kernel K's implicit global scratch NAME.  Zeroed
+    ONCE (the hoist's contract): the kernel resets / re-tags its own state between launches.  More groups
+    than before get a fresh, larger, zeroed buffer."""
+    t = _scr.get((k, name))
+    if t is None or t.numel() < n * eb:
+        if t is not None:
+            _scr_old.append(t)
+        t = _scr[(k, name)] = torch.zeros(n * eb, dtype=torch.uint8, device="cuda")
+    return t.data_ptr()
+
+
 def _launch(k, groups, tensors):
     """tensors: Crisp tensor name -> (pointer, element count[, element bytes, default 4])."""
-    key = (k, tuple(sorted(tensors.items())))
+    key = (k, groups, tuple(sorted(tensors.items())))
     a = _args.get(key)
     if a is None:
         vals = []
         for p in ABI[k]["params"]:
             if isinstance(p, int):
                 vals.append(p)
+            elif p[0] == "@scratch":
+                s = ABI[k]["scratch"][p[1]]
+                n = s["n"] if "n" in s else groups * s["per"]
+                vals.append({"ptr": _scratch(k, p[1], n, s["bytes"]), "byte_size": n * s["bytes"],
+                             "size_bytes": n * s["bytes"], "off0": 0, "offset": 0, "str0": 1,
+                             "ext0": n, "length": n}[p[2]])
             else:
                 ptr, n, *es = tensors[p[0]]
                 vals.append({"ptr": ptr, "byte_size": (es[0] if es else 4) * n, "off0": 0, "str0": 1, "ext0": n, "length": n}[p[1]])
@@ -203,8 +254,9 @@ def make_submission(out_name: str, title: str, crisp: str, extra: str = "", kern
     abi = {}
     for k in kernels:
         a = parse_abi(k, hoists[k])
-        print(f"  {k}: params={len(a['params'])} block={a['block']} smem={a['smem']} tensors={a['tensors']}")
-        abi[k] = {"params": a["params"], "block": a["block"], "smem": a["smem"]}
+        print(f"  {k}: params={len(a['params'])} block={a['block']} smem={a['smem']} tensors={a['tensors']}"
+              f" scratch={a['scratch']}")
+        abi[k] = {"params": a["params"], "block": a["block"], "smem": a["smem"], "scratch": a["scratch"]}
     py = (f"#!POPCORN leaderboard sort_v2\n# {title}\n#\n"
           "# Generated by contests/gpu-mode/07-sort-v2/package_sort.py from Crisp source.  The kernels are Crisp,\n"
           "# compiled to PTX by crisp-compile; this file only loads that PTX with the CUDA driver API and launches it.\n"
@@ -348,15 +400,13 @@ ONESWEEP_KERNELS = ("sort_minmax_hist", "sort_onesweep")
 # Replaces the radix custom_kernel: sort_minmax_hist, then ONE sort_onesweep launch per pass.
 ONESWEEP = r'''
 
-_CYC = 1024          # calls per epoch cycle; on wrap the status words are re-zeroed (a reused epoch
-_call = [0]          # could otherwise match a word left by the call that last used it)
 _PRMT = {}
 def _prm_table(passes):
-    # rows [shift, first, last, epoch, pass] for every (call slot, pass): made once, so no per-call upload
+    # rows [shift, first, last, pass], one per pass: made once, so no per-call upload.  The look-back's
+    # status words, epoch and ticket are the compiler's (implicit scratch, see _scratch).
     t = _PRMT.get(passes)
     if t is None:
-        rows = [[8 * i, int(i == 0), int(i == passes - 1), c * 4 + i + 1, i]
-                for c in range(_CYC) for i in range(4)]
+        rows = [[8 * i, int(i == 0), int(i == passes - 1), i] for i in range(passes)]
         t = _PRMT[passes] = torch.tensor(rows, dtype=torch.int32, device="cuda")
     return t
 
@@ -371,15 +421,8 @@ def custom_kernel(data: input_t) -> output_t:
     if b is None:
         b = _bufs[n] = dict(tmp=torch.empty(n, dtype=torch.float32, device="cuda"),
                             ghist=torch.zeros(1024, dtype=torch.int32, device="cuda"),
-                            status=torch.zeros(256 * nb, dtype=torch.int64, device="cuda"),
-                            ticket=torch.zeros(1, dtype=torch.int32, device="cuda"),
                             mm=torch.empty(2, dtype=torch.int32, device="cuda"),
                             mm0=torch.tensor([-1, 0], dtype=torch.int32, device="cuda"))
-    slot = _call[0] % _CYC
-    if slot == 0 and _call[0] > 0:
-        for bb in _bufs.values():
-            bb["status"].zero_()
-    _call[0] += 1
     mm, ghist = b["mm"], b["ghist"]
     mm.copy_(b["mm0"])                                  # kmin <- ~0, kmax <- 0
     ghist.zero_()
@@ -394,9 +437,8 @@ def custom_kernel(data: input_t) -> output_t:
     src = x
     for i in range(passes):
         dst = out if (passes - 1 - i) % 2 == 0 else b["tmp"]
-        _launch("sort_onesweep", nb, {"src": (P(src), n), "prm": (P(prm) + 20 * (slot * 4 + i), 5),
-                                      "dst": (P(dst), n), "mm": (P(mm), 2), "ghist": (P(ghist), 1024),
-                                      "status": (P(b["status"]), 256 * nb, 8), "ticket": (P(b["ticket"]), 1)})
+        _launch("sort_onesweep", nb, {"src": (P(src), n), "prm": (P(prm) + 16 * i, 4),
+                                      "dst": (P(dst), n), "mm": (P(mm), 2), "ghist": (P(ghist), 1024)})
         src = dst
     return out
 '''
@@ -446,7 +488,7 @@ def custom_kernel(data: input_t) -> output_t:
 '''
 
 
-BUILD_ONESWEEP = False
+BUILD_ONESWEEP = True
 
 
 def build_all() -> None:
@@ -459,8 +501,8 @@ def build_all() -> None:
                     "sort_radix.crisp")
     make_submission("diag_sort_v1.py", "sort_v2 v1 DIAGNOSTIC (per-launch timing at 100M / 10M / 1M)",
                     "sort_radix.crisp", DIAG)
-    # sort_onesweep.crisp does not compile since BUG 148 (its look-back waits with `while`, which Crisp
-    # does not have); it waits on a sanctioned look-back form.  Not built until then.
+    # sort_onesweep.crisp's look-back is endeavour 201's ordered-workgroup-id + look-back-scan (before that
+    # it waited with `while`, which Crisp does not have -- BUG 148).  The switch stays for a quick opt-out.
     if not BUILD_ONESWEEP:
         return
     make_submission("crisp_sort_v2.py",

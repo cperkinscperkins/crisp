@@ -1,0 +1,19 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "cannot appear inside a thread-divergent conditional"
+;;
+;; Endeavour 201: every thread of a workgroup must call look-back-scan -- a lane that is never published
+;; stalls every later tile forever.  The expansion starts with a sync-workgroup, so the barrier check
+;; refuses a call under a thread-divergent condition (here, only the first 32 threads).
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+(def-kernel k_e (&out res)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((tile (ordered-workgroup-id))
+        (lid  (get-local-linear-id)))
+    (when (< lid 32ul)
+      (set! (~ res lid) (look-back-scan 1u tile)))
+    (return)))

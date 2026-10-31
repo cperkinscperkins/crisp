@@ -39,3 +39,38 @@
           (cond ((null names) (format t "  FAIL: no ash / popcount helper in the module~%") nil)
                 (bad (format t "  FAIL: helpers without DontInline: ~{~a~^, ~}~%" bad) nil)
                 (t t))))))
+
+;;; Endeavour 201 -- :match-global-size scratch (one element per thread in the grid).
+
+;; tests/run-specs.lisp
+(defun %vad-resolve-symbolic-size (size kern forms)
+  "Endeavour 176.  SIZE (an implicit param's :size-expr) as an element COUNT.  An integer is returned as
+   is.  A symbolic size -- implicit reduction scratch is :match-num-warps-per-workgroup (local sweep) or
+   :match-num-workgroups (last-man's global partials, since 181) -- is resolved by the same rules as the
+   hoisters (%l0-scratch-symbolic-expr): ceiling division for warps, warp width 32 when no profile is
+   recorded, both from KERN's declared local size and the SIMD width found in FORMS; the group count is
+   the LAUNCH's (*vad-group-count*), which is what the kernel's get-num-groups will report."
+  (if (not (keywordp size))
+      size
+      (let* ((name (symbol-name size))
+             (ls (getf kern :local-size))            ; (local-size :set-to N) or (local-size :set-to (A B))
+             (n (and (consp ls) (third ls)))
+             (n (cond ((integerp n) n)
+                      ((and (consp n) (eq (car n) 'quote)) (reduce #'* (second n)))
+                      ((and (consp n) (every #'integerp n)) (reduce #'* n))
+                      (t nil)))
+             (warp (or (%vad-find-simd-width forms) 32)))
+        (cond ((string-equal name "MATCH-NUM-WORKGROUPS")
+               (or *vad-group-count*
+                   (error "%vad-resolve-symbolic-size: :match-num-workgroups needs the launch's group count, and no VERIFY-AUTODIFF pass is active")))
+              ;; Endeavour 201: one element per thread in the grid (a look-back-scan's status words).
+              ((and (string-equal name "MATCH-GLOBAL-SIZE") n)
+               (* (or *vad-group-count*
+                      (error "%vad-resolve-symbolic-size: :match-global-size needs the launch's group count, and no VERIFY-AUTODIFF pass is active"))
+                  n))
+              ((null n)
+               (error "%vad-resolve-symbolic-size: symbolic :size-expr ~s needs a compile-time (local-size :set-to N); kernel declares ~s"
+                      size ls))
+              ((string-equal name "MATCH-WORKGROUP-SIZE") n)
+              ((string-equal name "MATCH-NUM-WARPS-PER-WORKGROUP") (ceiling n warp))
+              (t (error "%vad-resolve-symbolic-size: unsupported symbolic :size-expr ~s" size))))))

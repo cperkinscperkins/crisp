@@ -391,15 +391,37 @@ def _init():
         _fn[k] = f
 
 
+_scr = {}            # the compiler's global scratch: (kernel, name) -> zeroed buffer, kept for the run
+_scr_old = []        # outgrown buffers stay alive -- a cached launch for fewer groups still points at them
+
+
+def _scratch(k, name, n, eb):
+    """A zeroed device buffer of N elements of EB bytes for kernel K's implicit global scratch NAME.  Zeroed
+    ONCE (the hoist's contract): the kernel resets / re-tags its own state between launches.  More groups
+    than before get a fresh, larger, zeroed buffer."""
+    t = _scr.get((k, name))
+    if t is None or t.numel() < n * eb:
+        if t is not None:
+            _scr_old.append(t)
+        t = _scr[(k, name)] = torch.zeros(n * eb, dtype=torch.uint8, device="cuda")
+    return t.data_ptr()
+
+
 def _launch(k, groups, tensors):
     """tensors: Crisp tensor name -> (pointer, element count[, element bytes, default 4])."""
-    key = (k, tuple(sorted(tensors.items())))
+    key = (k, groups, tuple(sorted(tensors.items())))
     a = _args.get(key)
     if a is None:
         vals = []
         for p in ABI[k]["params"]:
             if isinstance(p, int):
                 vals.append(p)
+            elif p[0] == "@scratch":
+                s = ABI[k]["scratch"][p[1]]
+                n = s["n"] if "n" in s else groups * s["per"]
+                vals.append({"ptr": _scratch(k, p[1], n, s["bytes"]), "byte_size": n * s["bytes"],
+                             "size_bytes": n * s["bytes"], "off0": 0, "offset": 0, "str0": 1,
+                             "ext0": n, "length": n}[p[2]])
             else:
                 ptr, n, *es = tensors[p[0]]
                 vals.append({"ptr": ptr, "byte_size": (es[0] if es else 4) * n, "off0": 0, "str0": 1, "ext0": n, "length": n}[p[1]])
@@ -522,7 +544,7 @@ def _diag_sizes(cases):
         lines.append(f"n={n} correct={ok} wall_us={[round(w) for w in walls]} last-rep: " + " ".join(per))
     return lines
 
-ABI = {"sort_minmax": {"params": [["input", "ptr"], ["input", "byte_size"], ["input", "off0"], ["input", "str0"], ["input", "ext0"], ["input", "length"], ["mm", "ptr"], ["mm", "byte_size"], ["mm", "off0"], ["mm", "str0"], ["mm", "ext0"], ["mm", "length"]], "block": 256, "smem": 0}, "sort_upsweep": {"params": [0, 8192, 0, 1, 2048, 2048, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["mm", "ptr"], ["mm", "byte_size"], ["mm", "off0"], ["mm", "str0"], ["mm", "ext0"], ["mm", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["hist", "ptr"], ["hist", "byte_size"], ["hist", "off0"], ["hist", "str0"], ["hist", "ext0"], ["hist", "length"]], "block": 256, "smem": 8192}, "sort_digit_scan": {"params": [0, 1152, 0, 1, 288, 288, ["hist", "ptr"], ["hist", "byte_size"], ["hist", "off0"], ["hist", "str0"], ["hist", "ext0"], ["hist", "length"], ["scanned", "ptr"], ["scanned", "byte_size"], ["scanned", "off0"], ["scanned", "str0"], ["scanned", "ext0"], ["scanned", "length"], ["totals", "ptr"], ["totals", "byte_size"], ["totals", "off0"], ["totals", "str0"], ["totals", "ext0"], ["totals", "length"]], "block": 256, "smem": 1152}, "sort_downsweep": {"params": [0, 1152, 0, 1, 288, 288, 1152, 1024, 0, 1, 256, 256, 2176, 1024, 0, 1, 256, 256, 3200, 16896, 0, 1, 4224, 4224, 20096, 16448, 0, 1, 4112, 4112, 36544, 16448, 0, 1, 4112, 4112, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["mm", "ptr"], ["mm", "byte_size"], ["mm", "off0"], ["mm", "str0"], ["mm", "ext0"], ["mm", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["scanned", "ptr"], ["scanned", "byte_size"], ["scanned", "off0"], ["scanned", "str0"], ["scanned", "ext0"], ["scanned", "length"], ["totals", "ptr"], ["totals", "byte_size"], ["totals", "off0"], ["totals", "str0"], ["totals", "ext0"], ["totals", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 256, "smem": 52992}}
+ABI = {"sort_minmax": {"params": [["input", "ptr"], ["input", "byte_size"], ["input", "off0"], ["input", "str0"], ["input", "ext0"], ["input", "length"], ["mm", "ptr"], ["mm", "byte_size"], ["mm", "off0"], ["mm", "str0"], ["mm", "ext0"], ["mm", "length"]], "block": 256, "smem": 0, "scratch": {}}, "sort_upsweep": {"params": [0, 8192, 0, 1, 2048, 2048, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["mm", "ptr"], ["mm", "byte_size"], ["mm", "off0"], ["mm", "str0"], ["mm", "ext0"], ["mm", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["hist", "ptr"], ["hist", "byte_size"], ["hist", "off0"], ["hist", "str0"], ["hist", "ext0"], ["hist", "length"]], "block": 256, "smem": 8192, "scratch": {}}, "sort_digit_scan": {"params": [0, 1152, 0, 1, 288, 288, ["hist", "ptr"], ["hist", "byte_size"], ["hist", "off0"], ["hist", "str0"], ["hist", "ext0"], ["hist", "length"], ["scanned", "ptr"], ["scanned", "byte_size"], ["scanned", "off0"], ["scanned", "str0"], ["scanned", "ext0"], ["scanned", "length"], ["totals", "ptr"], ["totals", "byte_size"], ["totals", "off0"], ["totals", "str0"], ["totals", "ext0"], ["totals", "length"]], "block": 256, "smem": 1152, "scratch": {}}, "sort_downsweep": {"params": [0, 1152, 0, 1, 288, 288, 1152, 1024, 0, 1, 256, 256, 2176, 1024, 0, 1, 256, 256, 3200, 16896, 0, 1, 4224, 4224, 20096, 16448, 0, 1, 4112, 4112, 36544, 16448, 0, 1, 4112, 4112, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["mm", "ptr"], ["mm", "byte_size"], ["mm", "off0"], ["mm", "str0"], ["mm", "ext0"], ["mm", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["scanned", "ptr"], ["scanned", "byte_size"], ["scanned", "off0"], ["scanned", "str0"], ["scanned", "ext0"], ["scanned", "length"], ["totals", "ptr"], ["totals", "byte_size"], ["totals", "off0"], ["totals", "str0"], ["totals", "ext0"], ["totals", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 256, "smem": 52992, "scratch": {}}}
 
 PTX = r"""//
 // Generated by LLVM NVPTX Back-End

@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "a look-back-scan VALUE must be a 32-bit uint, int or float"
+;;
+;; Endeavour 201: a VALUE rides in the low 32 bits of a 64-bit status word, next to its tag, so a 64-bit
+;; VALUE (here a ulong) is refused by name.  double is phase 3.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+(def-kernel k_e (&out res)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((tile (ordered-workgroup-id))
+        (i    (get-global-id 0)))
+    (set! (~ res i) (look-back-scan i tile))
+    (return)))

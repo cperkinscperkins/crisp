@@ -1,8 +1,6 @@
 ;; GPU MODE Challenge 07: sort_v2 -- ONESWEEP LSD radix sort (decoupled look-back), range-reduced keys.
-;; DOES NOT COMPILE since 2026-10-30 (BUG 148): the look-back waits with `while`, and Crisp has none --
-;; every loop is bounded.  It waits on a sanctioned look-back form (see
-;; tests/spec/200-sort-contest/sort-contest.md).  Kept as the reference for that form.
-;;
+;; The look-back is endeavour 201's (ordered-workgroup-id) + (look-back-scan VALUE TILE); until 2026-10-30
+;; it was written by hand with `while`, which Crisp does not have (BUG 148).
 ;;
 ;; Keys as in sort_radix.crisp: a float's bits become an order-preserving uint key, and every pass sorts
 ;; (key - kmin), so ceil(bits(kmax - kmin) / 8) 8-bit passes suffice -- 3 for the contest's data.
@@ -10,17 +8,18 @@
 ;;   sort_minmax_hist  ONE read of the input: kmin / kmax, and the histogram of the raw keys' low byte.
 ;;                     (key - kmin) mod 256 is that byte rotated by kmin, so it IS pass 0's histogram.
 ;;   sort_onesweep     one launch per pass.  A tile (4096 keys, 256 threads) takes an in-order ticket,
-;;                     sorts itself in shared memory (two 4-bit counting splits), publishes its 256 digit
-;;                     counts, looks back over its predecessors for each digit's running total
-;;                     (decoupled look-back: epoch-tagged 64-bit status words, never re-zeroed), and
-;;                     scatters.  It also adds its NEXT digit's counts into the global histogram, so the
-;;                     next pass has its digit bases without another read of the keys.
+;;                     sorts itself in shared memory (two 4-bit counting splits), and scans its 256 digit
+;;                     counts across the tiles before it -- one look-back-scan lane per thread, so
+;;                     thread d gets digit d's running total -- then scatters.  It also adds its NEXT
+;;                     digit's counts into the global histogram, so the next pass has its digit bases
+;;                     without another read of the keys.
 ;; No upsweep, no separate scan: per pass the keys are read once and written once.
 ;;
-;; prm (uint vector, per pass): [0] SHIFT, [1] 1 on the first pass, [2] 1 on the last pass, [3] EPOCH
-;;   (unique per launch; status words of older launches never match), [4] the pass index.
+;; prm (uint vector, per pass): [0] SHIFT, [1] 1 on the first pass, [2] 1 on the last pass, [3] the pass
+;;   index.
 ;; mm   [0] kmin  [1] kmax  (host fills ~0, 0).      ghist  4 x 256 digit counts (host zeroes them).
-;; status  256 x ntiles ulongs (zeroed once).        ticket [0] the tile counter (the last tile resets it).
+;; The ticket counter and the look-back's status words are the compiler's (implicit global scratch,
+;; zeroed once by the host); the forms reset / re-tag them for the next launch.
 
 (def-type fin-vec  (vector float :address-space :global :align :compact))
 (def-type fout-vec (vector float :address-space :global :align :compact))
@@ -212,24 +211,18 @@
 ;; sort_onesweep
 ;; ---------------------------------------------------------------------------------------------
 
-(def-type st-vec (vector ulong :address-space :global :align :compact))
-
-(def-kernel sort_onesweep (src prm &out dst mm ghist status ticket)
-  (declare #'(fin-vec u-vec &out fout-vec uout-vec uout-vec st-vec uout-vec => nil)
+(def-kernel sort_onesweep (src prm &out dst mm ghist)
+  (declare #'(fin-vec u-vec &out fout-vec uout-vec uout-vec => nil)
            (local-size :set-to 256))
   (let ((tid      (to-ulong (get-local-id 0)))
         (n        (length~ src))
-        (ntiles   (/ (+ n 4095ul) 4096ul))
         (u        (make-vector src uint :length n))
         (u4       (make-vector src uint4 :length (/ n 4ul)))
         (du       (make-vector dst uint :length n))
         (shift    (to-int (~ prm 0ul)))
         (is-first (~ prm 1ul))
         (is-last  (~ prm 2ul))
-        (epoch    (~ prm 3ul))
-        (pass     (to-ulong (~ prm 4ul)))
-        (tag-a    (to-ulong (+ (* epoch 4u) 1u)))
-        (tag-i    (to-ulong (+ (* epoch 4u) 2u)))
+        (pass     (to-ulong (~ prm 3ul)))
         (kmin     (atomic-load (~ mm 0ul)))
         (ta       (make-scratch-vector smem-vec 4112))
         (tb       (make-scratch-vector smem-vec 4112))
@@ -237,18 +230,11 @@
         (gofs     (make-scratch-vector smem-vec 256))
         (lstart   (make-scratch-vector smem-vec 256))
         (lend     (make-scratch-vector smem-vec 256))
-        (wtot     (make-scratch-vector smem-vec 288))
-        (s-id     (make-scratch-vector smem-vec 1)))
-    ;; 1. an in-order tile id (the last tile resets the counter for the next launch)
-    (when (= tid 0ul)
-      (let ((tk (to-ulong (atomic-inc! (~ ticket 0ul)))))
-        (set! (~ s-id 0ul) (to-uint tk))
-        (when (= tk (- ntiles 1ul))
-          (atomic-xchg! (~ ticket 0ul) 0u))))
+        (wtot     (make-scratch-vector smem-vec 288)))
     (set! (~ lstart tid) 0u)
     (set! (~ lend tid) 0u)
-    (sync-workgroup)
-    (let ((tile  (to-ulong (~ s-id 0ul)))
+    ;; 1. an in-order tile id.  It holds a barrier, so the clears above are visible after it.
+    (let ((tile  (ordered-workgroup-id))
           (base  (* tile 4096ul))
           (valid (min 4096ul (- n base))))
       ;; 2. this digit's base in dst: an exclusive scan of the pass's global histogram.  Pass 0's
@@ -290,29 +276,9 @@
               (when (or (= p (- valid 1ul)) (!= dg dr))
                 (set! (~ lend (to-ulong dg)) (to-uint (+ p 1ul))))))))
       (sync-workgroup)
-      ;; 6. decoupled look-back, one digit per thread: publish this tile's count, then add up the
-      ;;    predecessors' counts until one has published its inclusive total.
-      (let ((mine (to-ulong (- (~ lend tid) (~ lstart tid))))
-            (slot (+ (* tile 256ul) tid))
-            (excl 0ul))
-        (if (= tile 0ul)
-            (atomic-store! (~ status slot) (logior (ash tag-i 32) mine))
-            (progn
-              (atomic-store! (~ status slot) (logior (ash tag-a 32) mine))
-              (let ((pt   (- tile 1ul))
-                    (done 0u))
-                (while (= done 0u)
-                  (let ((w   (atomic-load (~ status (+ (* pt 256ul) tid))))
-                        (tag (ash w -32))
-                        (c   (logand w 4294967295ul)))
-                    (when (= tag tag-i)
-                      (set! excl (+ excl c))
-                      (set! done 1u))
-                    (when (= tag tag-a)
-                      (set! excl (+ excl c))
-                      (set! pt (- pt 1ul))))))
-              (atomic-store! (~ status slot) (logior (ash tag-i 32) (+ excl mine)))))
-        (set! (~ gofs tid) (+ (~ gofs tid) (to-uint excl))))
+      ;; 6. decoupled look-back, one digit per thread: digit tid's count in every earlier tile, summed.
+      (let ((excl (look-back-scan (- (~ lend tid) (~ lstart tid)) tile)))
+        (set! (~ gofs tid) (+ (~ gofs tid) excl)))
       ;; 7. the next pass's digit histogram, from this tile (cnt is free after the splits)
       (when (= is-last 0u)
         (dotimes (w 8ul)

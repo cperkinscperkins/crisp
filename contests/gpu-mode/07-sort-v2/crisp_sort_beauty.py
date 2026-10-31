@@ -146,15 +146,37 @@ def _init():
         _fn[k] = f
 
 
+_scr = {}            # the compiler's global scratch: (kernel, name) -> zeroed buffer, kept for the run
+_scr_old = []        # outgrown buffers stay alive -- a cached launch for fewer groups still points at them
+
+
+def _scratch(k, name, n, eb):
+    """A zeroed device buffer of N elements of EB bytes for kernel K's implicit global scratch NAME.  Zeroed
+    ONCE (the hoist's contract): the kernel resets / re-tags its own state between launches.  More groups
+    than before get a fresh, larger, zeroed buffer."""
+    t = _scr.get((k, name))
+    if t is None or t.numel() < n * eb:
+        if t is not None:
+            _scr_old.append(t)
+        t = _scr[(k, name)] = torch.zeros(n * eb, dtype=torch.uint8, device="cuda")
+    return t.data_ptr()
+
+
 def _launch(k, groups, tensors):
     """tensors: Crisp tensor name -> (pointer, element count[, element bytes, default 4])."""
-    key = (k, tuple(sorted(tensors.items())))
+    key = (k, groups, tuple(sorted(tensors.items())))
     a = _args.get(key)
     if a is None:
         vals = []
         for p in ABI[k]["params"]:
             if isinstance(p, int):
                 vals.append(p)
+            elif p[0] == "@scratch":
+                s = ABI[k]["scratch"][p[1]]
+                n = s["n"] if "n" in s else groups * s["per"]
+                vals.append({"ptr": _scratch(k, p[1], n, s["bytes"]), "byte_size": n * s["bytes"],
+                             "size_bytes": n * s["bytes"], "off0": 0, "offset": 0, "str0": 1,
+                             "ext0": n, "length": n}[p[2]])
             else:
                 ptr, n, *es = tensors[p[0]]
                 vals.append({"ptr": ptr, "byte_size": (es[0] if es else 4) * n, "off0": 0, "str0": 1, "ext0": n, "length": n}[p[1]])
@@ -258,7 +280,7 @@ def custom_kernel(data: input_t) -> output_t:
     _launch("bitonic_unpad", D(n), {"buf": (b.data_ptr(), P), "output": (out.data_ptr(), n)})
     return out
 
-ABI = {"bitonic_pad": {"params": [["input", "ptr"], ["input", "byte_size"], ["input", "off0"], ["input", "str0"], ["input", "ext0"], ["input", "length"], ["buf", "ptr"], ["buf", "byte_size"], ["buf", "off0"], ["buf", "str0"], ["buf", "ext0"], ["buf", "length"]], "block": 256, "smem": 0}, "bitonic_tiles": {"params": [0, 8192, 0, 1, 2048, 2048, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 1024, "smem": 8192}, "bitonic_global": {"params": [["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 256, "smem": 0}, "bitonic_finish": {"params": [0, 8192, 0, 1, 2048, 2048, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 1024, "smem": 8192}, "bitonic_unpad": {"params": [["buf", "ptr"], ["buf", "byte_size"], ["buf", "off0"], ["buf", "str0"], ["buf", "ext0"], ["buf", "length"], ["output", "ptr"], ["output", "byte_size"], ["output", "off0"], ["output", "str0"], ["output", "ext0"], ["output", "length"]], "block": 256, "smem": 0}}
+ABI = {"bitonic_pad": {"params": [["input", "ptr"], ["input", "byte_size"], ["input", "off0"], ["input", "str0"], ["input", "ext0"], ["input", "length"], ["buf", "ptr"], ["buf", "byte_size"], ["buf", "off0"], ["buf", "str0"], ["buf", "ext0"], ["buf", "length"]], "block": 256, "smem": 0, "scratch": {}}, "bitonic_tiles": {"params": [0, 8192, 0, 1, 2048, 2048, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 1024, "smem": 8192, "scratch": {}}, "bitonic_global": {"params": [["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 256, "smem": 0, "scratch": {}}, "bitonic_finish": {"params": [0, 8192, 0, 1, 2048, 2048, ["src", "ptr"], ["src", "byte_size"], ["src", "off0"], ["src", "str0"], ["src", "ext0"], ["src", "length"], ["prm", "ptr"], ["prm", "byte_size"], ["prm", "off0"], ["prm", "str0"], ["prm", "ext0"], ["prm", "length"], ["dst", "ptr"], ["dst", "byte_size"], ["dst", "off0"], ["dst", "str0"], ["dst", "ext0"], ["dst", "length"]], "block": 1024, "smem": 8192, "scratch": {}}, "bitonic_unpad": {"params": [["buf", "ptr"], ["buf", "byte_size"], ["buf", "off0"], ["buf", "str0"], ["buf", "ext0"], ["buf", "length"], ["output", "ptr"], ["output", "byte_size"], ["output", "off0"], ["output", "str0"], ["output", "ext0"], ["output", "length"]], "block": 256, "smem": 0, "scratch": {}}}
 
 PTX = r"""//
 // Generated by LLVM NVPTX Back-End

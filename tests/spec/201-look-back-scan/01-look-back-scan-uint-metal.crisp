@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER res: 0 1025 122 3
+;;
+;; Endeavour 201: look-back-scan, forward, uint.  16 workgroups of 64 threads.  Each workgroup takes an
+;; in-order ticket t with (ordered-workgroup-id); thread i of tile t scans VALUE = t + i + 1, so its
+;; exclusive prefix has a closed form:
+;;
+;;     excl(t, i) = sum over u < t of (u + i + 1) = t(t-1)/2 + t(i+1)
+;;
+;; Every thread checks its own prefix against that and counts a mismatch into res[0].
+;;
+;;   res[0] -- mismatches: 0.
+;;   res[1] -- threads that ran the check: 1 + 1024 (the buffer arrives pre-filled 0 1 2 3).
+;;   res[2] -- the sum of the tickets, counted once per workgroup: 2 + (0 + 1 + ... + 15) = 122.  A ticket
+;;             handed out twice, or one missing, moves it.
+;;   res[3] -- untouched: 3.
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel look_back_scan_uint (&out res)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 1024)
+           (local-size  :set-to 64))
+  (let ((tile (ordered-workgroup-id))
+        (lid  (get-local-linear-id))
+        (v    (to-uint (+ tile lid 1ul)))
+        (excl (look-back-scan v tile))
+        (want (to-uint (+ (/ (* tile (- tile 1ul)) 2ul) (* tile (+ lid 1ul))))))
+    (when (!= excl want)
+      (atomic-inc! (~ res 0ul)))
+    (atomic-inc! (~ res 1ul))
+    (when (= lid 0ul)
+      (atomic-add! (~ res 2ul) (to-uint tile)))
+    (return)))
