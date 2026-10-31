@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `prefixsum_v2`
 
-> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `832a2890`).
+> Generated from [`results/prefixsum_v2.json`](results/prefixsum_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/541?tab=rankings](https://www.gpumode.com/leaderboard/541?tab=rankings) (Crisp commit `28ca6e51`).
 
 **Workload:** Inclusive prefix sum (cumsum) of 1D float32 tensor across 11 benchmark sizes from 262,144 to 268,435,456 elements.
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#15** / 34 | **461.29 µs** | 462.49 µs | 4.66 TB/s | 51.3% (`236.70 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 06:19` |
-| **H100** | Hopper (sm_90) | **#10** / 30 | **756.96 µs** | 753.57 µs | 2.84 TB/s | 92.8% (`702.23 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 06:19` |
-| **A100** | Ampere (sm_80) | **#21** / 30 | **1692.50 µs** | 1690.42 µs | 1.27 TB/s | 54.5% (`922.11 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 06:19` |
-| **L4** | Ada Lovelace (sm_89) | **#13** / 24 | **9147.39 µs** | 9161.28 µs | 234.8 GB/s | 70.6% (`6454.27 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 06:19` |
+| **B200** | Blackwell (sm_100) | **#15** / 34 | **461.29 µs** | 462.49 µs | 4.66 TB/s | 51.3% (`236.70 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 08:19` |
+| **H100** | Hopper (sm_90) | **#10** / 30 | **756.96 µs** | 753.57 µs | 2.84 TB/s | 92.8% (`702.23 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 08:19` |
+| **A100** | Ampere (sm_80) | **#21** / 30 | **1692.50 µs** | 1690.42 µs | 1.27 TB/s | 54.5% (`922.11 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 08:19` |
+| **L4** | Ada Lovelace (sm_89) | **#13** / 24 | **9147.39 µs** | 9161.28 µs | 234.8 GB/s | 70.6% (`6454.27 µs`) | [`crisp_prefixsum_packed_rfl.py`](05-prefixsum-v2/crisp_prefixsum_packed_rfl.py) ([`.crisp`](05-prefixsum-v2/prefixsum_packed_rfl.crisp)) | — | `2026-10-30 08:19` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 

@@ -9,64 +9,101 @@ In the first stage, you hoist/enqueue a kernel which will invoke one of the `bit
 
 In the second stage, you hoist a `bitonic_merge_pass` kernel repeatedly until the sort is completed.
 
-#### psuedo demonstration
+#### A working bitonic sort, today ✅
 
-##### generate the kernels
+The toolkit below is still 📝, but bitonic sort itself is plain Crisp today.  This is the GPU MODE
+`sort_v2` "beauty" entry (`contests/gpu-mode/07-sort-v2/sort_bitonic_beauty.crisp`), verified bit-exact
+against a reference sort on the Intel Arc B580 (SPIR-V) and the H100 (PTX).
+
+The input is padded with `+inf` to a power of two `P`.  For every stage `k = 2, 4, .. P` and every distance
+`j = k/2 .. 1`, element `i` (with bit `j` of `i` clear) is compared with `i + j` and the pair is put in
+order: ascending where bit `k` of `i` is clear, descending where it is set.  Distances below one tile
+(2048 elements) run in shared memory; each larger one is a global pass.
+
+```lisp
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
+(def-type prm-vec (vector uint  :address-space :global :align :compact))
+(def-type s-vec   (vector float :address-space :local  :align :compact))
+
+;; Put (~ s i) and (~ s (+ i j)) in order: ascending when UP is 1.
+(def-function order-pair (s i j up)
+  (declare #'(s-vec ulong ulong uint => nil))
+  (let ((a (~ s i))
+        (b (~ s (+ i j))))
+    (when (= (if (> a b) 1u 0u) up)
+      (set! (~ s i) b)
+      (set! (~ s (+ i j)) a)))
+  (return))
+
+;; The I of pair Q at distance J: Q with a 0 inserted at bit J.
+(def-function pair-index (q j)
+  (declare #'(ulong ulong => ulong))
+  (return (+ (* (* 2ul j) (/ q j)) (rem q j))))
+
+;; 1 where bit K of the global position G is clear (ascending), else 0.
+(def-function ascending (g k)
+  (declare #'(ulong ulong => uint))
+  (return (if (= (logand g k) 0ul) 1u 0u)))
+
+;; Every distance J = from .. 1 of stage K, in shared memory, for the tile at global position BASE.
+(def-grid-function merge-in-tile (s base k from tid)
+  (declare #'(s-vec ulong ulong ulong ulong => nil)
+           (uniform from))
+  (dec-times-by-half+ (j from)
+    (let ((i (pair-index tid j)))
+      (order-pair s i j (ascending (+ base i) k)))
+    (sync-workgroup))
+  (return))
+
+(def-kernel bitonic_tiles (src &out dst)          ; stages k = 2 .. 2048, all in shared memory
+  (declare #'(in-vec &out out-vec => nil)
+           (local-size :set-to 1024))
+  (let ((tid  (to-ulong (get-local-id 0)))
+        (base (* (to-ulong (get-workgroup-id 0)) 2048ul))
+        (s    (make-scratch-vector s-vec 2048)))
+    (set! (~ s tid) (~ src (+ base tid)))
+    (set! (~ s (+ tid 1024ul)) (~ src (+ base (+ tid 1024ul))))
+    (sync-workgroup)
+    (do-power-step+ (half 2048ul)
+      (merge-in-tile s base (* 2ul half) half tid))
+    (set! (~ dst (+ base tid)) (~ s tid))
+    (set! (~ dst (+ base (+ tid 1024ul))) (~ s (+ tid 1024ul)))))
+
+(def-kernel bitonic_global (src prm &out dst)     ; one distance j >= 2048 of stage k
+  (declare #'(in-vec prm-vec &out out-vec => nil)
+           (global-size :derive-from src :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((j     (to-ulong (~ prm 0ul)))
+        (k     (to-ulong (~ prm 1ul)))
+        (pairs (/ (length~ src) 2ul)))
+    (grid-stride (pairs) (q)
+      (let ((i (pair-index q j))
+            (a (~ src i))
+            (b (~ src (+ i j))))
+        (if (= (if (> a b) 1u 0u) (ascending i k))
+            (progn (set! (~ dst i) b) (set! (~ dst (+ i j)) a))
+            (progn (set! (~ dst i) a) (set! (~ dst (+ i j)) b)))))))
 ```
-;; generate kernel that sorts in place a vector of floats using :compact alignment
-(gen-bitonic_sort_workgroup_in_place float :compact "stage_one_kernel")
 
-;; generate the merge kernel
-(gen-bintonic_merge_pass float :compact "stage_two_kernel")
+`bitonic_finish` (distances 1024 .. 1 of one stage `k`, in shared memory) is `bitonic_tiles` with
+`(merge-in-tile s base k 1024ul tid)` in place of the stage loop; `bitonic_pad` / `bitonic_unpad` copy in
+and out.  The host loop:
+
+```text
+bitonic_pad;  bitonic_tiles
+for k = 4096 .. P:   for j = k/2 .. 2048:  bitonic_global [j k]
+                     bitonic_finish [k]
+bitonic_unpad
 ```
 
-##### load and enqueue the first kernel
+`bitonic_global` and `bitonic_finish` read and write the same buffer: the host passes it as both `src` and
+`dst`.  Each element is read and written by one thread per launch, so the read-only load path is safe.
 
-This is a simplified Python example of hoisting the first kernel.
-
-```
-import crisp_runtime
-import numpy as np
-
-# --- Setup ---
-# 1. Load the kernels you generated. The runtime finds them by the names you provided.
-stage_one_kernel = crisp_runtime.load_kernel("stage_one_kernel")
-stage_two_kernel = crisp_runtime.load_kernel("stage_two_kernel") # Loaded for the next phase
-
-# 2. Prepare data on the host (the application's responsibility)
-# For this example, an array of 1024 elements
-host_data = np.array(np.random.rand(1024), dtype=np.float32)
-data_size = host_data.nbytes
-
-# 3. Create GPU buffers
-buffer = crisp_runtime.create_buffer(host_data)
-
-# --- Launch Kernel 1 ---
-# 4. Set kernel arguments by name
-stage_one_kernel.set_arg("data", buffer)
-
-# 5. Determine launch configuration and enqueue
-workgroup_size = 256 # Must be a power of 2 for this algorithm
-global_size = host_data.size
-stage_one_kernel.launch(queue, global_size, workgroup_size)
-
-# The host would then wait for the queue to finish before starting Stage 2.
-```
-
-##### loop the second kernel
-
-```
-# loop through the merge stages.
-j = workgroup_size * 2
-while j <= data_size:
-    k = j / 2
-    while k > 0:
-        # Launch the simple merge kernel for each pass
-        stage_two_kernel.launch(queue, data, j, k)
-        k = k / 2
-    j = j * 2
-``` 
-
+What writing it taught (each is now in `docs/writing-crisp.md`): a helper that holds a barrier must be a
+`def-grid-function`, and a grid function returns nothing; shared scratch passed to a helper is an ordinary
+parameter (an `&out` parameter is write-only); a loop bound that is a parameter needs `(declare (uniform
+...))` before `dec-times-by-half+` will accept it.
 
 #### `bitonic-sort-workgroup` 📝
 
@@ -114,102 +151,10 @@ The pattern is the same regardless of what the input numbers are.
 When swapping, there is a sorting direction. `direction == true` for an ascending sort, and `direction == false` for descending one. 
 
 
-A possible implementation might be
-
-```
-;; helper function
-(with-template-type (T U) ; T is element type, U is key type
-  ;; U must be orderable, T doesn't have to be if keyF is provided.
-  (declare (type-is U #'is-orderable?))
-
-  ;; -- bitonic-compare-and-swap --
-  (def-function bitonic-compare-and-swap (local-vec idx1 idx2 direction &optional (keyF nil))
-    (declare #((vector T) ulong ulong bool &optional #(T => U) => nil))
-    (let ((val1 (~ local-vec idx1))
-          (val2 (~ local-vec idx2)))
-
-      ;; extract keys if keyF is provided, otherwise use the values themselves
-      (let ((key1 (if keyF (funcall keyF val1) val1))
-            (key2 (if keyF (funcall keyF val2) val2)))
-
-        ;; Compare the keys
-        (when (if direction (> key1 key2) (< key1 key2))
-          ;; Swap the original full values (structs)
-          (set! (~ local-vec idx1) val2)
-          (set! (~ local-vec idx2) val1)))))
-
-;; out of place sort
-(with-template-type (T A)
-  ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
-  ;; The compiler/constraint system needs to handle this conditional constraint.
-  (declare (value-is A #'is-alignment?))
-
-  -- bitonic-sort-workgroup --
-  (def-function bitonic-sort-workgroup (data-in data-out &key keyF)
-    (declare (local-size :set-to 256 :msg "local-work-size should be a power of 2 for bitonic-sort-workgroup")
-             #((vector T :address-space :global) (vector T :address-space :global) 
-                &key #'(T => #_is-orderable?) => nil))
-    (let ((N   (get-local-linear-size)) ;; should be power of 2.
-         (shared-array (make-scratch-vector T :match-workgroup-size))
-         (global-id (get-global-id))
-         (local-id (get-local-id)))
-      (r-t-assert-0 (is-power-of-2 N) "local_work_size should be a power of 2")
-      ;; load data from global to shared memory 
-      ;; Each thread loads one element. For simplicity, assume N = global_size
-      (when (< global-id N) ;; Boundary check for global data
-        (set! (~ shared-array local-id) (~ data-in global-id)))
-      (sync-workgroup)
-
-      ;; perform Bitonic Sort
-      ;; Outer loop: Builds increasingly large bitonic sequences
-      ;; 'j' represents the size of the bitonic sequence being formed
-      (do-power-step (j N)  ; Iterates j = 1, 2, 4, ... N/2
-        ;; Inner loop: Merges bitonic sequences of size 'j'
-        ;; 'k' represents the sub-sequence length to compare (j/2, j/4, ... 1)
-        (dec-times-by-half (k (/ j 2))
-          ;; Determine sorting direction for this phase
-          ;; The first half of the sequences sort ascending, second half  descending
-          (let ((direction (> (bit-and local-id (+ j j)) 0))) ; Determines if this half sorts UP or DOWN
-                (partner-id (bit-xor local-id k))) ; Partner is 'k' distance away
-
-            (when (< partner-id N) ; Ensure partner ID is within bounds (for non-power-of-2 sizes)
-              (bitonic-compare-and-swap shared-array local-id partner-id direction keyF))) 
-          (sync-workgroup)))
-
-      ; store sorted data from shared to global memory
-      (when (< global-id N) ;; Boundary check for global data
-        (set! (~ data-out global-id) (~ shared-array local-id)))
-      (sync-workgroup)))
-
-;; in place sorting
-(with-template-type (T A)
-  ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
-  ;; The compiler/constraint system needs to handle this conditional constraint.
-  (declare (value-is A #'is-alignment?))
-
-  ;; -- bitonic-sort-workgroup! --
-  (def-function bitonic-sort-workgroup! (data &key keyF)
-    (declare #((vector T :address-space :global A) &key (function T => #_is-orderable?) => nil))
-    (bitonic-sort-workgroup data data :key keyF)))
-
-
-;; Kernels. These don't use the key. Define your own if you need to set one.
-(with-template-type (T A)
-  (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
-
-  -- bitonic_sort_workgroup --
-  (def-kernel bitonic_sort_workgroup (data-in data-out)
-    (declare #((vector T :address-space :global) (vector T :address-space :global) => nil))
-    (bitonic-sort-workgroup data-in data-out)))
-    
-(with-template-type (T A)
-  (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?))
-
-  -- bitonic_sort_workgroup_in_place --
-  (def-kernel bitonic_sort_workgroup_in_place (data)
-    (declare #((vector T :address-space :global) => nil))
-    (bitonic-sort-workgroup! data)))
-```
+The working `order-pair` / `merge-in-tile` / `bitonic_tiles` above are what this function would
+wrap.  (The sketch that used to be here did not compile: it held a barrier in a `def-function`,
+returned a value from a function that synchronizes, and used a run-time loop bound without proving
+it uniform -- see the notes at the end of *A working bitonic sort*.)
 
 #### `bitonic_merge_pass` 📝
 
@@ -219,65 +164,10 @@ A possible implementation might be
 (gen-bintonic_merge_pass elementT alignment kernelName &key keyF)
 (gen-bintonic_soa_merge_pass structT property alignment kernelName)
 ```
-The merge pass is provided as both a function you can use, and a kernel template that can be generated. 
-The function takes 
-It will generate a kernel that takes a data, j and k arguments. 
-The generated hoisting code will demonstrate how to manipulate j and k
-on each subsequent call.
-
-```
-   ;; generate the kernel we need
-   (gen-bintonic_merge_pass ulong :compact "my_bintonic_merge_pass_kernel")
-```
-
-
-
-Possible Implementation
-
-```
-(with-template-type (T A)
-  ;; Constraint relaxed: T only needs to be orderable IF keyF is NOT provided.
-  ;; The compiler/constraint system needs to handle this conditional constraint.
-  (declare (value-is A #'is-alignment?)) 
-
-  ;; -- bitonic-merge-pass --
-  (def-function bitonic-merge-pass (data j k &key keyF)
-    (declare #((vector T :address-space :global :align A) ulong ulong &key #'(T => #_is-orderable?) => nil))
-
-    (let ((i (get-global-id)))
-      
-      ;; 1. Determine the sorting direction for this thread.
-      ;; This logic splits the array into regions that sort ascending
-      ;; and regions that sort descending to form the next bitonic sequence.
-      (let ((direction (> (bit-and i j) 0)))
-
-        ;; 2. Find the partner thread to compare-and-swap with.
-        (let ((partner-id (bit-xor i k)))
-          
-          ;; 3. Guard: Ensure each pair is processed only ONCE, by the thread
-          ;;    with the lower index. This prevents a "double swap".
-          (when (< i partner-id)
-            (let ((val1 (~ data i))
-                  (val2 (~ data partner-id))
-                  (key1 (if keyF (funcall keyF val1) val1))
-                  (key2 (if keyF (funcall keyF val2) val2)))
-              
-              ;; 4. Perform the compare-and-swap based on the direction.
-              (when (if direction
-                        (> key1 key2)   ; Ascending sort for this region
-                        (< key1 key2))  ; Descending sort for this region
-                (set! (~ data i) val2)
-                (set! (~ data partner-id) val1)))))))))
-
-;; kernel doesn't take a key. Define your own if you wish to use one.
-(with-template-type (T A)
-  (declare (type-is T #'is-orderable?) (value-is A #'is-alignment?)) 
-
-  ;; -- bitonic_merge_pass --
-  (def-kernel bitonic_merge_pass (data j k)
-    (declare #((vector T :address-space :global :align A) ulong ulong => nil))
-    (bitonic-merge-pass data j k)))
-```
+The merge pass is provided as both a function you can use, and a kernel template that can be
+generated.  The generated kernel takes `data`, `j` and `k`; the generated hoisting code shows how
+to step `j` and `k` between launches.  Its working form today is `bitonic_global` above (one
+global distance) plus `bitonic_finish` (the distances below one tile, in shared memory).
 
 #### Don't Make Me Think `gen-bitonic-sort-vector` 📝
 
@@ -297,31 +187,5 @@ how to calculate `j` and `k` and enqueue the merge pass until done.
 `soa-vector` variants of these two orchestrations are provided as well. 
 
 
-Possible implementation.
-```
-(with-template-type (T L)
-
-  ;; bitonic_sort_vector_in_place
-  (def-kernel bitonic_sort_vector_in_place (vec)
-    (declare #((vector T :address-space :global :length L)))
-    (bitonic-sort-workgroup vec vec)))
-
-
-
-(with-template-type (T L)
-
-  ;; bitonic-sort-vector!
-  (def-orchestration bitonic-sort-vector!
-    (launch-sequential (gen-bitonic_sort_vector_in_place T L "bitonic_sort_vector_in_place_${T}_${L}"))
-
-    ; +wg-size+ is available as a constant in def-orchestration
-
-    (do-times-by-doubling (j (* 2 +wg-size+))
-      (do-times-by-half (k (/ j 2))
-        (launch-sequential ((gen-bitonic_merge_pass T L "bintonic_merge_pass_${T}_${L}")
-                              bitonic_sort_vector_in_place_T_L::vec j k))))))
-
-
-```
-
+The host loop under *A working bitonic sort* is exactly the orchestration this would generate.
 

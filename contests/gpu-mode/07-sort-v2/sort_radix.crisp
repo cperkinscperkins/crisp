@@ -1,0 +1,351 @@
+;; GPU MODE Challenge 07: sort_v2 -- LSD radix sort, reduce-then-scan, range-reduced keys.
+;;
+;; A float's bits become an order-preserving uint KEY: positive floats flip the sign bit, negative
+;; floats flip every bit.  sort_minmax finds the smallest and largest key; every pass then sorts
+;; (key - kmin), so only ceil(bits(kmax - kmin) / 8) 8-bit passes are needed -- 3 for the contest's
+;; data (values 6252 .. 16255 differ in their low 24 bits), never more than 4, for ANY input.
+;;
+;; One pass (8-bit digit at bit SHIFT), over tiles of 4096 keys, one 256-thread workgroup per tile:
+;;   sort_upsweep     per-tile 256-bin histogram  -> hist[digit * ntiles + tile]
+;;   sort_digit_scan  one workgroup per digit: exclusive scan of its row -> scanned, row total -> totals
+;;   sort_downsweep   stable local sort of the tile in shared memory (two 4-bit counting splits),
+;;                    then each key goes to  digit-base + scanned[digit][tile] + rank-within-digit.
+;; Pass 0 reads the input floats and makes keys; the last pass turns keys back into floats.
+;; Every buffer is a float vector; the kernels read and write its bits through a uint view.
+;;
+;; prm (uint vector, per pass): [0] SHIFT, [1] 1 on the first pass, [2] 1 on the last pass.
+;; mm  (uint vector): [0] kmin, [1] kmax -- written by sort_minmax (host fills it with ~0, 0 first).
+
+(def-type fin-vec  (vector float :address-space :global :align :compact))
+(def-type fout-vec (vector float :address-space :global :align :compact))
+(def-type u-vec    (vector uint  :address-space :global :align :compact))
+(def-type uout-vec (vector uint  :address-space :global :align :compact))
+(def-type smem-vec (vector uint  :address-space :local  :align :compact))
+
+;; ---------------------------------------------------------------------------------------------
+;; keys
+;; ---------------------------------------------------------------------------------------------
+
+;; Order-preserving: unsigned order of the result = float order of the bits B (NaN aside).
+(def-function float-bits-to-key (b)
+  (declare #'(uint => uint))
+  (return (if (= (ash b -31) 1u) (lognot b) (logxor b 2147483648u))))
+
+;; The inverse of float-bits-to-key.
+(def-function key-to-float-bits (k)
+  (declare #'(uint => uint))
+  (return (if (= (ash k -31) 1u) (logxor k 2147483648u) (lognot k))))
+
+;; The sort key of float bits B: on the first pass SRC holds floats, afterwards keys.
+(def-function key-of (b is-first kmin)
+  (declare #'(uint uint uint => uint))
+  (return (if (= is-first 1u) (- (float-bits-to-key b) kmin) b)))
+
+;; Element I of SRC as a sort key.
+(def-function load-key (src i is-first kmin)
+  (declare #'(u-vec ulong uint uint => uint))
+  (return (key-of (~ src i) is-first kmin)))
+
+;; ---------------------------------------------------------------------------------------------
+;; scans
+;; ---------------------------------------------------------------------------------------------
+
+;; Inclusive scan of X across the warp (LANE = warp-lane).
+(def-function warp-scan-u (x lane)
+  (declare #'(uint ulong => uint))
+  (let ((s x))
+    (do-power-step+ (off (to-ulong (warp-size)))
+      (let ((up (shuffle-up s off)))
+        (set! s (+ s (if (>= lane off) up 0u)))))
+    (return s)))
+
+;; Exclusive scan of X over the 256 threads of the workgroup, any warp width (32 NVIDIA, 16 BMG).
+;; A grid function returns nothing, so the results are left in WTOT (288 words of shared scratch):
+;; this thread's exclusive prefix at 32 + tid, the workgroup total at 16.  Holds barriers; call it
+;; workgroup-uniformly.
+(def-grid-function block-scan-u (x tid wtot)
+  (declare #'(uint ulong smem-vec => nil))
+  (let ((ws   (to-ulong (warp-size)))
+        (nw   (/ 256ul ws))
+        (lane (to-ulong (warp-lane)))
+        (wid  (to-ulong (warp-id)))
+        (inc  (warp-scan-u x lane)))
+    (when (= lane (- ws 1ul))
+      (set! (~ wtot wid) inc))
+    (sync-workgroup)
+    (when (= (warp-id) 0u)            ; warp-uniform: the shuffles inside are legal
+      (let ((w  (if (< lane nw) (~ wtot lane) 0u))
+            (sw (warp-scan-u w lane)))
+        (when (< lane nw)
+          (set! (~ wtot lane) (- sw w)))
+        (when (= lane (- nw 1ul))
+          (set! (~ wtot 16ul) sw))))
+    (sync-workgroup)
+    (let ((excl (+ (~ wtot wid) (- inc x))))
+      (sync-workgroup)          ; every thread has read WTOT[wid] before anyone reuses it
+      (set! (~ wtot (+ 32ul tid)) excl))
+    (return)))
+
+;; ---------------------------------------------------------------------------------------------
+;; sort_minmax: kmin / kmax of the keys
+;; ---------------------------------------------------------------------------------------------
+
+(def-kernel sort_minmax (input &out mm)
+  (declare #'(fin-vec &out uout-vec => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n  (length~ input))
+        (u  (make-vector input uint :length n))
+        (lo (lognot 0u))
+        (hi 0u))
+    (loop-vector-stride u (i)
+      (let ((k (float-bits-to-key (~ u i))))
+        (set! lo (min lo k))
+        (set! hi (max hi k))))
+    (dec-times-by-half+ (s (/ (warp-size) 2u))
+      (set! lo (min lo (shuffle-xor lo s)))
+      (set! hi (max hi (shuffle-xor hi s))))
+    (when (= (warp-lane) 0u)
+      (atomic-min! (~ mm 0ul) lo)
+      (atomic-max! (~ mm 1ul) hi))
+    (return)))
+
+;; ---------------------------------------------------------------------------------------------
+;; sort_upsweep: per-tile digit histogram
+;; ---------------------------------------------------------------------------------------------
+
+;; Count the digits of the four keys in V into the histogram slice at H.
+(def-function count-digits4 (v h shift is-first kmin &out shist)
+  (declare #'(uint4 ulong int uint uint &out smem-vec => nil))
+  (atomic-inc! (~ shist (+ h (to-ulong (logand (ash (key-of (x~ v) is-first kmin) (- shift)) 255u)))))
+  (atomic-inc! (~ shist (+ h (to-ulong (logand (ash (key-of (y~ v) is-first kmin) (- shift)) 255u)))))
+  (atomic-inc! (~ shist (+ h (to-ulong (logand (ash (key-of (z~ v) is-first kmin) (- shift)) 255u)))))
+  (atomic-inc! (~ shist (+ h (to-ulong (logand (ash (key-of (w~ v) is-first kmin) (- shift)) 255u)))))
+  (return))
+
+(def-kernel sort_upsweep (src mm prm &out hist)
+  (declare #'(fin-vec u-vec u-vec &out uout-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid   (to-ulong (get-local-id 0)))
+        (wid   (ash tid -5))
+        (bid   (to-ulong (get-workgroup-id 0)))
+        (nb    (to-ulong (get-num-groups 0)))
+        (n     (length~ src))
+        (u     (make-vector src uint :length n))
+        (u4    (make-vector src uint4 :length (/ n 4ul)))
+        (shift (to-int (~ prm 0ul)))
+        (is-first (~ prm 1ul))
+        (kmin  (~ mm 0ul))
+        (base  (* bid 4096ul))
+        (valid (min 4096ul (- n base)))
+        (shist (make-scratch-vector smem-vec 2048)))
+    (dotimes+ (w 8ul)
+      (set! (~ shist (+ (* w 256ul) tid)) 0u))
+    (sync-workgroup)
+    (if (= valid 4096ul)
+        ;; a full tile: 128-bit loads, all four in flight before the first atomic
+        (let ((q (+ (/ base 4ul) tid))
+              (v0 (~ u4 q))
+              (v1 (~ u4 (+ q 256ul)))
+              (v2 (~ u4 (+ q 512ul)))
+              (v3 (~ u4 (+ q 768ul)))
+              (h  (* wid 256ul)))
+          (count-digits4 v0 h shift is-first kmin shist)
+          (count-digits4 v1 h shift is-first kmin shist)
+          (count-digits4 v2 h shift is-first kmin shist)
+          (count-digits4 v3 h shift is-first kmin shist))
+        ;; the last, partial tile
+        (dotimes (j 16ul)
+          (let ((p (+ (* j 256ul) tid)))
+            (when (< p valid)
+              (let ((d (logand (ash (load-key u (+ base p) is-first kmin) (- shift)) 255u)))
+                (atomic-inc! (~ shist (+ (* wid 256ul) (to-ulong d)))))))))
+    (sync-workgroup)
+    (let ((c 0u))
+      (dotimes (w 8ul)
+        (set! c (+ c (~ shist (+ (* w 256ul) tid)))))
+      (set! (~ hist (+ (* tid nb) bid)) c))
+    (return)))
+
+;; ---------------------------------------------------------------------------------------------
+;; sort_digit_scan: one workgroup per digit scans that digit's row of tile counts
+;; ---------------------------------------------------------------------------------------------
+
+(def-kernel sort_digit_scan (hist &out scanned totals)
+  (declare #'(u-vec &out uout-vec uout-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid     (to-ulong (get-local-id 0)))
+        (d       (to-ulong (get-workgroup-id 0)))
+        (nb      (/ (length~ hist) 256ul))
+        (row     (* d nb))
+        (nchunks (/ (+ nb 1023ul) 1024ul))
+        (wtot    (make-scratch-vector smem-vec 288))
+        (running 0u))
+    (dotimes+ (c nchunks)
+      (let ((e  (+ (* c 1024ul) (* tid 4ul)))
+            (x0 (if (< e nb) (~ hist (+ row e)) 0u))
+            (x1 (if (< (+ e 1ul) nb) (~ hist (+ row (+ e 1ul))) 0u))
+            (x2 (if (< (+ e 2ul) nb) (~ hist (+ row (+ e 2ul))) 0u))
+            (x3 (if (< (+ e 3ul) nb) (~ hist (+ row (+ e 3ul))) 0u))
+            (t4 (+ (+ x0 x1) (+ x2 x3))))
+        (block-scan-u t4 tid wtot)
+        (let ((excl (~ wtot (+ 32ul tid)))
+              (total (~ wtot 16ul)))
+          (let ((b (+ running excl)))
+            (when (< e nb)
+              (set! (~ scanned (+ row e)) b))
+            (when (< (+ e 1ul) nb)
+              (set! (~ scanned (+ row (+ e 1ul))) (+ b x0)))
+            (when (< (+ e 2ul) nb)
+              (set! (~ scanned (+ row (+ e 2ul))) (+ (+ b x0) x1)))
+            (when (< (+ e 3ul) nb)
+              (set! (~ scanned (+ row (+ e 3ul))) (+ (+ (+ b x0) x1) x2))))
+          (set! running (+ running total)))))
+    (when (= tid 0ul)
+      (set! (~ totals d) running))
+    (return)))
+
+;; ---------------------------------------------------------------------------------------------
+;; sort_downsweep: stable local sort of the tile, then scatter
+;; ---------------------------------------------------------------------------------------------
+;; Shared tiles hold LOGICAL position p (thread t owns p = 16t .. 16t+15 while counting) at physical
+;; word (p mod 16) * 257 + p / 16: counting reads (j * 257 + t) are conflict-free, the final in-order
+;; walk is at most 2-way.  Counter c = digit * 256 + t lives at word c + c / 32, so both the counting
+;; access (digit fixed, t varies) and the scan access (16t + j) are conflict-free.
+
+(def-function tile-word (p)
+  (declare #'(ulong => ulong))
+  (return (+ (* (logand p 15ul) 257ul) (ash p -4))))
+
+(def-function cnt-word (c)
+  (declare #'(ulong => ulong))
+  (return (+ c (ash c -5))))
+
+;; A thread's 16 nibble counters, packed 8 bits each into two ulongs (LO: digits 0-7, HI: 8-15).  A
+;; count never exceeds 16, so a field never carries into its neighbour.  Counting in registers keeps
+;; the per-key read-modify-write of a shared counter -- a serial chain of shared-memory latencies --
+;; out of the loop (endeavour 200: the two splits fell from ~500 us to ... at 100M on H100).
+(def-function nib-inc (d)
+  (declare #'(uint => ulong))
+  (return (ash 1ul (to-int (* (logand d 7u) 8u)))))
+
+(def-function nib-field (lo hi d)
+  (declare #'(ulong ulong uint => uint))
+  (return (to-uint (logand (ash (if (< d 8u) lo hi) (- (to-int (* (logand d 7u) 8u)))) 255ul))))
+
+;; Stable counting sort of the 4096 keys in IN by the 4 bits at SH, into OUT.  Workgroup-uniform.
+(def-grid-function split-nibble (in out cnt wtot tid sh)
+  (declare #'(smem-vec smem-vec smem-vec smem-vec ulong int => nil))
+  ;; count this thread's 16 keys in registers, then publish the 16 counts
+  (let ((lo 0ul)
+        (hi 0ul))
+    (dotimes (j 16ul)
+      (let ((d   (logand (ash (~ in (+ (* j 257ul) tid)) (- sh)) 15u))
+            (inc (nib-inc d)))
+        (set! lo (+ lo (if (< d 8u) inc 0ul)))
+        (set! hi (+ hi (if (< d 8u) 0ul inc)))))
+    (dotimes (dg 16ul)
+      (set! (~ cnt (cnt-word (+ (* dg 256ul) tid))) (nib-field lo hi (to-uint dg)))))
+  (sync-workgroup)
+  ;; exclusive scan of all 4096 counters in (digit, thread) order: thread t owns 16t .. 16t+15
+  (let ((mine 0u))
+    (dotimes (j 16ul)
+      (set! mine (+ mine (~ cnt (cnt-word (+ (* tid 16ul) j))))))
+    (block-scan-u mine tid wtot)
+    (let ((excl (~ wtot (+ 32ul tid))))
+      (let ((run excl))
+        (dotimes (j 16ul)
+          (let ((c (cnt-word (+ (* tid 16ul) j)))
+                (v (~ cnt c)))
+            (set! (~ cnt c) run)
+            (set! run (+ run v)))))))
+  (sync-workgroup)
+  ;; each key to its rank: the digit's base (read only) + how many of this thread's earlier keys share it
+  (let ((lo 0ul)
+        (hi 0ul))
+    (dotimes (j 16ul)
+      (let ((k   (~ in (+ (* j 257ul) tid)))
+            (d   (logand (ash k (- sh)) 15u))
+            (inc (nib-inc d))
+            (r   (+ (~ cnt (cnt-word (+ (* (to-ulong d) 256ul) tid))) (nib-field lo hi d))))
+        (set! lo (+ lo (if (< d 8u) inc 0ul)))
+        (set! hi (+ hi (if (< d 8u) 0ul inc)))
+        (set! (~ out (tile-word (to-ulong r))) k))))
+  (sync-workgroup)
+  (return))
+
+;; Rotate the 32-bit key K right / left by S (0 .. 24).  The downsweep rotates each key once on load
+;; so the pass's digit is the low byte -- every later digit is a constant mask -- and back once on
+;; write.  (A run-time ash costs ~10 instructions; six per key per pass were 20% of the downsweep.)
+(def-function rot-right (k s)
+  (declare #'(uint int => uint))
+  (return (logior (ash k (- s)) (ash k (- 32 s)))))
+
+(def-function rot-left (k s)
+  (declare #'(uint int => uint))
+  (return (logior (ash k s) (ash k (- s 32)))))
+
+(def-kernel sort_downsweep (src mm prm scanned totals &out dst)
+  (declare #'(fin-vec u-vec u-vec u-vec u-vec &out fout-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid    (to-ulong (get-local-id 0)))
+        (bid    (to-ulong (get-workgroup-id 0)))
+        (nb     (to-ulong (get-num-groups 0)))
+        (n      (length~ src))
+        (u      (make-vector src uint :length n))
+        (u4     (make-vector src uint4 :length (/ n 4ul)))
+        (du     (make-vector dst uint :length n))
+        (shift  (to-int (~ prm 0ul)))
+        (is-first  (~ prm 1ul))
+        (is-last   (~ prm 2ul))
+        (kmin   (~ mm 0ul))
+        (base   (* bid 4096ul))
+        (valid  (min 4096ul (- n base)))
+        (ta     (make-scratch-vector smem-vec 4112))
+        (tb     (make-scratch-vector smem-vec 4112))
+        (cnt    (make-scratch-vector smem-vec 4224))
+        (gofs   (make-scratch-vector smem-vec 256))
+        (lstart (make-scratch-vector smem-vec 256))
+        (wtot   (make-scratch-vector smem-vec 288)))
+    ;; where each digit's run for this tile starts in dst
+    (block-scan-u (~ totals tid) tid wtot)
+    (let ((dbase (~ wtot (+ 32ul tid))))
+      (set! (~ gofs tid) (+ dbase (~ scanned (+ (* tid nb) bid)))))
+    ;; the tile, padded with the largest key (it sorts last and is never written)
+    (if (= valid 4096ul)
+        ;; a full tile: 128-bit loads, 4 per thread
+        (dotimes (j 4ul)
+          (let ((q (+ (* j 256ul) tid))
+                (v (~ u4 (+ (/ base 4ul) q)))
+                (p (* q 4ul)))
+            (set! (~ ta (tile-word p))         (rot-right (key-of (x~ v) is-first kmin) shift))
+            (set! (~ ta (tile-word (+ p 1ul))) (rot-right (key-of (y~ v) is-first kmin) shift))
+            (set! (~ ta (tile-word (+ p 2ul))) (rot-right (key-of (z~ v) is-first kmin) shift))
+            (set! (~ ta (tile-word (+ p 3ul))) (rot-right (key-of (w~ v) is-first kmin) shift))))
+        ;; the last, partial tile
+        (dotimes (j 16ul)
+          (let ((p (+ (* j 256ul) tid)))
+            (set! (~ ta (tile-word p))
+                  (if (< p valid) (rot-right (load-key u (+ base p) is-first kmin) shift) (lognot 0u))))))
+    (sync-workgroup)
+    ;; the keys are rotated so this pass's digit is the low byte: every digit below is a constant mask
+    (split-nibble ta tb cnt wtot tid 0)
+    (split-nibble tb ta cnt wtot tid 4)
+    ;; ta is sorted by the 8-bit digit; note where each digit's run starts
+    (dotimes (j 16ul)
+      (let ((p  (+ (* j 256ul) tid))
+            (q  (if (= p 0ul) 0ul (- p 1ul)))
+            (dg (logand (~ ta (tile-word p)) 255u))
+            (dq (logand (~ ta (tile-word q)) 255u)))
+        (when (or (= p 0ul) (!= dg dq))
+          (set! (~ lstart (to-ulong dg)) (to-uint p)))))
+    (sync-workgroup)
+    (dotimes (j 16ul)
+      (let ((p (+ (* j 256ul) tid)))
+        (when (< p valid)
+          (let ((r  (~ ta (tile-word p)))
+                (k  (rot-left r shift))
+                (dg (to-ulong (logand r 255u)))
+                (g  (to-ulong (+ (~ gofs dg) (- (to-uint p) (~ lstart dg))))))
+            (set! (~ du g) (if (= is-last 1u) (key-to-float-bits (+ k kmin)) k))))))
+    (return)))

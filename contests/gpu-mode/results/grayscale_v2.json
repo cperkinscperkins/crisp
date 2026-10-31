@@ -4,7 +4,7 @@
   "leaderboard_id": 538,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/538?tab=rankings",
   "directory": "03-grayscale-v2",
-  "crisp_commit": "832a2890",
+  "crisp_commit": "28ca6e51",
   "workload": {
     "dtype": "float32",
     "shape": [
@@ -44,7 +44,7 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-30T06:19:36Z",
+      "captured_at": "2026-10-30T08:18:53Z",
       "user_name": "cperkinscperkins",
       "rank": 24,
       "total_entrants": 47,
@@ -60,7 +60,7 @@
       "median_score_us": 601.52
     },
     "H100": {
-      "captured_at": "2026-10-30T06:19:36Z",
+      "captured_at": "2026-10-30T08:18:53Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 36,
@@ -76,7 +76,7 @@
       "median_score_us": 1371.36
     },
     "A100": {
-      "captured_at": "2026-10-30T06:19:36Z",
+      "captured_at": "2026-10-30T08:18:53Z",
       "user_name": "cperkinscperkins",
       "rank": 23,
       "total_entrants": 126,
@@ -92,7 +92,7 @@
       "median_score_us": 10403.15
     },
     "L4": {
-      "captured_at": "2026-10-30T06:19:36Z",
+      "captured_at": "2026-10-30T08:18:53Z",
       "user_name": "cperkinscperkins",
       "rank": 19,
       "total_entrants": 31,

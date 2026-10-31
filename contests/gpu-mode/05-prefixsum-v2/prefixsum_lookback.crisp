@@ -1,4 +1,8 @@
 ;; GPU MODE Challenge 05: prefixsum_v2 -- Single-pass decoupled-lookback inclusive scan.
+;; DOES NOT COMPILE since 2026-10-30 (BUG 148): the look-back waits with `while`, and Crisp has none --
+;; every loop is bounded.  It waits on a sanctioned look-back form (see
+;; tests/spec/200-sort-contest/sort-contest.md).  Kept as the reference for that form.
+;;
 ;;
 ;; Strategy (one kernel launch, 2N DRAM traffic):
 ;;   1. Each workgroup (256 threads = 8 warps) takes the next TILE of 16,384 floats from a dynamic

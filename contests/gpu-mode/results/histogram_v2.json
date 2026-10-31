@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 04: Histogram (uint8 -> 256 int64 bins under 10%/40%/90% Contention)",
   "leaderboard_id": 539,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/539?tab=rankings",
-  "crisp_commit": "832a2890",
+  "crisp_commit": "28ca6e51",
   "workload": {
     "description": "256-bin histogram of 1D uint8 tensor. task.yml lists 6 benchmarks (1.31M-10.49M bytes; contention 10/40/90%), but kernelbot ranks by RankCriterion.LAST (the default; task.yml sets no ranking_by): the score is the LAST case only, 10,485,760 bytes at 10% contention",
     "total_traffic_bytes": 10485760
@@ -32,7 +32,7 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-30T06:19:42Z",
+      "captured_at": "2026-10-30T08:18:59Z",
       "user_name": "cperkinscperkins",
       "rank": 29,
       "total_entrants": 35,
@@ -48,7 +48,7 @@
       "median_score_us": 12.05
     },
     "H100": {
-      "captured_at": "2026-10-30T06:19:42Z",
+      "captured_at": "2026-10-30T08:18:59Z",
       "user_name": "cperkinscperkins",
       "rank": 16,
       "total_entrants": 30,
@@ -64,7 +64,7 @@
       "median_score_us": 14.9
     },
     "A100": {
-      "captured_at": "2026-10-30T06:19:42Z",
+      "captured_at": "2026-10-30T08:18:59Z",
       "user_name": "cperkinscperkins",
       "rank": 19,
       "total_entrants": 27,
@@ -80,7 +80,7 @@
       "median_score_us": 21.5
     },
     "L4": {
-      "captured_at": "2026-10-30T06:19:42Z",
+      "captured_at": "2026-10-30T08:18:59Z",
       "user_name": "cperkinscperkins",
       "rank": 6,
       "total_entrants": 20,

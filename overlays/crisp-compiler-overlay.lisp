@@ -140,3 +140,199 @@
 ;;;;                                  (src/mma.lisp)
 
 (in-package :crisp.compiler)
+
+;;; ==========================================================================================================
+;;; Endeavour 200 (sort_v2 contest): BUG 138 -- the BUG 120 noinline workaround only on SPIR-V.
+;;; ==========================================================================================================
+
+;; src/codegen.lisp
+(defun %185-helper-call (builder module name ret-type arg-vals body-fn)
+  "Call the internal helper NAME : RET-TYPE(types of ARG-VALS), creating it in MODULE on first use with a
+   body built by BODY-FN, called as (BODY-FN helper-builder param-values) and returning the value to ret.
+   SPIR_FUNC on SPIR-V; the call site gets the callee's CC.
+
+   Endeavour 200 (BUG 138): the helper is noinline ON SPIR-V ONLY.  The noinline exists for the BMG,
+   which failed zeModuleCreate when these bodies were inlined (BUG 120 family).  On PTX it bought nothing
+   and cost a call per ash / popcount in the hottest loops -- and kept ptxas from fusing (logand (ash w -8)
+   255u) into bfe.u32.  With internal linkage and no noinline, LLVM inlines the helper on PTX."
+  (let* ((n (length arg-vals))
+         (existing (crisp.llvm-bindings::llvm-get-named-function module name))
+         (fnty (cffi:with-foreign-objects ((ptypes :pointer (max 1 n)))
+                 (loop for i from 0 for v in arg-vals
+                       do (setf (cffi:mem-aref ptypes :pointer i) (llvm-type-of v)))
+                 (crisp.llvm-bindings::llvm-function-type ret-type ptypes n nil)))
+         (fn (if (not (cffi:null-pointer-p existing))
+                 existing
+                 (let ((fn (crisp.llvm-bindings::llvm-add-function module name fnty))
+                       (tmp (llvm-create-builder)))
+                   (log:debug "%185-helper-call: creating ~a (noinline: ~a)" name (eq *target-backend* :spirv))
+                   (crisp.llvm-bindings::llvm-set-linkage fn 8)            ; LLVMInternalLinkage
+                   (when (eq *target-backend* :spirv)
+                     (llvm-add-attribute-at-index
+                      fn +llvm-attribute-function-index+
+                      (crisp.llvm-bindings::llvm-create-enum-attribute
+                       (llvm-get-module-context module)
+                       (crisp.llvm-bindings::llvm-get-enum-attribute-kind-for-name "noinline" 8) 0))
+                     (llvm-set-function-call-conv fn 75))                 ; SPIR_FUNC
+                   (unwind-protect
+                        (progn
+                          (llvm-position-builder-at-end tmp (llvm-append-basic-block fn "entry"))
+                          (llvm-build-ret tmp (funcall body-fn tmp
+                                                       (loop for i below n
+                                                             collect (crisp.llvm-bindings::llvm-get-param fn i)))))
+                     (llvm-dispose-builder tmp))
+                   fn)))
+         (call (cffi:with-foreign-objects ((avals :pointer (max 1 n)))
+                 (loop for i from 0 for v in arg-vals do (setf (cffi:mem-aref avals :pointer i) v))
+                 (crisp.llvm-bindings::llvm-build-call2 builder fnty fn avals n "helper_call"))))
+    (%propagate-callee-cc-to-call call fn)
+    call))
+
+;;; Endeavour 200: BUG 145 -- semantic-while was missing from semantic-node-type and
+;;; semantic-node-source-location.  A while whose type is asked for (the last form of a let body, which
+;;; takes its type from it) died with a raw ETYPECASE fall-through printing the whole semantic tree.
+;;; FOLD: add the two clauses to the etypecases in src/analysis/core.lisp and drop these wrappers.
+
+;; src/analysis/core.lisp
+(defvar *200-orig-semantic-node-type* (fdefinition 'semantic-node-type))
+
+;; src/analysis/core.lisp
+(defun semantic-node-type (node)
+  "Returns the Crisp type of a semantic node.  Endeavour 200 (BUG 145): semantic-while (void)."
+  (if (semantic-while-p node)
+      (semantic-while-type node)
+      (funcall *200-orig-semantic-node-type* node)))
+
+;; src/analysis/core.lisp
+(defvar *200-orig-semantic-node-source-location* (fdefinition 'semantic-node-source-location))
+
+;; src/analysis/core.lisp
+(defun semantic-node-source-location (node)
+  "The source location of a semantic node.  Endeavour 200 (BUG 145): semantic-while."
+  (if (semantic-while-p node)
+      (semantic-while-source-location node)
+      (funcall *200-orig-semantic-node-source-location* node)))
+
+;;; Endeavour 200 follow-up -- `while` is compiler-internal (%while), and the forms that hide one
+;;; carry a VJP.  Crisp is not Turing-complete: an author never writes an unbounded loop.  A
+;;; compiler form may hide one (sync-wait's spin) only behind a form the A|D pass sees whole.
+
+;; src/errors.lisp
+(defparameter *unsupported-form-hints*
+  '(("EQ" . "compare values, including enum keywords, with =")
+    ("EQL" . "compare values, including enum keywords, with =")
+    ("EQUAL" . "compare values, including enum keywords, with =")
+    ("EQUALP" . "compare values, including enum keywords, with =")
+    ("/=" . "not-equal is !=")
+    ("SETF" . "assign with set!, e.g. (set! x v) or (set! (~ v i) x)")
+    ("SETQ" . "assign with set!")
+    ("AREF" . "index a storage handle with ~, e.g. (~ v i)")
+    ("DEFUN" . "define functions at top level with def-function")
+    ("LET*" . "Crisp's let is already sequential; use let")
+    ("PROGN" . "a function or let body is already a sequence of forms")
+    ("INCF" . "write (set! x (+ x 1))")
+    ("DECF" . "write (set! x (- x 1))")
+    ("DOLIST" . "loop with dotimes or one of the stride macros")
+    ("LOOP" . "loop with dotimes or one of the stride macros")
+    ("WHILE" . "every Crisp loop is bounded, so kernels always terminate -- loop with dotimes or one of the stride macros, and leave early with return-from-loop"))
+  "Common Lisp operator name -> what to write in Crisp instead.  Appended to the
+   unsupported-form error (ADV-007).  Endeavour 200: WHILE -- an author never writes an unbounded
+   loop; the compiler's own spin (sync-wait) is %while, which no user form names.")
+
+;; src/analysis/control.lisp
+(defvar *200-orig-register-control-analyzers* (fdefinition 'register-control-analyzers))
+
+;; src/analysis/control.lisp
+(defun register-control-analyzers ()
+  "Endeavour 200: the while analyzer is registered ONLY as crisp.compiler::%while.  It was also
+   registered as crisp-language::while, so authors could write unbounded loops (Crisp is not
+   Turing-complete).  FOLD: in register-control-analyzers replace the WHILE block with the single
+   %WHILE registration below."
+  (funcall *200-orig-register-control-analyzers*)
+  (remhash (intern "WHILE" (find-package :crisp-language)) *expression-analyzers*)
+  (remhash (intern "WHILE" (find-package :crisp.compiler)) *expression-analyzers*)
+  (setf (gethash (intern "%WHILE" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-while-expression)
+  (log:debug "200: while analyzer registered as %WHILE only"))
+
+;; src/macros.lisp  (MACRO -- patch src directly; it is expanded only at Crisp-compile time, so the
+;; overlay copy is live for testing)
+(defmacro sync-wait (handle)
+  "Blocks until count units have been put into the sync bucket.  The spin is the compiler-internal
+   %while (endeavour 200); under --differentiate sync-wait is opaque to ANF and has its own VJP."
+  `(progn
+    (%while (< (crisp.compiler::%volatile-read (~ (arrival-sync-handle-counter ,handle))) (arrival-sync-handle-count ,handle))
+            (mem-fence))
+    (sync-workgroup)))
+
+;; src/anf-transform.lisp
+(defvar *200-orig-anf-normalize* (fdefinition 'anf-normalize))
+
+;; src/anf-transform.lisp
+(defun anf-normalize (expr is-nested?)
+  "Endeavour 200 wrapper.  FOLD into anf-normalize's dispatch:
+    * MAKE-SCRATCH-CELL keeps its trailing arguments.  The clause rebuilt it as
+      (make-scratch-cell TYPE), dropping :address-space :global, so a global cell became a LOCAL one
+      in the backward walk (make-arrival-sync: 'Expected (CELL INT ADDRESS-SPACE GLOBAL) but
+      inferred (CELL INT LOCAL)').
+    * WHILE is refused as the analyzer refuses it (A|D runs before the forward kernel is analyzed).
+    * %WHILE must never reach ANF: the compiler hides a spin only inside a form that has a VJP and
+      is opaque here (sync-wait).  Reaching this is a compiler bug, not an author's."
+  (let ((name (and (consp expr) (symbolp (car expr)) (symbol-name (car expr)))))
+    (cond ((equal name "MAKE-SCRATCH-CELL")
+           (%anf-bind-if-nested (copy-list expr) nil is-nested?))
+          ((equal name "WHILE")
+           (error 'crisp-unsupported-form-error :form (car expr)))
+          ((equal name "%WHILE")
+           (error "Internal compiler error: a %while reached the A|D pass (~s).  The compiler hides an unbounded spin only inside a form that is opaque to ANF and has a registered VJP (see sync-wait); whichever form expanded to this one needs both."
+                  expr))
+          (t (funcall *200-orig-anf-normalize* expr is-nested?)))))
+
+;; src/anf-transform.lisp  (FOLD: add SYNC-ARRIVE / SYNC-WAIT to both defparameter lists)
+(pushnew 'sync-arrive *anf-unexpanded-macros*)
+(pushnew 'sync-wait *anf-unexpanded-macros*)
+(pushnew "SYNC-ARRIVE" *anf-opaque-statement-names* :test #'string=)
+(pushnew "SYNC-WAIT" *anf-opaque-statement-names* :test #'string=)
+
+;; src/autodiff.lisp
+(defun %200-vjp-sync-wait (form ctx)
+  "Backward rule for sync-wait (endeavour 200).  An arrival sync orders the work BEFORE every arrive
+   ahead of the work AFTER every wait.  The adjoints flow the other way, so in the backward the roles
+   swap: at the mirror of its wait a thread SIGNALS that the adjoints of its after-wait work are
+   published, and at the mirror of its arrive it WAITS for every thread's signal before running the
+   adjoints of its before-arrive work.  The walk runs in reverse, so this wait's mirror is an arrive.
+   Both forms are refused under divergent control, so the arriving and the waiting threads are the same
+   set and the forward's count still applies.  The backward kernel replays the forward's bindings but
+   not its statements, so the replayed handle is a fresh, zeroed counter."
+  (declare (ignore ctx))
+  (log:debug "200 VJP sync-wait ~s -> sync-arrive" (second form))
+  `(sync-arrive ,(second form)))
+
+;; src/autodiff.lisp
+(defun %200-vjp-sync-arrive (form ctx)
+  "Backward rule for sync-arrive (endeavour 200): the mirror of an arrive is a wait -- see
+   %200-vjp-sync-wait."
+  (declare (ignore ctx))
+  (log:debug "200 VJP sync-arrive ~s -> sync-wait" (second form))
+  `(sync-wait ,(second form)))
+
+;; src/autodiff.lisp
+(eval-when (:load-toplevel :execute)
+  (register-vjp "SYNC-WAIT"   (function %200-vjp-sync-wait))
+  (register-vjp "SYNC-ARRIVE" (function %200-vjp-sync-arrive)))
+
+;; src/autodiff.lisp
+(defun %200-vjp-construct-struct (form ctx)
+  "Backward rule for %construct-struct (endeavour 200): building an ARRIVAL-SYNC-HANDLE is gradient-inert.
+   The handle is a scheduling object -- an integer counter cell and an integer count -- exactly as a
+   barrier is.  Walked as a struct, its counter CELL was given a scalar adjoint 0.0 that shadowed the
+   cell's paired scratch adjoint ('No matching function overload found for ~ with argument types
+   (FLOAT)').  Every other struct DECLINES, so the walk's own constructor clauses run unchanged."
+  (declare (ignore ctx))
+  (when (and (symbolp (second form)) (string-equal (symbol-name (second form)) "ARRIVAL-SYNC-HANDLE"))
+    (log:debug "200 VJP %construct-struct arrival-sync-handle: inert")
+    :inert))
+
+;; src/autodiff.lisp
+(eval-when (:load-toplevel :execute)
+  (register-vjp "%CONSTRUCT-STRUCT" (function %200-vjp-construct-struct)))

@@ -34,7 +34,9 @@ bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
 `libdevice.10.bc`: pass it as an extra input (`$CUDA_HOME/nvvm/libdevice/libdevice.10.bc`).  Without it
 the compiler stops with a clear message naming the missing `__nv_*` function.  SPIR-V needs nothing.
 
-The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative to there).
+The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative to there).  Run from
+anywhere else it fails -- and a script that does not check the exit code then reads the PREVIOUS `.ptx`
+or `.spv` and reports stale results.
 
 ---
 
@@ -75,6 +77,7 @@ The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative
 | `(* 2.0 x)` | `(* 2 x)` with a float `x` | No implicit int/float mixing — use float literals, or `(to-float n)`. |
 | `(< lid 32ul)` | `(< lid 32)` with a `ulong` | Integer literals are `int`; a literal compared with a `ulong` needs `ul` (see §4). |
 | `def-function` at top level | `defun`, nested functions | Functions are top-level forms; no closures, no recursion. |
+| `def-grid-function` for a helper holding a barrier | `def-function` around `sync-workgroup` | A `def-function` may not hold a barrier ("only valid inside a kernel"). A grid function returns nothing (`=> nil`): leave results in shared scratch. |
 | `dotimes`, stride macros | `loop`, `while`, `dolist` | Every loop is bounded (see §6). |
 
 When you write a Common Lisp form Crisp does not have, the error says what to write instead
@@ -161,6 +164,8 @@ well supported inside the MMA paths.
 - `return-from-loop` leaves the innermost `dotimes`-family loop.  No barrier in a loop that holds one;
   warp collectives only if every exit is warp-uniform (and, on SPIR-V, not in a nested loop -- BUG 141).
 - No recursion, no `while`.
+- A collective gated on a warp: write `(when (= (warp-id) 0u) ...)`.  A `wid` computed from the local id
+  is the same number, but the compiler cannot prove it warp-uniform and refuses the shuffle inside.
 
 ---
 

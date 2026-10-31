@@ -39,341 +39,153 @@ Result: A new global buffer where the data is sorted according to the current gr
 
 This new output buffer then becomes the input buffer for the next pass of the host-side loop. This is often called "ping-ponging" between two large buffers. After the final pass (on the most significant bits), the data is fully sorted.
 
-#### Radix Sort in Crisp
+#### Radix Sort in Crisp ✅
 
+A working LSD radix sort of `float` is the GPU MODE `sort_v2` entry (`contests/gpu-mode/07-sort-v2/`):
+`sort_radix.crisp` (reduce-then-scan, the three-kernel loop described above) and `sort_onesweep.crisp`
+(one kernel per pass, decoupled look-back).  `sort_radix` is verified bit-exact against a reference sort on
+the Intel Arc B580 (SPIR-V) and the H100 (PTX) -- the warp logic follows `(warp-size)`, so one source serves
+both; `sort_onesweep` was verified on the H100 (on the BMG it does not launch: BUG 147), but needs a
+look-back form before it compiles again -- see below.  On the H100 the
+scored 100M case takes 3.75 ms (reduce-then-scan) -- correct, but about twice the board's median.
+
+##### Keys
+
+A float's bits become an unsigned key whose unsigned order is the float order -- positive floats flip the
+sign bit, negative floats flip every bit -- and back again after the last pass:
+
+```lisp
+(def-function float-bits-to-key (b)
+  (declare #'(uint => uint))
+  (return (if (= (ash b -31) 1u) (lognot b) (logxor b 2147483648u))))
+
+(def-function key-to-float-bits (k)
+  (declare #'(uint => uint))
+  (return (if (= (ash k -31) 1u) (logxor k 2147483648u) (lognot k))))
+```
+
+The kernels read and write the float buffers through a `uint` view: `(make-vector src uint :length n)`.
+
+**Range reduction.**  A first pass finds the smallest and largest key; every pass then sorts
+`key - kmin`, so only `ceil(bits(kmax - kmin) / 8)` 8-bit passes are needed.  Values 6252 .. 16251 differ
+in their low 24 bits: 3 passes, not 4.  It is correct for any input -- all-equal input needs 0 passes (a
+copy).
+
+##### Ranking within a tile: the hard part
+
+The scatter needs each key's STABLE rank among the keys of its tile that share its digit.  Each 256-thread
+workgroup loads a tile of 4096 keys into shared memory and sorts it by the 8-bit digit with two 4-bit
+counting splits (low nibble, then high).  A split: every thread counts the nibbles of its 16 keys, the
+4096 counts are exclusive-scanned in (digit, thread) order, and each key goes to its digit's offset plus
+the number of the thread's earlier keys with the same digit.
+
+Here the counts live in REGISTERS: 16 counters of at most 16 fit in 8-bit fields of two `ulong`s.  (Measured
+on the H100 this is no faster than counters in shared memory -- the downsweep is bound by instruction count,
+not by the counters' read-modify-write.  Either works.)  Before the splits each key is ROTATED so the pass's
+digit is its low byte: every digit extraction below is then a constant mask, where a run-time `ash` costs
+about ten instructions.
+
+```lisp
+;; LO holds digits 0-7, HI digits 8-15, 8 bits each.
+(def-function nib-inc (d)
+  (declare #'(uint => ulong))
+  (return (ash 1ul (to-int (* (logand d 7u) 8u)))))
+
+(def-function nib-field (lo hi d)
+  (declare #'(ulong ulong uint => uint))
+  (return (to-uint (logand (ash (if (< d 8u) lo hi) (- (to-int (* (logand d 7u) 8u)))) 255ul))))
+
+;; Stable counting sort of the 4096 keys in IN by the 4 bits at SH, into OUT.  Workgroup-uniform.
+(def-grid-function split-nibble (in out cnt wtot tid sh)
+  (declare #'(smem-vec smem-vec smem-vec smem-vec ulong int => nil))
+  (let ((lo 0ul) (hi 0ul))                         ; count this thread's 16 keys in registers
+    (dotimes (j 16ul)
+      (let ((d   (logand (ash (~ in (+ (* j 257ul) tid)) (- sh)) 15u))
+            (inc (nib-inc d)))
+        (set! lo (+ lo (if (< d 8u) inc 0ul)))
+        (set! hi (+ hi (if (< d 8u) 0ul inc)))))
+    (dotimes (dg 16ul)                             ; publish the 16 counts
+      (set! (~ cnt (cnt-word (+ (* dg 256ul) tid))) (nib-field lo hi (to-uint dg)))))
+  (sync-workgroup)
+  (let ((mine 0u))                                 ; exclusive scan of all 4096 counts
+    (dotimes (j 16ul)
+      (set! mine (+ mine (~ cnt (cnt-word (+ (* tid 16ul) j))))))
+    (block-scan-u mine tid wtot)
+    (let ((run (~ wtot (+ 32ul tid))))
+      (dotimes (j 16ul)
+        (let ((c (cnt-word (+ (* tid 16ul) j)))
+              (v (~ cnt c)))
+          (set! (~ cnt c) run)
+          (set! run (+ run v))))))
+  (sync-workgroup)
+  (let ((lo 0ul) (hi 0ul))                         ; each key to its rank
+    (dotimes (j 16ul)
+      (let ((k   (~ in (+ (* j 257ul) tid)))
+            (d   (logand (ash k (- sh)) 15u))
+            (inc (nib-inc d))
+            (r   (+ (~ cnt (cnt-word (+ (* (to-ulong d) 256ul) tid))) (nib-field lo hi d))))
+        (set! lo (+ lo (if (< d 8u) inc 0ul)))
+        (set! hi (+ hi (if (< d 8u) 0ul inc)))
+        (set! (~ out (tile-word (to-ulong r))) k))))
+  (sync-workgroup)
+  (return))
+```
+
+**Layouts.**  Logical tile position `p` lives at shared word `(p mod 16) * 257 + p / 16` (`tile-word`), so
+the counting reads -- thread `t` reads its 16 keys `16t .. 16t+15` -- are conflict-free; counter
+`c = digit * 256 + thread` lives at word `c + c / 32` (`cnt-word`), conflict-free both for counting and for
+the scan, which walks `16t .. 16t+15`.  `block-scan-u` is a 256-thread exclusive scan (warp shuffles, then
+the warp totals); being a grid function it returns nothing, so it leaves each thread's prefix in shared
+scratch.
+
+After the two splits the tile is sorted by its 8-bit digit; each digit's run `[lstart, lend)` is found by
+comparing neighbours, and the run is written out contiguously: key `p` goes to
+`digit-base + offset-of-this-tile + (p - lstart)`.
+
+##### Onesweep: no upsweep, no scan kernel
+
+`sort_onesweep.crisp` removes the per-pass histogram and scan kernels:
+
+- one read of the input finds kmin / kmax AND pass 0's histogram: `(key - kmin) mod 256` is the raw key's
+  low byte rotated by kmin, so the raw low-byte histogram, read with an offset, IS pass 0's;
+- each pass is one launch.  A tile takes an in-order ticket (`atomic-inc!` on a counter the last tile
+  resets), sorts itself, publishes its 256 digit counts, and each thread looks back over the predecessor
+  tiles for its digit -- a decoupled look-back on 64-bit status words `(tag << 32) | count`, with tags
+  `epoch * 4 + 1` (this tile's count) and `epoch * 4 + 2` (the running total through this tile).  The
+  epoch is unique per launch, so the status words are never re-zeroed;
+- while it has its tile sorted, each tile also counts its NEXT digit and adds the 256 totals to the global
+  histogram: the next pass has its digit bases without reading the keys again.
+
+The publish is a single `atomic-store!` of the whole word, so no separate fence is needed between data
+and flag.  The look-back, though, must WAIT for a predecessor that has not published yet -- an unbounded
+wait, and an author cannot write one: Crisp has no `while` (only the compiler hides a spin, inside a form
+that owns a VJP, as `sync-wait` does).  `sort_onesweep.crisp` was written with a `while` before that door
+was closed, and does not compile today; it waits on a sanctioned look-back form 📝.
+
+##### The library forms 📝
+
+The functions sketched below (`histogram-pass`, `scan-histogram`, `scatter-pass`) remain the intended
+library API; the kernels above are their working bodies.  The earlier "possible implementations" here did
+not compile (barriers inside `def-function`, an unstable atomic scatter for the local rank, `as-bits`) and
+have been removed.
 
 ##### `histogram-pass` 📝
 ```
- (histogram-pass input-vec bit-offset &out global-histogram  &optional local-histogram)
+(histogram-pass input-vec bit-offset &out global-histogram &optional local-histogram)
 ```
+One pass's digit counts.  Working body today: `sort_upsweep` (per-tile counts) or, for the onesweep form, the
+per-tile counts a tile publishes for itself.
 
- - this routine requires that the `local_work_size` is set to 256
- - similarly the `global-histogram` vector parameter must consist of 256 `uint`
- - the `local-histogram` scratch vector is optional, it should be 256 `uint` as well. If not provided,
-  Crisp will use the scratch vector side channel to fulfill it.
-
-
-Possible Implementation
-```
-(def-constraint is-signed-integer? (T)
-   (and (is-signed? T) (is-integer? T)))
-
-;;
-;; histogram-pass
-;; 
-(with-template-type (T A)
-  (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
-
-  ;; -- histogram-pass --
-  (def-grid-function histogram-pass (input-vec bit-offset &out global-histogram  
-                                                     &optional (local-histogram (make-scratch-vector uint 256))
-    (declare #((in-vec T A) uint &out (out-vec uint A 256)  &optional (scratch-vector-type T)))
-              (local-work-size :set-to 256 :msg "local_work_size must be 256 for histogram kernel"))
-              
-    ;; setup
-    (let ((local-id (get-local-id))
-          (local-size (get-local-size)))
-
-      ;; initialize local histogram
-      ;; The workgroup must zero-out its local histogram. This is done in parallel.
-      ;; Each thread clears a portion of the 256-element array.
-      (set! (~ local-histogram local-id) 0)
-      (sync-workgroup)
-
-      ;; build local histogram
-      ;; Each thread processes its slice of the large input vector.
-      ;; note we have to handle floats and unsigned digits special to make sure 
-      ;; they are bit-wise evaluable. 
-      (loop-vector-stride input-vec (i)
-        ;; a. Get the value from the input vector.
-        (let ((initial-val (~ input-vec i))
-              (base-val  #+(is-floating-point? T) (as-bits initial-val uint)
-                          #-(is-floating-point? T) initial-val)
-              (val    #+(is-signed-integer? T) (logxor base-val #x80000000)
-                       #-(is-signed-integer? T) base-val))
-
-          #+(is-floating-point? T)
-          (when (is-negative? initial-val)
-              (set! val (lognot val)))
-
-          ;; b. Isolate the 8-bit "digit" we're sorting by in this pass.
-          (let ((digit (bit-and (ash val (- bit-offset)) #xFF)))
-            ;; c. Atomically increment the counter for that digit IN LOCAL MEMORY.
-            ;;    Atomics on local memory are very fast.
-            (atomic-add! (~ local-histogram digit) 1))))
-      (sync-workgroup)
-
-      ;; combine into local histogram
-      ;; Now that the local histogram is complete, the workgroup adds its results
-      ;; to the final global histogram.
-      ;; Each thread is responsible for one bin of the local histogram.
-      (when (< local-id 256)
-        (let ((count-for-this-bin (~ local-histogram local-id)))
-          (when (> count-for-this-bin 0)
-            ;; Atomically add this workgroup's count for this bin to the global total.
-            (atomic-add! (~ global-histogram local-id) count-for-this-bin)))) )))
-```
-
-#### scan histogram pass 📝
-
+##### `scan-histogram` 📝
 ```
 (scan-histogram global-histogram &out bucket-offsets)
 ```
+The exclusive scan of the counts.  Working body today: `sort_digit_scan`, or the per-digit look-back.
 
-The `global-histogram` that was the output of `histogram-pass` is the input of this routine.
-And its output is a prefix-sum vector.
-
-
-```
-;;
-;; scan-historgram
-;;
-(with-template-type (A)
-  (declare (value-is A #'is-alignment?))
-
-  ;; -- scan-histogram --
-  (def-function scan-histogram (global-histogram &out bucket-offsets)
-    (declare #((in-vec uint  A 256)
-              &out (out-vec uint  A 256) => nil)
-            ;; Ensure this kernel runs with only ONE workgroup of size 256
-            (local-size :set-to 256 :strategy :exact)
-            (global-size :set-to 256 :strategy :exact))
-
-    (let ((local-id (get-local-id))
-           ;; A buffer in fast local memory to perform the scan
-          (local-scan-buffer (make-local-scratch-vector uint 256)))
-
-      ;; load data from global to local
-      ;; each thread loads one count from the global histogram
-      (set! (~ local-scan-buffer local-id) (~ global-histogram local-id))
-      (sync-workgroup) ; ensure load is complete before scan begins
-
-      ;; perform Parallel Exclusive Scan in local memory 
-      ;; uses the built-in primitive - modifies
-      ;; 'local-scan-buffer' in place and returns the total sum (which is ignored)
-      (exclusive-scan-workgroup local-scan-buffer)
-      ;; no barrier needed here, scan primitive includes own internal barriers.
-
-      ;; store results from local to global
-      ;; Each thread writes one offset back to the global output buffer.
-      (set! (~ bucket-offsets local-id) (~ local-scan-buffer local-id)))))
-```
-
-
-#### scatter pass 📝
-
+##### `scatter-pass` 📝
 ```
 (scatter-pass input-vec bucket-offset bit-offset &out output-vec)
 ```
-
-Ping-Pong: This kernel reads from `input-vec` and writes to `output-vec`. The host needs to swap these buffers between passes.
-
-Transformations: The `radix-transform` helper encapsulates the bitwise logic for signed integers and floats.
-
-Local Rank (The Tricky Part): The local-rank-within-digit function is the most complex part. A high-performance implementation requires another clever scan algorithm within the workgroup. 
-
-```
-;;
-;; scatter pass
-;;
-(with-template-type (T A)
-  (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
-
-  ;; -- scatter-pass --
-  (def-grid-function scatter-pass (input-vec bucket-offsets bit-offset &out output-vec)
-    (declare #((in-vec T A) ; Input data
-               (in-vec uint  A 256) ; Bucket offsets
-              uint ; Current bit offset
-              &out (out-vec T A))) ; Output data
-
-    ;; setup shared memory
-    (let ((wg-size (get-local-size))
-           ;; Need space to store the data tile for this workgroup
-          (local-data-tile (make-scratch-vector T :match-workgroup-size ))
-           ;; Need space to store the 'digit' for each element in the tile
-          (local-digits (make-scratch-vector uint :match-workgroup-size ))
-           ;; Need space for the local scan (prefix sum) result for each thread
-          (local-scan-indices (make-scratch-vector uint :match-workgroup-size))
-
-          (local-id (get-local-id))
-          (global-id (get-global-id)))
-
-      ;; load data tile
-      ;; Each thread loads one element into local memory.
-      (load-local input-vec local-data-tile)
-      
-
-      ;; calculate digits and local scan
-      ;; each thread determines its element's digit for this pass.
-      (let ((initial-val (~ local-data-tile local-id))
-            ;; Apply signed/float transformations (same as histogram kernel)
-            (sortable-int (radix-transform initial-val)) ; Use a helper/macro  
-            (digit (bit-and (ash sortable-int (- bit-offset)) #xFF)))
-
-        (set! (~ local-digits local-id) digit)
-        (sync-workgroup)
-
-        ;; Perform a local scan on the digits to find the rank within the workgroup
-        ;; Need a scan that counts occurrences of each digit.
-        (let ((local-rank (local-rank-within-digit local-digits local-id)))
-          (set! (~ local-scan-indices local-id) local-rank)))
-      (sync-workgroup)
-
-      ;; calculate global write position
-      ;; Read the starting offset for this element's digit from the global offsets.
-      (let ((global-bucket-offset (~ bucket-offsets (~ local-digits local-id)))
-            (local-rank (~ local-scan-indices local-id)))
-
-        (let ((final-write-pos (+ global-bucket-offset local-rank)))
-
-          ;; write to global output
-          ;; Write the ORIGINAL element value to its final sorted position for this pass.
-          (when (< global-id (length~ input-vec)) ; Bounds check
-            (set! (~ output-vec final-write-pos) (~ local-data-tile local-id))))))))
-
-;;
-;; get-unsigned-type
-;;
-
-;; -- get-unsigned-type --
-(def-type-function get-unsigned-type (T)
-  ;; Helper to determine the corresponding unsigned integer type
-  (cond ((<= (sizeof T) (sizeof uint)) 'uint)
-        (else 'ulong)))
-
-;;
-;; radix-transform
-;;
-;; we could also realize this as a series of overloads.
-(with-template-type (T)
-  ;; Ensure T is a type we can work with
-  (declare (type-is T #'is-numeric?))
-
-  ;; Determine the corresponding unsigned integer type (UintT) for the result
-  (let ((UintT (get-unsigned-type T)))
-
-    ;; -- radix-transform --
-    (def-function radix-transform (value)
-      ;; The function returns an unsigned integer of the same size as T
-      (declare #'(T => UintT))
-
-      (cond
-        
-        ((is-unsigned-integer? T)
-         ;; No transformation needed, just ensure it's the right uint type if T was smaller
-         (as UintT value))
-
-        
-        ((is-signed-integer? T)
-         ;; Calculate the mask for the most significant bit (sign bit)
-         (let ((msb-mask (ash 1 (- (* (sizeof T) 8) 1))))
-           (declare (type msb-mask uint))
-           ;; Flip the sign bit using XOR to map negatives below positives
-           (logxor (as UintT value) msb-mask)))
-
-        
-        ((is-floating-point? T)
-         ;; Bit-cast the float to an unsigned integer of the same size
-         (let ((as-uint (as-bits uint value)))
-           ;; Check if the original float value was negative
-           (if (< value 0.0)
-               ;; If negative, flip ALL bits to reverse their order
-               (lognot as-uint)
-               ;; If positive, add the sign bit offset (same as signed int XOR)
-               (let ((msb-mask (ash 1 (- (* (sizeof T) 8) 1))))
-                 (logxor as-uint msb-mask)))))
-
-        ;; Should not be reached if T is numeric
-        (else (c-t-error "Unsupported type for radix_transform"))))))
-
-;;
-;; local-rank-within-digit
-;;
-(with-template-type (A) ;; A is the alignment
-  (declare (value-is A #'is-alignment?))
-  ;; This function calculates the 0-based rank of a thread among threads
-  ;; in the same workgroup that have the same digit for the current radix pass.
-  ;; It uses fast atomic operations on local memory.
-
-  ;; -- local-rank-within-digit --
-  (def-function local-rank-within-digit (local-digits ;; Input: array (size=wg_size) of digits (0-255) for each thread
-                                          local-id     ;; Input: this thread's local ID
-                                          ;; Optional scratch space for atomic counters
-                                          &optional (digit-counts (make-scratch-vector uint 256 :align A)))
-    (declare #((vector uint :address-space :local) uint &optional (vector uint :address-space :local :align A :length 256) => uint))
-
-    ;; initialize the shared counter array
-    ;; Need to zero out the 256 counters. This can be done in parallel.
-    ;; Assuming local_work_size >= 256. If not, this needs a loop.
-    (when (< local-id 256)
-      (set! (~ digit-counts local-id) 0))
-    ;; Ensure all counters are zero before any thread proceeds.
-    (sync-workgroup)
-
-    ;; atomically increment and get rank
-    ;; each thread reads its digit for the current pass.
-    (let ((my-digit (~ local-digits local-id)))
-
-      ;; Atomically increment the counter for that specific digit in local memory.
-      ;; The 'atomic-add!' returns the value *before* the increment.
-      ;; This previous value is exactly the 0-based rank needed.
-      ;; (e.g. the first thread with digit '5' gets rank 0, the second gets rank 1, etc.)
-      (let ((rank (atomic-add! (~ digit-counts my-digit) 1)))
-
-        ;; synchronize
-        (sync-workgroup)
-
-        ;; return the calculated rank
-        rank))))
-```
-
-#### coordinating all three: histogram / san / scatter
-
-Finally, after defining `histogram-pass`, `scan-histogram` and `scatter-pass` we
-are ready to use Radix Sort. 
-
-The most difficult part to grasp is that these three kernels are run repeatedly, 
-8 bits at a time. The orchestration below demonstrates how to run them. 
-
-Just use `(gen-radix-sort Type Alignment)` and the Crisp compiler will build the correct
-kernels and the hoisting example code will walk through everything.
-
-```
-;;  the three passes and their param names, for reference.
-;;  (histogram_pass input-vec bit-offset &out global-histogram  &optional local-histogram)
-;;  (scan_historgram global-histogram &out bucket-offsets)
-;;  (scatter_pass input-vec bucket-offsets bit-offset &out output-vec)
-
-
-#
-# radix-sort orchestration
-#
-(with-template-type (T A)
-  (declare (type-is T #'is-numeric?) (value-is A #'is-alignment?))
-
-  ;; -- radix-sort --
-  (def-orchestration radix-sort
-    ;; the goal is to start with the unsorted input-vec (that we'll pass to the first kernel, histogram-pass)
-    ;; and finally end up with the sorted output-vec.
-
-    (let ((histogram_pass_kernel (gen-histogram_pass T A "histogram_pass_kernel"))
-          (buffer-A (allocate-tensor histogram_pass_kernel::input-vec))
-          (buffer-B (allocate-tensor histogram_pass_kernel::input-vec)))
-
-      (let ((num-passes (/ (* (sizeof T) 8) 8)) ;; why is this not just sizeof T?
-            (N (* num-passes 8)))
-        (dotimes (bit-offset N 8)
-          (launch-sequential 
-            (histogram_pass_kernel buffer-A bit-offset _)
-            ((gen-scan_histogram A "scan_histogram") histogram_pass::global-histogram _)
-            ((gen-scatter_pass T A)) scan_histogram::global-histogram scan_histogram::bucket-offsets bit-offset buffer-B)
-          (swap-refs buffer-A buffer-B))) ;; <-- orchestration only routine. ping pong
-
-      (let ((final-buffer (if (even? num-passes) buffer-A buffer-B)))
-        ; present victory?
-      ))))
-
-```
-
-
+The stable scatter.  Working body today: `sort_downsweep` -- the local sort above is the "local rank within
+digit" the old sketch left open, and it is the part that decides the speed.
 

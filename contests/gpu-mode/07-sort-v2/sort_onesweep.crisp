@@ -1,0 +1,342 @@
+;; GPU MODE Challenge 07: sort_v2 -- ONESWEEP LSD radix sort (decoupled look-back), range-reduced keys.
+;; DOES NOT COMPILE since 2026-10-30 (BUG 148): the look-back waits with `while`, and Crisp has none --
+;; every loop is bounded.  It waits on a sanctioned look-back form (see
+;; tests/spec/200-sort-contest/sort-contest.md).  Kept as the reference for that form.
+;;
+;;
+;; Keys as in sort_radix.crisp: a float's bits become an order-preserving uint key, and every pass sorts
+;; (key - kmin), so ceil(bits(kmax - kmin) / 8) 8-bit passes suffice -- 3 for the contest's data.
+;;
+;;   sort_minmax_hist  ONE read of the input: kmin / kmax, and the histogram of the raw keys' low byte.
+;;                     (key - kmin) mod 256 is that byte rotated by kmin, so it IS pass 0's histogram.
+;;   sort_onesweep     one launch per pass.  A tile (4096 keys, 256 threads) takes an in-order ticket,
+;;                     sorts itself in shared memory (two 4-bit counting splits), publishes its 256 digit
+;;                     counts, looks back over its predecessors for each digit's running total
+;;                     (decoupled look-back: epoch-tagged 64-bit status words, never re-zeroed), and
+;;                     scatters.  It also adds its NEXT digit's counts into the global histogram, so the
+;;                     next pass has its digit bases without another read of the keys.
+;; No upsweep, no separate scan: per pass the keys are read once and written once.
+;;
+;; prm (uint vector, per pass): [0] SHIFT, [1] 1 on the first pass, [2] 1 on the last pass, [3] EPOCH
+;;   (unique per launch; status words of older launches never match), [4] the pass index.
+;; mm   [0] kmin  [1] kmax  (host fills ~0, 0).      ghist  4 x 256 digit counts (host zeroes them).
+;; status  256 x ntiles ulongs (zeroed once).        ticket [0] the tile counter (the last tile resets it).
+
+(def-type fin-vec  (vector float :address-space :global :align :compact))
+(def-type fout-vec (vector float :address-space :global :align :compact))
+(def-type u-vec    (vector uint  :address-space :global :align :compact))
+(def-type uout-vec (vector uint  :address-space :global :align :compact))
+(def-type smem-vec (vector uint  :address-space :local  :align :compact))
+
+;; Order-preserving: unsigned order of the result = float order of the bits B (NaN aside).
+(def-function float-bits-to-key (b)
+  (declare #'(uint => uint))
+  (return (if (= (ash b -31) 1u) (lognot b) (logxor b 2147483648u))))
+
+;; The inverse of float-bits-to-key.
+(def-function key-to-float-bits (k)
+  (declare #'(uint => uint))
+  (return (if (= (ash k -31) 1u) (logxor k 2147483648u) (lognot k))))
+
+;; The sort key of float bits B: on the first pass SRC holds floats, afterwards keys.
+(def-function key-of (b is-first kmin)
+  (declare #'(uint uint uint => uint))
+  (return (if (= is-first 1u) (- (float-bits-to-key b) kmin) b)))
+
+;; Element I of SRC as a sort key.
+(def-function load-key (src i is-first kmin)
+  (declare #'(u-vec ulong uint uint => uint))
+  (return (key-of (~ src i) is-first kmin)))
+
+;; Inclusive scan of X across the warp (LANE = warp-lane).
+(def-function warp-scan-u (x lane)
+  (declare #'(uint ulong => uint))
+  (let ((s x))
+    (do-power-step+ (off (to-ulong (warp-size)))
+      (let ((up (shuffle-up s off)))
+        (set! s (+ s (if (>= lane off) up 0u)))))
+    (return s)))
+
+;; Exclusive scan of X over the 256 threads of the workgroup, any warp width (32 NVIDIA, 16 BMG).
+;; A grid function returns nothing, so the results are left in WTOT (288 words of shared scratch):
+;; this thread's exclusive prefix at 32 + tid, the workgroup total at 16.  Holds barriers; call it
+;; workgroup-uniformly.
+(def-grid-function block-scan-u (x tid wtot)
+  (declare #'(uint ulong smem-vec => nil))
+  (let ((ws   (to-ulong (warp-size)))
+        (nw   (/ 256ul ws))
+        (lane (to-ulong (warp-lane)))
+        (wid  (to-ulong (warp-id)))
+        (inc  (warp-scan-u x lane)))
+    (when (= lane (- ws 1ul))
+      (set! (~ wtot wid) inc))
+    (sync-workgroup)
+    (when (= (warp-id) 0u)            ; warp-uniform: the shuffles inside are legal
+      (let ((w  (if (< lane nw) (~ wtot lane) 0u))
+            (sw (warp-scan-u w lane)))
+        (when (< lane nw)
+          (set! (~ wtot lane) (- sw w)))
+        (when (= lane (- nw 1ul))
+          (set! (~ wtot 16ul) sw))))
+    (sync-workgroup)
+    (let ((excl (+ (~ wtot wid) (- inc x))))
+      (sync-workgroup)          ; every thread has read WTOT[wid] before anyone reuses it
+      (set! (~ wtot (+ 32ul tid)) excl))
+    (return)))
+
+;; Shared tiles hold LOGICAL position p (thread t owns p = 16t .. 16t+15 while counting) at physical
+;; word (p mod 16) * 257 + p / 16: counting reads (j * 257 + t) are conflict-free, the final in-order
+;; walk is at most 2-way.  Counter c = digit * 256 + t lives at word c + c / 32, so both the counting
+;; access (digit fixed, t varies) and the scan access (16t + j) are conflict-free.
+
+(def-function tile-word (p)
+  (declare #'(ulong => ulong))
+  (return (+ (* (logand p 15ul) 257ul) (ash p -4))))
+
+(def-function cnt-word (c)
+  (declare #'(ulong => ulong))
+  (return (+ c (ash c -5))))
+
+;; A thread's 16 nibble counters, packed 8 bits each into two ulongs (LO: digits 0-7, HI: 8-15).  A
+;; count never exceeds 16, so a field never carries into its neighbour.  Counting in registers keeps
+;; the per-key read-modify-write of a shared counter -- a serial chain of shared-memory latencies --
+;; out of the loop (endeavour 200: the two splits fell from ~500 us to ... at 100M on H100).
+(def-function nib-inc (d)
+  (declare #'(uint => ulong))
+  (return (ash 1ul (to-int (* (logand d 7u) 8u)))))
+
+(def-function nib-field (lo hi d)
+  (declare #'(ulong ulong uint => uint))
+  (return (to-uint (logand (ash (if (< d 8u) lo hi) (- (to-int (* (logand d 7u) 8u)))) 255ul))))
+
+;; Stable counting sort of the 4096 keys in IN by the 4 bits at SH, into OUT.  Workgroup-uniform.
+(def-grid-function split-nibble (in out cnt wtot tid sh)
+  (declare #'(smem-vec smem-vec smem-vec smem-vec ulong int => nil))
+  ;; count this thread's 16 keys in registers, then publish the 16 counts
+  (let ((lo 0ul)
+        (hi 0ul))
+    (dotimes (j 16ul)
+      (let ((d   (logand (ash (~ in (+ (* j 257ul) tid)) (- sh)) 15u))
+            (inc (nib-inc d)))
+        (set! lo (+ lo (if (< d 8u) inc 0ul)))
+        (set! hi (+ hi (if (< d 8u) 0ul inc)))))
+    (dotimes (dg 16ul)
+      (set! (~ cnt (cnt-word (+ (* dg 256ul) tid))) (nib-field lo hi (to-uint dg)))))
+  (sync-workgroup)
+  ;; exclusive scan of all 4096 counters in (digit, thread) order: thread t owns 16t .. 16t+15
+  (let ((mine 0u))
+    (dotimes (j 16ul)
+      (set! mine (+ mine (~ cnt (cnt-word (+ (* tid 16ul) j))))))
+    (block-scan-u mine tid wtot)
+    (let ((excl (~ wtot (+ 32ul tid))))
+      (let ((run excl))
+        (dotimes (j 16ul)
+          (let ((c (cnt-word (+ (* tid 16ul) j)))
+                (v (~ cnt c)))
+            (set! (~ cnt c) run)
+            (set! run (+ run v)))))))
+  (sync-workgroup)
+  ;; each key to its rank: the digit's base (read only) + how many of this thread's earlier keys share it
+  (let ((lo 0ul)
+        (hi 0ul))
+    (dotimes (j 16ul)
+      (let ((k   (~ in (+ (* j 257ul) tid)))
+            (d   (logand (ash k (- sh)) 15u))
+            (inc (nib-inc d))
+            (r   (+ (~ cnt (cnt-word (+ (* (to-ulong d) 256ul) tid))) (nib-field lo hi d))))
+        (set! lo (+ lo (if (< d 8u) inc 0ul)))
+        (set! hi (+ hi (if (< d 8u) 0ul inc)))
+        (set! (~ out (tile-word (to-ulong r))) k))))
+  (sync-workgroup)
+  (return))
+
+;; ---------------------------------------------------------------------------------------------
+;; sort_minmax_hist
+;; ---------------------------------------------------------------------------------------------
+
+;; Fold the four keys of V into LO / HI (returned) and count their low bytes into the slice at H.
+(def-function minmax-hist4 (v h lo hi &out shist)
+  (declare #'(uint4 ulong uint uint &out smem-vec => uint uint))
+  (let ((k0 (float-bits-to-key (x~ v)))
+        (k1 (float-bits-to-key (y~ v)))
+        (k2 (float-bits-to-key (z~ v)))
+        (k3 (float-bits-to-key (w~ v))))
+    (atomic-inc! (~ shist (+ h (to-ulong (logand k0 255u)))))
+    (atomic-inc! (~ shist (+ h (to-ulong (logand k1 255u)))))
+    (atomic-inc! (~ shist (+ h (to-ulong (logand k2 255u)))))
+    (atomic-inc! (~ shist (+ h (to-ulong (logand k3 255u)))))
+    (return (min (min lo k0) (min (min k1 k2) k3))
+            (max (max hi k0) (max (max k1 k2) k3)))))
+
+(def-kernel sort_minmax_hist (input &out mm ghist)
+  (declare #'(fin-vec &out uout-vec uout-vec => nil)
+           (global-size :derive-from input :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((tid   (to-ulong (get-local-id 0)))
+        (h     (* (ash tid -5) 256ul))
+        (n     (length~ input))
+        (n4    (/ n 4ul))
+        (u     (make-vector input uint :length n))
+        (u4    (make-vector input uint4 :length n4))
+        (shist (make-scratch-vector smem-vec 2048))
+        (lo    (lognot 0u))
+        (hi    0u))
+    (dotimes+ (w 8ul)
+      (set! (~ shist (+ (* w 256ul) tid)) 0u))
+    (sync-workgroup)
+    (loop-vector-stride u4 (i)
+      (let ((l2 h2 (minmax-hist4 (~ u4 i) h lo hi shist)))
+        (set! lo l2)
+        (set! hi h2)))
+    (let ((tail (+ (* n4 4ul) (get-global-id 0))))     ; the 0..3 keys uint4 cannot cover
+      (when (< tail n)
+        (let ((k (float-bits-to-key (~ u tail))))
+          (set! lo (min lo k))
+          (set! hi (max hi k))
+          (atomic-inc! (~ shist (+ h (to-ulong (logand k 255u))))))))
+    (dec-times-by-half+ (s (/ (warp-size) 2u))
+      (set! lo (min lo (shuffle-xor lo s)))
+      (set! hi (max hi (shuffle-xor hi s))))
+    (when (= (warp-lane) 0u)
+      (atomic-min! (~ mm 0ul) lo)
+      (atomic-max! (~ mm 1ul) hi))
+    (sync-workgroup)
+    (let ((c 0u))
+      (dotimes (w 8ul)
+        (set! c (+ c (~ shist (+ (* w 256ul) tid)))))
+      (when (> c 0u)
+        (atomic-add! (~ ghist tid) c)))
+    (return)))
+
+;; ---------------------------------------------------------------------------------------------
+;; sort_onesweep
+;; ---------------------------------------------------------------------------------------------
+
+(def-type st-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel sort_onesweep (src prm &out dst mm ghist status ticket)
+  (declare #'(fin-vec u-vec &out fout-vec uout-vec uout-vec st-vec uout-vec => nil)
+           (local-size :set-to 256))
+  (let ((tid      (to-ulong (get-local-id 0)))
+        (n        (length~ src))
+        (ntiles   (/ (+ n 4095ul) 4096ul))
+        (u        (make-vector src uint :length n))
+        (u4       (make-vector src uint4 :length (/ n 4ul)))
+        (du       (make-vector dst uint :length n))
+        (shift    (to-int (~ prm 0ul)))
+        (is-first (~ prm 1ul))
+        (is-last  (~ prm 2ul))
+        (epoch    (~ prm 3ul))
+        (pass     (to-ulong (~ prm 4ul)))
+        (tag-a    (to-ulong (+ (* epoch 4u) 1u)))
+        (tag-i    (to-ulong (+ (* epoch 4u) 2u)))
+        (kmin     (atomic-load (~ mm 0ul)))
+        (ta       (make-scratch-vector smem-vec 4112))
+        (tb       (make-scratch-vector smem-vec 4112))
+        (cnt      (make-scratch-vector smem-vec 4224))
+        (gofs     (make-scratch-vector smem-vec 256))
+        (lstart   (make-scratch-vector smem-vec 256))
+        (lend     (make-scratch-vector smem-vec 256))
+        (wtot     (make-scratch-vector smem-vec 288))
+        (s-id     (make-scratch-vector smem-vec 1)))
+    ;; 1. an in-order tile id (the last tile resets the counter for the next launch)
+    (when (= tid 0ul)
+      (let ((tk (to-ulong (atomic-inc! (~ ticket 0ul)))))
+        (set! (~ s-id 0ul) (to-uint tk))
+        (when (= tk (- ntiles 1ul))
+          (atomic-xchg! (~ ticket 0ul) 0u))))
+    (set! (~ lstart tid) 0u)
+    (set! (~ lend tid) 0u)
+    (sync-workgroup)
+    (let ((tile  (to-ulong (~ s-id 0ul)))
+          (base  (* tile 4096ul))
+          (valid (min 4096ul (- n base))))
+      ;; 2. this digit's base in dst: an exclusive scan of the pass's global histogram.  Pass 0's
+      ;;    histogram is the raw keys' low byte, rotated by kmin.
+      (block-scan-u (if (= pass 0ul)
+                        (atomic-load (~ ghist (to-ulong (logand (+ (to-uint tid) kmin) 255u))))
+                        (atomic-load (~ ghist (+ (* pass 256ul) tid))))
+                    tid wtot)
+      (set! (~ gofs tid) (~ wtot (+ 32ul tid)))
+      ;; 3. the tile, padded with the largest key (it sorts last and is never written)
+      (if (= valid 4096ul)
+          (dotimes (j 4ul)
+            (let ((q (+ (* j 256ul) tid))
+                  (v (~ u4 (+ (/ base 4ul) q)))
+                  (p (* q 4ul)))
+              (set! (~ ta (tile-word p))         (key-of (x~ v) is-first kmin))
+              (set! (~ ta (tile-word (+ p 1ul))) (key-of (y~ v) is-first kmin))
+              (set! (~ ta (tile-word (+ p 2ul))) (key-of (z~ v) is-first kmin))
+              (set! (~ ta (tile-word (+ p 3ul))) (key-of (w~ v) is-first kmin))))
+          (dotimes (j 16ul)
+            (let ((p (+ (* j 256ul) tid)))
+              (set! (~ ta (tile-word p))
+                    (if (< p valid) (load-key u (+ base p) is-first kmin) (lognot 0u))))))
+      (sync-workgroup)
+      ;; 4. stable local sort by the 8-bit digit
+      (split-nibble ta tb cnt wtot tid shift)
+      (split-nibble tb ta cnt wtot tid (+ shift 4))
+      ;; 5. each digit's run in the sorted tile is [lstart, lend)
+      (dotimes (j 16ul)
+        (let ((p (+ (* j 256ul) tid)))
+          (when (< p valid)
+            (let ((dg (logand (ash (~ ta (tile-word p)) (- shift)) 255u))
+                  (q  (if (= p 0ul) 0ul (- p 1ul)))
+                  (r  (min (+ p 1ul) 4095ul))
+                  (dq (logand (ash (~ ta (tile-word q)) (- shift)) 255u))
+                  (dr (logand (ash (~ ta (tile-word r)) (- shift)) 255u)))
+              (when (or (= p 0ul) (!= dg dq))
+                (set! (~ lstart (to-ulong dg)) (to-uint p)))
+              (when (or (= p (- valid 1ul)) (!= dg dr))
+                (set! (~ lend (to-ulong dg)) (to-uint (+ p 1ul))))))))
+      (sync-workgroup)
+      ;; 6. decoupled look-back, one digit per thread: publish this tile's count, then add up the
+      ;;    predecessors' counts until one has published its inclusive total.
+      (let ((mine (to-ulong (- (~ lend tid) (~ lstart tid))))
+            (slot (+ (* tile 256ul) tid))
+            (excl 0ul))
+        (if (= tile 0ul)
+            (atomic-store! (~ status slot) (logior (ash tag-i 32) mine))
+            (progn
+              (atomic-store! (~ status slot) (logior (ash tag-a 32) mine))
+              (let ((pt   (- tile 1ul))
+                    (done 0u))
+                (while (= done 0u)
+                  (let ((w   (atomic-load (~ status (+ (* pt 256ul) tid))))
+                        (tag (ash w -32))
+                        (c   (logand w 4294967295ul)))
+                    (when (= tag tag-i)
+                      (set! excl (+ excl c))
+                      (set! done 1u))
+                    (when (= tag tag-a)
+                      (set! excl (+ excl c))
+                      (set! pt (- pt 1ul))))))
+              (atomic-store! (~ status slot) (logior (ash tag-i 32) (+ excl mine)))))
+        (set! (~ gofs tid) (+ (~ gofs tid) (to-uint excl))))
+      ;; 7. the next pass's digit histogram, from this tile (cnt is free after the splits)
+      (when (= is-last 0u)
+        (dotimes (w 8ul)
+          (set! (~ cnt (+ (* w 256ul) tid)) 0u)))
+      (sync-workgroup)
+      (when (= is-last 0u)
+        (let ((h (* (ash tid -5) 256ul)))
+          (dotimes (j 16ul)
+            (let ((p (+ (* j 256ul) tid)))
+              (when (< p valid)
+                (atomic-inc! (~ cnt (+ h (to-ulong (logand (ash (~ ta (tile-word p)) (- (+ shift 8))) 255u))))))))))
+      ;; 8. scatter: each digit's run goes to its global base plus its rank within the run
+      (dotimes (j 16ul)
+        (let ((p (+ (* j 256ul) tid)))
+          (when (< p valid)
+            (let ((k  (~ ta (tile-word p)))
+                  (dg (to-ulong (logand (ash k (- shift)) 255u)))
+                  (g  (to-ulong (+ (~ gofs dg) (- (to-uint p) (~ lstart dg))))))
+              (set! (~ du g) (if (= is-last 1u) (key-to-float-bits (+ k kmin)) k))))))
+      (sync-workgroup)
+      (when (= is-last 0u)
+        (let ((c 0u))
+          (dotimes (w 8ul)
+            (set! c (+ c (~ cnt (+ (* w 256ul) tid)))))
+          (when (> c 0u)
+            (atomic-add! (~ ghist (+ (* (+ pass 1ul) 256ul) tid)) c)))))
+    (return)))

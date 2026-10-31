@@ -4350,7 +4350,11 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (LLVMDeleteFunction) as well as unregistering it; and/or skip the companion for a void function whose
         only active params are integers.
 
-[ ] 138 ON PTX, ash AND popcount LOWER TO OUT-OF-LINE noinline HELPER CALLS (perf; the BUG 120 workaround is applied to every backend).
+[ ] 138 FIXED (endeavour 200, overlay -- fold pending) -- ON PTX, ash AND popcount LOWER TO OUT-OF-LINE noinline HELPER CALLS (perf; the BUG 120 workaround is applied to every backend).
+        FIX 2026-10-30: %185-helper-call adds noinline (and SPIR_FUNC) only on SPIR-V; the hypothesis held.  The
+        sort_v2 PTX went from 66 call.uni to 0 (even split-nibble inlined).  Suites: unit, E2E 1620/1620, negative
+        403/403.  Spec: tests/spec/200-sort-contest/01-ash-popcount-inline-on-ptx-metal.crisp (PTX inline, SPIR-V
+        DontInline, metal values on BMG).
         Found 2026-10-25 (histogram_v2 contest, reported by AG; reproduced: put_temp_files_here/hist_cases/bugs/a-ash.crisp).
         OBSERVATION: (+ (logand (ash w -8) 255u) (popcount w)) compiled --ir-target=ptx gives
         call.uni __crisp_ash_uint and call.uni __crisp_popcount_uint in the kernel body.  With a single constant
@@ -4447,3 +4451,73 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         passing on the default target (CHECK-FAIL would then pin the wrong refusal).
         LIKELY FIX: trim #\Return (and tabs) in read-check-fail-flags; the spec runner's own directive readers
         may want the same look.
+
+[ ] 145 FIXED (endeavour 200, overlay -- fold pending) -- A while WHOSE TYPE IS ASKED FOR DIES WITH A RAW ETYPECASE DUMP.
+        Found 2026-10-30 (sort_v2 onesweep look-back).  semantic-while was missing from semantic-node-type and
+        semantic-node-source-location (src/analysis/core.lisp).  A while that is the LAST form of a let body (the
+        let takes its type from it) fell through the ETYPECASE and printed the whole semantic tree as the error.
+        The prefix-sum contest kernel's while never hit it: its type was never asked for.
+        FIX: two wrappers in overlays/crisp-compiler-overlay.lisp; FOLD = add the two clauses.
+        2026-10-30, later: found through a door that should not have been open -- an AUTHOR's while (BUG 148).
+        With while compiler-internal (%while), and sync-wait's %while never the last form of a let, nothing
+        reaches this any more.  The two clauses are still right for the node; fold them anyway.  The spec that
+        exercised it (200/02-while-ends-a-let-body-metal) was deleted -- it tested the door.
+
+[ ] 148 FIXED (endeavour 200, overlay -- fold pending) -- AN AUTHOR COULD WRITE while.  CRISP IS NOT TURING-COMPLETE.
+        Found 2026-10-30 (Chris, reviewing endeavour 200).  The while analyzer exists for the compiler's own spin
+        (sync-wait, commit 3a5958c8) but was registered for crisp-language::WHILE too, so user code compiled an
+        unbounded loop.  Two contest kernels used it (05-prefixsum-v2/prefixsum_lookback.crisp, committed in
+        #54, and 07-sort-v2/sort_onesweep.crisp), and I wrote it into docs/writing-crisp.md as a feature.
+        FIX: the analyzer is registered only as crisp.compiler::%while; sync-wait expands to %while; an author's
+        while is "Unsupported form ... every Crisp loop is bounded" (a *unsupported-form-hints* entry), and ANF
+        refuses it the same way under --differentiate (A|D runs before the forward is analyzed).  A %while that
+        reaches ANF is an internal error: the compiler may hide a spin only inside a form that is opaque to ANF
+        and has a VJP.  Specs: 200/errors/01-unbounded-loop-refused, 02-unbounded-loop-refused-differentiate.
+        OPEN: the two look-back kernels no longer compile -- they need a sanctioned form (endeavour doc).
+
+[ ] 149 FIXED (endeavour 200, overlay -- fold pending) -- AN ARRIVAL SYNC COULD NOT BE DIFFERENTIATED.
+        Found 2026-10-30 checking whether sync-wait's hidden while survives --differentiate.  It never got that
+        far.  Every arrival-sync spec skipped --differentiate ("no &out param"), so none had been tried.
+          * make-arrival-sync: "Expected (CELL INT ADDRESS-SPACE GLOBAL) but inferred (CELL INT LOCAL)".  ANF's
+            make-scratch-cell clause rebuilt the form as (make-scratch-cell TYPE), DROPPING :address-space
+            :global -- for every global scratch cell in every differentiated kernel, not just this one.
+          * then "No matching function overload found for ~ with argument types (FLOAT)": the walk treated the
+            handle's %construct-struct as a differentiable struct and gave the counter CELL a scalar adjoint
+            0.0 that shadowed its paired scratch adjoint.
+          * sync-arrive / sync-wait: "Function PROGN is not differentiable" -- ANF expanded them, and the
+            hand-written accessor arrival-sync-handle-counter is (progn (declare ...) (%extract-struct-member ..)).
+        FIX: ANF keeps make-scratch-cell's arguments; sync-arrive / sync-wait stay unexpanded and opaque in ANF,
+        with VJPs -- the mirror of a wait is an arrive and of an arrive a wait (the adjoints flow the other way);
+        %construct-struct of an ARRIVAL-SYNC-HANDLE is inert.  Spec: 200/02-arrival-sync-differentiates-metal
+        (VERIFY-AUTODIFF on BMG, data crossing workgroups through the sync: analytical 12.0, numerical 12.02).
+        NOTE (not fixed): global scratch is zeroed ONCE per program, so an arrival sync is good for one launch
+        per program run -- a second launch finds the counter already at its count and does not wait.
+
+[ ] 150 SPEC RUNNER: UNDER --use-binary A TEST-WITH[--ir-target=spv] VALIDATOR IS "not found".
+        Found 2026-10-30 running CI's differentiate pass locally (run-specs --use-binary --differentiate
+        --skip-unit-tests): 1622/1624, the two failures "Validator fn VALIDATE-SPV-RELAXED-LOAD-STORE not found"
+        (195/01, validator in tests/run-specs.lisp) and "... VALIDATE-SPV-200-HELPERS-NOINLINE not found" (200/01,
+        in overlays/spec-runner-overlay.lisp).  Both validators PASS in the in-process runner, with and without
+        --differentiate.  Probably invisible on CI because its Linux runner skips SPIR-V.  Not chased: the lookup
+        (run-specs.lisp ~2448) is fboundp on a symbol read by read-from-string in extract-test-directives.
+
+[ ] 146 BMG: A ULONG LOOP COUNTER ACCUMULATED THROUGH (to-uint k) RETURNS GARBAGE IN THE HIGH BITS (BUG 120 family).
+        Found 2026-10-30 (endeavour 200, writing spec 200/02).  Each thread i sums 0 .. i:
+            (let ((k 0ul) (acc 0u)) (while (<= k i) (set! acc (+ acc (to-uint k))) (set! k (+ k 1ul))) ...)
+        BMG (Arc B580, OpenCL and L0) returns 0 3762290689 3758096386 3755999235 for 0 1 3 6.  A dotimes over a
+        ulong with the same (to-uint kk) is equally wrong; a UINT counter (compare (to-ulong k) i) is right.
+        The pre-opt IR is correct (load / trunc i64 -> i32 / add / store).  Same family as BUG 120: correct
+        code, wrong on the BMG, inline in a kernel body.  Probes: put_temp_files_here/sort/whileprobe/ (w_orig,
+        w_dotimes fail; w_uint passes), run with put_temp_files_here/sort/cl_sort.py's Kernel class.
+        NOT YET TRIED: the optimized IR / SPIR-V of w_orig vs w_uint; routing the trunc through a helper.
+
+[ ] 147 BMG: THE sort_v2 ONESWEEP KERNEL FAILS TO LAUNCH (CL_OUT_OF_RESOURCES, -5); EVERY SUBSET OF ITS ATOMICS LAUNCHES.
+        Found 2026-10-30 (endeavour 200).  contests/gpu-mode/07-sort-v2/sort_onesweep.crisp's sort_onesweep
+        compiles for SPIR-V, but clEnqueueNDRangeKernel returns -5 (Level Zero untried).  54 KB of SLM (the
+        device has 128 KB; the reduce-then-scan downsweep with 53 KB runs fine), private memory 0, max WG 1024.
+        Bisection (put_temp_files_here/sort/bisect/): without the while -- still -5; without the status
+        atomic-store!s -- still -5; with NO global atomics -- launches.  Keeping any ONE group of global atomics
+        (the mm atomic-load, the ghist atomic-loads, the ticket atomic-inc!/xchg!, the ghist atomic-add!)
+        launches; removing any one group from the full set still fails.  Looks like a resource threshold
+        (registers? binding table? stateless/stateful addressing?) in IGC rather than one operation.
+        The contest target is NVIDIA, so the onesweep was verified on the H100 instead.

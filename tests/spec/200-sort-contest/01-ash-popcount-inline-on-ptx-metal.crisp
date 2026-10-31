@@ -1,0 +1,30 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-200-helpers-inline
+;; TEST-WITH[--ir-target=spv] : validate-spv-200-helpers-noinline
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER a: 4096 2048 1024 512
+;; HOIST-EXPECT: BUFFER b: 8 1 2 2
+;; HOIST-EXPECT: BUFFER c: 3 6 12 24
+;;
+;; Endeavour 200 (BUG 138): ash and popcount lower through internal helper functions
+;; (__crisp_ash_<type>, __crisp_popcount_<type>).  The helpers were noinline on EVERY backend -- a
+;; workaround for the BMG, which failed zeModuleCreate with the bodies inlined (BUG 120 family).  On
+;; PTX that left a call.uni per ash in the hottest loops of the sort_v2 radix sort, and kept ptxas
+;; from fusing (logand (ash w -8) 255u) into bfe.u32.  Now the helpers are noinline ON SPIR-V ONLY.
+;;
+;; THE VALIDATORS: the PTX has no call to a __crisp_ash / __crisp_popcount helper; the SPIR-V still
+;; declares each helper with FunctionControl DontInline.  The counts are RUNTIME values (the global
+;; id), so nothing folds and the shift / popcount instructions really execute -- on the BMG too,
+;; where the noinline helpers are what make this kernel load at all.
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel ash_popcount_inline (&out a b c)
+  (declare #'(&out u-vec u-vec u-vec => nil)
+           (global-size :set-to 4))
+  (let ((i (get-global-id 0))
+        (s (to-int i)))
+    (set! (~ a i) (ash 4096u (- s)))                ; right shift by a runtime count
+    (set! (~ b i) (popcount (+ 255u (to-uint i))))   ; 255 256 257 258
+    (set! (~ c i) (ash 3u s))))                     ; left shift by a runtime count

@@ -1,0 +1,19 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "every Crisp loop is bounded"
+;; CHECK-FAIL-FLAGS: --differentiate
+;;
+;; Endeavour 200 -- the same refusal on the A|D path.  Under --differentiate the kernel is put through
+;; ANF before the forward kernel is analyzed, so ANF refuses `while` itself, with the analyzer's error.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel k_e (x &out y)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4))
+  (let ((i (get-global-id 0))
+        (k 0u))
+    (while (< k 4u)
+      (set! k (+ k 1u)))
+    (set! (~ y i) (* (to-float k) (~ x i)))))
