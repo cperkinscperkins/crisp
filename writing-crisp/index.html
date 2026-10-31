@@ -1,0 +1,914 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="for GPU kernel development.">
+      
+      
+        <meta name="author" content="Chris Perkins">
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Writing Crisp - Crisp - High Performance GPU Programming</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Nunito+Sans:300,300i,400,400i,700,700i%7CCaslon:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Nunito Sans";--md-code-font:"Caslon"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#writing-crisp" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-header__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Crisp - High Performance GPU Programming
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Writing Crisp
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Crisp - High Performance GPU Programming" class="md-nav__button md-logo" aria-label="Crisp - High Performance GPU Programming" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Crisp - High Performance GPU Programming
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Welcome
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ideal_001/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Language Specification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="writing-crisp">Writing Crisp<a class="headerlink" href="#writing-crisp" title="Permanent link">&para;</a></h1>
+<p>A working guide for writing GPU kernels in Crisp — aimed at an AI agent (or a person) who knows GPU
+programming and some Lisp, and needs to produce kernels that compile and run correctly on the first try.
+It covers the language as it IS today; the design document (<code>docs/ideal_001.md</code>, split into
+<code>docs/chapters/</code>) also describes features that are planned (marked 📝).  Every complete example below
+compiles for both SPIR-V and PTX.</p>
+<p>If you are working ON the compiler rather than writing kernels with it, read <code>CLAUDE.md</code> /
+<code>ANTIGRAVITY.md</code> and <code>docs/crisp-curios.md</code> instead.</p>
+<hr />
+<h2 id="1-compiling-and-running">1. Compiling and running<a class="headerlink" href="#1-compiling-and-running" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--ir-target=spv</code></td>
+<td>SPIR-V for Intel GPUs (Level Zero).  Writes <code>kernel.spv</code> next to the source.</td>
+</tr>
+<tr>
+<td><code>--ir-target=ptx</code></td>
+<td>PTX for NVIDIA.  Writes <code>kernel.ptx</code>.  Add <code>--ir-target-arch=sm_90</code> (etc.) for arch-specific features.</td>
+</tr>
+<tr>
+<td>(no <code>--ir-target</code>)</td>
+<td>LLVM IR to standard output — useful for reading what you wrote.</td>
+</tr>
+<tr>
+<td><code>--hardware-profile=NAME</code></td>
+<td><code>bmg</code> (Intel Arc B580) and <code>h100</code> are built in; others are <code>def-hardware-profile</code> forms (see <code>benchmarks/profiles/</code>). Required for warp collectives on SPIR-V and for the MMA paths.</td>
+</tr>
+<tr>
+<td><code>--math-precision=ieee\|fast</code></td>
+<td><code>ieee</code> (default): correctly rounded. <code>fast</code>: approximate hardware paths.</td>
+</tr>
+<tr>
+<td><code>--hoist=L0</code> / <code>--hoist=CUDA</code></td>
+<td>Also write a host <code>.cpp</code> that loads and runs the kernel (Level Zero / CUDA).</td>
+</tr>
+<tr>
+<td><code>--differentiate</code></td>
+<td>Compile the BACKWARD (gradient) kernels instead — see §11.</td>
+</tr>
+<tr>
+<td><code>--runtime-checks</code></td>
+<td>Compile the runtime asserts and bounds checks; a failure stops the thread — see §15.</td>
+</tr>
+<tr>
+<td><code>--logging-output</code></td>
+<td>Compile <code>r-t-output</code> into the log (implies <code>--runtime-checks</code>) — see §15.</td>
+</tr>
+<tr>
+<td><code>--logging-size=4M</code></td>
+<td>The log's size in bytes (<code>K</code>/<code>M</code>/<code>G</code> suffixes; default <code>4M</code>).</td>
+</tr>
+</tbody>
+</table>
+<p><strong>PTX + transcendentals</strong> (<code>exp log sin cos tan asin acos atan pow atan2 log2 tanh erf exp2</code>) need NVIDIA's
+<code>libdevice.10.bc</code>: pass it as an extra input (<code>$CUDA_HOME/nvvm/libdevice/libdevice.10.bc</code>).  Without it
+the compiler stops with a clear message naming the missing <code>__nv_*</code> function.  SPIR-V needs nothing.</p>
+<p>The compiler is run from the repository root (it finds <code>bin/LLVM-C.dll</code> relative to there).  Run from
+anywhere else it fails -- and a script that does not check the exit code then reads the PREVIOUS <code>.ptx</code>
+or <code>.spv</code> and reports stale results.</p>
+<hr />
+<h2 id="2-a-first-kernel">2. A first kernel<a class="headerlink" href="#2-a-first-kernel" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="c1">;; B[i] = 2 * A[i] for every element, any length.</span>
+<span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">in-vec</span><span class="w">  </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="p">))</span>
+<span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">out-vec</span><span class="w"> </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="p">))</span>
+
+<span class="p">(</span><span class="nv">def-kernel</span><span class="w"> </span><span class="nv">scale</span><span class="w"> </span><span class="p">(</span><span class="nv">A</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">B</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="nf">#'</span><span class="p">(</span><span class="nv">in-vec</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">out-vec</span><span class="w"> </span><span class="nv">=&gt;</span><span class="w"> </span><span class="no">nil</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:derive-from</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="ss">:strategy</span><span class="w"> </span><span class="ss">:strided</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">loop-vector-stride</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="p">(</span><span class="nv">i</span><span class="p">)</span>
+<span class="w">    </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="nv">i</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nb">*</span><span class="w"> </span><span class="mf">2.0</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="nv">i</span><span class="p">)))))</span>
+</code></pre></div>
+<ul>
+<li><strong>Storage handles</strong> (<code>vector</code>, <code>matrix</code>, <code>tensor</code>, <code>cell</code>) are how a kernel sees memory.  Declare their
+  type once with <code>def-type</code>; <code>:align :compact</code> lets indexing skip strides.</li>
+<li><strong><code>&amp;out</code></strong> marks outputs.  Parameters before it are inputs (and get read-only loads on NVIDIA).</li>
+<li><strong><code>(declare #'(... =&gt; nil))</code></strong> is the signature; kernels return <code>nil</code>.</li>
+<li><strong><code>global-size</code> / <code>local-size</code></strong> say how many threads to launch.  <code>:derive-from A :strategy :strided</code>
+  sizes the launch from <code>A</code> and lets each thread stride over several elements.</li>
+<li><strong><code>loop-vector-stride</code></strong> gives each thread its indices; <code>(~ V i)</code> reads, <code>(set! (~ V i) x)</code> writes.</li>
+</ul>
+<hr />
+<h2 id="3-the-rules-that-trip-people-up">3. The rules that trip people up<a class="headerlink" href="#3-the-rules-that-trip-people-up" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Write this</th>
+<th>Not this</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(let ((a 1) (b (+ a 1))) ...)</code></td>
+<td><code>let*</code></td>
+<td>Crisp's <code>let</code> is already sequential (later bindings see earlier ones).  <code>let*</code> is an error.</td>
+</tr>
+<tr>
+<td><code>(return q r)</code></td>
+<td><code>(values q r)</code></td>
+<td>Multiple values are returned with <code>return</code>, and bound with <code>(let ((q r (f x))) ...)</code>.</td>
+</tr>
+<tr>
+<td><code>(= mode :fast)</code>, <code>(!= a b)</code></td>
+<td><code>eq</code>, <code>eql</code>, <code>equal</code>, <code>/=</code></td>
+<td>One equality, <code>=</code>; it compares enum keywords too.  <code>!=</code> for not-equal.</td>
+</tr>
+<tr>
+<td><code>(set! x v)</code>, <code>(set! (~ v i) x)</code></td>
+<td><code>setf</code>, <code>setq</code>, <code>incf</code></td>
+<td>Assignment is <code>set!</code>.</td>
+</tr>
+<tr>
+<td><code>(~ v i)</code></td>
+<td><code>aref</code></td>
+<td>Indexing a storage handle.</td>
+</tr>
+<tr>
+<td><code>(cond (... ) (else default))</code></td>
+<td><code>(cond ... (true default))</code></td>
+<td>In <code>cond</code> the catch-all clause is <code>else</code>, not <code>T</code>. This is because <code>T</code> is often used by users for template types.  There is no boolean literal (<code>true</code> / <code>false</code> are not values yet).</td>
+</tr>
+<tr>
+<td><code>(* 2.0 x)</code></td>
+<td><code>(* 2 x)</code> with a float <code>x</code></td>
+<td>No implicit int/float mixing — use float literals, or <code>(to-float n)</code>.</td>
+</tr>
+<tr>
+<td><code>(&lt; lid 32ul)</code></td>
+<td><code>(&lt; lid 32)</code> with a <code>ulong</code></td>
+<td>Integer literals are <code>int</code>; a literal compared with a <code>ulong</code> needs <code>ul</code> (see §4).</td>
+</tr>
+<tr>
+<td><code>def-function</code> at top level</td>
+<td><code>defun</code>, nested functions</td>
+<td>Functions are top-level forms; no closures, no recursion.</td>
+</tr>
+<tr>
+<td><code>def-grid-function</code> for a helper holding a barrier</td>
+<td><code>def-function</code> around <code>sync-workgroup</code></td>
+<td>A <code>def-function</code> may not hold a barrier ("only valid inside a kernel"). A grid function returns nothing (<code>=&gt; nil</code>): leave results in shared scratch.</td>
+</tr>
+<tr>
+<td><code>dotimes</code>, stride macros</td>
+<td><code>loop</code>, <code>while</code>, <code>dolist</code></td>
+<td>Every loop is bounded (see §6).</td>
+</tr>
+</tbody>
+</table>
+<p>When you write a Common Lisp form Crisp does not have, the error says what to write instead
+(e.g. "Crisp has no EQ: compare values, including enum keywords, with =").</p>
+<p>Kernel names come out <strong>lower-cased</strong>: <code>(def-kernel MyKernel ...)</code> is the symbol <code>mykernel</code> in the SPIR-V /
+PTX and the <code>.metacrisp</code> (BUG 018).  Look kernels up by the lower-case name, or just name them in lower case.</p>
+<hr />
+<h2 id="4-types-and-literals">4. Types and literals<a class="headerlink" href="#4-types-and-literals" title="Permanent link">&para;</a></h2>
+<p>Scalars: <code>int uint long ulong short ushort char uchar float double half bfloat16</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Literal</th>
+<th>Type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>5</code></td>
+<td><code>int</code></td>
+</tr>
+<tr>
+<td><code>5u</code> <code>5l</code> <code>5ul</code></td>
+<td><code>uint</code> <code>long</code> <code>ulong</code></td>
+</tr>
+<tr>
+<td><code>5s</code> <code>5us</code> <code>5c</code> <code>5uc</code></td>
+<td><code>short</code> <code>ushort</code> <code>char</code> <code>uchar</code></td>
+</tr>
+<tr>
+<td><code>1.0</code> or <code>1.0f</code></td>
+<td><code>float</code></td>
+</tr>
+<tr>
+<td><code>1.0d</code></td>
+<td><code>double</code></td>
+</tr>
+<tr>
+<td><code>1.0h</code></td>
+<td><code>half</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>No silent conversions between integer types or between int and float.</strong>  Convert with <code>to-TYPE</code>:
+<code>(to-float i)</code>, <code>(to-int (get-workgroup-id 0))</code>, <code>(to-ulong n)</code>.  Float -&gt; int is <code>(truncate x)</code>,
+<code>(floor x)</code>, <code>(ceil x)</code> or <code>(round x)</code> (round: ties to even).</p>
+<p>Builtins have fixed types worth knowing: <code>get-global-id</code>, <code>get-local-linear-id</code>, <code>get-workgroup-id</code>,
+<code>get-local-work-size</code>, <code>get-global-work-size</code>, <code>get-num-groups</code> return <code>ulong</code>; <code>warp-size</code>, <code>warp-lane</code>,
+<code>warp-id</code> return <code>uint</code>.</p>
+<p><strong>An element holds exactly its own type.</strong>  <code>(set! (~ v i) x)</code> with an <code>x</code> of any other type is a compile
+error ("convert it explicitly") -- the rule a plain variable's <code>set!</code> always had.  That includes literals:
+a <code>long</code> element takes <code>7l</code>, a <code>ulong</code> one <code>8ul</code>, a <code>double</code> one <code>1.0d</code> or <code>(to-double x)</code>.  Narrow a
+float into a 16-bit element with <code>(to-half x)</code> / <code>(to-bfloat16 x)</code>, both round-to-nearest-even (before
+endeavour 186 such a store silently wrote 4 bytes into a 2-byte slot, BUG 059).  Avoid the scalar
+<code>bfloat16</code> literal and scalar <code>bfloat16</code> arithmetic on SPIR-V for now (BUG 121); <code>bfloat16</code> / <code>half</code> are
+well supported inside the MMA paths.</p>
+<hr />
+<h2 id="5-memory-and-storage-handles">5. Memory and storage handles<a class="headerlink" href="#5-memory-and-storage-handles" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type mat-t   (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type out-c   (cell float :address-space :global))   ; a single value
+</code></pre></div>
+<ul>
+<li><code>(~ v i)</code>, <code>(~ m row col)</code>, <code>(~ c)</code> read; <code>set!</code> on the same form writes.</li>
+<li><code>(length~ v)</code> is the element count.</li>
+<li><strong>Kernel parameters must be complete types</strong>: give every <code>:address-space</code>, and every compile-time
+  property of a struct element.  Storage handles cannot be nested (<code>(cell (cell ...))</code> is refused).</li>
+<li><strong>Scratch memory</strong>: <code>(make-scratch-vector float :match-workgroup-size)</code> (also <code>:match-num-warps-per-workgroup</code>,
+  <code>make-scratch-matrix</code>, <code>make-scratch-cell</code>).  It is workgroup-local by default and the compiler adds the
+  allocation to the kernel's launch for you.</li>
+<li><strong>Barriers</strong>: <code>(sync-workgroup)</code> between writes and reads of shared scratch.</li>
+<li><strong>Read-only inputs</strong>: put the outputs after <code>&amp;out</code>.  Tensors declared before <code>&amp;out</code> are read-only, so
+  their loads use the read-only path (<code>ld.global.nc</code> on NVIDIA) -- a signature with no <code>&amp;out</code> gets none.</li>
+<li><strong>Cache hints</strong>: a <code>:global</code> type can add <code>:cache :streaming</code>, <code>:reused</code>, <code>:no-l1</code>, or
+  <code>(:streaming :prefetch 256)</code>.  The hint is not part of the type, views and tile operations inherit
+  it, and it never changes a result.  It is a knob to measure, not a default: about 3% on an H100
+  streaming reduction, nothing on B200 (ideal_001, <em>Cache hints</em>).</li>
+</ul>
+<hr />
+<h2 id="6-control-flow-and-loops">6. Control flow and loops<a class="headerlink" href="#6-control-flow-and-loops" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>if</code> (both branches the same type), <code>when</code>, <code>unless</code>, <code>cond</code>.</li>
+<li>Bounded loops only: <code>(dotimes (i n) ...)</code>, <code>(dec-times-by-half (s 32ul) ...)</code> (s = 32, 16, ... 1),
+  and the other members of the <code>dotimes</code> family (chapter 13).</li>
+<li>The <strong><code>+</code> variants</strong> (<code>dotimes+</code>, <code>dec-times-by-half+</code>, <code>when+</code>, <code>if+</code>) PROVE the condition / trip count is
+  uniform across the workgroup.</li>
+<li><strong>Two levels of uniform</strong> (Endeavour 194).  A BARRIER (<code>sync-workgroup</code>, <code>to-workgroup-uniform</code>, a tile
+  op, or a call to a function holding one) needs every thread of the WORKGROUP to arrive: only under
+  workgroup-uniform conditions and loop bounds.  A WARP COLLECTIVE (shuffle, <code>reduce-warp</code>,
+  <code>to-warp-uniform</code>, <code>sync-warp</code>, or a call reaching one) needs only its WARP: a warp-uniform condition or
+  plain-loop bound is enough.  Warp-uniform values: <code>to-warp-uniform</code>, <code>(warp-id)</code>, a variable after
+  <code>reduce-warp</code>, a function whose returns are all warp-uniform.  <code>if+</code> / <code>dotimes+</code> need workgroup-uniform.</li>
+<li><code>to-workgroup-uniform</code> / <code>to-warp-uniform</code> BROADCAST (local thread 0 / lane 0) -- each costs a barrier /
+  a shuffle and is a collective itself.  <code>(declare (uniform x))</code> asserts for free.</li>
+<li><strong>Strides</strong> hand each thread its work: <code>loop-vector-stride</code> (one vector), <code>grid-stride</code>, <code>tile-stride</code>,
+  <code>matrix-multiply-tile-stride</code> (§10), <code>hardware-stride</code>, <code>workgroup-stride</code> (chapter 13).</li>
+<li><code>return-from-loop</code> leaves the innermost <code>dotimes</code>-family loop.  No barrier in a loop that holds one;
+  warp collectives only if every exit is warp-uniform (and, on SPIR-V, not in a nested loop -- BUG 141).</li>
+<li>No recursion, no <code>while</code>.</li>
+<li>A collective gated on a warp: write <code>(when (= (warp-id) 0u) ...)</code>.  A <code>wid</code> computed from the local id
+  is the same number, but the compiler cannot prove it warp-uniform and refuses the shuffle inside.</li>
+</ul>
+<hr />
+<h2 id="7-math">7. Math<a class="headerlink" href="#7-math" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Available</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>+ - * /</code></td>
+<td><code>/</code> on integers truncates.  <code>(- x)</code> negates.</td>
+</tr>
+<tr>
+<td><code>min max clamp abs</code></td>
+<td>int and float.  <code>(clamp x lo hi)</code>.</td>
+</tr>
+<tr>
+<td><code>floor ceil round</code></td>
+<td>one argument: float -&gt; int.  Two arguments: integer division; <code>(let ((q r (floor a b))) ...)</code> gives the remainder too.</td>
+</tr>
+<tr>
+<td><code>rem mod</code></td>
+<td><code>rem</code> truncates (like C <code>%</code>); <code>mod</code> floors: <code>(mod -1 4)</code> is 3.  Int and float.</td>
+</tr>
+<tr>
+<td><code>sqrt rsqrt</code></td>
+<td>float / double.</td>
+</tr>
+<tr>
+<td><code>exp log log2 exp2 sin cos tan asin acos atan tanh erf pow atan2</code></td>
+<td>float / double.  PTX needs libdevice (§1).</td>
+</tr>
+<tr>
+<td><code>ash logand logior logxor lognot popcount</code></td>
+<td>integers.  <code>(ash x n)</code>: n &gt; 0 left, n &lt; 0 right, defined for any n.</td>
+</tr>
+<tr>
+<td><code>op-fma op-saturate op-min3 op-max3 op-rsqrt-approx</code> ...</td>
+<td>hardware ops, chapter 32/07.</td>
+</tr>
+<tr>
+<td><code>*!</code></td>
+<td>widening multiply; on the basic types it is <code>*</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Not yet: the chapter 14 bit-twiddling ops (<code>op-count-leading-zeros</code>, <code>op-bit-reverse</code>, ...), the chapter 15
+pack/unpack ops, <code>fmin</code> / <code>fmax</code> (use <code>min</code> / <code>max</code>).</p>
+<hr />
+<h2 id="8-threads-warps-and-workgroups">8. Threads, warps and workgroups<a class="headerlink" href="#8-threads-warps-and-workgroups" title="Permanent link">&para;</a></h2>
+<p><code>(get-global-id 0)</code>, <code>(get-local-id 0)</code>, <code>(get-local-linear-id)</code>, <code>(get-workgroup-id 0)</code>, <code>(warp-lane)</code>,
+<code>(warp-id)</code>, <code>(warp-size)</code>; <code>(sync-workgroup)</code>; shuffles <code>shuffle</code>, <code>shuffle-up</code>, <code>shuffle-down</code>,
+<code>shuffle-xor</code>.</p>
+<p><code>(warp-size)</code> comes from the hardware profile: 32 on NVIDIA, 16 on BMG.  <strong>On SPIR-V a warp collective
+(shuffle, warp reduction) needs <code>--hardware-profile=...</code> AND a literal <code>(local-size :set-to N)</code> that is a
+multiple of the profile's SIMD width</strong> — Crisp refuses rather than guess the subgroup size.  A kernel
+that assumes one warp per workgroup must make <code>local-size</code> EQUAL the warp width (32 NVIDIA, 16 BMG).  (Write the
+literal; <code>(local-size :set-to (warp-size))</code> is not yet accepted there — BUG 118.)</p>
+<div class="highlight"><pre><span></span><code><span class="c1">;; One warp per workgroup: the warp sums its lanes with a butterfly of shuffles.</span>
+<span class="c1">;; local-size must be exactly one warp: 32 on NVIDIA -- write 16 for --hardware-profile=bmg.</span>
+<span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">in-vec</span><span class="w">  </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="p">))</span>
+<span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">res-vec</span><span class="w"> </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="p">))</span>
+
+<span class="p">(</span><span class="nv">def-kernel</span><span class="w"> </span><span class="nv">warp_sum</span><span class="w"> </span><span class="p">(</span><span class="nv">A</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">Res</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="nf">#'</span><span class="p">(</span><span class="nv">in-vec</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">res-vec</span><span class="w"> </span><span class="nv">=&gt;</span><span class="w"> </span><span class="no">nil</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:derive-from</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="ss">:strategy</span><span class="w"> </span><span class="ss">:strided</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">local-size</span><span class="w">  </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">32</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="k">let</span><span class="w"> </span><span class="p">((</span><span class="nv">sum</span><span class="w"> </span><span class="mf">0.0</span><span class="p">))</span>
+<span class="w">    </span><span class="p">(</span><span class="nv">loop-vector-stride</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="p">(</span><span class="nv">i</span><span class="p">)</span>
+<span class="w">      </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="nv">sum</span><span class="w"> </span><span class="p">(</span><span class="nb">+</span><span class="w"> </span><span class="nv">sum</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="nv">i</span><span class="p">))))</span>
+<span class="w">    </span><span class="p">(</span><span class="nv">dec-times-by-half+</span><span class="w"> </span><span class="p">(</span><span class="nv">s</span><span class="w"> </span><span class="p">(</span><span class="nb">/</span><span class="w"> </span><span class="p">(</span><span class="nv">warp-size</span><span class="p">)</span><span class="w"> </span><span class="nv">2u</span><span class="p">))</span>
+<span class="w">      </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="nv">sum</span><span class="w"> </span><span class="p">(</span><span class="nb">+</span><span class="w"> </span><span class="nv">sum</span><span class="w"> </span><span class="p">(</span><span class="nv">shuffle-xor</span><span class="w"> </span><span class="nv">sum</span><span class="w"> </span><span class="nv">s</span><span class="p">))))</span>
+<span class="w">    </span><span class="p">(</span><span class="nb">when</span><span class="w"> </span><span class="p">(</span><span class="nb">=</span><span class="w"> </span><span class="p">(</span><span class="nv">warp-lane</span><span class="p">)</span><span class="w"> </span><span class="nv">0u</span><span class="p">)</span>
+<span class="w">      </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">Res</span><span class="w"> </span><span class="p">(</span><span class="nv">get-workgroup-id</span><span class="w"> </span><span class="mi">0</span><span class="p">))</span><span class="w"> </span><span class="nv">sum</span><span class="p">))))</span>
+</code></pre></div>
+<p><strong>Atomics</strong> take a place <code>(~ v i)</code>.  <code>atomic-add! atomic-sub! atomic-inc! atomic-dec! atomic-min!
+atomic-max! atomic-xchg! atomic-cas! atomic-binop! atomic-op!</code> read-modify-write it and return the OLD
+value; <code>(atomic-load place)</code> and <code>(atomic-store! place v)</code> are a plain atomic read and write (32- and
+64-bit scalars only).  Every one is relaxed at device scope: it <strong>orders nothing</strong>, so a publish is
+data, <code>(mem-fence)</code>, flag, and a poll is flag, <code>(mem-fence)</code>, data.  An atomic may read an <code>&amp;out</code>
+(a plain <code>(~ out i)</code> read may not), so a kernel can poll the flags it publishes into.  A complete
+publish / poll kernel, run on metal: <code>tests/spec/195-atomic-load/05-publish-poll-across-workgroups-metal.crisp</code>.
+<code>atomic-load</code> is not differentiable; an integer <code>atomic-store!</code> is inert under <code>--differentiate</code>.</p>
+<hr />
+<h2 id="9-reductions">9. Reductions<a class="headerlink" href="#9-reductions" title="Permanent link">&para;</a></h2>
+<p>Do not hand-roll a reduction unless you have a reason: <code>reduce-vec</code> does the whole thing — per-thread,
+per-warp, per-workgroup and across workgroups — and picks the strategy for the hardware.</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">in-vec</span><span class="w"> </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="p">))</span>
+<span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">out-c</span><span class="w">  </span><span class="p">(</span><span class="nv">cell</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="p">))</span>
+
+<span class="p">(</span><span class="nv">def-kernel</span><span class="w"> </span><span class="nv">vec_sum</span><span class="w"> </span><span class="p">(</span><span class="nv">A</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">out</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="nf">#'</span><span class="p">(</span><span class="nv">in-vec</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">out-c</span><span class="w"> </span><span class="nv">=&gt;</span><span class="w"> </span><span class="no">nil</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">128</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">local-size</span><span class="w">  </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">64</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">reduce-vec</span><span class="w"> </span><span class="nf">#'</span><span class="nb">+</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="nv">out</span><span class="p">))</span>
+</code></pre></div>
+<p>Building blocks when you need them: <code>reduce-warp</code>, <code>reduce-workgroup</code>, <code>grid-reduce!</code> (chapters 18-24,
+including several values at once and segmented reductions).</p>
+<hr />
+<h2 id="10-matrix-multiplication">10. Matrix multiplication<a class="headerlink" href="#10-matrix-multiplication" title="Permanent link">&para;</a></h2>
+<p><code>matrix-multiply-tile-stride</code> walks output tiles and the K dimension for you; you load tiles, multiply,
+and store.  A minimal (scalar) version:</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">mat-t</span><span class="w"> </span><span class="p">(</span><span class="nv">matrix</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="w"> </span><span class="ss">:contiguous-term</span><span class="w"> </span><span class="ss">:row-major</span><span class="p">))</span>
+
+<span class="p">(</span><span class="nv">def-kernel</span><span class="w"> </span><span class="nv">mm_tiles</span><span class="w"> </span><span class="p">(</span><span class="nv">A</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">C</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="nf">#'</span><span class="p">(</span><span class="nv">mat-t</span><span class="w"> </span><span class="nv">mat-t</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">mat-t</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">local-size</span><span class="w">  </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">1</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="k">let</span><span class="w"> </span><span class="p">((</span><span class="nv">A-tile</span><span class="w"> </span><span class="p">(</span><span class="nv">make-scratch-matrix</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="p">(</span><span class="mi">4</span><span class="w"> </span><span class="mi">4</span><span class="p">)))</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">B-tile</span><span class="w"> </span><span class="p">(</span><span class="nv">make-scratch-matrix</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="p">(</span><span class="mi">4</span><span class="w"> </span><span class="mi">4</span><span class="p">)))</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">C-tile</span><span class="w"> </span><span class="p">(</span><span class="nv">make-scratch-matrix</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="p">(</span><span class="mi">4</span><span class="w"> </span><span class="mi">4</span><span class="p">)))</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">K</span><span class="w">      </span><span class="p">(</span><span class="nv">inner-dimension</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="nv">B</span><span class="p">)))</span>
+<span class="w">    </span><span class="p">(</span><span class="nv">matrix-multiply-tile-stride</span><span class="w"> </span><span class="nv">C</span><span class="w"> </span><span class="nv">C-tile</span><span class="w"> </span><span class="nv">K</span><span class="w"> </span><span class="mi">4</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-y</span><span class="w"> </span><span class="nv">grid-x</span><span class="w"> </span><span class="nv">grid-k</span><span class="p">)</span>
+<span class="w">      </span><span class="p">(</span><span class="nb">when</span><span class="w"> </span><span class="p">(</span><span class="nb">=</span><span class="w"> </span><span class="nv">grid-k</span><span class="w"> </span><span class="p">(</span><span class="nv">to-ulong</span><span class="w"> </span><span class="mi">0</span><span class="p">))</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">fill-tile</span><span class="w"> </span><span class="nv">C-tile</span><span class="w"> </span><span class="mf">0.0</span><span class="p">))</span>
+<span class="w">      </span><span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="nv">A-tile</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-y</span><span class="w"> </span><span class="nv">grid-k</span><span class="p">))</span>
+<span class="w">      </span><span class="p">(</span><span class="nv">load-tile</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="nv">B-tile</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-k</span><span class="w"> </span><span class="nv">grid-x</span><span class="p">))</span>
+<span class="w">      </span><span class="p">(</span><span class="nb">dotimes</span><span class="w"> </span><span class="p">(</span><span class="nv">i</span><span class="w"> </span><span class="mi">4</span><span class="p">)</span>
+<span class="w">        </span><span class="p">(</span><span class="nb">dotimes</span><span class="w"> </span><span class="p">(</span><span class="nv">j</span><span class="w"> </span><span class="mi">4</span><span class="p">)</span>
+<span class="w">          </span><span class="p">(</span><span class="nb">dotimes</span><span class="w"> </span><span class="p">(</span><span class="nv">kk</span><span class="w"> </span><span class="mi">4</span><span class="p">)</span>
+<span class="w">            </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">C-tile</span><span class="w"> </span><span class="nv">i</span><span class="w"> </span><span class="nv">j</span><span class="p">)</span>
+<span class="w">                  </span><span class="p">(</span><span class="nb">+</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">C-tile</span><span class="w"> </span><span class="nv">i</span><span class="w"> </span><span class="nv">j</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nb">*</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">A-tile</span><span class="w"> </span><span class="nv">i</span><span class="w"> </span><span class="nv">kk</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">B-tile</span><span class="w"> </span><span class="nv">kk</span><span class="w"> </span><span class="nv">j</span><span class="p">)))))))</span>
+<span class="w">      </span><span class="ss">:epilogue</span>
+<span class="w">      </span><span class="p">(</span><span class="nv">store-tile</span><span class="w"> </span><span class="nv">C-tile</span><span class="w"> </span><span class="nv">C</span><span class="w"> </span><span class="p">(</span><span class="nv">grid-y</span><span class="w"> </span><span class="nv">grid-x</span><span class="p">)))))</span>
+</code></pre></div>
+<p>For speed, use the tensor-core / XMX paths (register tiles and <code>mma</code>), async tile loads, rings and warp
+specialization — chapters 57-60, and the tuned kernels in <code>performance/matmul-bmg/</code> and the matmul
+benchmarks.  These need <code>--hardware-profile</code>.</p>
+<p><strong>16-bit output.</strong>  A 16-bit MMA accumulates in <code>float</code>, and an element holds exactly its own type, so
+storing the accumulator into a <code>half</code> / <code>bfloat16</code> matrix is refused.  Put the conversion on the store's
+SOURCE: <code>(store-tile (to-half C-tile) C (grid-y grid-x))</code>, <code>(store-tile-at (to-half D) C (row col))</code>, or
+<code>to-bfloat16</code>.  It works on register tiles and wgmma accumulators, PTX only (endeavour 196).  Each
+element is converted (round-to-nearest-even) as it is stored -- no half copy of the tile is made -- and
+<code>(to-half X)</code> is legal there only when X is an MMA accumulator.</p>
+<p><strong>Async loads without TMA (A100 / L4).</strong>  <code>load-tile ... :barrier bar</code> with a plain <code>(make-async-barrier)</code>
+lowers to <code>cp.async</code>.  It copies the tile's last dimension in 16-byte chunks (8 halves, 4 floats) when a
+run-time check finds the layout contiguous and chunk-aligned, else element by element -- so 16-bit tiles
+work too.  It assumes the tensor's base address is 16-byte aligned (any allocation is).</p>
+<p><strong>wgmma with a row-major B (H100).</strong>  <code>wgmma-accumulate-via-tile</code> reads B as <code>(N K)</code> by default.  For
+the plain <code>a @ b</code> layout -- B <code>(K N)</code>, N-contiguous -- stage a <code>(K N)</code> tile and add <code>:b-major :mn</code>:
+<code>(wgmma-accumulate-via-tile (64 256 64) D A-tile B-tile :swizzle :128b :b-major :mn)</code>.  Needs a <code>half</code> /
+<code>bfloat16</code> B, <code>:swizzle :128b</code>, and N a multiple of 64 (endeavour 198).  No transpose kernel needed.</p>
+<p><strong>Accumulator stores are packed.</strong>  <code>store-tile</code> / <code>store-tile-at</code> of a register tile or wgmma
+accumulator writes each thread's adjacent column pair as one store when a run-time check finds the pair
+contiguous and aligned (the normal case), else element by element (endeavour 197).</p>
+<p><strong>Store a wgmma accumulator through the TMA (H100).</strong>  Add <code>:via :tma</code>:
+<code>(store-tile-at (to-half D) C (row col) :via :tma)</code>.  Each warp stages its rows in shared memory with
+<code>stmatrix</code> and one lane issues TMA stores, so the stores leave as full 128-byte lines and finish
+asynchronously -- on the H100 matmul it is 11% of the whole kernel (endeavour 199).  Rules: the source is
+a wgmma accumulator converted with <code>to-half</code> / <code>to-bfloat16</code>, C is a <code>:row-major</code> kernel parameter of
+that element type, N is a multiple of 64, and the kernel declares <code>(local-size :set-to N)</code>.  The compiler
+adds a staging buffer of 16 KB per warpgroup (+1 KB) to the kernel's shared memory -- leave room for it
+under the 227 KB limit.</p>
+<hr />
+<h2 id="11-automatic-differentiation">11. Automatic differentiation<a class="headerlink" href="#11-automatic-differentiation" title="Permanent link">&para;</a></h2>
+<p><code>--differentiate</code> compiles a kernel's backward pass: for every <code>&amp;out</code> output it produces gradients for
+the inputs.  Most of the language is differentiable (including <code>sqrt</code>, <code>abs</code>, <code>clamp</code>, the
+transcendentals, reductions with a declared VJP, matmul).  A kernel needs inputs and at least one <code>&amp;out</code>.
+Integer results (<code>floor</code>, bit ops) carry zero gradient.  See chapter 48.</p>
+<hr />
+<h2 id="12-performance">12. Performance<a class="headerlink" href="#12-performance" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Start from the measured guidance in <code>docs/performance-levers.md</code>.</li>
+<li>Pick the hardware profile that matches the device; it drives tile shapes, register budgets and the
+  warp width.</li>
+<li><code>(declare (occupancy-target N))</code> and the profile's <code>:stream-occupancy-target</code> bound registers on NVIDIA
+  (registers per thread = 65536 / N).  <strong>Do not hand-set a higher target than the profile's</strong> -- a kernel
+  that needs more registers than the bound allows is SPILLED by ptxas, silently (BUG 124).  Leave it to the
+  profile, or turn it off with <code>(occupancy-target nil)</code>; whatever you choose, check that <code>ptxas -v</code> (or a
+  contest site's report) shows a stack of 0 bytes.</li>
+<li><code>(declare (unroll t))</code> / unroll counts on loops.</li>
+<li>Reductions: <code>reduce-vec</code>.  Matmul: the MMA paths above.  Elementwise: <code>loop-vector-stride</code>.</li>
+<li>Compare against <code>benchmarks/</code> and <code>performance/</code> before claiming a speedup.</li>
+</ul>
+<h3 id="memory-bound-streaming-kernels-elementwise-maps-vector-add">Memory-bound streaming kernels (elementwise maps, vector add, ...)<a class="headerlink" href="#memory-bound-streaming-kernels-elementwise-maps-vector-add" title="Permanent link">&para;</a></h3>
+<p>The work is moving bytes, so the levers are bytes per instruction and loads in flight -- not occupancy:</p>
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">in-vec</span><span class="w">  </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="p">))</span>
+<span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">out-vec</span><span class="w"> </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="p">))</span>
+
+<span class="p">(</span><span class="nv">def-kernel</span><span class="w"> </span><span class="nv">vector_add</span><span class="w"> </span><span class="p">(</span><span class="nv">A</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">C</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="nf">#'</span><span class="p">(</span><span class="nv">in-vec</span><span class="w"> </span><span class="nv">in-vec</span><span class="w"> </span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">out-vec</span><span class="w"> </span><span class="nv">=&gt;</span><span class="w"> </span><span class="no">nil</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:derive-from</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="ss">:strategy</span><span class="w"> </span><span class="ss">:strided</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">local-size</span><span class="w">  </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">256</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="k">let</span><span class="w"> </span><span class="p">((</span><span class="nv">n</span><span class="w">  </span><span class="p">(</span><span class="nv">length~</span><span class="w"> </span><span class="nv">A</span><span class="p">))</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">n4</span><span class="w"> </span><span class="p">(</span><span class="nb">/</span><span class="w"> </span><span class="nv">n</span><span class="w"> </span><span class="nv">4ul</span><span class="p">))</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">a4</span><span class="w"> </span><span class="p">(</span><span class="nv">make-vector</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="nv">float4</span><span class="w"> </span><span class="ss">:length</span><span class="w"> </span><span class="nv">n4</span><span class="p">))</span><span class="w">      </span><span class="c1">; 128-bit loads and stores</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">b4</span><span class="w"> </span><span class="p">(</span><span class="nv">make-vector</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="nv">float4</span><span class="w"> </span><span class="ss">:length</span><span class="w"> </span><span class="nv">n4</span><span class="p">))</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">c4</span><span class="w"> </span><span class="p">(</span><span class="nv">make-vector</span><span class="w"> </span><span class="nv">C</span><span class="w"> </span><span class="nv">float4</span><span class="w"> </span><span class="ss">:length</span><span class="w"> </span><span class="nv">n4</span><span class="p">)))</span>
+<span class="w">    </span><span class="p">(</span><span class="nv">loop-vector-stride</span><span class="w"> </span><span class="nv">a4</span><span class="w"> </span><span class="p">(</span><span class="nv">i</span><span class="p">)</span>
+<span class="w">      </span><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="p">(</span><span class="nv">unroll</span><span class="w"> </span><span class="mi">4</span><span class="p">))</span><span class="w">                          </span><span class="c1">; keeps several loads in flight per thread</span>
+<span class="w">      </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">c4</span><span class="w"> </span><span class="nv">i</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nb">+</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">a4</span><span class="w"> </span><span class="nv">i</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">b4</span><span class="w"> </span><span class="nv">i</span><span class="p">))))</span>
+<span class="w">    </span><span class="p">(</span><span class="k">let</span><span class="w"> </span><span class="p">((</span><span class="nv">tail</span><span class="w"> </span><span class="p">(</span><span class="nb">+</span><span class="w"> </span><span class="p">(</span><span class="nb">*</span><span class="w"> </span><span class="nv">n4</span><span class="w"> </span><span class="nv">4ul</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">get-global-id</span><span class="w"> </span><span class="mi">0</span><span class="p">))))</span><span class="w">  </span><span class="c1">; the 0..3 elements float4 cannot cover</span>
+<span class="w">      </span><span class="p">(</span><span class="nb">when</span><span class="w"> </span><span class="p">(</span><span class="nb">&lt;</span><span class="w"> </span><span class="nv">tail</span><span class="w"> </span><span class="nv">n</span><span class="p">)</span>
+<span class="w">        </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">C</span><span class="w"> </span><span class="nv">tail</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nb">+</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">A</span><span class="w"> </span><span class="nv">tail</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">B</span><span class="w"> </span><span class="nv">tail</span><span class="p">)))))))</span>
+</code></pre></div>
+<p>Measured on LeetGPU's H100 (challenge 01, 2026-10-16), one change at a time:</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Registers / stack</th>
+<th>Time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>scalar, <code>unroll 4</code>, <code>(occupancy-target 2048)</code></td>
+<td>32 / <strong>72 B</strong> (spilled)</td>
+<td>0.16 ms</td>
+</tr>
+<tr>
+<td>scalar, <code>unroll 4</code>, no target</td>
+<td>56 / 0</td>
+<td>0.12 ms</td>
+</tr>
+<tr>
+<td>the kernel above (<code>float4</code> + <code>unroll 4</code>)</td>
+<td>64 / 0</td>
+<td>0.12 ms</td>
+</tr>
+<tr>
+<td><code>float4</code>, no unroll</td>
+<td>32 / 0</td>
+<td>0.13 ms</td>
+</tr>
+</tbody>
+</table>
+<p>So: no hand-set occupancy target, keep the unroll, and prefer <code>float4</code> -- it was a wash on H100 but is the
+form that matters on older GPUs.  Still open: whether one <code>float4</code> per thread
+(<code>:strategy :one-thread-per</code>, no loop) beats the strided loop on H100.  The <code>float4</code> rows were measured
+before endeavour 186 fixed BUG 125: a view of a read-only input now keeps the <code>.nc</code> read-only load
+(<code>ld.global.nc.v4</code>), so they may improve.  The CUDA launcher Crisp hoists now prints the registers and
+local (spill) bytes the driver reports, so a spill shows up without <code>ptxas -v</code>.</p>
+<hr />
+<h2 id="13-what-crisp-refuses-on-purpose">13. What Crisp refuses (on purpose)<a class="headerlink" href="#13-what-crisp-refuses-on-purpose" title="Permanent link">&para;</a></h2>
+<p>Recursion; unbounded loops; <code>let*</code>; <code>eq</code>-family equality; storage handles inside storage handles; incomplete
+types at the kernel boundary; <code>voidp</code> as a <code>def-kernel</code> parameter; two-argument <code>floor</code> on floats; a warp
+collective on SPIR-V without a pinned subgroup size; reusing one explicit kernel name for two template
+instantiations.  Each refusal is a compile error that says what to do instead.</p>
+<hr />
+<h2 id="14-checking-your-work">14. Checking your work<a class="headerlink" href="#14-checking-your-work" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Compile for BOTH targets: <code>--ir-target=spv --hardware-profile=bmg</code> and <code>--ir-target=ptx</code>.</li>
+<li>Read the generated code when performance matters (<code>.ptx</code>, or <code>llvm-spirv -to-text</code> on the <code>.spv</code>).</li>
+<li>Run it: <code>--hoist=L0</code> (Intel) or <code>--hoist=CUDA</code> writes a host program; or write a spec in
+   <code>tests/spec/</code> with <code>TEST-HOIST[L0]</code> and <code>HOIST-EXPECT: BUFFER name: v0 v1 ...</code> (see <code>docs/tests.md</code>).
+   Put several cases in ONE kernel and build operands from a run-time value such as
+   <code>(to-int (get-workgroup-id 0))</code> so nothing is constant-folded away.</li>
+<li>For gradients: <code>VERIFY-AUTODIFF: input=1.5 atol=1e-3 expect.input=2.0</code> checks against finite differences.</li>
+<li>Known issues live in <code>plan/bugs.md</code>; check it when something compiles but computes the wrong thing
+   (BUG 120: some integer operations written inline in a kernel body misbehaved on the BMG; the compiler
+   routes the affected built-ins through helper functions).</li>
+</ol>
+<hr />
+<h2 id="15-debugging-die-runtime-asserts-and-the-log">15. Debugging: <code>die</code>, runtime asserts and the log<a class="headerlink" href="#15-debugging-die-runtime-asserts-and-the-log" title="Permanent link">&para;</a></h2>
+<p>None of this changes the host code that launches a kernel.  The die record and the log are module
+globals; the generated launchers (<code>--hoist=L0</code> / <code>--hoist=CUDA</code>) read them back after the kernel and print
+them.</p>
+<p><strong><code>die</code> stops the thread that calls it.</strong>  It is always compiled.  The message is optional and must be a
+compile-time string.  The first thread to die is recorded, and the launcher prints it:</p>
+<p><div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nv">def-type</span><span class="w"> </span><span class="nv">out-v</span><span class="w"> </span><span class="p">(</span><span class="nb">vector</span><span class="w"> </span><span class="nb">float</span><span class="w"> </span><span class="ss">:align</span><span class="w"> </span><span class="ss">:compact</span><span class="w"> </span><span class="ss">:address-space</span><span class="w"> </span><span class="ss">:global</span><span class="p">))</span>
+
+<span class="p">(</span><span class="nv">def-kernel</span><span class="w"> </span><span class="nv">die_report</span><span class="w"> </span><span class="p">(</span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">out</span><span class="p">)</span>
+<span class="w">  </span><span class="p">(</span><span class="k">declare</span><span class="w"> </span><span class="nf">#'</span><span class="p">(</span><span class="nv">&amp;out</span><span class="w"> </span><span class="nv">out-v</span><span class="w"> </span><span class="nv">=&gt;</span><span class="w"> </span><span class="no">nil</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">global-size</span><span class="w"> </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">4</span><span class="p">)</span>
+<span class="w">           </span><span class="p">(</span><span class="nv">local-size</span><span class="w">  </span><span class="ss">:set-to</span><span class="w"> </span><span class="mi">4</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="nb">when</span><span class="w"> </span><span class="p">(</span><span class="nb">=</span><span class="w"> </span><span class="p">(</span><span class="nv">get-local-id</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">to-ulong</span><span class="w"> </span><span class="mi">2</span><span class="p">))</span>
+<span class="w">    </span><span class="p">(</span><span class="nv">die</span><span class="w"> </span><span class="s">"thread two gives up"</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">set!</span><span class="w"> </span><span class="p">(</span><span class="nv">~</span><span class="w"> </span><span class="nv">out</span><span class="w"> </span><span class="p">(</span><span class="nv">get-local-id</span><span class="w"> </span><span class="mi">0</span><span class="p">))</span><span class="w"> </span><span class="mf">7.0</span><span class="p">))</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>BUFFER out: 7 7 2 7
+DIE die_report.crisp:8 group 0 local 2: thread two gives up
+</code></pre></div>
+The kernel still finishes: other threads run on (a <code>die</code> inside a function stops its callers too, and a
+dead thread never hangs a <code>sync-workgroup</code> or an <code>await</code>).  Results are undefined after a death.</p>
+<p><strong>Runtime asserts disappear unless you compile with <code>--runtime-checks</code></strong> (or <code>--logging-output</code>) — test
+and all, like C's <code>assert</code> under <code>NDEBUG</code>.  With the flag, a failed assert dies, and its compile-time
+strings become the DIE line's message.  The compiler's own bounds checks (<code>make-vector</code> and friends) are
+compiled under the same flag and report the same way.
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nv">r-t-assert</span><span class="w"> </span><span class="p">(</span><span class="nv">!=</span><span class="w"> </span><span class="p">(</span><span class="nv">get-local-id</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">to-ulong</span><span class="w"> </span><span class="mi">2</span><span class="p">))</span><span class="w"> </span><span class="s">"lane check"</span><span class="p">)</span><span class="w">   </span><span class="c1">; every thread tests</span>
+<span class="p">(</span><span class="nv">r-t-assert-0</span><span class="w"> </span><span class="p">(</span><span class="nb">&lt;=</span><span class="w"> </span><span class="p">(</span><span class="nv">get-num-groups</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">to-ulong</span><span class="w"> </span><span class="mi">64</span><span class="p">))</span><span class="w"> </span><span class="s">"too many groups"</span><span class="p">)</span><span class="w">  </span><span class="c1">; global thread 0 only</span>
+</code></pre></div></p>
+<p><strong><code>--logging-output</code> turns on <code>r-t-output</code>.</strong>  Each call writes one message: compile-time strings and
+scalar values (<code>int</code> <code>uint</code> <code>long</code> <code>ulong</code> <code>float</code> <code>double</code>, and <code>short</code> <code>char</code> <code>bool</code>).  Without the
+flag the form and its arguments are compiled away.  <code>r-t-output-0</code> writes from global thread 0 only.
+<div class="highlight"><pre><span></span><code><span class="p">(</span><span class="nb">when</span><span class="w"> </span><span class="p">(</span><span class="nb">=</span><span class="w"> </span><span class="p">(</span><span class="nv">get-local-id</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="nv">to-ulong</span><span class="w"> </span><span class="mi">1</span><span class="p">))</span>
+<span class="w">  </span><span class="p">(</span><span class="nv">r-t-output</span><span class="w"> </span><span class="s">"lane"</span><span class="w"> </span><span class="p">(</span><span class="nv">get-local-id</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="s">"x"</span><span class="w"> </span><span class="mf">1.5</span><span class="p">))</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code>LOG kernel.crisp:18 group 0 local 1: lane 1 x 1.5
+</code></pre></div>
+Under the flag a failed assert also writes its full message, runtime values included, before it dies.</p>
+<p><strong>Choose who logs</strong> — every thread that reaches an <code>r-t-output</code> writes.  Guard it:
+<code>(when-thread-is 0 ...)</code> (global thread 0, one message per launch), <code>(when-thread-in-group-is 0 ...)</code> (one
+per workgroup), or any condition of your own.  The log keeps the first messages to arrive, complete, and
+when it overflows the launcher says what the launch needed:
+<div class="highlight"><pre><span></span><code>LOG FULL: kept 1024 bytes; the launch wanted 1296 (recompile with --logging-size=2K)
+</code></pre></div></p>
+<p><code>(is-logging?)</code> and <code>(is-runtime-checking?)</code> are compile-time truths, for <code>if+</code> / <code>when+</code>.  Under
+<code>--differentiate</code> the log is off (the gradient kernels are compiled without it); <code>--runtime-checks</code> still
+applies.  More: <code>docs/ideal_001.md</code>, "Logging and Debugging"; specs in <code>tests/spec/193-logging-output/</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "toc.integrate"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
