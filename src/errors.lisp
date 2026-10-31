@@ -78,9 +78,11 @@
     ("INCF" . "write (set! x (+ x 1))")
     ("DECF" . "write (set! x (- x 1))")
     ("DOLIST" . "loop with dotimes or one of the stride macros")
-    ("LOOP" . "loop with dotimes or one of the stride macros"))
+    ("LOOP" . "loop with dotimes or one of the stride macros")
+    ("WHILE" . "every Crisp loop is bounded, so kernels always terminate -- loop with dotimes or one of the stride macros, and leave early with return-from-loop"))
   "Common Lisp operator name -> what to write in Crisp instead.  Appended to the
-   unsupported-form error (ADV-007).")
+   unsupported-form error (ADV-007).  Endeavour 200: WHILE -- an author never writes an unbounded
+   loop; the compiler's own spin (sync-wait) is %while, which no user form names.")
 
 (defun %unsupported-form-hint (form)
   "The Crisp alternative for FORM's operator name, or NIL."

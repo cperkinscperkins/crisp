@@ -1547,6 +1547,10 @@
        ;; number of workgroups has no meaning.  (No ~<newline> continuation: this file is CRLF.)
        (error "Scratch tensor ~a: :size-expr :match-num-workgroups (one element per workgroup in the grid) sizes GLOBAL scratch.  Workgroup-local scratch cannot be sized by the grid; give it a workgroup-relative or explicit size."
               param-name))
+      ((string-equal name "MATCH-GLOBAL-SIZE")
+       ;; Endeavour 201: likewise deferred for GLOBAL scratch; grid-sized LOCAL memory has no meaning.
+       (error "Scratch tensor ~a: :size-expr :match-global-size (one element per thread in the grid) sizes GLOBAL scratch.  Workgroup-local scratch cannot be sized by the grid; give it a workgroup-relative or explicit size."
+              param-name))
       (t
        (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%The sizes this hoister can resolve are :match-workgroup-size and~%:match-num-warps-per-workgroup.  (:match-warp-tile is recorded in the metacrisp~%for tooling but has no host-side meaning, so it cannot size a buffer here.)"
               param-name size-expr)))))
@@ -1718,26 +1722,43 @@
    held back by the argument walk and written out by %l0-emit-deferred-scratch once %l0-emit-dispatch
    has declared `groupCount`.")
 
-(defun %l0-num-workgroups-size-p (size-expr)
-  "T when SIZE-EXPR is the symbolic :match-num-workgroups."
-  (and (keywordp size-expr) (string-equal (symbol-name size-expr) "MATCH-NUM-WORKGROUPS")))
+(defun %l0-global-size-size-p (size-expr)
+  "Endeavour 201.  T when SIZE-EXPR is the symbolic :match-global-size (one element per thread in the
+   grid -- a look-back-scan's status words)."
+  (and (keywordp size-expr) (string-equal (symbol-name size-expr) "MATCH-GLOBAL-SIZE")))
 
-(defun %l0-deferred-global-scratch-block (param-name param-type context-var device-var arg-index)
+(defun %l0-num-workgroups-size-p (size-expr)
+  "T when SIZE-EXPR is sized by the group count: the symbolic :match-num-workgroups (181) or
+   :match-global-size (201, the group count times wg_size).  Both are only known once the dispatch has
+   declared `groupCount`, so both are deferred."
+  (and (keywordp size-expr)
+       (or (string-equal (symbol-name size-expr) "MATCH-NUM-WORKGROUPS")
+           (%l0-global-size-size-p size-expr))))
+
+(defun %l0-deferred-global-scratch-block (param-name param-type context-var device-var arg-index size-expr)
   "Endeavour 181.  The C++ block (a string) that allocates a rank-1 GLOBAL scratch vector of one element
    per workgroup and binds its 6 kernel arguments (ptr, byte-size, offset[0], stride[0], extent[0],
    length -- %l0-emit-symbolic-global-scratch-arg's order).  It is emitted AFTER the group count, so it
    reads `groupCount` directly.  Zeroed once, as all global scratch is (endeavour 179's contract), by a
    memory fill on the main command list with a barrier before the launch that follows -- no staging
-   mirror, because there is nothing to copy."
+   mirror, because there is nothing to copy.
+
+   Endeavour 201: under :match-global-size (SIZE-EXPR) the count is the group count times wg_size -- one
+   element per thread in the grid."
   (let* ((elem-str   (crisp-type-to-cpp-type (second param-type)))
          (elem-bytes (%elem-type-bytes elem-str))
          (cpp        (substitute #\_ #\- param-name))
-         (idx        arg-index))
+         (idx        arg-index)
+         (per-thread (%l0-global-size-size-p size-expr)))
+    ;; No log4cl here: crisp-hoist-l0 is a standalone app that does not load it.
     (with-output-to-string (s)
-      (format s "~%    // GLOBAL scratch vector: ~a (rank=1, ~a, one element per workgroup in the grid)~%" param-name elem-str)
-      (format s "    //   :size-expr :match-num-workgroups -- allocated HERE, after the group count above,~%")
+      (format s "~%    // GLOBAL scratch vector: ~a (rank=1, ~a, one element per ~a in the grid)~%"
+              param-name elem-str (if per-thread "thread" "workgroup"))
+      (format s "    //   :size-expr ~a -- allocated HERE, after the group count above,~%"
+              (if per-thread ":match-global-size" ":match-num-workgroups"))
       (format s "    //   because under :strided that count is only known at run time.~%")
-      (format s "    const uint64_t ~a_elems = (uint64_t)groupCount.groupCountX * groupCount.groupCountY * groupCount.groupCountZ;~%" cpp)
+      (format s "    const uint64_t ~a_elems = (uint64_t)groupCount.groupCountX * groupCount.groupCountY * groupCount.groupCountZ~a;~%"
+              cpp (if per-thread " * wg_size" ""))
       (format s "    ~a* ~a_ptr = nullptr;~%" elem-str cpp)
       (format s "    result = zeMemAllocDevice(~a, &deviceDesc,~%" context-var)
       (format s "        ~a_elems * sizeof(~a), 1, ~a, (void**)&~a_ptr);~%" cpp elem-str device-var cpp)
@@ -1857,14 +1878,14 @@
          (param-name-cpp (substitute #\_ #\- param-name))
          (ptr-var (format nil "~a_ptr" param-name-cpp))
          (host-var (format nil "~a_host" param-name-cpp)))
-    ;; Endeavour 181: one element per WORKGROUP.  The group count is only known once
+    ;; Endeavour 181: one element per WORKGROUP (201: or per THREAD, :match-global-size).  The group count is only known once
     ;; %l0-emit-dispatch has emitted `groupCount` (at RUN TIME under :strided), and
     ;; zeKernelSetArgumentValue copies its value -- so the whole block is DEFERRED and written by
     ;; %l0-emit-deferred-scratch after the dispatch.
     (when (and (%l0-num-workgroups-size-p size-expr) (= rank 1))
       (format stream "~%    // GLOBAL scratch vector: ~a -- args ~d..~d are bound AFTER the group count (see below).~%"
               param-name arg-index (+ arg-index 5))
-      (push (%l0-deferred-global-scratch-block param-name param-type context-var device-var arg-index)
+      (push (%l0-deferred-global-scratch-block param-name param-type context-var device-var arg-index size-expr)
             *l0-deferred-scratch*)
       (return-from %l0-emit-global-scratch-tensor-arg (+ arg-index 6)))
     ;; BUG 094: a rank-1 SYMBOLIC size is phrased as a C++ expression over the geometry constants.

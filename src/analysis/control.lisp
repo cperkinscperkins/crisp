@@ -5761,11 +5761,18 @@
   ;; Endeavour 172: dec-times, dec-times-by-half/-by-factor, do-times-by-doubling/-by-multiply,
   ;; do-power-step, dec-power-step, and every + form.
   (register-loop-variant-analyzers)
-  (let ((sym-cl (intern "WHILE" (find-package :crisp-language)))
-        (sym-cc (intern "WHILE" (find-package :crisp.compiler))))
-    (setf (gethash sym-cl *expression-analyzers*) #'analyze-while-expression)
-    (unless (eq sym-cl sym-cc)
-      (setf (gethash sym-cc *expression-analyzers*) #'analyze-while-expression)))
+  ;; Endeavour 200 (BUG 148): the while analyzer is registered ONLY as crisp.compiler::%while.  It was also
+  ;; registered as crisp-language::while, so authors could write unbounded loops -- Crisp is not
+  ;; Turing-complete.  The compiler hides a spin (sync-wait, look-back-scan) as %while, which no user form names.
+  (setf (gethash (intern "%WHILE" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-while-expression)
+  ;; Endeavour 201: look-back-scan's typed helpers and its phase-1 backward check (src/analysis/ops.lisp).
+  (setf (gethash (intern "%LBS-TO-BITS" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-lbs-to-bits)
+  (setf (gethash (intern "%LBS-FROM-BITS" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-lbs-from-bits)
+  (setf (gethash (intern "%LOOK-BACK-SCAN-INTEGER-ONLY" (find-package :crisp.compiler)) *expression-analyzers*)
+        #'analyze-lbs-integer-adjoint)
   (let ((sym-cl (intern "LOOP-VECTOR-STRIDE" (find-package :crisp-language)))
         (sym-cc (intern "LOOP-VECTOR-STRIDE" (find-package :crisp.compiler))))
     (setf (gethash sym-cl *expression-analyzers*) #'analyze-loop-vector-stride-expression)

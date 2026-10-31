@@ -2128,11 +2128,93 @@ processes float inputs — integer tensor inputs contribute zero gradient."
   `(atomic-add! (~ (arrival-sync-handle-counter ,handle)) 1))
 
 (defmacro sync-wait (handle)
-  "Blocks until count units have been put into the sync bucket."
+  "Blocks until count units have been put into the sync bucket.  The spin is the compiler-internal
+   %while (endeavour 200); under --differentiate sync-wait is opaque to ANF and has its own VJP."
   `(progn
-    (while (< (crisp.compiler::%volatile-read (~ (arrival-sync-handle-counter ,handle))) (arrival-sync-handle-count ,handle))
-           (mem-fence))
+    (%while (< (crisp.compiler::%volatile-read (~ (arrival-sync-handle-counter ,handle))) (arrival-sync-handle-count ,handle))
+            (mem-fence))
     (sync-workgroup)))
+
+;; Endeavour 201: the decoupled look-back as two forms.  look-back-scan hides a %while (the wait on an
+;; earlier tile, which ends only because ordered-workgroup-id's order guarantees that tile has started);
+;; ANF keeps both unexpanded and each owns a VJP (src/autodiff.lisp).  Each expansion's LET owns its
+;; scratch, so Pass 1 names it <binding>_FROM_<fn>_<n>, unique per occurrence -- and the hoists print that
+;; binding name as a C++ identifier, so it must be one.
+
+(defmacro ordered-workgroup-id ()
+  "(ordered-workgroup-id) -> ulong in [0, NT), NT the launch's workgroup count.  An in-order ticket: the
+   first workgroup to reach the call gets 0, so every workgroup with a smaller ticket has already
+   STARTED -- what makes a decoupled look-back deadlock-free.  Thread 0 takes the ticket from a global
+   counter and broadcasts it through a workgroup-local cell, so the form holds a barrier and is refused
+   under divergent control.  The workgroup that takes the LAST ticket puts the counter back to 0 (every
+   other workgroup has taken its ticket by then), so the next launch in the program starts at 0 again
+   even though global scratch is zeroed only once."
+  `(let ((ticket-counter (make-scratch-cell ulong :address-space :global))
+         (ticket-broadcast  (make-scratch-cell ulong)))
+     (when (= (get-local-linear-id) 0ul)
+       (let ((%owg-tk (atomic-add! (~ ticket-counter) 1ul)))
+         (set! (~ ticket-broadcast) %owg-tk)
+         (when (= %owg-tk (- (* (get-num-groups 0) (get-num-groups 1) (get-num-groups 2)) 1ul))
+           (atomic-store! (~ ticket-counter) 0ul))))
+     (sync-workgroup)
+     (~ ticket-broadcast)))
+
+(defmacro look-back-scan (value tile)
+  "(look-back-scan VALUE TILE) -> the EXCLUSIVE prefix of VALUE over the earlier tiles, per thread: thread i
+   of tile t gets sum over u < t of thread i's VALUE in tile u.  VALUE is a 32-bit uint, int or float;
+   TILE is the workgroup's (ordered-workgroup-id).  Every thread of the workgroup must call it -- a lane
+   left unpublished stalls every later tile -- so it starts with a sync-workgroup, which makes the
+   barrier checks refuse a divergent call site.
+
+   Decoupled look-back over one status word per thread in the grid (:match-global-size, global, zeroed
+   once): word = (tag << 32) | bits(value), tag = epoch*4+1 for a tile's own AGGREGATE, epoch*4+2 for its
+   INCLUSIVE prefix.  Tile 0 publishes inclusive at once; tile t publishes its aggregate, walks back
+   adding aggregates until it meets an inclusive word, then publishes its inclusive.  The wait for a
+   predecessor's word is the %while -- it ends only because every predecessor has started (the ticket's
+   order), which is why an author cannot write it and the compiler hides it here.
+
+   Relaunch: the epoch cell starts at 0.  The LAST tile, after every one of its lanes has published its
+   inclusive word (the second barrier), adds 1 -- by then every tile has read the epoch, since each
+   inclusive word in the chain was published after its tile read it.  The next launch's words carry new
+   tags, so the old words never match and nothing is re-zeroed.  One call per launch per occurrence:
+   inside a loop a fast tile would overwrite a slot a slow tile is still reading."
+  `(let ((%lbs-v   ,value)
+         (%lbs-t   ,tile)
+         (look-back-status  (make-scratch-vector ulong :match-global-size :address-space :global))
+         (look-back-epoch  (make-scratch-cell uint :address-space :global))
+         (%lbs-nt  (* (get-num-groups 0) (get-num-groups 1) (get-num-groups 2)))
+         (%lbs-ls  (* (get-local-work-size 0) (get-local-work-size 1) (get-local-work-size 2)))
+         (%lbs-lid (get-local-linear-id)))
+     (sync-workgroup)
+     (let ((%lbs-epoch (atomic-load (~ look-back-epoch)))
+           (%lbs-tag-a (to-ulong (+ (* %lbs-epoch 4u) 1u)))
+           (%lbs-tag-i (to-ulong (+ (* %lbs-epoch 4u) 2u)))
+           (%lbs-slot  (+ (* %lbs-t %lbs-ls) %lbs-lid))
+           (%lbs-excl  (%lbs-from-bits %lbs-v 0u)))
+       (if (= %lbs-t 0ul)
+           (atomic-store! (~ look-back-status %lbs-slot)
+                          (logior (ash %lbs-tag-i 32) (to-ulong (%lbs-to-bits %lbs-v))))
+           (let ((%lbs-pt   (- %lbs-t 1ul))
+                 (%lbs-done 0u))
+             (atomic-store! (~ look-back-status %lbs-slot)
+                            (logior (ash %lbs-tag-a 32) (to-ulong (%lbs-to-bits %lbs-v))))
+             (%while (= %lbs-done 0u)
+               (let ((%lbs-w   (atomic-load (~ look-back-status (+ (* %lbs-pt %lbs-ls) %lbs-lid))))
+                     (%lbs-tag (ash %lbs-w -32))
+                     (%lbs-c   (%lbs-from-bits %lbs-v (to-uint (logand %lbs-w 4294967295ul)))))
+                 (when (= %lbs-tag %lbs-tag-i)
+                   (set! %lbs-excl (+ %lbs-excl %lbs-c))
+                   (set! %lbs-done 1u))
+                 (when (= %lbs-tag %lbs-tag-a)
+                   (set! %lbs-excl (+ %lbs-excl %lbs-c))
+                   (set! %lbs-pt (- %lbs-pt 1ul)))))
+             (atomic-store! (~ look-back-status %lbs-slot)
+                            (logior (ash %lbs-tag-i 32)
+                                    (to-ulong (%lbs-to-bits (+ %lbs-excl %lbs-v)))))))
+       (sync-workgroup)
+       (when (and (= %lbs-t (- %lbs-nt 1ul)) (= %lbs-lid 0ul))
+         (atomic-add! (~ look-back-epoch) 1u))
+       %lbs-excl)))
 
 (defmacro await (barrier)
   "Awaits an async barrier."

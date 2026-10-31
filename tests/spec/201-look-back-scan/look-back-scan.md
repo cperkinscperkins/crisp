@@ -1,7 +1,8 @@
 # Endeavour 201 -- `look-back-scan`: the decoupled look-back as a form
 
-Status: design agreed with Chris 2026-10-30.  Phase 1 built 2026-10-30 (overlays; see "Phase 1 as built"
-and decisions D-201-1..10 for review).  sort_onesweep.crisp ported; H100 run pending (GPU MODE returned 503).
+Status: design agreed with Chris 2026-10-30.  Phase 1 built 2026-10-30 and folded into src/ the same day (see
+"Phase 1 as built" and decisions D-201-1..10 for review; the fold gave the hoists' deferred-scratch helpers a
+SIZE-EXPR parameter and exported the two names from crisp.compiler).  sort_onesweep.crisp ported; H100 run pending (GPU MODE returned 503).
 
 ## Why
 

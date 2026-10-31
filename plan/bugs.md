@@ -4350,7 +4350,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         (LLVMDeleteFunction) as well as unregistering it; and/or skip the companion for a void function whose
         only active params are integers.
 
-[ ] 138 FIXED (endeavour 200, overlay -- fold pending) -- ON PTX, ash AND popcount LOWER TO OUT-OF-LINE noinline HELPER CALLS (perf; the BUG 120 workaround is applied to every backend).
+[x] 138 FIXED (endeavour 200, folded into src/ 2026-10-30) -- ON PTX, ash AND popcount LOWER TO OUT-OF-LINE noinline HELPER CALLS (perf; the BUG 120 workaround is applied to every backend).
         FIX 2026-10-30: %185-helper-call adds noinline (and SPIR_FUNC) only on SPIR-V; the hypothesis held.  The
         sort_v2 PTX went from 66 call.uni to 0 (even split-nibble inlined).  Suites: unit, E2E 1620/1620, negative
         403/403.  Spec: tests/spec/200-sort-contest/01-ash-popcount-inline-on-ptx-metal.crisp (PTX inline, SPIR-V
@@ -4452,7 +4452,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY FIX: trim #\Return (and tabs) in read-check-fail-flags; the spec runner's own directive readers
         may want the same look.
 
-[ ] 145 FIXED (endeavour 200, overlay -- fold pending) -- A while WHOSE TYPE IS ASKED FOR DIES WITH A RAW ETYPECASE DUMP.
+[x] 145 FIXED (endeavour 200, folded into src/ 2026-10-30) -- A while WHOSE TYPE IS ASKED FOR DIES WITH A RAW ETYPECASE DUMP.
         Found 2026-10-30 (sort_v2 onesweep look-back).  semantic-while was missing from semantic-node-type and
         semantic-node-source-location (src/analysis/core.lisp).  A while that is the LAST form of a let body (the
         let takes its type from it) fell through the ETYPECASE and printed the whole semantic tree as the error.
@@ -4463,7 +4463,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         reaches this any more.  The two clauses are still right for the node; fold them anyway.  The spec that
         exercised it (200/02-while-ends-a-let-body-metal) was deleted -- it tested the door.
 
-[ ] 148 FIXED (endeavour 200, overlay -- fold pending) -- AN AUTHOR COULD WRITE while.  CRISP IS NOT TURING-COMPLETE.
+[x] 148 FIXED (endeavour 200, folded into src/ 2026-10-30) -- AN AUTHOR COULD WRITE while.  CRISP IS NOT TURING-COMPLETE.
         Found 2026-10-30 (Chris, reviewing endeavour 200).  The while analyzer exists for the compiler's own spin
         (sync-wait, commit 3a5958c8) but was registered for crisp-language::WHILE too, so user code compiled an
         unbounded loop.  Two contest kernels used it (05-prefixsum-v2/prefixsum_lookback.crisp, committed in
@@ -4475,7 +4475,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         and has a VJP.  Specs: 200/errors/01-unbounded-loop-refused, 02-unbounded-loop-refused-differentiate.
         OPEN: the two look-back kernels no longer compile -- they need a sanctioned form (endeavour doc).
 
-[ ] 149 FIXED (endeavour 200, overlay -- fold pending) -- AN ARRIVAL SYNC COULD NOT BE DIFFERENTIATED.
+[x] 149 FIXED (endeavour 200, folded into src/ 2026-10-30) -- AN ARRIVAL SYNC COULD NOT BE DIFFERENTIATED.
         Found 2026-10-30 checking whether sync-wait's hidden while survives --differentiate.  It never got that
         far.  Every arrival-sync spec skipped --differentiate ("no &out param"), so none had been tried.
           * make-arrival-sync: "Expected (CELL INT ADDRESS-SPACE GLOBAL) but inferred (CELL INT LOCAL)".  ANF's

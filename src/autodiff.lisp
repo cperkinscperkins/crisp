@@ -7187,3 +7187,67 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
 (eval-when (:load-toplevel :execute)
   (register-vjp "ATOMIC-LOAD"   (function %195-vjp-atomic-load))
   (register-vjp "ATOMIC-STORE!" (function %195-vjp-atomic-store)))
+
+;;; Endeavour 200: an arrival sync differentiates.  sync-arrive / sync-wait stay whole through ANF (their
+;;; accessors expand to a PROGN the walk cannot differentiate) and their backward rules swap roles.
+
+(defun %200-vjp-sync-wait (form ctx)
+  "Backward rule for sync-wait (endeavour 200).  An arrival sync orders the work BEFORE every arrive
+   ahead of the work AFTER every wait.  The adjoints flow the other way, so in the backward the roles
+   swap: at the mirror of its wait a thread SIGNALS that the adjoints of its after-wait work are
+   published, and at the mirror of its arrive it WAITS for every thread's signal before running the
+   adjoints of its before-arrive work.  The walk runs in reverse, so this wait's mirror is an arrive.
+   Both forms are refused under divergent control, so the arriving and the waiting threads are the same
+   set and the forward's count still applies.  The backward kernel replays the forward's bindings but
+   not its statements, so the replayed handle is a fresh, zeroed counter."
+  (declare (ignore ctx))
+  (log:debug "200 VJP sync-wait ~s -> sync-arrive" (second form))
+  `(sync-arrive ,(second form)))
+
+(defun %200-vjp-sync-arrive (form ctx)
+  "Backward rule for sync-arrive (endeavour 200): the mirror of an arrive is a wait -- see
+   %200-vjp-sync-wait."
+  (declare (ignore ctx))
+  (log:debug "200 VJP sync-arrive ~s -> sync-wait" (second form))
+  `(sync-wait ,(second form)))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "SYNC-WAIT"   (function %200-vjp-sync-wait))
+  (register-vjp "SYNC-ARRIVE" (function %200-vjp-sync-arrive)))
+
+(defun %200-vjp-construct-struct (form ctx)
+  "Backward rule for %construct-struct (endeavour 200): building an ARRIVAL-SYNC-HANDLE is gradient-inert.
+   The handle is a scheduling object -- an integer counter cell and an integer count -- exactly as a
+   barrier is.  Walked as a struct, its counter CELL was given a scalar adjoint 0.0 that shadowed the
+   cell's paired scratch adjoint ('No matching function overload found for ~ with argument types
+   (FLOAT)').  Every other struct DECLINES, so the walk's own constructor clauses run unchanged."
+  (declare (ignore ctx))
+  (when (and (symbolp (second form)) (string-equal (symbol-name (second form)) "ARRIVAL-SYNC-HANDLE"))
+    (log:debug "200 VJP %construct-struct arrival-sync-handle: inert")
+    :inert))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "%CONSTRUCT-STRUCT" (function %200-vjp-construct-struct)))
+
+;;; Endeavour 201: ordered-workgroup-id is inert; look-back-scan is inert for an integer VALUE, and its
+;;; phase-1 backward rule refuses a float one by name (a scan in the opposite tile order is phase 2).
+
+(defun %201-vjp-ordered-workgroup-id (form ctx)
+  "Backward rule for ordered-workgroup-id (endeavour 201): an integer ticket carries no gradient.  The
+   backward kernel replays the binding and so takes its own tickets from its own counter."
+  (declare (ignore ctx))
+  (log:debug "201 VJP ~s: inert" form)
+  :inert)
+
+(defun %201-vjp-look-back-scan (form ctx)
+  "Backward rule for look-back-scan (endeavour 201, phase 1).  The walk sees forms, not types, so it emits
+   (%look-back-scan-integer-only VALUE): a no-op for an integer VALUE (an integer scan is inert), a
+   compile error naming the gap for a float one (its adjoint, a scan in the opposite tile order, is
+   phase 2)."
+  (declare (ignore ctx))
+  (log:debug "201 VJP ~s: integer-only check on ~s" form (second form))
+  `(%look-back-scan-integer-only ,(second form)))
+
+(eval-when (:load-toplevel :execute)
+  (register-vjp "ORDERED-WORKGROUP-ID" (function %201-vjp-ordered-workgroup-id))
+  (register-vjp "LOOK-BACK-SCAN"       (function %201-vjp-look-back-scan)))

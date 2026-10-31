@@ -527,6 +527,10 @@
          ;; sized by the number of workgroups has no meaning.  (No ~<newline> continuation: CRLF file.)
          (error "Scratch tensor ~a: :size-expr :match-num-workgroups (one element per workgroup in the grid) sizes GLOBAL scratch.  Workgroup-local scratch cannot be sized by the grid; give it a workgroup-relative or explicit size."
                 param-name))
+        ((string-equal name "MATCH-GLOBAL-SIZE")
+         ;; Endeavour 201: likewise filled at the launch anchor for GLOBAL scratch.
+         (error "Scratch tensor ~a: :size-expr :match-global-size (one element per thread in the grid) sizes GLOBAL scratch.  Workgroup-local scratch cannot be sized by the grid; give it a workgroup-relative or explicit size."
+                param-name))
         (t
          (error "Scratch tensor ~a: unknown symbolic :size-expr ~a.~%The sizes this hoister can resolve are :match-workgroup-size and~%:match-num-warps-per-workgroup.  (:match-warp-tile is recorded in the metacrisp~%for tooling but has no host-side meaning, so it cannot size a buffer here.)"
                 param-name size-expr))))))
@@ -1047,27 +1051,45 @@ overrides the runtime SM-count query in the grid-size heuristic."
   "Endeavour 181.  C++ blocks (strings, newest first) that size and allocate :match-num-workgroups global
    scratch, held back by the argument walk and injected by emit-launch once the grid is final.")
 
-(defun %cuda-num-workgroups-size-p (size-expr)
-  "T when SIZE-EXPR is the symbolic :match-num-workgroups."
-  (and (keywordp size-expr) (string-equal (symbol-name size-expr) "MATCH-NUM-WORKGROUPS")))
+(defun %cuda-global-size-size-p (size-expr)
+  "Endeavour 201.  T when SIZE-EXPR is the symbolic :match-global-size (one element per thread in the
+   grid -- a look-back-scan's status words)."
+  (and (keywordp size-expr) (string-equal (symbol-name size-expr) "MATCH-GLOBAL-SIZE")))
 
-(defun %cuda-emit-num-workgroups-scratch-arg (stream param-name param-type arg-index)
+(defun %cuda-num-workgroups-size-p (size-expr)
+  "T when SIZE-EXPR is sized by the grid: the symbolic :match-num-workgroups (181) or :match-global-size
+   (201, the grid times the declared workgroup size).  Both are deferred to the launch anchor."
+  (and (keywordp size-expr)
+       (or (string-equal (symbol-name size-expr) "MATCH-NUM-WORKGROUPS")
+           (%cuda-global-size-size-p size-expr))))
+
+(defun %cuda-emit-num-workgroups-scratch-arg (stream param-name param-type arg-index size-expr)
   "Endeavour 181.  A rank-1 GLOBAL scratch vector of :size-expr :match-num-workgroups -- one element per
    workgroup -- is sized by the GRID, which the launcher may compute at run time.  kernelParams[] holds
    ADDRESSES and cuLaunchKernel reads them at launch, so the six host variables are only DECLARED here and
    *cuda-deferred-scratch* gets the block that sizes, allocates and zeroes the buffer; emit-launch injects
-   it before the launch lambda.  Returns (values next-index arg-names) like the concrete path."
+   it before the launch lambda.  Returns (values next-index arg-names) like the concrete path.
+
+   Endeavour 201: under :match-global-size (SIZE-EXPR) the length is the grid times the DECLARED workgroup
+   size, baked in as a number -- the launch's block dimensions are baked the same way."
   (let* ((elem-str   (crisp-type-to-cpp-type (second param-type)))
          (elem-bytes (%hoist-elem-type-bytes elem-str))
          (cpp        (substitute #\_ #\- param-name))
+         (per-thread (%cuda-global-size-size-p size-expr))
+         (wg         (when per-thread
+                       (or *cuda-wg-size*
+                           (error "Scratch tensor ~a: :size-expr :match-global-size (one element per thread in the grid) needs the workgroup size, but this kernel declares no compile-time (local-size :set-to N)."
+                                  param-name))))
+         (what       (if per-thread "thread" "workgroup"))
+         (size-kw    (if per-thread ":match-global-size" ":match-num-workgroups"))
          (names      (list (format nil "~a_ptr" cpp)
                            (format nil "~a_byte_size" cpp)
                            (format nil "~a_off0" cpp)
                            (format nil "~a_str0" cpp)
                            (format nil "~a_ext0" cpp)
                            (format nil "~a_length" cpp))))
-    (format stream "~%    // GLOBAL scratch tensor: ~a (rank=1, ~a, one element per workgroup)~%" param-name elem-str)
-    (format stream "    //   :size-expr :match-num-workgroups -- sized and allocated just before the launch,~%")
+    (format stream "~%    // GLOBAL scratch tensor: ~a (rank=1, ~a, one element per ~a)~%" param-name elem-str what)
+    (format stream "    //   :size-expr ~a -- sized and allocated just before the launch,~%" size-kw)
     (format stream "    //   once the grid is known; kernelParams[] reads these variables at launch time.~%")
     (format stream "    CUdeviceptr ~a_ptr = 0;~%" cpp)
     (format stream "    uint64_t ~a_byte_size = 0ULL;~%" cpp)
@@ -1076,8 +1098,10 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "    uint64_t ~a_ext0 = 0ULL;~%" cpp)
     (format stream "    uint64_t ~a_length = 0ULL;~%" cpp)
     (push (with-output-to-string (s)
-            (format s "    // GLOBAL scratch ~a: one element per workgroup (:match-num-workgroups), zeroed once~%" param-name)
-            (format s "    ~a_length = (uint64_t)gridX * gridY * gridZ;~%" cpp)
+            (format s "    // GLOBAL scratch ~a: one element per ~a (~a), zeroed once~%" param-name what size-kw)
+            (if per-thread
+                (format s "    ~a_length = (uint64_t)gridX * gridY * gridZ * ~dULL;~%" cpp wg)
+                (format s "    ~a_length = (uint64_t)gridX * gridY * gridZ;~%" cpp))
             (format s "    ~a_ext0 = ~a_length;~%" cpp cpp)
             (format s "    ~a_byte_size = ~a_length * ~dULL;~%" cpp cpp elem-bytes)
             (format s "    CUDA_CHECK(cuMemAlloc(&~a_ptr, ~a_byte_size));~%" cpp cpp)
@@ -1090,7 +1114,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
   (when (and (%cuda-num-workgroups-size-p (getf param :size-expr))
              (= (let ((n3 (third param-type))) (if (integerp n3) n3 1)) 1))
     (return-from %cuda-emit-global-scratch-tensor-arg
-      (%cuda-emit-num-workgroups-scratch-arg stream param-name param-type arg-index)))
+      (%cuda-emit-num-workgroups-scratch-arg stream param-name param-type arg-index (getf param :size-expr))))
   (let* ((rank        (let ((n3 (third param-type))) (if (integerp n3) n3 1)))
          (size-expr   (getf param :size-expr))
          (elem-type   (second param-type))

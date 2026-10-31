@@ -2477,9 +2477,14 @@
                                (%hw-int-intrinsic builder module "max" cat bits lanes x lo) hi))))))
 
 (defun %185-helper-call (builder module name ret-type arg-vals body-fn)
-  "Call the internal noinline helper NAME : RET-TYPE(types of ARG-VALS), creating it in MODULE on
-   first use with a body built by BODY-FN, called as (BODY-FN helper-builder param-values) and
-   returning the value to ret.  SPIR_FUNC on SPIR-V; the call site gets the callee's CC."
+  "Call the internal helper NAME : RET-TYPE(types of ARG-VALS), creating it in MODULE on first use with a
+   body built by BODY-FN, called as (BODY-FN helper-builder param-values) and returning the value to ret.
+   SPIR_FUNC on SPIR-V; the call site gets the callee's CC.
+
+   Endeavour 200 (BUG 138): the helper is noinline ON SPIR-V ONLY.  The noinline exists for the BMG,
+   which failed zeModuleCreate when these bodies were inlined (BUG 120 family).  On PTX it bought nothing
+   and cost a call per ash / popcount in the hottest loops -- and kept ptxas from fusing (logand (ash w -8)
+   255u) into bfe.u32.  With internal linkage and no noinline, LLVM inlines the helper on PTX."
   (let* ((n (length arg-vals))
          (existing (crisp.llvm-bindings::llvm-get-named-function module name))
          (fnty (cffi:with-foreign-objects ((ptypes :pointer (max 1 n)))
@@ -2490,14 +2495,14 @@
                  existing
                  (let ((fn (crisp.llvm-bindings::llvm-add-function module name fnty))
                        (tmp (llvm-create-builder)))
-                   (log:debug "%185-helper-call: creating ~a" name)
+                   (log:debug "%185-helper-call: creating ~a (noinline: ~a)" name (eq *target-backend* :spirv))
                    (crisp.llvm-bindings::llvm-set-linkage fn 8)            ; LLVMInternalLinkage
-                   (llvm-add-attribute-at-index
-                    fn +llvm-attribute-function-index+
-                    (crisp.llvm-bindings::llvm-create-enum-attribute
-                     (llvm-get-module-context module)
-                     (crisp.llvm-bindings::llvm-get-enum-attribute-kind-for-name "noinline" 8) 0))
                    (when (eq *target-backend* :spirv)
+                     (llvm-add-attribute-at-index
+                      fn +llvm-attribute-function-index+
+                      (crisp.llvm-bindings::llvm-create-enum-attribute
+                       (llvm-get-module-context module)
+                       (crisp.llvm-bindings::llvm-get-enum-attribute-kind-for-name "noinline" 8) 0))
                      (llvm-set-function-call-conv fn 75))                 ; SPIR_FUNC
                    (unwind-protect
                         (progn
