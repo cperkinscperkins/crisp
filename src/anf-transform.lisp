@@ -209,7 +209,11 @@
 (defparameter *anf-unexpanded-macros*
   '(when when+ unless unless+ cond cond+ if if+ return dotimes dotimes+ while set! declare progn let
     template-instantiation def-function def-kernel def-kernel-exact make-scratch-cell make-scratch-vector make-scratch-matrix make-scratch-tensor as quote compiler-no-op
-    make-cell make-vector make-matrix make-tensor)
+    make-cell make-vector make-matrix make-tensor
+    ;; Endeavour 200: an arrival sync stays whole (its accessors expand to a PROGN AD cannot walk) and owns
+    ;; a VJP.  Endeavour 201: so do the look-back forms -- not opaque, so ANF lifts their arguments into temps
+    ;; and binds the call, and the backward walk sees (x (look-back-scan a b)) / (k (ordered-workgroup-id)).
+    sync-arrive sync-wait look-back-scan ordered-workgroup-id)
   "Operators anf-normalize handles ITSELF.  When one of them is also a macro, it must not be
    macroexpanded before the dispatch below sees it.")
 
@@ -237,7 +241,9 @@
     ;; (see src/macros.lisp:982, "the forward still analyses the
     ;; original form"), so no shipped prefetch kernel's forward
     ;; lowering can be affected by this entry.
-    "PREFETCH-TILE")
+    "PREFETCH-TILE"
+    ;; Endeavour 200: arrival-sync statements, each with a registered VJP.
+    "SYNC-ARRIVE" "SYNC-WAIT")
   "Forms anf-normalize passes through WHOLE (bound to a temp when nested): their coordinate / dimension
    tuples are not expressions to flatten, and the backward walk meets them as single statements.")
 
@@ -270,6 +276,15 @@
 
    ((consp expr)
      (let ((op (car expr)))
+       ;; Endeavour 200 (BUG 148): WHILE is refused as the analyzer refuses it -- A|D runs before the forward
+       ;; kernel is analyzed.  %WHILE must never get here: the compiler hides a spin only inside a form that
+       ;; is unexpanded by ANF and has a registered VJP (sync-wait, look-back-scan).  Reaching this is a
+       ;; compiler bug, not an author's.
+       (when (and (symbolp op) (string= (symbol-name op) "WHILE"))
+         (error 'crisp-unsupported-form-error :form op))
+       (when (and (symbolp op) (string= (symbol-name op) "%WHILE"))
+         (error "Internal compiler error: a %while reached the A|D pass (~s).  The compiler hides an unbounded spin only inside a form that is unexpanded by ANF and has a registered VJP (see sync-wait, look-back-scan); whichever form expanded to this one needs both."
+                expr))
        ;; 176 Phase 2b: an INDEPENDENT reduce-warp / reduce-workgroup / grid-reduce! is SPLIT per clause
        ;; here, BEFORE macroexpansion -- the forward lowers it fused, but the backward walk must meet only
        ;; single forms, whose VJPs it already has.  Independent clauses do not interact, so the split
@@ -321,8 +336,11 @@
                 (val (caddr expr)))
             (multiple-value-bind (new-val bindings) (anf-normalize val t)
               (%anf-bind-if-nested `(as ,type-spec ,new-val) bindings is-nested?))))
+        ;; Endeavour 200: keep the trailing arguments.  Rebuilding it as (make-scratch-cell TYPE) dropped
+        ;; :address-space :global, so a global cell became a LOCAL one in the backward walk (make-arrival-sync:
+        ;; "Expected (CELL INT ADDRESS-SPACE GLOBAL) but inferred (CELL INT LOCAL)").
         ((eq op 'make-scratch-cell)
-          (%anf-bind-if-nested `(make-scratch-cell ,(cadr expr)) nil is-nested?))
+          (%anf-bind-if-nested (copy-list expr) nil is-nested?))
         ((member op '(make-scratch-vector make-scratch-matrix make-scratch-tensor))
           (%anf-bind-if-nested `(,op ,@(cdr expr)) nil is-nested?))
         ((member op '(make-cell make-vector make-matrix make-tensor))

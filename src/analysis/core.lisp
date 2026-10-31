@@ -2779,8 +2779,11 @@ in single-pass mode."
 (defun semantic-node-type (node)
   "Returns the Crisp type of a semantic node.
    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
-   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store."
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
+   Endeavour 200 (BUG 145): semantic-while (void)."
   (etypecase node
+    ;; Endeavour 200 (BUG 145): a while as the last form of a let body is asked for its type.
+    (semantic-while (semantic-while-type node))
     ;; Endeavours 197 / 199: the packed-store and TMA-store nodes.
     (semantic-store-pair (semantic-store-pair-type node))
     (semantic-pair-ok-p (semantic-pair-ok-p-type node))
@@ -2864,8 +2867,11 @@ in single-pass mode."
 (defun semantic-node-source-location (node)
   "Returns the source location of a semantic node.
    Extended for 092-dotimes and 114 Phase B.
-   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store."
+   Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
+   Endeavour 200 (BUG 145): semantic-while."
   (etypecase node
+    ;; Endeavour 200 (BUG 145).
+    (semantic-while (semantic-while-source-location node))
     ;; Endeavours 197 / 199: the packed-store and TMA-store nodes.
     (semantic-store-pair (semantic-store-pair-source-location node))
     (semantic-pair-ok-p (semantic-pair-ok-p-source-location node))

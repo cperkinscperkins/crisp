@@ -1,0 +1,31 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=[1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0] at.x=1 atol=5e-2 expect.x=4.0 output-vec=32 group=8 groups=4
+;;
+;; Endeavour 201: an INTEGER look-back-scan in a differentiated kernel is inert, and the scan survives a
+;; relaunch.  4 workgroups of 8 threads.  Tile t scans VALUE = t + 1 (int), so the exclusive prefix is
+;; t(t+1)/2, and
+;;
+;;     y[i] = ok * x[i]^2,   ok = 1 + (excl - t(t+1)/2) = 1.0 when the prefix is right
+;;
+;; so dy[1]/dx[1] = 2 * x[1] = 4.
+;;
+;; VERIFY-AUTODIFF launches the forward kernel once per finite-difference probe without re-zeroing its
+;; global scratch (endeavour 179), so the numerical gradient is a RELAUNCH test: if the epoch did not
+;; roll, a later launch would match the first launch's status words, ok would leave 1.0, and the
+;; numerical gradient would move off 4.  The analytical side checks that the scan's backward rule is
+;; inert (no adjoint flows through an integer) and that the backward kernel's replayed scan runs.
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
+
+(def-kernel integer_scan_grad (x &out y)
+  (declare #'(in-vec &out out-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 8))
+  (let ((tile (ordered-workgroup-id))
+        (i    (get-global-id 0))
+        (ti   (to-int tile))
+        (excl (look-back-scan (+ ti 1) tile))
+        (ok   (to-float (+ 1 (- excl (/ (* ti (+ ti 1)) 2))))))
+    (set! (~ y i) (* ok (* (~ x i) (~ x i))))
+    (return)))

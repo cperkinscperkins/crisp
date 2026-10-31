@@ -1,0 +1,20 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "every Crisp loop is bounded"
+;;
+;; Endeavour 200 -- an author cannot write `while`.  Crisp is not Turing-complete: every loop is
+;; bounded, so every kernel terminates, and that guarantee is what the static analyses and A|D stand on.
+;; The analyzer used to be registered for the language's `while` too (it exists for the compiler's own
+;; spin in sync-wait, now the internal %while), so this compiled.
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel k_e (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 4))
+  (let ((i (get-global-id 0))
+        (k 0u))
+    (while (< k 4u)
+      (set! k (+ k 1u)))
+    (set! (~ out i) k)))

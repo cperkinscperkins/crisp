@@ -5,6 +5,24 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-10-30 -- endeavours 200 (sort_v2 contest: BUG 138 / 145 / 148 / 149) and 201 (look-back-scan,
+;;;; phase 1) folded into src/ (put_temp_files_here/201-fold/fold.py: verbatim copies; wrappers folded, their
+;;;; *200-orig-* / *201-orig-* defvars dropped):
+;;;;   * BUG 138  -> %185-helper-call (noinline on SPIR-V only) replaced (src/codegen.lisp)
+;;;;   * BUG 145  -> semantic-while clauses in semantic-node-type / -source-location (src/analysis/core.lisp)
+;;;;   * BUG 148  -> WHILE hint in *unsupported-form-hints* (src/errors.lisp); register-control-analyzers registers
+;;;;                 only %WHILE (src/analysis/control.lisp); anf-normalize refuses WHILE / %WHILE at the top of
+;;;;                 its cons branch (src/anf-transform.lisp); sync-wait spins with %while (src/macros.lisp)
+;;;;   * BUG 149  -> make-scratch-cell keeps its keywords in anf-normalize; SYNC-ARRIVE / SYNC-WAIT in
+;;;;                 *anf-unexpanded-macros* and *anf-opaque-statement-names* (src/anf-transform.lisp); the
+;;;;                 %200-vjp-* rules and their register-vjp blocks at the end of src/autodiff.lisp
+;;;;   * 201      -> ordered-workgroup-id / look-back-scan macros after sync-wait (src/macros.lisp), exported from
+;;;;                 crisp.compiler and imported into crisp-language (src/package.lisp, all three lists); the
+;;;;                 %lbs-* / analyze-lbs-* helpers at the end of src/analysis/ops.lisp, registered in
+;;;;                 register-control-analyzers; both names in *anf-unexpanded-macros*; %201-vjp-* at the end
+;;;;                 of src/autodiff.lisp
+;;;;   (spec-runner-overlay.lisp -> tests/run-specs.lisp the same day: the 200 helper validators before main,
+;;;;    %vad-resolve-symbolic-size with :match-global-size; the hoist overlays -> src/hoist-*/main.lisp)
 ;;;; EMPTY as of 2026-10-29 -- endeavours 196-199 (matmul contest: 16-bit stores, packed stores, wgmma transB,
 ;;;; :via :tma) folded into src/ by script (put_temp_files_here/199-fold/fold.py: LIVE copies by offset; wrappers
 ;;;; folded, their *orig* defvars dropped):
@@ -138,5 +156,6 @@
 ;;;;                                  %apply-cluster-dims-attribute (src/codegen.lisp)
 ;;;;   * spec validators          -> %ptx-minnctapersm, validate-ptx-minnctapersm-4/-2, validate-ptx-no-minnctapersm
 ;;;;                                  (src/mma.lisp)
+
 
 (in-package :crisp.compiler)

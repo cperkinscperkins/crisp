@@ -204,6 +204,13 @@ OPEN
 - [x] stmatrix + TMA-store epilogue for wgmma accumulators -- DONE, endeavour 199:
       `(store-tile-at (to-half D) C (r c) :via :tma)`; H100 contest kernel 255.5 -> 228.0 us, exact
       (tests/spec/199-tma-store/tma-store.md).  Persistence measured at only ~1 us on top of it.
+- [x] sort_v2 contest -- endeavour 200 (2026-10-30, Chris away; decisions D-200-* for review):
+      LSD radix (range-reduced keys, 3 passes), H100 3749.5 us #19/30; onesweep variant correct but slower;
+      bitonic beauty entry.  Fixed BUG 138 (ash/popcount inline on PTX) and BUG 145 (while type) in
+      overlays; opened BUG 146/147 (BMG).  tests/spec/200-sort-contest/sort-contest.md.
+- [ ] sort_v2 next lever: a warp ballot / match builtin (vote.ballot / match.any; SPIR-V subgroup
+      ballot) for warp-level multisplit ranking -- one 8-bit ranking pass instead of two 4-bit splits.
+      A compiler feature: discuss first.
 - [ ] `:via :tma` for an f32 C (the benchmark suite's wgmma kernels): stmatrix is b16-only, so it needs a
       st.shared.v2.f32 staging write with its own swizzle.  D-199-5.
 - [ ] ldmatrix for load-fragment-a / -b on PTX.  The mma.sync path reads every operand fragment from

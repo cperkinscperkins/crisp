@@ -3167,3 +3167,51 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
 (defun %analyze-atomic-op! (expr env context location)
   "Analyzer for atomic-op! -- expands to the bounded CAS loop and delegates."
   (analyze-expression (%atomic-op-expand expr) env context location))
+
+;;; Endeavour 201: look-back-scan's typed helpers.  The macro (src/macros.lisp) cannot see VALUE's type, so
+;;; these analyzers do the bit moves; registered in register-control-analyzers.
+
+(defun %lbs-value-type-or-refuse (node what location)
+  "Endeavour 201.  NODE's single value type when it is one look-back-scan carries in a status word
+   (uint, int, float); otherwise a compiler error naming WHAT."
+  (let ((ty (get-single-value-type node)))
+    (unless (and (symbolp ty) (member (symbol-name ty) '("UINT" "INT" "FLOAT") :test #'string=))
+      (error 'crisp-compiler-error
+             :message (format nil "look-back-scan: ~a is ~a; a look-back-scan VALUE must be a 32-bit uint, int or float (it travels with a 32-bit tag in one 64-bit status word).  double is planned (endeavour 201 phase 3)." what ty)
+             :source-location location))
+    ty))
+
+(defun analyze-lbs-to-bits (expr env context location)
+  "Endeavour 201.  (%lbs-to-bits V) -> uint: V's 32 bits.  uint is itself; int and float are bitcast."
+  (let* ((node (analyze-expression (second expr) env context (append location '(1))))
+         (ty   (%lbs-value-type-or-refuse node "the VALUE" location)))
+    (log:debug "201 %lbs-to-bits: ~s of type ~s" (second expr) ty)
+    (if (string= (symbol-name ty) "UINT")
+        node
+        (make-semantic-bitcast :type 'uint :arg node :source-location location))))
+
+(defun analyze-lbs-from-bits (expr env context location)
+  "Endeavour 201.  (%lbs-from-bits WITNESS BITS) -> BITS (a uint) reinterpreted as WITNESS's type.  The
+   look-back-scan macro cannot see types; WITNESS (the scan's VALUE) supplies one.  WITNESS is analyzed
+   only for its type -- it is a variable reference, so nothing is evaluated twice."
+  (let* ((witness (analyze-expression (second expr) env context (append location '(1))))
+         (ty      (%lbs-value-type-or-refuse witness "the VALUE" location))
+         (bits    (analyze-expression (third expr) env context (append location '(2)))))
+    (log:debug "201 %lbs-from-bits: ~s as ~s" (third expr) ty)
+    (if (string= (symbol-name ty) "UINT")
+        bits
+        (make-semantic-bitcast :type ty :arg bits :source-location location))))
+
+(defun analyze-lbs-integer-adjoint (expr env context location)
+  "Endeavour 201, phase 1.  (%look-back-scan-integer-only V), emitted by look-back-scan's VJP into the
+   backward kernel.  An integer scan is gradient-inert and this is a no-op read of V; a FLOAT scan has a
+   real adjoint (a scan in the opposite tile order) that phase 1 does not emit, so refuse rather than
+   return a silently zero gradient."
+  (let* ((node (analyze-expression (second expr) env context (append location '(1))))
+         (ty   (%lbs-value-type-or-refuse node "the VALUE" location)))
+    (log:debug "201 look-back-scan backward: VALUE ~s is ~s" (second expr) ty)
+    (when (string= (symbol-name ty) "FLOAT")
+      (error 'crisp-compiler-error
+             :message "look-back-scan: a float VALUE is not differentiable yet.  Its adjoint is a look-back-scan in the opposite tile order (endeavour 201 phase 2); until then only an integer look-back-scan -- which carries no gradient -- may appear in a kernel compiled with --differentiate."
+             :source-location location))
+    node))

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-29T07:53:42.818689Z
+Generated on 2026-10-31T05:34:27.896775Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2119,14 +2119,14 @@ Generated on 2026-10-29T07:53:42.818689Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
+  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.  >    Endeavour 200 (BUG 145): semantic-while (void).
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
+  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.  >    Endeavour 200 (BUG 145): semantic-while.
 
 
 ---
@@ -3337,6 +3337,34 @@ Generated on 2026-10-29T07:53:42.818689Z
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
   > Analyzer for atomic-op! -- expands to the bounded CAS loop and delegates.
+
+
+---
+### DEFUN `%LBS-VALUE-TYPE-OR-REFUSE`
+- **Args**: `(NODE WHAT LOCATION)`
+
+  > Endeavour 201.  NODE's single value type when it is one look-back-scan carries in a status word  >    (uint, int, float); otherwise a compiler error naming WHAT.
+
+
+---
+### DEFUN `ANALYZE-LBS-TO-BITS`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 201.  (%lbs-to-bits V) -> uint: V's 32 bits.  uint is itself; int and float are bitcast.
+
+
+---
+### DEFUN `ANALYZE-LBS-FROM-BITS`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 201.  (%lbs-from-bits WITNESS BITS) -> BITS (a uint) reinterpreted as WITNESS's type.  The  >    look-back-scan macro cannot see types; WITNESS (the scan's VALUE) supplies one.  WITNESS is analyzed  >    only for its type -- it is a variable reference, so nothing is evaluated twice.
+
+
+---
+### DEFUN `ANALYZE-LBS-INTEGER-ADJOINT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 201, phase 1.  (%look-back-scan-integer-only V), emitted by look-back-scan's VJP into the  >    backward kernel.  An integer scan is gradient-inert and this is a no-op read of V; a FLOAT scan has a  >    real adjoint (a scan in the opposite tile order) that phase 1 does not emit, so refuse rather than  >    return a silently zero gradient.
 
 
 ---
@@ -5847,6 +5875,41 @@ Generated on 2026-10-29T07:53:42.818689Z
 
 
 ---
+### DEFUN `%200-VJP-SYNC-WAIT`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for sync-wait (endeavour 200).  An arrival sync orders the work BEFORE every arrive  >    ahead of the work AFTER every wait.  The adjoints flow the other way, so in the backward the roles  >    swap: at the mirror of its wait a thread SIGNALS that the adjoints of its after-wait work are  >    published, and at the mirror of its arrive it WAITS for every thread's signal before running the  >    adjoints of its before-arrive work.  The walk runs in reverse, so this wait's mirror is an arrive.  >    Both forms are refused under divergent control, so the arriving and the waiting threads are the same  >    set and the forward's count still applies.  The backward kernel replays the forward's bindings but  >    not its statements, so the replayed handle is a fresh, zeroed counter.
+
+
+---
+### DEFUN `%200-VJP-SYNC-ARRIVE`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for sync-arrive (endeavour 200): the mirror of an arrive is a wait -- see  >    %200-vjp-sync-wait.
+
+
+---
+### DEFUN `%200-VJP-CONSTRUCT-STRUCT`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for %construct-struct (endeavour 200): building an ARRIVAL-SYNC-HANDLE is gradient-inert.  >    The handle is a scheduling object -- an integer counter cell and an integer count -- exactly as a  >    barrier is.  Walked as a struct, its counter CELL was given a scalar adjoint 0.0 that shadowed the  >    cell's paired scratch adjoint ('No matching function overload found for ~ with argument types  >    (FLOAT)').  Every other struct DECLINES, so the walk's own constructor clauses run unchanged.
+
+
+---
+### DEFUN `%201-VJP-ORDERED-WORKGROUP-ID`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for ordered-workgroup-id (endeavour 201): an integer ticket carries no gradient.  The  >    backward kernel replays the binding and so takes its own tickets from its own counter.
+
+
+---
+### DEFUN `%201-VJP-LOOK-BACK-SCAN`
+- **Args**: `(FORM CTX)`
+
+  > Backward rule for look-back-scan (endeavour 201, phase 1).  The walk sees forms, not types, so it emits  >    (%look-back-scan-integer-only VALUE): a no-op for an integer VALUE (an integer scan is inert), a  >    compile error naming the gap for a float one (its adjoint, a scan in the opposite tile order, is  >    phase 2).
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
 
 ### DEFUN `%COOP-LENGTH`
@@ -6491,7 +6554,7 @@ Generated on 2026-10-29T07:53:42.818689Z
 ### DEFUN `%185-HELPER-CALL`
 - **Args**: `(BUILDER MODULE NAME RET-TYPE ARG-VALS BODY-FN)`
 
-  > Call the internal noinline helper NAME : RET-TYPE(types of ARG-VALS), creating it in MODULE on  >    first use with a body built by BODY-FN, called as (BODY-FN helper-builder param-values) and  >    returning the value to ret.  SPIR_FUNC on SPIR-V; the call site gets the callee's CC.
+  > Call the internal helper NAME : RET-TYPE(types of ARG-VALS), creating it in MODULE on first use with a  >    body built by BODY-FN, called as (BODY-FN helper-builder param-values) and returning the value to ret.  >    SPIR_FUNC on SPIR-V; the call site gets the callee's CC.  >   >    Endeavour 200 (BUG 138): the helper is noinline ON SPIR-V ONLY.  The noinline exists for the BMG,  >    which failed zeModuleCreate when these bodies were inlined (BUG 120 family).  On PTX it bought nothing  >    and cost a call per ash / popcount in the hottest loops -- and kept ptxas from fusing (logand (ash w -8)  >    255u) into bfe.u32.  With internal linkage and no noinline, LLVM inlines the helper on PTX.
 
 
 ---
@@ -8532,7 +8595,7 @@ Generated on 2026-10-29T07:53:42.818689Z
 
 ### DEFPARAMETER `*UNSUPPORTED-FORM-HINTS*`
 
-  > Common Lisp operator name -> what to write in Crisp instead.  Appended to the  >    unsupported-form error (ADV-007).
+  > Common Lisp operator name -> what to write in Crisp instead.  Appended to the  >    unsupported-form error (ADV-007).  Endeavour 200: WHILE -- an author never writes an unbounded  >    loop; the compiler's own spin (sync-wait) is %while, which no user form names.
 
 
 ---
@@ -9023,17 +9086,24 @@ Generated on 2026-10-29T07:53:42.818689Z
 
 
 ---
+### DEFUN `%CUDA-GLOBAL-SIZE-SIZE-P`
+- **Args**: `(SIZE-EXPR)`
+
+  > Endeavour 201.  T when SIZE-EXPR is the symbolic :match-global-size (one element per thread in the  >    grid -- a look-back-scan's status words).
+
+
+---
 ### DEFUN `%CUDA-NUM-WORKGROUPS-SIZE-P`
 - **Args**: `(SIZE-EXPR)`
 
-  > T when SIZE-EXPR is the symbolic :match-num-workgroups.
+  > T when SIZE-EXPR is sized by the grid: the symbolic :match-num-workgroups (181) or :match-global-size  >    (201, the grid times the declared workgroup size).  Both are deferred to the launch anchor.
 
 
 ---
 ### DEFUN `%CUDA-EMIT-NUM-WORKGROUPS-SCRATCH-ARG`
-- **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
+- **Args**: `(STREAM PARAM-NAME PARAM-TYPE ARG-INDEX SIZE-EXPR)`
 
-  > Endeavour 181.  A rank-1 GLOBAL scratch vector of :size-expr :match-num-workgroups -- one element per  >    workgroup -- is sized by the GRID, which the launcher may compute at run time.  kernelParams[] holds  >    ADDRESSES and cuLaunchKernel reads them at launch, so the six host variables are only DECLARED here and  >    *cuda-deferred-scratch* gets the block that sizes, allocates and zeroes the buffer; emit-launch injects  >    it before the launch lambda.  Returns (values next-index arg-names) like the concrete path.
+  > Endeavour 181.  A rank-1 GLOBAL scratch vector of :size-expr :match-num-workgroups -- one element per  >    workgroup -- is sized by the GRID, which the launcher may compute at run time.  kernelParams[] holds  >    ADDRESSES and cuLaunchKernel reads them at launch, so the six host variables are only DECLARED here and  >    *cuda-deferred-scratch* gets the block that sizes, allocates and zeroes the buffer; emit-launch injects  >    it before the launch lambda.  Returns (values next-index arg-names) like the concrete path.  >   >    Endeavour 201: under :match-global-size (SIZE-EXPR) the length is the grid times the DECLARED workgroup  >    size, baked in as a number -- the launch's block dimensions are baked the same way.
 
 
 ---
@@ -9581,17 +9651,24 @@ Generated on 2026-10-29T07:53:42.818689Z
 
 
 ---
+### DEFUN `%L0-GLOBAL-SIZE-SIZE-P`
+- **Args**: `(SIZE-EXPR)`
+
+  > Endeavour 201.  T when SIZE-EXPR is the symbolic :match-global-size (one element per thread in the  >    grid -- a look-back-scan's status words).
+
+
+---
 ### DEFUN `%L0-NUM-WORKGROUPS-SIZE-P`
 - **Args**: `(SIZE-EXPR)`
 
-  > T when SIZE-EXPR is the symbolic :match-num-workgroups.
+  > T when SIZE-EXPR is sized by the group count: the symbolic :match-num-workgroups (181) or  >    :match-global-size (201, the group count times wg_size).  Both are only known once the dispatch has  >    declared `groupCount`, so both are deferred.
 
 
 ---
 ### DEFUN `%L0-DEFERRED-GLOBAL-SCRATCH-BLOCK`
-- **Args**: `(PARAM-NAME PARAM-TYPE CONTEXT-VAR DEVICE-VAR ARG-INDEX)`
+- **Args**: `(PARAM-NAME PARAM-TYPE CONTEXT-VAR DEVICE-VAR ARG-INDEX SIZE-EXPR)`
 
-  > Endeavour 181.  The C++ block (a string) that allocates a rank-1 GLOBAL scratch vector of one element  >    per workgroup and binds its 6 kernel arguments (ptr, byte-size, offset[0], stride[0], extent[0],  >    length -- %l0-emit-symbolic-global-scratch-arg's order).  It is emitted AFTER the group count, so it  >    reads `groupCount` directly.  Zeroed once, as all global scratch is (endeavour 179's contract), by a  >    memory fill on the main command list with a barrier before the launch that follows -- no staging  >    mirror, because there is nothing to copy.
+  > Endeavour 181.  The C++ block (a string) that allocates a rank-1 GLOBAL scratch vector of one element  >    per workgroup and binds its 6 kernel arguments (ptr, byte-size, offset[0], stride[0], extent[0],  >    length -- %l0-emit-symbolic-global-scratch-arg's order).  It is emitted AFTER the group count, so it  >    reads `groupCount` directly.  Zeroed once, as all global scratch is (endeavour 179's contract), by a  >    memory fill on the main command list with a barrier before the launch that follows -- no staging  >    mirror, because there is nothing to copy.  >   >    Endeavour 201: under :match-global-size (SIZE-EXPR) the count is the group count times wg_size -- one  >    element per thread in the grid.
 
 
 ---
@@ -10853,7 +10930,20 @@ Generated on 2026-10-29T07:53:42.818689Z
 ### DEFMACRO `SYNC-WAIT`
 - **Args**: `(HANDLE)`
 
-  > Blocks until count units have been put into the sync bucket.
+  > Blocks until count units have been put into the sync bucket.  The spin is the compiler-internal  >    %while (endeavour 200); under --differentiate sync-wait is opaque to ANF and has its own VJP.
+
+
+---
+### DEFMACRO `ORDERED-WORKGROUP-ID`
+
+  > (ordered-workgroup-id) -> ulong in [0, NT), NT the launch's workgroup count.  An in-order ticket: the  >    first workgroup to reach the call gets 0, so every workgroup with a smaller ticket has already  >    STARTED -- what makes a decoupled look-back deadlock-free.  Thread 0 takes the ticket from a global  >    counter and broadcasts it through a workgroup-local cell, so the form holds a barrier and is refused  >    under divergent control.  The workgroup that takes the LAST ticket puts the counter back to 0 (every  >    other workgroup has taken its ticket by then), so the next launch in the program starts at 0 again  >    even though global scratch is zeroed only once.
+
+
+---
+### DEFMACRO `LOOK-BACK-SCAN`
+- **Args**: `(VALUE TILE)`
+
+  > (look-back-scan VALUE TILE) -> the EXCLUSIVE prefix of VALUE over the earlier tiles, per thread: thread i  >    of tile t gets sum over u < t of thread i's VALUE in tile u.  VALUE is a 32-bit uint, int or float;  >    TILE is the workgroup's (ordered-workgroup-id).  Every thread of the workgroup must call it -- a lane  >    left unpublished stalls every later tile -- so it starts with a sync-workgroup, which makes the  >    barrier checks refuse a divergent call site.  >   >    Decoupled look-back over one status word per thread in the grid (:match-global-size, global, zeroed  >    once): word = (tag << 32) | bits(value), tag = epoch*4+1 for a tile's own AGGREGATE, epoch*4+2 for its  >    INCLUSIVE prefix.  Tile 0 publishes inclusive at once; tile t publishes its aggregate, walks back  >    adding aggregates until it meets an inclusive word, then publishes its inclusive.  The wait for a  >    predecessor's word is the %while -- it ends only because every predecessor has started (the ticket's  >    order), which is why an author cannot write it and the compiler hides it here.  >   >    Relaunch: the epoch cell starts at 0.  The LAST tile, after every one of its lanes has published its  >    inclusive word (the second barrier), adds 1 -- by then every tile has read the epoch, since each  >    inclusive word in the chain was published after its tile read it.  The next launch's words carry new  >    tags, so the old words never match and nothing is re-zeroed.  One call per launch per occurrence:  >    inside a loop a fast tile would overwrite a slot a slow tile is still reading.
 
 
 ---

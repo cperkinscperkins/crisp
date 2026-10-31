@@ -1,0 +1,33 @@
+;; TEST-EXPECT: PASS
+;; VERIFY-AUTODIFF: x=[1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0] at.x=1 atol=5e-2 expect.x=12.0 output-vec=8 group=4 groups=2
+;;
+;; Endeavour 200 -- an arrival sync differentiates, and its backward orders the adjoints.
+;;
+;; Each thread i squares x[i] into a GLOBAL scratch vector, every thread arrives and waits, and then
+;; thread i reads the value at 7 - i -- written by a thread of the OTHER workgroup.  So
+;; f(x) = sum_i 3 * x[7-i]^2 = 3 * sum x^2, and df/dx[1] = 6 * x[1] = 12.
+;;
+;; The backward runs the other way: thread i adds 3 * dy[i] into the scratch adjoint at 7 - i (the
+;; other workgroup's slot), and only then may thread 7 - i read it.  That ordering is the mirrored
+;; sync: the VJP of sync-wait is an arrive and the VJP of sync-arrive is a wait, so the backward kernel
+;; carries its own arrive + spin between the two halves.  (The backward replays the forward's bindings,
+;; not its statements, so its replayed handle is a fresh, zeroed counter.)
+;;
+;; Before: make-arrival-sync died under --differentiate with "Expected (CELL INT ADDRESS-SPACE GLOBAL)
+;; but inferred (CELL INT LOCAL)" (ANF dropped make-scratch-cell's :address-space), and
+;; sync-arrive / sync-wait with "Function PROGN is not differentiable" (their accessor expansion).
+;; Every earlier arrival-sync spec skipped --differentiate (no &out), so it had never been tried.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel arrival_sync_grad (x &out y)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 8)
+           (local-size  :set-to 4))
+  (let ((sync (make-arrival-sync 8))
+        (tmp  (make-scratch-vector float 8 :address-space :global))
+        (i    (get-global-id 0)))
+    (set! (~ tmp i) (* (~ x i) (~ x i)))
+    (sync-arrive sync)
+    (sync-wait sync)
+    (set! (~ y i) (* 3.0 (~ tmp (- 7ul i))))))

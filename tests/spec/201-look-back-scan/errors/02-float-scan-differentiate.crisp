@@ -1,0 +1,21 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "a float VALUE is not differentiable yet"
+;; CHECK-FAIL: "a float VALUE is not differentiable yet"
+;; CHECK-FAIL-FLAGS: --differentiate
+;;
+;; Endeavour 201, phase 1: a float look-back-scan has a real adjoint -- a look-back-scan in the opposite
+;; tile order -- which phase 2 adds.  Until then the backward rule refuses it rather than return a
+;; silently zero gradient.  (Without the differentiate flag this kernel compiles: 02 runs a float scan.)
+;;
+;; Named neutrally on purpose -- CHECK-FAIL matches against the kernel name and the filename too.
+
+(def-type vec-t (vector float :address-space :global :align :compact))
+(def-kernel k_e (x &out y)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 256)
+           (local-size  :set-to 64))
+  (let ((tile (ordered-workgroup-id))
+        (i    (get-global-id 0))
+        (e    (look-back-scan (~ x i) tile)))
+    (set! (~ y i) e)
+    (return)))

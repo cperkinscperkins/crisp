@@ -1,0 +1,106 @@
+;; GPU MODE Challenge 07: sort_v2 -- Beauty Contestant: bitonic sort.
+;;
+;; Idiomatic Crisp: compare-and-swap on floats, no bit tricks.  The input is padded with +inf to a power
+;; of two P; then, for every stage k = 2, 4, .. P, and every distance j = k/2 .. 1, each element i is
+;; compared with i + j (for i with bit j clear) and the pair is put in order -- ascending where bit k of
+;; i is clear, descending where it is set.  Distances below one tile (2048) are done in shared memory,
+;; larger ones by one global pass each.  O(n log^2 n): slow at 100M, but every step is plain.
+;;
+;; Host loop:   bitonic_pad;  bitonic_tiles (k = 2 .. 2048, all in shared memory)
+;;              for k = 4096 .. P:  for j = k/2 .. 2048: bitonic_global [j k];  bitonic_finish [k]
+;;              bitonic_unpad
+;; bitonic_global / bitonic_finish read and write the same buffer: the host passes it as SRC and DST.
+;; Each element is read and written by one thread per launch, so the read-only path is safe.
+
+(def-type in-vec  (vector float :address-space :global :align :compact))
+(def-type out-vec (vector float :address-space :global :align :compact))
+(def-type prm-vec (vector uint  :address-space :global :align :compact))
+(def-type s-vec   (vector float :address-space :local  :align :compact))
+
+;; Put (~ s i) and (~ s (+ i j)) in order: ascending when UP is 1.
+(def-function order-pair (s i j up)
+  (declare #'(s-vec ulong ulong uint => nil))
+  (let ((a (~ s i))
+        (b (~ s (+ i j))))
+    (when (= (if (> a b) 1u 0u) up)
+      (set! (~ s i) b)
+      (set! (~ s (+ i j)) a)))
+  (return))
+
+;; The I of pair Q at distance J: Q with a 0 inserted at bit J.
+(def-function pair-index (q j)
+  (declare #'(ulong ulong => ulong))
+  (return (+ (* (* 2ul j) (/ q j)) (rem q j))))
+
+;; 1 where bit K of the global position G is clear (ascending), else 0.
+(def-function ascending (g k)
+  (declare #'(ulong ulong => uint))
+  (return (if (= (logand g k) 0ul) 1u 0u)))
+
+;; Every distance J = from .. 1 of stage K, in shared memory, for the tile at global position BASE.
+(def-grid-function merge-in-tile (s base k from tid)
+  (declare #'(s-vec ulong ulong ulong ulong => nil)
+           (uniform from))
+  (dec-times-by-half+ (j from)
+    (let ((i (pair-index tid j)))
+      (order-pair s i j (ascending (+ base i) k)))
+    (sync-workgroup))
+  (return))
+
+(def-kernel bitonic_pad (input &out buf)
+  (declare #'(in-vec &out out-vec => nil)
+           (global-size :derive-from buf :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((n (length~ input)))
+    (loop-vector-stride buf (i)
+      (set! (~ buf i) (if (< i n) (~ input i) (/ 1.0 0.0))))))
+
+(def-kernel bitonic_tiles (src &out dst)
+  (declare #'(in-vec &out out-vec => nil)
+           (local-size :set-to 1024))
+  (let ((tid  (to-ulong (get-local-id 0)))
+        (base (* (to-ulong (get-workgroup-id 0)) 2048ul))
+        (s    (make-scratch-vector s-vec 2048)))
+    (set! (~ s tid) (~ src (+ base tid)))
+    (set! (~ s (+ tid 1024ul)) (~ src (+ base (+ tid 1024ul))))
+    (sync-workgroup)
+    (do-power-step+ (half 2048ul)                      ; stages k = 2 .. 2048
+      (merge-in-tile s base (* 2ul half) half tid))
+    (set! (~ dst (+ base tid)) (~ s tid))
+    (set! (~ dst (+ base (+ tid 1024ul))) (~ s (+ tid 1024ul)))))
+
+(def-kernel bitonic_global (src prm &out dst)
+  (declare #'(in-vec prm-vec &out out-vec => nil)
+           (global-size :derive-from src :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((j     (to-ulong (~ prm 0ul)))
+        (k     (to-ulong (~ prm 1ul)))
+        (pairs (/ (length~ src) 2ul)))
+    (grid-stride (pairs) (q)
+      (let ((i (pair-index q j))
+            (a (~ src i))
+            (b (~ src (+ i j))))
+        (if (= (if (> a b) 1u 0u) (ascending i k))
+            (progn (set! (~ dst i) b) (set! (~ dst (+ i j)) a))
+            (progn (set! (~ dst i) a) (set! (~ dst (+ i j)) b)))))))
+
+(def-kernel bitonic_finish (src prm &out dst)
+  (declare #'(in-vec prm-vec &out out-vec => nil)
+           (local-size :set-to 1024))
+  (let ((tid  (to-ulong (get-local-id 0)))
+        (base (* (to-ulong (get-workgroup-id 0)) 2048ul))
+        (k    (to-ulong (~ prm 1ul)))
+        (s    (make-scratch-vector s-vec 2048)))
+    (set! (~ s tid) (~ src (+ base tid)))
+    (set! (~ s (+ tid 1024ul)) (~ src (+ base (+ tid 1024ul))))
+    (sync-workgroup)
+    (merge-in-tile s base k 1024ul tid)
+    (set! (~ dst (+ base tid)) (~ s tid))
+    (set! (~ dst (+ base (+ tid 1024ul))) (~ s (+ tid 1024ul)))))
+
+(def-kernel bitonic_unpad (buf &out output)
+  (declare #'(in-vec &out out-vec => nil)
+           (global-size :derive-from output :strategy :strided)
+           (local-size  :set-to 256))
+  (loop-vector-stride output (i)
+    (set! (~ output i) (~ buf i))))

@@ -1,0 +1,39 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER res: 0 1 1242 3
+;;
+;; Endeavour 201: look-back-scan over int and float VALUEs (01 is uint), and the tickets are a
+;; permutation.  16 workgroups of 64 threads; thread i of tile t scans two values:
+;;
+;;     int   a = i - t          excl = sum over u < t of (i - u) = t*i - t(t-1)/2   (negative for i = 0)
+;;     float b = t + i + 1      excl = t(t-1)/2 + t(i+1), exact in float (all well under 2^24)
+;;
+;; Every thread checks both prefixes and counts a mismatch into res[0].  Thread 0 of each workgroup adds
+;; t^2 into res[2]: 2 + (0^2 + 1^2 + ... + 15^2) = 1242, which moves if a ticket is handed out twice or
+;; skipped (01 checks the plain sum).  The buffer arrives pre-filled 0 1 2 3.
+;;
+;; The kernel takes no float input, so under the differentiate flag nothing reaches the backward rules
+;; (a float look-back-scan in a differentiated kernel is refused: errors/02).
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel look_back_scan_int_float (&out res)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 1024)
+           (local-size  :set-to 64))
+  (let ((tile  (ordered-workgroup-id))
+        (lid   (get-local-linear-id))
+        (ti    (to-int tile))
+        (li    (to-int lid))
+        (a     (- li ti))
+        (b     (to-float (+ tile lid 1ul)))
+        (ea    (look-back-scan a tile))
+        (eb    (look-back-scan b tile))
+        (wa    (- (* ti li) (/ (* ti (- ti 1)) 2)))
+        (wb    (to-float (+ (/ (* tile (- tile 1ul)) 2ul) (* tile (+ lid 1ul))))))
+    (when (or (!= ea wa) (!= eb wb))
+      (atomic-inc! (~ res 0ul)))
+    (when (= lid 0ul)
+      (atomic-add! (~ res 2ul) (to-uint (* tile tile))))
+    (return)))

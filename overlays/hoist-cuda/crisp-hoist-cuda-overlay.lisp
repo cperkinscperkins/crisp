@@ -25,4 +25,8 @@
 ;;;; EMPTY as of 2026-10-25 -- endeavour 193 folded: %193-cuda-emit-die-report / -log-report, the site tables
 ;;;; bound in generate-cuda-launcher and reported at the top of emit-readback (src/hoist-cuda/main.lisp);
 ;;;; the shared helpers into src/hoist/common.lisp.
+;;;; EMPTY as of 2026-10-30 -- endeavour 201 (:match-global-size scratch) folded into src/hoist-cuda/main.lisp:
+;;;; %cuda-global-size-size-p (new), %cuda-num-workgroups-size-p (accepts it), %cuda-emit-num-workgroups-
+;;;; scratch-arg (a SIZE-EXPR parameter; grid x *cuda-wg-size*), its caller passes it; the wrapper and
+;;;; *201-scratch-size-expr* dropped.  %cuda-resolve-symbolic-size refuses it for LOCAL scratch.
 (in-package :crisp.hoist.cuda)

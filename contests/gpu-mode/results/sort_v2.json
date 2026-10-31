@@ -1,0 +1,246 @@
+{
+  "problem": "sort_v2",
+  "title": "GPU MODE Challenge 07: Sort (fp32, 100,000,000 keys scored)",
+  "leaderboard_id": 542,
+  "leaderboard_url": "https://www.gpumode.com/leaderboard/542?tab=rankings",
+  "crisp_commit": "28ca6e51",
+  "workload": {
+    "description": "Sort a 1-D fp32 tensor ascending; must equal torch.sort exactly. task.yml lists 5 benchmarks (100K .. 100M); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: 100,000,000 floats (seed 6252), rows of randn + seed + i -- nearly sorted by row. The traffic below is the floor: read 400 MB once and write 400 MB once.",
+    "total_traffic_bytes": 800000000
+  },
+  "gpu_specs": {
+    "B200": {
+      "arch": "Blackwell (sm_100)",
+      "sm_count": 148,
+      "hbm_peak_gbps": 8000.0
+    },
+    "H100": {
+      "arch": "Hopper (sm_90)",
+      "sm_count": 132,
+      "hbm_peak_gbps": 3350.0
+    },
+    "A100": {
+      "arch": "Ampere (sm_80)",
+      "sm_count": 108,
+      "hbm_peak_gbps": 2039.0
+    },
+    "L4": {
+      "arch": "Ada Lovelace (sm_89)",
+      "sm_count": 58,
+      "hbm_peak_gbps": 300.0
+    }
+  },
+  "standings": {
+    "H100": {
+      "captured_at": "2026-10-30T08:19:07Z",
+      "user_name": "cperkinscperkins",
+      "rank": 19,
+      "total_entrants": 30,
+      "file_name": "crisp_sort_v1.py",
+      "crisp_file": "07-sort-v2/sort_radix.crisp",
+      "py_file": "07-sort-v2/crisp_sort_v1.py",
+      "hardware_profile": null,
+      "public_score_us": 3749.47,
+      "secret_score_us": 475.49,
+      "submission_id": 968679,
+      "top1_score_us": 296.75,
+      "top1_user": "Varshith",
+      "median_score_us": 2093.71
+    },
+    "A100": {
+      "captured_at": "2026-10-30T08:19:07Z",
+      "user_name": "cperkinscperkins",
+      "rank": 24,
+      "total_entrants": 33,
+      "file_name": "crisp_sort_v1.py",
+      "crisp_file": "07-sort-v2/sort_radix.crisp",
+      "py_file": "07-sort-v2/crisp_sort_v1.py",
+      "hardware_profile": null,
+      "public_score_us": 8155.72,
+      "secret_score_us": 985.09,
+      "submission_id": 968680,
+      "top1_score_us": 557.12,
+      "top1_user": "owl",
+      "median_score_us": 3427.67
+    },
+    "L4": {
+      "captured_at": "2026-10-30T08:19:07Z",
+      "user_name": "cperkinscperkins",
+      "rank": 16,
+      "total_entrants": 20,
+      "file_name": "crisp_sort_v1.py",
+      "crisp_file": "07-sort-v2/sort_radix.crisp",
+      "py_file": "07-sort-v2/crisp_sort_v1.py",
+      "hardware_profile": null,
+      "public_score_us": 25318.74,
+      "secret_score_us": 5061.47,
+      "submission_id": 968686,
+      "top1_score_us": 3165.53,
+      "top1_user": "owl",
+      "median_score_us": 15424.16
+    }
+  },
+  "kernels": [
+    {
+      "step": "0",
+      "key": "crisp_sort_beauty",
+      "crisp_file": "07-sort-v2/sort_bitonic_beauty.crisp",
+      "py_file": "07-sort-v2/crisp_sort_beauty.py",
+      "strategy": "Beauty: plain bitonic sort -- compare-and-swap, 2048-key shared-memory tiles, one global pass per large distance",
+      "registers": null,
+      "hardware_profile": null
+    },
+    {
+      "step": "1",
+      "key": "crisp_sort_v1",
+      "crisp_file": "07-sort-v2/sort_radix.crisp",
+      "py_file": "07-sort-v2/crisp_sort_v1.py",
+      "strategy": "LSD radix: keys = order-preserving float bits minus kmin (3 passes, not 4); per pass upsweep / digit scan / downsweep; 4096-key tiles sorted in shared memory by two 4-bit splits; keys rotated so the digit is the low byte (endeavour 200)",
+      "registers": 48,
+      "hardware_profile": null
+    }
+  ],
+  "runs": [
+    {
+      "timestamp": "2026-10-30T06:46:50Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_sort_v1",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "test",
+      "submission_id": 968656,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-30T06:47:09Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_sort_v1",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "benchmark",
+      "submission_id": 968657,
+      "benchmark_mean_us": 4060.0,
+      "benchmark_std_us": 0.0,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": [
+        4060.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-30T07:51:57Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_sort_v1",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "leaderboard",
+      "submission_id": 968679,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 3749.47,
+      "secret_score_us": 475.49
+    },
+    {
+      "timestamp": "2026-10-30T07:53:15Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_sort_v1",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "leaderboard",
+      "submission_id": 968680,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 8155.72,
+      "secret_score_us": 985.09
+    },
+    {
+      "timestamp": "2026-10-30T08:10:00Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_sort_v1",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "leaderboard",
+      "submission_id": 968686,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 25318.74,
+      "secret_score_us": 5061.47
+    },
+    {
+      "timestamp": "2026-10-30T07:55:46Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_sort_beauty",
+      "file_name": "crisp_sort_beauty.py",
+      "mode": "test",
+      "submission_id": 968684,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-10-30T07:55:59Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_sort_beauty",
+      "file_name": "crisp_sort_beauty.py",
+      "mode": "benchmark",
+      "submission_id": 968685,
+      "benchmark_mean_us": 68900.0,
+      "benchmark_std_us": 0.0,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": [
+        68900.0
+      ],
+      "public_score_us": null,
+      "secret_score_us": null
+    }
+  ],
+  "ablation_size_label": "scored case: 100,000,000 floats (ranking_by LAST)",
+  "takeaways": [
+    "**Exact match, so radix:** the output must equal torch.sort; a radix sort on order-preserving key bits is exact by construction. One min/max pass lets every pass sort key - kmin: the scored data differ only in their low 24 bits, so 3 passes instead of 4, correct for any input.",
+    "**The H100 #1 (129.7 us) is below the memory floor** (~240 us to read and write 800 MB): the leaders exploit the input's near-sortedness. The median is 2094 us; Crisp ranks 19/30 at 3749.5 us.",
+    "**The downsweep is instruction-bound, not memory-bound:** probes showed ~38K cycles per 4096-key tile; packed register counters bought nothing, a run-time ash cost ~200 us per pass. The next lever is a warp ballot/match builtin for one-pass 8-bit ranking (a compiler feature).",
+    "**Onesweep (decoupled look-back) was correct but slower** here (1330 vs 1236 us per pass).",
+    "**Two compiler bugs fixed on the way:** BUG 138 (ash/popcount were out-of-line calls on PTX) and BUG 145 (a while ending a let crashed the analyzer). Endeavour 200: tests/spec/200-sort-contest/sort-contest.md."
+  ],
+  "beauty_entry": {
+    "crisp_file": "07-sort-v2/sort_bitonic_beauty.crisp",
+    "py_file": "07-sort-v2/crisp_sort_beauty.py",
+    "kernel_key": "crisp_sort_beauty",
+    "sloc": 79,
+    "title": "Plain Bitonic Sort",
+    "description": "Pad to a power of two with +inf, then for every stage k and distance j put each pair (i, i+j) in order -- ascending where bit k of i is clear. Distances below one 2048-key tile run in shared memory, larger ones as global passes. Runs unchanged on the BMG and the H100.",
+    "idioms": [
+      "def-grid-function merge-in-tile: a barrier-holding helper (dec-times-by-half+ over the distances)",
+      "do-power-step+ over the stages inside one tile",
+      "grid-stride over the pairs of one global distance",
+      "(declare (uniform from)): a parameter as a provably uniform loop bound"
+    ],
+    "scores": {
+      "H100": {
+        "score_us": 68900.0,
+        "public_score_us": null,
+        "secret_score_us": null,
+        "benchmark_mean_us": 68900.0,
+        "mode": "benchmark",
+        "submission_id": 968685
+      }
+    }
+  }
+}

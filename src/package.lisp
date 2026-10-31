@@ -414,6 +414,7 @@
    #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile #:load-local #:store-global
    #:position-tile #:position-tile-at
    #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
+   #:ordered-workgroup-id #:look-back-scan          ; endeavour 201
    
    ;; GPU Built-ins
    #:get-global-id #:get-local-id #:get-workgroup-id #:get-num-groups
@@ -526,6 +527,7 @@
                 #:make-async-barrier #:await #:load-tile-at #:store-tile-at #:load-tile #:store-tile #:load-local #:store-global
                 #:position-tile #:position-tile-at
                 #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
+   #:ordered-workgroup-id #:look-back-scan          ; endeavour 201
 
                 ;; All Crisp types
                 #:char #:short #:int #:long
@@ -748,6 +750,7 @@
    #:compile-function #:store-chunk #:load-tile #:store-tile #:load-local #:store-global
    #:load-tile-at #:store-tile-at #:position-tile #:position-tile-at #:make-async-barrier #:await
    #:make-arrival-sync #:sync-arrive #:sync-wait #:arrival-sync-handle
+   #:ordered-workgroup-id #:look-back-scan          ; endeavour 201
    #:~ #:set! #:length~ #:~ref~
 
    ;; Ops
