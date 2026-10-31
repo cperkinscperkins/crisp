@@ -45,8 +45,10 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - (%CUDA-RESOLVE-SYMBOLIC-SIZE SIZE-EXPR PARAM-NAME)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%CUDA-EMIT-GLOBAL-SCRATCH-TENSOR-ARG STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)  hoist-cuda/main.lisp
 - - - - - - - - (%CUDA-NUM-WORKGROUPS-SIZE-P SIZE-EXPR)  hoist-cuda/main.lisp
-- - - - - - - - (%CUDA-EMIT-NUM-WORKGROUPS-SCRATCH-ARG STREAM PARAM-NAME PARAM-TYPE ARG-INDEX)  hoist-cuda/main.lisp
+- - - - - - - - - (%CUDA-GLOBAL-SIZE-SIZE-P SIZE-EXPR)  hoist-cuda/main.lisp
+- - - - - - - - (%CUDA-EMIT-NUM-WORKGROUPS-SCRATCH-ARG STREAM PARAM-NAME PARAM-TYPE ARG-INDEX SIZE-EXPR)  hoist-cuda/main.lisp
 - - - - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
+- - - - - - - - - (%CUDA-GLOBAL-SIZE-SIZE-P SIZE-EXPR)  hoist-cuda/main.lisp [See above]
 - - - - - - - - (%HOIST-ELEM-TYPE-BYTES ELEM-STR)  hoist-cuda/main.lisp [See above]
 - - - - - - - - (%CUDA-SCRATCH-DIMS SIZE-EXPR RANK PARAM-NAME)  hoist-cuda/main.lisp [See above]
 - - - - - - - (%CUDA-EMIT-TENSOR-ARG STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX DISPATCH-INFO)  hoist-cuda/main.lisp
@@ -1679,6 +1681,21 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%195-ELEM-CATEGORY-OF-TYPE TYPE-SPEC)  autodiff.lisp
 - - - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 
+- (%200-VJP-CONSTRUCT-STRUCT FORM CTX)  autodiff.lisp
+
+- (%200-VJP-SYNC-ARRIVE FORM CTX)  autodiff.lisp
+- - (SYNC-WAIT HANDLE)  macros.lisp
+- - - (ARRIVAL-SYNC-HANDLE-COUNTER OBJ)  macros.lisp
+- - - (ARRIVAL-SYNC-HANDLE-COUNT OBJ)  macros.lisp
+
+- (%200-VJP-SYNC-WAIT FORM CTX)  autodiff.lisp
+- - (SYNC-ARRIVE HANDLE)  macros.lisp
+- - - (ARRIVAL-SYNC-HANDLE-COUNTER OBJ)  macros.lisp [See above]
+
+- (%201-VJP-LOOK-BACK-SCAN FORM CTX)  autodiff.lisp
+
+- (%201-VJP-ORDERED-WORKGROUP-ID FORM CTX)  autodiff.lisp
+
 - (%AD-REPLAY-READ-SYMS FORM)  autodiff.lisp
 
 - (%AD-REPLAY-SCALAR-WRITE-TARGETS FORM)  autodiff.lisp
@@ -2672,6 +2689,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-IS-SET-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 
+- (ANALYZE-LBS-FROM-BITS EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%LBS-VALUE-TYPE-OR-REFUSE NODE WHAT LOCATION)  analysis/ops.lisp
+- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-LBS-INTEGER-ADJOINT EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%LBS-VALUE-TYPE-OR-REFUSE NODE WHAT LOCATION)  analysis/ops.lisp [See above]
+
+- (ANALYZE-LBS-TO-BITS EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%LBS-VALUE-TYPE-OR-REFUSE NODE WHAT LOCATION)  analysis/ops.lisp [See above]
+
 - (ANALYZE-LENGTH-TILDE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
@@ -3548,6 +3578,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (LOAD-TILE SRC TILE GRID-LIST &REST KEY-ARGS)  macros.lisp
 
+- (LOOK-BACK-SCAN VALUE TILE)  macros.lisp
+
 - (MAKE-ARRIVAL-SYNC COUNT)  macros.lisp
 
 - (MAKE-ASYNC-BARRIER &KEY MODE)  macros.lisp
@@ -3582,6 +3614,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (MARSHALL-VECTOR TYPE-ALIAS BYTE-SIZE PTR OFF_0 STR_0 EXT_0 LENGTH)  macros.lisp
 - - (CANONICALIZE-TYPE-SPECIFIER SPEC)  types/validation.lisp [See above]
 - - (%MARSHALL-TENSOR TYPE-ALIAS BYTE-SIZE PTR &REST FLAT-ARGS)  macros.lisp [See above]
+
+- (ORDERED-WORKGROUP-ID)  macros.lisp
 
 - (PARSE-STRUCT-MEMBER-SPEC SPEC)  structs.lisp
 
@@ -3618,13 +3652,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (IS-SUBSTITUTABLE-FOR? SOURCE-TYPE TARGET-TYPE)  types/hierarchy.lisp [See above]
 
 - (STORE-TILE TILE DEST GRID-LIST &REST KEY-ARGS)  macros.lisp
-
-- (SYNC-ARRIVE HANDLE)  macros.lisp
-- - (ARRIVAL-SYNC-HANDLE-COUNTER OBJ)  macros.lisp
-
-- (SYNC-WAIT HANDLE)  macros.lisp
-- - (ARRIVAL-SYNC-HANDLE-COUNTER OBJ)  macros.lisp [See above]
-- - (ARRIVAL-SYNC-HANDLE-COUNT OBJ)  macros.lisp
 
 - (TEMPLATE-INSTANTIATION FORM)  templates.lisp
 
