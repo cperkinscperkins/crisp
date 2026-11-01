@@ -50,6 +50,8 @@ accessors:
 (accum q-a-accum) ; => q-a-accum
 ```
 
+It expands into two `:subst :no` derived types and a `(set-accum q-a q-a-accum)`.
+
 Two `def-qint`s with identical parameters still cannot mix, because scale is a property of the data.
 In practice that means one `def-qint` per differently scaled tensor in a kernel.
 
@@ -58,7 +60,7 @@ In practice that means one `def-qint` per differently scaled tensor in a kernel.
 ```lisp
 (def-qint q-act :base uchar :accum int)
 (def-qint q-wt  :base char  :accum int)
-(def-qint-product q-dot (q-act q-wt) :accum int)
+(def-qint-product q-dot (q-act q-wt) :accum int)  ; expands to (set-accum (q-act q-wt) q-dot)
 
 (accum q-act q-wt) ; => q-dot
 ```
@@ -268,7 +270,7 @@ backward kernel.
 | Endeavour | Delivers |
 |---|---|
 | 202 | Derived types through handles, casts, `:enforce :always`, operators that refuse rather than ignore an overload |
-| 203 | `(accum T)` / `(base T)`, real `*!`, saturating round-to-int |
+| 203 | Done in overlay: `(accum T)` / `(base T)`, `set-accum`, real `*!`, `+!`, `-!`, `widen`, `to-sat` |
 | 204 | Integer MMA on both backends, on metal |
 | 205 | `def-qint`, `def-qint-product`, conversions, tile narrowing, then autodiff last |
 | 206 | Records holding handles, microfloat blocks, conversion path, then autodiff last |

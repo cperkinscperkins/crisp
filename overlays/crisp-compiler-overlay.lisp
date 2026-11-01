@@ -536,3 +536,570 @@
               (push entry declared-args)
               (incf current-phys-index width)))))
     (nreverse declared-args)))
+
+;;; ===================================================================
+;;; Endeavour 203: accumulator types, widening *! +! -!, widen, to-sat.
+;;; ===================================================================
+;;; NOTE FOR THE FOLD: set-accum, widen, +!, -! and to-sat need exporting through src/package.lisp the
+;;; way set-derived is.  An analyzer is found by symbol name, so only the set-accum macro depends on
+;;; the crisp-language:: spelling used here.  "*!" also leaves *185-math-op-names*.
+
+;; src/globals.lisp
+(defvar *accum-registry* (make-hash-table :test 'equal)
+  "(NAME-A . NAME-B) -> accumulator type symbol, filled by set-accum.  Keyed by symbol NAME so that a
+   type read through a handle cannot miss on its package (endeavour 202).  Cleared per compile.")
+
+;; src/globals.lisp
+(defvar *accum-base-registry* (make-hash-table :test 'equal)
+  "Accumulator type NAME -> its base type symbol, for a single-operand set-accum.  Cleared per compile.")
+
+;; src/types/hierarchy.lisp
+(defun %accum-key (a b)
+  "The *accum-registry* key for the operand pair A, B, after alias resolution."
+  (cons (symbol-name (resolve-type-alias a)) (symbol-name (resolve-type-alias b))))
+
+;; src/types/hierarchy.lisp
+(defun %accum-numeric-parts (type-name)
+  "(values CATEGORY BITS) of TYPE-NAME's underlying primitive, or NIL if it is not numeric."
+  (let ((ct (and (symbolp type-name) (gethash (get-type-base (resolve-type-alias type-name)) *crisp-types*))))
+    (when (and ct (member (crisp-type-category ct) '(:signed-int :unsigned-int :float)))
+      (values (crisp-type-category ct) (crisp-type-size ct)))))
+
+;; src/types/hierarchy.lisp
+(defun %validate-accum-pair (a b accum)
+  "Signals unless ACCUM can hold every product of A and B exactly."
+  (multiple-value-bind (a-cat a-bits) (%accum-numeric-parts a)
+    (multiple-value-bind (b-cat b-bits) (%accum-numeric-parts b)
+      (multiple-value-bind (acc-cat acc-bits) (%accum-numeric-parts accum)
+        (unless (and a-cat b-cat acc-cat)
+          (error 'crisp-compiler-error
+                 :message (format nil "set-accum: ~a, ~a and ~a must all be numeric types." a b accum)))
+        (let ((need (+ a-bits b-bits)))
+          (unless (>= acc-bits need)
+            (error 'crisp-compiler-error
+                   :message (format nil "set-accum: accumulator ~a must be at least ~a bits to hold a product of ~a and ~a; it is ~a."
+                                    accum need a b acc-bits))))
+        (when (and (or (eq a-cat :signed-int) (eq b-cat :signed-int)) (eq acc-cat :unsigned-int))
+          (error 'crisp-compiler-error
+                 :message (format nil "set-accum: accumulator ~a must be signed: a product involving signed ~a can be negative."
+                                  accum (if (eq a-cat :signed-int) a b))))))))
+
+;; src/types/hierarchy.lisp
+(defun register-accum-type (operands accum)
+  "Records ACCUM as the accumulator of OPERANDS, a type name or a list of two.  (set-accum B A) also
+   makes A its own accumulator and B its base; (set-accum (B C) A) is a mixed-operand product."
+  (let* ((pair-p (consp operands))
+         (a (if pair-p (first operands) operands))
+         (b (if pair-p (second operands) operands))
+         (key (%accum-key a b)))
+    (%validate-accum-pair a b accum)
+    (let ((existing (gethash key *accum-registry*)))
+      (when (and existing (not (eq existing accum)))
+        (error 'crisp-compiler-error
+               :message (format nil "set-accum: ~a already has an accumulator, ~a." operands existing))))
+    (setf (gethash key *accum-registry*) accum)
+    (setf (gethash (%accum-key accum accum) *accum-registry*) accum)
+    (unless pair-p
+      (setf (gethash (symbol-name (resolve-type-alias accum)) *accum-base-registry*) a))
+    (log:debug "register-accum-type: ~a -> ~a" operands accum)
+    accum))
+
+;; src/types/hierarchy.lisp
+(defun accum-type-of (a &optional (b a))
+  "(accum A B).  A declared accumulator, else A itself when A and B are the same type: for the basic
+   types (accum T) is T.  NIL for an undeclared pair of different types."
+  (or (gethash (%accum-key a b) *accum-registry*)
+      (and (string= (symbol-name (resolve-type-alias a)) (symbol-name (resolve-type-alias b)))
+           (resolve-type-alias a))))
+
+;; src/types/hierarchy.lisp
+(defun base-type-of (type-name)
+  "(base T): the base of a declared accumulator, else T."
+  (or (gethash (symbol-name (resolve-type-alias type-name)) *accum-base-registry*)
+      (resolve-type-alias type-name)))
+
+;; src/types/hierarchy.lisp
+(defun %type-accessor-form-p (spec)
+  "T for the type forms (accum T), (accum A B) and (base T)."
+  (and (consp spec) (symbolp (first spec))
+       (member (symbol-name (first spec)) '("ACCUM" "BASE") :test #'string=)
+       t))
+
+;; src/types/hierarchy.lisp
+(defun resolve-type-accessor (spec)
+  "The type named by the accessor form SPEC.  The one registry a future def-type-function would fill."
+  (let* ((args (mapcar #'parse-type-specifier (rest spec)))
+         (result (if (string= (symbol-name (first spec)) "BASE")
+                     (base-type-of (first args))
+                     (apply #'accum-type-of args))))
+    (unless result
+      (error 'crisp-compiler-error
+             :message (format nil "(accum ~{~(~a~)~^ ~}): no accumulator is declared for these types.  Use set-accum." args)))
+    (log:debug "resolve-type-accessor: ~s -> ~a" spec result)
+    result))
+
+;; src/macros.lisp
+(defmacro crisp-language::set-accum (operands accum)
+  "Declares ACCUM the accumulator type of OPERANDS, a type or a list of two types.
+   Syntax: (set-accum q-a q-a-accum) or (set-accum (q-act q-wt) q-dot).
+   Requirements:
+   - All types are numeric.
+   - ACCUM holds a full product: at least the sum of the operand widths.
+   - ACCUM is signed if either operand is."
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (register-accum-type ',operands ',accum)))
+
+;; src/analysis/ops.lisp
+(defun %cast-node (node to-type location)
+  "NODE as a value cast to TO-TYPE, or NODE itself when it already has that type."
+  (if (eq (get-single-value-type node) to-type)
+      node
+      (make-semantic-value-cast :type to-type :arg node :source-location location)))
+
+;; src/analysis/ops.lisp
+(defun %widen-node (node accum location)
+  "NODE at ACCUM's underlying primitive, extended according to NODE's own signedness."
+  (%cast-node node (get-type-base accum) location))
+
+;; src/analysis/ops.lisp
+(defun analyze-accum-op (expr env context location)
+  "Analyzes (*! a b), (+! a b), (-! a b).  With a declared accumulator both operands widen by their own
+   signedness and the op runs at the accumulator's width.  There is no widening add instruction: PTX
+   has no add.wide, so sext + add IS the lowering.  Otherwise this is the plain operator (decision D6)."
+  (let* ((name (symbol-name (first expr)))
+         (plain (%185-crisp-sym (subseq name 0 1)))
+         (args (rest expr)))
+    (unless (= (length args) 2)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~) takes 2 arguments; got ~a" name (length args))
+             :source-location location))
+    ;; No set-accum in this compile: nothing can widen, so take the plain path without analyzing twice.
+    (when (zerop (hash-table-count *accum-registry*))
+      (return-from analyze-accum-op
+        (analyze-expression (list plain (first args) (second args)) env context location)))
+    (let* ((left (analyze-expression (first args) env context (append location '(1))))
+           (right (analyze-expression (second args) env context (append location '(2))))
+           (left-type (get-single-value-type left))
+           (right-type (get-single-value-type right))
+           (accum (if (string= name "*!")
+                      (and (gethash (%accum-key left-type right-type) *accum-registry*)
+                           (accum-type-of left-type right-type))
+                      (let ((la (accum-type-of left-type)) (ra (accum-type-of right-type)))
+                        (and la ra (eq la ra)
+                             (or (not (eq left-type la)) (not (eq right-type la))
+                                 (gethash (%accum-key left-type right-type) *accum-registry*))
+                             la)))))
+      (log:debug "analyze-accum-op: ~a ~a ~a => accum ~a" name left-type right-type accum)
+      (if (null accum)
+          (analyze-expression (list plain (first args) (second args)) env context location)
+          (let* ((l (%widen-node left accum location))
+                 (r (%widen-node right accum location))
+                 (prim (get-type-base accum))
+                 (op-node (cond ((string= name "*!")
+                                 (make-semantic-mul :type prim :left-arg l :right-arg r :source-location location))
+                                ((string= name "+!")
+                                 (make-semantic-add :type prim :left-arg l :right-arg r :source-location location))
+                                (t
+                                 (make-semantic-sub :type prim :left-arg l :right-arg r :source-location location)))))
+            (%cast-node op-node accum location))))))
+
+;; src/analysis/ops.lisp
+(defun analyze-widen (expr env context location)
+  "(widen x): x at its accumulator type, keeping its scale.  The identity on the basic types."
+  (let* ((node (analyze-expression (second expr) env context (append location '(1))))
+         (type (get-single-value-type node))
+         (accum (accum-type-of type)))
+    (if (eq accum type)
+        node
+        (%cast-node (%widen-node node accum location) accum location))))
+
+;; src/analysis/ops.lisp
+(defun analyze-to-sat (expr env context location)
+  "(to-sat T x): float X rounded to nearest, ties to even, then saturated to integer type T, with NaN
+   going to 0."
+  (let* ((target (resolve-type-alias (second expr)))
+         (node (analyze-expression (third expr) env context (append location '(2))))
+         (source (get-single-value-type node)))
+    (multiple-value-bind (cat bits) (%accum-numeric-parts target)
+      (declare (ignore bits))
+      (unless (member cat '(:signed-int :unsigned-int))
+        (error 'crisp-compiler-error
+               :message (format nil "to-sat needs an integer target; got ~(~a~)." target)
+               :source-location location)))
+    (multiple-value-bind (cat bits) (%hw-type-parts source)
+      (unless (and (eq cat :float) (member bits '(32 64)))
+        (error 'crisp-compiler-error
+               :message (format nil "to-sat: operand must be float or double; got ~(~a~)." source)
+               :source-location location)))
+    (make-semantic-hw-op :op '%to-sat :type target :args (list node) :source-location location)))
+
+;; src/codegen.lisp
+(defmethod %hw-lower ((op (eql '%to-sat)) builder module arg-vals arg-types result-type)
+  "to-sat: llvm.rint, which is nearest with ties to even in the default rounding mode, then
+   llvm.fpto[su]i.sat, which clamps to the target's range and sends NaN to 0."
+  (let* ((source (first arg-types))
+         (prim (get-type-base result-type))
+         (rounded (%hw-intrinsic builder module "rint" source (first arg-vals))))
+    (multiple-value-bind (cat bits) (%hw-type-parts prim)
+      (%hw-call builder module
+                (format nil "llvm.fpto~ai.sat.i~a.~a" (if (eq cat :signed-int) "s" "u") bits (%hw-type-suffix source))
+                (crisp-type-to-llvm-type prim module) (list rounded) "to_sat"))))
+
+;; src/analysis/ops.lisp
+(defun %register-accum-analyzers ()
+  "Registers the endeavour 203 analyzers by name in both packages."
+  (let ((pkgs (list (find-package :crisp-language) (find-package :crisp.compiler))))
+    (dolist (entry '(("*!" . analyze-accum-op) ("+!" . analyze-accum-op) ("-!" . analyze-accum-op)
+                     ("WIDEN" . analyze-widen) ("TO-SAT" . analyze-to-sat)))
+      (dolist (pkg pkgs)
+        (setf (gethash (intern (car entry) pkg) *expression-analyzers*) (cdr entry))))))
+
+;; src/compiler.lisp -- clears the accumulator registries
+(defun initialize-compiler (&key (log-level :off) (runtime-checks nil) (differentiate nil)
+                                 (math-precision :ieee) (force-math-precision nil)
+                                 (denormal-handling :preserve)
+                                 (hardware-profile nil)
+                                 (logging-output nil) (logging-size nil))
+  "Initializes the compiler state.
+   Extended to clear *grid-functions* for def-grid-function support.
+   Endeavour 193: LOGGING-OUTPUT (--logging-output) implies RUNTIME-CHECKS; under DIFFERENTIATE the
+   log is off (the gradient kernels are compiled without it) but RUNTIME-CHECKS is honoured.
+   LOGGING-SIZE is the log's size in bytes (--logging-size, default 4M).
+   Endeavour 194: also forgets the function summaries (%194-clear-summaries)."
+  (%194-clear-summaries)
+  (let ((logging (and logging-output (not differentiate))))
+    (setf *logging-output-enabled* logging
+          *logging-size-bytes* (or logging-size (* 4 1024 1024))
+          *runtime-checks-enabled* (or runtime-checks logging)))
+  (setf *differentiate-p* differentiate)
+  ;; Endeavor 130: record the requested hardware profile (a name string) and clear
+  ;; the profile registry (the current file's def-hardware-profile forms re-register).
+  (setf *requested-hardware-profile* hardware-profile)
+  (clrhash *hardware-profiles*)
+  ;; Endeavor 126: force is the hard lock; the effective starting precision is
+  ;; force (if given) else the --math-precision flag. declaim/with-precision may
+  ;; later mutate *math-precision* only when *force-math-precision* is NIL.
+  (setf *force-math-precision* force-math-precision)
+  (setf *math-precision* (or force-math-precision math-precision))
+  (setf *denormal-handling* denormal-handling)
+  (cffi:use-foreign-library crisp.llvm-bindings::libllvm)
+
+  (if (eq log-level :off)
+      (log:config :off)
+      (progn
+        (log:config :sane :stream *error-output* log-level)
+        (%drop-terminal-io-log-appender)))
+  ;; Reproducible output: every compilation numbers its gensyms from the same base.
+  (%reset-gensym-counter)
+
+  (initialize-crisp-types)
+  (initialize-crisp-types)
+  (initialize-type-hierarchy)
+  (clrhash *function-table*)
+  (clrhash *crisp-structs*)
+  (clrhash *crisp-type-aliases*)
+  (clrhash *accum-registry*)
+  (clrhash *accum-base-registry*)
+  (clrhash *crisp-template-aliases*)
+  (clrhash *generic-functions*)
+  (clrhash *kernel-declared-signatures*)
+  (when (boundp '*record-definitions*) (clrhash *record-definitions*))
+
+  (setf *compiled-kernels* nil)
+
+  (clrhash *differentiable-functions*)
+  (clrhash *differentiable-hof-store*)
+  (clrhash *foreign-functions*)
+
+  (initialize-expression-analyzers)
+  (clrhash *implicit-arg-map*)
+  (initialize-advisements)
+
+  (setf (gethash 'die *function-table*)
+        (list (make-function-signature :name 'die :parameters nil :return-types '(nil))))
+  ;; Endeavour 193: r-t-output's message node, and the per-compile die / log tables.
+  (setf (gethash '%193-log-message *function-table*)
+        (list (make-function-signature :name '%193-log-message :parameters nil :return-types '(nil))))
+  (clrhash *may-die-functions*)
+  (clrhash *die-messages*)
+  (clrhash *193-location-sites*)
+  (clrhash *193-log-messages*)
+  (setf *die-sites* nil
+        *log-sites* nil)
+
+  (setf (symbol-function 'truncate) #'cl:truncate)
+  (setf (symbol-function 'floor) #'cl:floor)
+  (setf (symbol-function 'ceil) #'cl:ceiling)
+  (setf (symbol-function 'round) #'cl:round)
+
+  (if (fboundp 'initialize-templates)
+      (funcall 'initialize-templates)
+      (log:warn "Template system not loaded/initialized."))
+
+  (when (boundp '*brand-definitions*) (clrhash *brand-definitions*))
+  (when (boundp '*brand-instance-cache*) (clrhash *brand-instance-cache*))
+  (when (boundp '*brand-instance-types*) (clrhash *brand-instance-types*))
+  ;; 101 endeavor: clear parameterized-brand-names too — left-over state from a
+  ;; prior test (e.g. value-t marked parameterized after cell+fake-cell both
+  ;; defined value-t) was bleeding into later tests in 037-cell-branded, masking
+  ;; the brand-instance mismatch that errors/02 and errors/04 expect to detect.
+  (when (boundp '*parameterized-brand-names*) (clrhash *parameterized-brand-names*))
+
+  (when (boundp '*partial-template-instantiations*)
+        (loop for template-name being the hash-keys of *partial-template-instantiations*
+              do (let ((dispatch-sym (intern (format nil "MAKE-~a%DISPATCH" template-name)
+                                             (symbol-package template-name))))
+                   (when (macro-function dispatch-sym)
+                         (fmakunbound dispatch-sym))))
+        (clrhash *partial-template-instantiations*))
+
+  (when (boundp '*struct-mutating-functions*)
+        (clrhash *struct-mutating-functions*))
+
+  ;; clear scratch tensor size-expr side table
+  (clrhash *implicit-scratch-size-expr-map*)
+  ;; 179: clear the reduction launch-init side table (same lifetime)
+  (clrhash *reduction-launch-init*)
+
+  ;; Endeavor 137: clear the CUtensorMap descriptor metadata side table.  This is a PERSISTENT
+  ;; global (not rebound per-module) so it survives to metadata-emission time, which runs after
+  ;; compile-module returns — same lifetime as *implicit-scratch-size-expr-map*.
+  (when (boundp '*tma-descriptor-info*)
+    (clrhash *tma-descriptor-info*))
+  (when (boundp '*tma-resolved*)
+    (clrhash *tma-resolved*))
+
+  ;; clear dispatch declarations side table
+  (clrhash *kernel-dispatch-declarations*)
+
+  ;; clear grid-function registry
+  (clrhash *grid-functions*)
+
+  (register-builtins)
+  (register-mma-types)              ; Endeavor 132 — MMA fundamentals (src/mma.lisp)
+
+  (log:info "Compiler initialized. differentiate=~a" differentiate))
+
+;; src/environment.lisp -- (accum T) and (base T) in a type position
+(defun parse-type-specifier (spec)
+  "Parses a single type specifier, handling basic types, parameterized types,
+   function types like #'(int => int), and brand type applications like (token-t s).
+   Extended: (array T N) is returned as-is (not mangled) before the generic path."
+  (cond
+   ;; (accum T), (accum A B), (base T) -- endeavour 203
+   ((%type-accessor-form-p spec) (resolve-type-accessor spec))
+   ;; (array T N) — return as a list spec unchanged, not mangled
+   ((%array-type-p spec)
+    spec)
+
+   ;; 0. Type Aliases
+   ((and (symbolp spec) (gethash spec *crisp-type-aliases*))
+     (let ((resolved (resolve-type-alias spec)))
+       (valid-type-p resolved)
+       (if (and (consp resolved) (eq (first resolved) 'common-lisp:function))
+           (let* ((sig (if (listp (second resolved)) (second resolved) (rest resolved)))
+                     (arrow-pos (position-if (lambda (x) (and (symbolp x)
+                                                              (string-equal (symbol-name x) "=>")))
+                                             sig))
+                     (param-types (if arrow-pos (subseq sig 0 arrow-pos) sig))
+                     (return-types (if arrow-pos (nthcdr (1+ arrow-pos) sig) nil)))
+             `(:function-type ,return-types :params ,(mapcar #'parse-type-specifier param-types)))
+           spec)))
+
+   ;; 0.1 Template Aliases (e.g. (in-cell int))
+   ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-template-aliases*))
+     (let* ((alias-name (first spec))
+               (args (rest spec))
+               (alias-def (gethash alias-name *crisp-template-aliases*))
+               (params (car alias-def))
+               (body-spec (cdr alias-def))
+               (arity (length params))
+               (required-args (subseq args 0 (min (length args) arity)))
+               (rest-args (subseq args (length required-args)))
+               (substitutions (pairlis params required-args)))
+       (let ((expanded (sublis substitutions body-spec)))
+         (let ((final-spec (if (and rest-args (consp expanded))
+                                  (append expanded rest-args)
+                                  (if rest-args
+                                      (cons expanded rest-args)
+                                      expanded))))
+           (parse-type-specifier final-spec)))))
+
+   ;; 0.15 Brand Type Application: (brand-name var-ref)
+   ((and (listp spec)
+         (= (length spec) 2)
+         (symbolp (first spec))
+         (symbolp (second spec))
+         (is-brand-type-p (first spec)))
+     (let* ((brand-name (first spec))
+               (var-ref (second spec))
+               (brand-def (is-brand-type-p brand-name)))
+       (if (gethash brand-name *parameterized-brand-names*)
+           (progn
+             (log:info "PARSE: Parameterized brand application (~a ~a) - deferring resolution"
+                       brand-name var-ref)
+             spec)
+           (progn
+             (log:info "PARSE: Brand type application (~a ~a) -> ~a [~a]"
+                       brand-name var-ref brand-name
+                       (if (brand-active-p brand-def) "active" "inactive"))
+             brand-name))))
+
+   ;; 0.2 Simple Alias as List Head (e.g. (int-cell :access :read-only))
+   ((and (listp spec) (symbolp (first spec)) (gethash (first spec) *crisp-type-aliases*))
+     (let* ((alias-name (first spec))
+               (args (rest spec))
+               (expanded-base (gethash alias-name *crisp-type-aliases*)))
+       (let ((final-spec (if (listp expanded-base)
+                                (append expanded-base args)
+                                (cons expanded-base args))))
+         (log:info "EXPAND-ALIAS-HEAD: ~a -> ~a" spec final-spec)
+         (parse-type-specifier final-spec))))
+
+   ;; Standard symbol: e.g. 'int'
+   ((and (symbolp spec) (valid-type-p spec)) spec)
+
+   ;; Storage Handle Symbols (e.g. CELL, VECTOR...)
+   ((and (symbolp spec) (member (symbol-name spec) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+     (log:info "PARSE: Promoting symbol ~a to list (~a)" spec spec)
+     (parse-type-specifier (list spec)))
+
+   ;; Function Type: #'(int => int) — raw (function ...) form from reader
+   ((and (listp spec) (member (first spec) '(function common-lisp:function)))
+     (let* ((sig (if (listp (second spec)) (second spec) (rest spec))))
+       `(:function-type ,(analyze-return-type-from-spec sig)
+                        :params ,(mapcar #'parse-type-specifier
+                                    (subseq sig 0 (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "=>"))) sig))))))
+
+   ;; Storage Handle Constructor Rules
+   ((and (listp spec) (member (symbol-name (first spec)) '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal))
+     (log:info "PARSE: Calling expand for ~s" spec)
+     (let ((canonical (expand-storage-handle-type-specifier spec)))
+       (cond
+         ;; Incomplete: any positional slot is nil (e.g. (cell elem nil) or
+         ;; (tensor elem N nil nil ct)).  Don't mangle — return as a list
+         ;; so downstream incomplete-type-p / implicit-template detection
+         ;; can recognize it as polymorphic.
+         ((and (listp canonical) (some #'null (rest canonical)))
+          canonical)
+         ((valid-type-p canonical)
+           (let ((base (first canonical))
+                    (params (rest canonical)))
+             (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+               (mangle-template-struct-name base resolved-params))))
+         (t (error 'crisp-unknown-type-error :type-name spec)))))
+
+   ;; Function Type/Literal (already parsed to :function-type or :function-literal)
+   ((and (listp spec) (valid-function-type-p spec)) spec)
+
+   ;; Generic Parameterized Type: e.g. '(point float)
+   ((and (listp spec) (valid-type-p spec))
+     (log:info "PARSE: Generic path for ~s" spec)
+     (let* ((base (first spec))
+               (raw-params (rest spec))
+               (arity (get-template-arity base))
+               (params (if (and arity (> (length raw-params) arity))
+                           (extract-positional-from-keyword-args raw-params arity)
+                           raw-params)))
+       (let ((resolved-params (mapcar (lambda (p) (if (valid-type-p p) (parse-type-specifier p) p)) params)))
+         (if (and arity (> arity 0))
+             (mangle-template-struct-name base resolved-params)
+             (if resolved-params
+                 (cons base resolved-params)
+                 base)))))
+
+   ;; Unknown?
+   (t
+     (log:error "PARSE: Unknown type spec: ~s" spec)
+     (error 'crisp-unknown-type-error :type-name spec))))
+
+;; src/analysis/ops.lisp -- registers the endeavour 203 analyzers, after the 185 entries
+(defun %185-register-math-op-analyzers ()
+  "Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language
+   and :crisp.compiler.  Called from register-ops-analyzers."
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (name *185-math-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-math-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-math-op))
+    ;; P2: the integer bit operations
+    (dolist (name *185-bit-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-bit-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-bit-op)))
+  (%register-accum-analyzers))
+
+;; src/autodiff.lisp -- +! -! widen differentiate as + - identity; to-sat has no gradient, like round
+(defun %185-math-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of
+   them (the clause handled it), else NIL."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x))
+         (sym (n) (%185-crisp-sym n)))
+    (let ((op (car expr)))
+      (cond
+        ((%185-op-named-p op "SQRT")            ; d/da sqrt(a) = 0.5 / sqrt(a)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 0.5 (,(sym "SQRT") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "RSQRT")           ; d/da a^-1/2 = -0.5 rsqrt(a) / a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* -0.5 (/ (,(sym "RSQRT") ,a) ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "TANH")            ; d/da tanh(a) = 1 - tanh(a)^2
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (- 1.0 (* (,(sym "TANH") ,a) (,(sym "TANH") ,a))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ERF")             ; d/da erf(a) = 2/sqrt(pi) exp(-a^2)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 1.1283791670955126 (exp (- 0.0 (* ,a ,a)))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "EXP2")            ; d/da 2^a = ln2 2^a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 0.6931471805599453 (,(sym "EXP2") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ABS")             ; d/da |a| = sign(a)  (0 at 0)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a)
+                                            (* (- (to-float (> ,a 0.0)) (to-float (< ,a 0.0))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "CLAMP")           ; x passes through inside [lo,hi]; lo below; hi above
+         (destructuring-bind (x lo hi) (cdr expr)
+           (let ((v-adj (local-adj v)))
+             (when (symbolp x)
+               (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (to-float (* (>= ,x ,lo) (<= ,x ,hi))) ,v-adj)))))
+             (when (symbolp lo)
+               (emit `(set! ,(local-adj lo) (+ ,(local-adj lo) (* (to-float (< ,x ,lo)) ,v-adj)))))
+             (when (symbolp hi)
+               (emit `(set! ,(local-adj hi) (+ ,(local-adj hi) (* (to-float (> ,x ,hi)) ,v-adj)))))
+             t)))
+        ((%185-op-named-p op "+!")              ; endeavour 203: on the basic types +! is +
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "-!")              ; endeavour 203: on the basic types -! is -
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (- ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "WIDEN")           ; endeavour 203: the identity on basic types
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           t))
+        ((%185-op-named-p op "*!")              ; D6: *! is *
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))
+           t))
+        ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
+        ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
+        ((some (lambda (n) (%185-op-named-p op n))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"))
+         t)
+        (t nil)))))

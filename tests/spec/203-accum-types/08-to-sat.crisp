@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; Endeavour 203 -- to-sat: round to nearest (ties to even), then saturate.  Integer results carry no
+;; gradient, like round.
+(def-derived-type q-a char :subst :no)
+(def-type fc (cell float :address-space :global))
+(def-type sc (cell char :address-space :global))
+(def-type uc (cell uchar :address-space :global))
+(def-type qc (cell q-a :address-space :global))
+
+(def-kernel k (f &out s u q o)
+  (declare #'(fc &out sc uc qc fc => nil))
+  (set! (~ s) (to-sat char (~ f)))
+  (set! (~ u) (to-sat uchar (~ f)))
+  (set! (~ q) (to-sat q-a (~ f)))
+  (set! (~ o) (* (~ f) (to-float (to-sat char (~ f))))))

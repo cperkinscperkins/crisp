@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 203 -- (accum T) follows set-accum, and (base A) walks back.
+(def-derived-type q-a char :subst :no)
+(def-derived-type q-a-accum int :subst :no)
+(set-accum q-a q-a-accum)
+(def-type qc (cell q-a :address-space :global))
+(def-type ac (cell q-a-accum :address-space :global))
+
+(def-function to-accum (x)
+  (declare #'(q-a => (accum q-a)))
+  (widen x))
+
+(def-function round-trip-type (x)
+  (declare #'((accum q-a) => (base q-a-accum)))
+  (to q-a (to int x)))
+
+(def-kernel k (a &out r s)
+  (declare #'(qc &out ac qc => nil))
+  (set! (~ r) (to-accum (~ a)))
+  (set! (~ s) (round-trip-type (to-accum (~ a)))))

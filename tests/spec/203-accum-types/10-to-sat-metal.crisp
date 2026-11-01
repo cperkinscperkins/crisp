@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 127 -128 2 4
+;; HOIST-EXPECT: BUFFER p: -2 255 0 3
+;; HOIST-EXPECT: BUFFER q: 0
+;;
+;; Endeavour 203 ON-METAL: to-sat at the edges.  Range clamps, ties to even, and NaN to 0.
+(def-type iv (vector int :address-space :global :align :compact))
+(def-type ic (cell int :address-space :global))
+
+(def-kernel to_sat_metal (&out o p q)
+  (declare #'(&out iv iv ic => nil) (global-size :set-to 1))
+  (let ((g (to-float (get-global-id 0))))
+    (set! (~ o 0) (to int (to-sat char (+ g 300.0))))
+    (set! (~ o 1) (to int (to-sat char (+ g -300.0))))
+    (set! (~ o 2) (to int (to-sat char (+ g 2.5))))
+    (set! (~ o 3) (to int (to-sat char (+ g 3.5))))
+    (set! (~ p 0) (to int (to-sat char (+ g -2.5))))
+    (set! (~ p 1) (to int (to-sat uchar (+ g 300.0))))
+    (set! (~ p 2) (to int (to-sat uchar (+ g -5.0))))
+    (set! (~ p 3) (to int (to-sat uchar (+ g 2.6))))
+    (set! (~ q) (to int (to-sat char (/ g g))))))

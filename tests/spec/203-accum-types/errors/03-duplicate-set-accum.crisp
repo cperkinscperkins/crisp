@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "already has an accumulator"
+;; Endeavour 203 -- one type, one accumulator.
+(def-derived-type b8 char :subst :no)
+(def-derived-type a32 int :subst :no)
+(def-derived-type b32 int :subst :no)
+(set-accum b8 a32)
+(set-accum b8 b32)

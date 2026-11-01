@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 203 -- (accum T) and (base T) in a type position.  For the basic types both are T
+;; (ideal_001.md, binop vs accum-op).
+(def-type ic (cell int :address-space :global))
+
+(def-function same-int (x)
+  (declare #'((base int) => (accum int)))
+  x)
+
+(def-kernel k (a &out r)
+  (declare #'(ic &out ic => nil))
+  (set! (~ r) (same-int (~ a))))

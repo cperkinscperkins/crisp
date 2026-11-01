@@ -1,0 +1,5 @@
+;; CHECK-FAIL: "must be at least 16 bits"
+;; Endeavour 203 -- an accumulator must hold a full product.
+(def-derived-type b8 char :subst :no)
+(def-derived-type a8 char :subst :no)
+(set-accum b8 a8)

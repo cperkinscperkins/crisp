@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "operand must be float or double"
+;; Endeavour 203
+(def-type ic (cell int :address-space :global))
+(def-type cc (cell char :address-space :global))
+
+(def-kernel k (a &out r)
+  (declare #'(ic &out cc => nil))
+  (set! (~ r) (to-sat char (~ a))))

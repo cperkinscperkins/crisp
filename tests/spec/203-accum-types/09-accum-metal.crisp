@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 16384 -32640 254 -254
+;; HOIST-EXPECT: BUFFER p: 383
+;;
+;; Endeavour 203 ON-METAL: each value is wrong if the operation narrows.
+;;   -128 *! -128  =  16384   8-bit multiply gives 0
+;;    255 *! -128  = -32640   mixed sign: needs zero-extend on one side, sign-extend on the other
+;;    127 +!  127  =    254   8-bit add gives -2
+;;   -127 -!  127  =   -254   8-bit subtract gives 2
+;;   254 then +! 127 = 381, +! 2 = 383, an accumulate in three steps
+;; g = gid = 0 at runtime keeps the constant folder away from the operands.
+(def-derived-type q-a char :subst :no)
+(def-derived-type q-a-accum int :subst :no)
+(set-accum q-a q-a-accum)
+(def-derived-type q-act uchar :subst :no)
+(def-derived-type q-dot int :subst :no)
+(set-accum (q-act q-a) q-dot)
+(def-type iv (vector int :address-space :global :align :compact))
+(def-type ic (cell int :address-space :global))
+
+(def-kernel accum_metal (&out o p)
+  (declare #'(&out iv ic => nil) (global-size :set-to 1))
+  (let ((g (to-int (get-global-id 0))))
+    (let ((neg (to q-a (+ g -128)))
+          (pos (to q-a (+ g 127)))
+          (mpos (to q-a (+ g -127)))
+          (two (to q-a (+ g 2)))
+          (u (to q-act (+ g 255))))
+      (set! (~ o 0) (to int (*! neg neg)))
+      (set! (~ o 1) (to int (*! u neg)))
+      (set! (~ o 2) (to int (+! pos pos)))
+      (set! (~ o 3) (to int (-! mpos pos)))
+      (set! (~ p) (to int (+! (+! (+! pos pos) pos) two))))))

@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 203 -- a declared mixed-sign product, and (accum A B) in a type position.
+(def-derived-type q-act uchar :subst :no)
+(def-derived-type q-wt char :subst :no)
+(def-derived-type q-dot int :subst :no)
+(set-accum (q-act q-wt) q-dot)
+(def-type actc (cell q-act :address-space :global))
+(def-type wtc (cell q-wt :address-space :global))
+(def-type dc (cell q-dot :address-space :global))
+
+(def-function product (x y)
+  (declare #'(q-act q-wt => (accum q-act q-wt)))
+  (*! x y))
+
+(def-kernel k (a w &out r)
+  (declare #'(actc wtc &out dc => nil))
+  (set! (~ r) (product (~ a) (~ w))))
