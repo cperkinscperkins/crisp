@@ -4312,6 +4312,12 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         on SXM?); the other 154 specs pass.  Also seen in that full run: 122/07, 128/13, 128/14, 170/43
         (libdevice FFI hoists) failed "execution failed (Code 1)" but pass when run singly on both
         builds -- order / environment, not a compiler change.
+        ALSO ON AN H100 NVL, 2026-11-01, same driver 595.91.07 (endeavour 204's pod), so not PCIe-specific.
+        3 of 3 runs fail on each of 5abdc2bf, fd3c62ed and 47d68e47 built side by side; the .ptx is
+        byte-identical across all three, so 202-204 did not cause it.  The spec's own header records
+        timing measurements on an H100 NVL, which suggests it worked then.  So either a compiler change
+        since 154 or a driver change.  Next rental: build cb3b7199 (where the spec arrived) first; if that
+        fails too, the driver is the suspect.  The rest of 140 and 154 pass on the same pod.
 
 [x] 136 FIXED (endeavour 193, 2026-10-25) -- die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
         FIX: die no longer lowers to llvm.trap.  It claims the module-scope @__crisp_die_record (CAS) and

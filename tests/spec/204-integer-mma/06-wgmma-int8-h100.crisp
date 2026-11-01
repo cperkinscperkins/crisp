@@ -2,7 +2,9 @@
 ;; SKIP-DEFAULT-PASS
 ;;
 ;; Endeavour 204 ON-METAL (H100): char x char through wgmma.  K=128 is a 128-byte swizzle block,
-;; which is four k32 slices.
+;; which is four k32 slices.  B is :col-major because wgmma reads its tile as N x K, the same as
+;; 140/03.  Declared row-major, B's map is 64 wide, and TMA zero-fills the box past that edge, so
+;; only two of the four slices multiply anything.
 ;;
 ;; MMA-DIMS: 64 64 128
 ;; HOIST-ARCH: sm_90
@@ -10,10 +12,11 @@
 ;; HOIST-EXPECT: MMA_CORRECT
 
 (def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :col-major))
 (def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
 
 (def-kernel wgmma_int8 (A B &out C)
-  (declare #'(a-mat a-mat &out c-mat)
+  (declare #'(a-mat b-mat &out c-mat)
            (global-size :set-to 128) (local-size :set-to 128))
   (let ((A-tile (make-scratch-matrix char (64 128)))
         (B-tile (make-scratch-matrix char (64 128)))

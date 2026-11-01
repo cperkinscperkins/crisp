@@ -9,7 +9,7 @@
 ;; HOIST-EXPECT: MMA_CORRECT
 
 (def-type a-mat (matrix uchar :address-space :global :align :compact :contiguous-term :row-major))
-(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :col-major))
 (def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
 
 (def-kernel wgmma_mixed (A B &out C)

@@ -257,8 +257,8 @@ backward kernel.
    can be handled by hand: with symmetric weights, `sum((a - za) * b) = sum(a * b) - za * sum(b)`, an
    accumulator subtraction of a precomputed term.  A zero-point key can be added later without
    breaking anything.
-2. **Mixed-sign hardware: settled by 204.**  Exact on BMG in all four sign pairs.  `wgmma` assembles
-   with a mixed pair at PTX 8.4, and awaits an H100 run.
+2. **Mixed-sign hardware: settled by 204.**  Exact on BMG in all four sign pairs, and on the H100 for
+   `uchar` x `char` through `wgmma` at PTX 8.4.
 3. **Block `&out`.**  How `quantize-to` writes both handles of an output record.
 4. **Global scale.**  NVFP4 exports can carry an optional per-tensor scale besides the block scales.
 5. **Per-instance scales.**  Brands could tie values to a specific scale at compile time.  Left out
@@ -270,7 +270,7 @@ backward kernel.
 |---|---|
 | 202 | Derived types through handles, casts, `:enforce :always`, operators that refuse rather than ignore an overload |
 | 203 | Done in overlay: `(accum T)` / `(base T)`, `set-accum`, real `*!`, `+!`, `-!`, `widen`, `to-sat` |
-| 204 | Done in overlay: integer MMA.  Exact on BMG; `wgmma` on H100 pending a pod run |
+| 204 | Done in overlay: integer MMA.  Exact on BMG and, through `wgmma`, on H100 |
 | 205 | `def-qint`, `def-qint-product`, conversions, tile narrowing, then autodiff last |
 | 206 | Records holding handles, microfloat blocks, conversion path, then autodiff last |
 | Later | Native Blackwell `tcgen05` |

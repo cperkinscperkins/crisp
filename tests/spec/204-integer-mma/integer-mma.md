@@ -13,6 +13,7 @@ Puts `char` and `uchar` operands with an `int` accumulator through the tensor ha
 | PTX `wgmma.m64n{8..128}k32.s32.s8.s8`, `.u8.u8` | Assembles at `.version 8.0` |
 | PTX `wgmma ... .s8.u8`, `.u8.s8` | Needs `.version 8.4` |
 | PTX `wgmma` int8 at K=8, 16, 64 | Refused: K=32 only |
+| `wgmma` int8 on H100 NVL, driver 595.91.07 | Exact: `s8.s8`, `u8.s8`, derived, all 4096 outputs |
 
 The `wgmma` int8 form is `{N/2 regs}, descA, descB, 1`: one trailing immediate, not tf32's three or
 the 16-bit forms' five.  Its slice is 32 bytes of K, the same as tf32 and 16-bit, so the descriptors
@@ -64,10 +65,23 @@ carry over unchanged.
 - `.version 8.4` on the mixed kernel, `8.0` on the signed one.
 - `ptxas -arch=sm_90a` accepts all three H100 kernels.  `nvcc -c` accepts all three harnesses.
 
+## H100 run (2026-11-01)
+
+The first run of 06-08 gave `MMA_WRONG`, and the spec was at fault, not the compiler.  B was declared
+`:row-major`, so its tensor map is 64 wide while the box is 128.  `wgmma` reads its tile as N x K
+(float spec 140/03 declares B `:col-major` for this reason), and TMA zero-fills past the map's edge.
+An offline check on the device buffers fit `C[i][j] = sum_{k<64} A[i][k] * B[j*64 + k]` with 0
+mismatches of 4096 in all three kernels, so the multiply, signs, lanes and store mapping were
+already exact; only slices 2 and 3 had read zeros.
+
+With B `:col-major`, all three give `MMA_CORRECT`.  The same check on the device buffers gives 0
+mismatches at K=128, and 3571 to 4096 if slices 2 and 3 are dropped, so all four slices contribute.
+The first run doubles as a negative control: a lost K slice is reported as `MMA_WRONG`.
+
 ## Not covered
 
-- **None of specs 06-08 has run on NVIDIA.**  They assemble and compile, but the swizzle layout,
-  store mapping and mixed signs are proven only by an H100 run.
+- `wgmma` int8 is verified at `s8.s8` and `u8.s8`.  `u8.u8` and `s8.u8` assemble but have not run on
+  metal.
 - A hardware profile with `:wgmma-shapes` compares K against its own entries, so int8 needs a typed or
   k32 entry there.  It fails loudly.  Spec 06-08 use no profile.
 - Autodiff through integer MMA.  It belongs to 205's last rung.
