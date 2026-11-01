@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 202 -- arithmetic on derived values read through a cell.  (~ a) used to yield
+;; CRISP.COMPILER::Q-C, a symbol missing from *crisp-types*: "Cannot operate on Q-C and Q-C".
+(def-derived-type q-c char :subst :no)
+(def-type qc (cell q-c :address-space :global))
+
+(def-kernel k (a b &out r)
+  (declare #'(qc qc &out qc => nil))
+  (set! (~ r) (+ (~ a) (~ b))))

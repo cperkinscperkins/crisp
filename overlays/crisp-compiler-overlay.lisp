@@ -159,3 +159,380 @@
 
 
 (in-package :crisp.compiler)
+
+;;; ===================================================================
+;;; Endeavour 202: derived types through handles, :enforce :always, operator definitions.
+;;; ===================================================================
+
+;; src/mangling.lisp
+(defun %unmangled-symbol (token-str package)
+  "The symbol a mangled template-name token stands for.  Prefers a type the user registered in
+   :crisp-language over a same-named symbol in PACKAGE: a template such as CELL lives in
+   crisp.compiler, so interning there minted CRISP.COMPILER::Q-C, which *crisp-types* has never heard
+   of, and (+ (~ a) (~ b)) died with \"Cannot operate on Q-C and Q-C\" (endeavour 202).  A symbol
+   PACKAGE already has registered wins, which keeps the shadowed primitives (CHAR, FLOAT) as they were."
+  (let ((existing (find-symbol token-str package))
+        (lang (find-symbol token-str :crisp-language)))
+    (flet ((registered-p (sym)
+             (and sym (boundp '*crisp-types*)
+                  (or (gethash sym *crisp-types*) (gethash sym *crisp-type-aliases*)))))
+      (cond ((and lang (not (eq lang existing))
+                  (not (registered-p existing))
+                  (registered-p lang))
+             (log:debug "%unmangled-symbol: ~a resolves to the registered ~s" token-str lang)
+             lang)
+            (existing existing)
+            (t (intern token-str package))))))
+
+;; src/mangling.lisp
+(defun reconstruct-one-arg (tokens package)
+  "Reads exactly one logical form (atom or template-expr) from tokens."
+  (if (null tokens) (values nil nil)
+      (let* ((token-str (first tokens))
+                (token-sym (if (char= (cl:char token-str 0) #\:)
+                               (intern (subseq token-str 1) :keyword)
+                               (%unmangled-symbol token-str package)))
+                (arity (and *template-arity-lookup-fn*
+                            (funcall *template-arity-lookup-fn* token-sym))))
+
+        (if (and arity (> arity 0))
+            (multiple-value-bind (args remaining)
+                (reconstruct-n-args (rest tokens) arity package)
+              (values (list (cons token-sym args)) remaining))
+            (values (list token-sym) (rest tokens))))))
+
+;; src/mangling.lisp
+(defun reconstruct-template-args (tokens package)
+  "Recursively groups tokens into lists based on template arity.
+   tokens: list of strings.
+   package: the fallback package for interning.
+   Returns: (values property-list remaining-tokens)
+   FIX: numeric token strings are parsed as integers before interning as symbols."
+  (if (null tokens)
+      (values nil nil)
+      (let* ((token-str (first tokens))
+                ;; Handle keywords specially
+                (token-sym (if (char= (cl:char token-str 0) #\:)
+                               (intern (subseq token-str 1) :keyword)
+                               ;; Try parse as integer first, then find/intern as symbol
+                               (multiple-value-bind (n end)
+                                   (parse-integer token-str :junk-allowed t)
+                                 (if (and n (= end (length token-str)))
+                                        n  ; it's a numeric token — return the integer
+                                        (%unmangled-symbol token-str package)))))
+                (arity (and (not (integerp token-sym))
+                               *template-arity-lookup-fn*
+                               (funcall *template-arity-lookup-fn* token-sym))))
+
+        (if (and arity (> arity 0))
+            ;; It's a template! Consume 'arity' args.
+            (multiple-value-bind (args remaining)
+                (reconstruct-n-args (rest tokens) arity package)
+              (multiple-value-bind (rest-processed rest-remaining)
+                  (reconstruct-template-args remaining package)
+                (values (cons (cons token-sym args) rest-processed) rest-remaining)))
+
+            ;; Not a template (or arity 0), treat as atom
+            (multiple-value-bind (rest-processed rest-remaining)
+                (reconstruct-template-args (rest tokens) package)
+              (values (cons token-sym rest-processed) rest-remaining))))))
+
+;; src/environment.lisp
+(defparameter *unoverloadable-operators* '("+" "-" "*" "/" "*!" "<" "<=" ">" ">=" "=" "MAX" "MIN")
+  "Operators with an *expression-analyzers* entry that never consults *function-table*.  analyze-expression
+   tries analyzers first, so a user def-function of one of these compiled and was then silently never
+   called.  Measured per operator in endeavour 202.  Accessors (~, X~) are absent on purpose: their
+   analyzers do look for overloads, and that is a feature.")
+
+;; src/environment.lisp
+(defun %refuse-operator-definition (form location)
+  "Signals if FORM is a def-function of an operator the compiler lowers directly (endeavour 202)."
+  (when (and (consp form) (symbolp (car form)) (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+             (symbolp (second form))
+             (member (symbol-name (second form)) *unoverloadable-operators* :test #'string=))
+    (error 'crisp-compiler-error
+           :message (format nil "~(~a~) cannot be overloaded: the compiler lowers it directly, so this definition would never be called.  Use a named function instead."
+                            (second form))
+           :source-location location)))
+
+;; src/environment.lisp
+(defun register-function-signature (form location)
+  "Registers the signature of a def-function / def-kernel FORM in the environment.
+   Endeavour 177: also records a def-function's (declare (reduction-vjp f)) in *REDUCTION-VJPS* -- or clears
+   a stale entry, so in-process runs that redefine a function without it never see an old one."
+  (%refuse-operator-definition form location)
+  (when (and (consp form) (symbolp (car form)) (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+             (second form) (symbolp (second form)))
+    (let ((vjp (%declared-reduction-vjp form))
+          (key (symbol-name (second form))))
+      (if vjp
+          (progn (log:debug "177: ~a declares reduction-vjp ~a" (second form) vjp)
+                 (setf (gethash key *reduction-vjps*) vjp))
+          (remhash key *reduction-vjps*))))
+  (let* ((name (second form))
+         (params (third form))
+         (body (cdddr form))
+         (declare-forms (loop for f in body
+                              while (and (listp f) (eq (car f) 'declare))
+                              collect f)))
+
+    (finish-output *error-output*)
+    ;; Debug logging
+    ;; (log:info "REGISTER-FUNC (Overlay): ~s" name)
+
+    (multiple-value-bind (env return-types optional-idx extracted-defaults key-idx)
+        (parse-function-declarations params (loop for f in declare-forms append (rest f)))
+
+      ;; --- NEW VALIDATION ---
+      (validate-dependent-brand-types declare-forms env)
+      ;; ----------------------
+
+      (cond
+       ((or optional-idx key-idx)
+         (%register-generic-function name params env return-types declare-forms
+                                     extracted-defaults key-idx body location))
+       (t
+         (%register-standard-function name env return-types declare-forms location))))))
+
+;; src/analysis/core.lisp -- the brand checks below were gated on *differentiate-p*, which silently
+;; disabled :enforce :always in every other pass.  Both already ask brand-active-p, so the gate goes.
+(defun analyze-function-call (op expr env context location)
+  "Analyzes a function call expression.
+   Checks for struct immutability violations via %check-struct-mutating-call.
+   Extended (091): grid functions can only be called from a dispatch context.
+   Endeavour 193: a call to a function that may die makes the caller may-die too.  Multi-pass compiles
+   know this from Pass 1.5 already; --single-pass relies on this.  (A lazily instantiated variant marks
+   itself when its own body is analysed.)
+   Endeavour 194 (D4, F3): a call reaches whatever its callee reaches.  A callee that contains a
+   barrier is refused where only some threads of the workgroup arrive; one that contains a warp
+   collective, where lanes may have split.  Both are recorded for the enclosing loop and the caller's
+   own summary, so the rule is transitive."
+  (let ((%194-node
+         (progn
+             (when (%193-may-die-p op)
+               (let ((caller (%193-current-function context)))
+                 (when (and caller (not (%193-may-die-p caller)))
+                   (log:info "193: ~a may die (analysis: calls ~a)" caller op)
+                   (setf (gethash caller *may-die-functions*) t))))
+             (log:debug "Analyzing function call to ~s. Current function: ~s" op (compiler-context-current-compiling-function context))
+
+             ;; Recursion / call-graph tracking
+             (if (multi-pass-mode-p)
+                 (when (compiler-context-current-compiling-function context)
+                       (pushnew op (gethash (compiler-context-current-compiling-function context) *call-graph*)))
+                 (when (eq op (compiler-context-current-compiling-function context))
+                       (error 'crisp-recursion-error :form op :source-location (append location '(0)))))
+
+             ;; Grid function dispatch-context check
+             (when (and (gethash op *grid-functions*)
+                        (not *in-dispatch-context*))
+               (error 'crisp-compiler-error
+                 :message (format nil "Grid function '~(~a~)' cannot be called outside a dispatch context. Use def-kernel or def-grid-function to provide a dispatch context." op)
+                 :source-location location))
+
+             ;; Implicit args
+             (let ((implicit-args-required (gethash op *implicit-arg-map*)))
+               (when (and (single-pass-mode-p) implicit-args-required)
+                     (setf (gethash (compiler-context-current-compiling-function context) *implicit-arg-map*) implicit-args-required))
+
+               (let* ((arg-forms (rest expr))
+                      (explicit-arg-nodes (loop for arg-form in arg-forms
+                                                for i from 1
+                                                collect (analyze-expression arg-form env context (append location (list i)))))
+                      (explicit-arg-types (mapcar #'get-single-value-type explicit-arg-nodes))
+                      (signature (resolve-best-signature op explicit-arg-types context)))
+
+                 ;; Struct mutating function check
+                 (%check-struct-mutating-call op explicit-arg-nodes env context location)
+
+                 (let ((final-arg-nodes
+                        (if implicit-args-required
+                            (let ((implicit-arg-nodes
+                                   (loop for (param-name . param-type) in implicit-args-required
+                                         collect (let ((found (find-variable-in-env param-name env)))
+                                                   (if found
+                                                       (make-semantic-var-read :name param-name :type (parameter-def-type found) :source-location location)
+                                                       (error "Compiler bug: Carrier function ~s is missing implicit argument ~s."
+                                                         (compiler-context-current-compiling-function context) param-name))))))
+                              (append implicit-arg-nodes explicit-arg-nodes))
+                            explicit-arg-nodes)))
+
+                   (unless (= (length explicit-arg-types) (length (function-signature-parameters signature)))
+                     (error 'crisp-signature-arity-error
+                       :expected (length (function-signature-parameters signature))
+                       :inferred (length explicit-arg-types)
+                       :source-location location))
+
+                   ;; === Uniformity Constraint Checking ===
+                   (let ((sig-params (function-signature-parameters signature)))
+                     (loop for param in sig-params
+                           for arg-node in explicit-arg-nodes
+                           do (when (eq (parameter-def-uniformity param) :uniform)
+                                (let ((arg-uniformity (calculate-uniformity-state arg-node env)))
+                                  (unless (eq arg-uniformity :uniform)
+                                    (error 'crisp-compiler-error
+                                      :message (format nil "Function ~a requires parameter ~a to be :uniform, but inferred state was ~a. Use (to-workgroup-uniform ...) if you must."
+                                                       (function-signature-name signature)
+                                                       (parameter-def-name param)
+                                                       arg-uniformity)
+                                      :source-location location))))))
+
+                   (let ((augmented-signature
+                          (if implicit-args-required
+                              (let ((implicit-params (loop for (param-name . param-type) in implicit-args-required
+                                                           collect (make-parameter-def :name param-name :type param-type :kind :in))))
+                                (make-function-signature
+                                 :name (function-signature-name signature)
+                                 :parameters (append implicit-params (function-signature-parameters signature))
+                                 :return-types (function-signature-return-types signature)
+                                 :source-location (function-signature-source-location signature)
+                                 :is-template-p (function-signature-is-template-p signature)
+                                 :template-params (function-signature-template-params signature)))
+                              signature)))
+
+                     ;; === Brand Instance Type Checking (when --differentiate is active) ===
+                     (let ((refined-return-types (function-signature-return-types augmented-signature)))
+
+                       (progn
+                         (let ((sig-params (function-signature-parameters augmented-signature)))
+
+                           ;; 1. Brand parameter type checking
+                           (loop for param in sig-params
+                                 for arg-node in final-arg-nodes
+                                 for param-type = (parameter-def-type param)
+                                 do (let ((brand-def (is-brand-type-p param-type)))
+                                      (when (and brand-def (brand-active-p brand-def))
+                                        (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                   sig-params final-arg-nodes)))
+                                          (when owner-var
+                                            (let* ((expected-type (resolve-brand-type param-type owner-var))
+                                                      (actual-type (get-single-value-type arg-node)))
+                                              (unless (or (eq actual-type expected-type)
+                                                          (is-substitutable-for? actual-type expected-type))
+                                                (error 'crisp-type-error
+                                                  :expected (list expected-type)
+                                                  :inferred (list actual-type)
+                                                  :source-location location))))))))
+
+                           ;; 2. Brand return type refinement
+                           (setf refined-return-types
+                             (loop for ret-type in (function-signature-return-types augmented-signature)
+                                   collect (let ((brand-def (is-brand-type-p ret-type)))
+                                             (if (and brand-def (brand-active-p brand-def))
+                                                 (let ((owner-var (%find-brand-owner-var (brand-definition-brand-name brand-def)
+                                                                                            sig-params final-arg-nodes)))
+                                                   (if owner-var
+                                                       (resolve-brand-type ret-type owner-var)
+                                                       ret-type))
+                                                 ret-type))))))
+
+                       (make-semantic-call :name (function-signature-name augmented-signature)
+                                           :type refined-return-types
+                                           :args final-arg-nodes
+                                           :signature augmented-signature
+                                           :source-location location))))))))) 
+    (when (semantic-call-p %194-node)
+      (let ((summary (gethash (%194-summary-key (semantic-call-name %194-node)) *194-function-summaries*)))
+        (if (null summary)
+            (log:debug "194: no summary for callee ~a (not compiled yet) -- call site unchecked"
+                       (semantic-call-name %194-node))
+            (let ((barrier (%194-fn-summary-barrier summary))
+                  (collective (%194-fn-summary-collective summary))
+                  (callee (string-downcase (%194-summary-key (semantic-call-name %194-node)))))
+              (when barrier
+                (%194-note :barrier (format nil "~a (it reaches ~a)" callee barrier) location t)
+                (when *in-divergent-conditional*
+                  (%194-barrier-refusal (format nil "A call to ~a, which reaches ~a," callee barrier)
+                                        "workgroup" location)))
+              (when collective
+                (%194-note :collective (format nil "~a (it reaches ~a)" callee collective) location t)
+                (when *in-lane-divergent*
+                  (%194-collective-refusal (format nil "A call to ~a, which reaches ~a," callee collective)
+                                           location)))))))
+    %194-node))
+
+;; src/metadata.lisp
+(defun %host-visible-type (type-spec)
+  "TYPE-SPEC with every derived NUMERIC type replaced by its primitive.  A hoist reads metadata alone
+   and has no type registry, so `(vector q-c ..)` reached the generated C++ as an undeclared `q_c`
+   (endeavour 202).  The primitive is the true host ABI.  Derived STRUCT types are left alone: their
+   name is what the host's struct lookup wants."
+  (cond ((consp type-spec) (mapcar #'%host-visible-type type-spec))
+        ((and type-spec (symbolp type-spec) (not (keywordp type-spec))
+              (not (eq (get-type-base type-spec) type-spec)))
+         (let* ((base (get-type-base type-spec))
+                (ct (gethash base *crisp-types*)))
+           (if (and ct (member (crisp-type-category ct) '(:signed-int :unsigned-int :float)))
+               (progn (log:debug "%host-visible-type: ~a -> ~a" type-spec base) base)
+               type-spec)))
+        (t type-spec)))
+
+;; src/metadata.lisp
+(defun serialize-aliases (stream aliases-hash)
+  (format stream "(:aliases~%")
+  (let ((aliases (alexandria:hash-table-keys aliases-hash)))
+    (setf aliases (sort aliases #'string< :key #'symbol-name))
+    (dolist (alias aliases)
+      (let ((target (gethash alias *crisp-type-aliases*)))
+        (format stream "  (def-type ~a " (strip-package-qualifiers alias))
+        (print-without-packages (%host-visible-type target) stream)
+        (format stream ")~%"))))
+  (format stream "  )~%~%"))
+
+;; src/metadata.lisp
+(defun generate-declared-signature (sig &optional declared-params)
+  "Generates the declared-signature plist for a kernel's metadata.
+   Omits :access — storage handles are always treated as read-write by hoist code."
+  (let ((declared-args nil)
+        (current-phys-index 0)
+        (out-mode nil)
+        (params-to-use (or declared-params (function-signature-parameters sig))))
+
+    ;; Count implicit params
+    (dolist (p (function-signature-implicit-parameters sig))
+      (incf current-phys-index (get-physical-width (parameter-def-type p))))
+
+    (dolist (param-def params-to-use)
+      (let* ((name (if (consp param-def) (car param-def) (parameter-def-name param-def)))
+             (type (if (consp param-def) (cdr param-def) (parameter-def-type param-def))))
+
+        (if (and (symbolp name) (string-equal (symbol-name name) "&OUT"))
+            (setf out-mode t)
+            (let* ((width (get-physical-width type))
+                   (start current-phys-index)
+                   (end (+ start (max 0 (1- width))))
+                   (entry (list :name (string-downcase (symbol-name name)))))
+
+              (setf entry (append entry (list :type (strip-package-qualifiers (%host-visible-type type)))))
+              (setf entry (append entry (list :direction (if out-mode :out :in))))
+
+              (when (%storage-handle-type-p type)
+                (let* ((canonical (canonicalize-type-specifier type))
+                       (base (if (consp canonical) (first canonical) canonical))
+                       (is-cell   (and (symbolp base) (string-equal (symbol-name base) "CELL")))
+                       (is-tensor (and (symbolp base) (string-equal (symbol-name base) "TENSOR")))
+                       ;; CELL 3-tuple:   (cell elem ADDR)         — addr at index 2
+                       ;; TENSOR 6-tuple: (tensor elem N ADDR aln ct) — addr at index 3
+                       (as (if (and (consp canonical) is-cell (>= (length canonical) 3))
+                               (nth 2 canonical)
+                               (if (consp canonical)
+                                   (let ((found (member :address-space canonical)))
+                                     (if found (second found) :global))
+                                   :global))))
+                  (setf entry (append entry (list :address-space as)))
+                  (when is-tensor
+                    (let* ((n (if (integerp (third canonical))
+                                  (third canonical)
+                                  (parse-integer (symbol-name (third canonical)))))
+                           ;; TENSOR 6-tuple: (tensor T N addr ALN ct) — aln at index 4
+                           (alg (or (nth 4 canonical) :compact)))
+                      (setf entry (append entry (list :rank n :align alg)))))))
+
+              (setf entry (append entry (list :range (list start end))))
+              ;; 179: a reduction output the host must set to the identity before every launch.
+              (let ((launch-init (%reduction-launch-init-for (function-signature-name sig) name)))
+                (when launch-init
+                  (setf entry (append entry (list :launch-init launch-init)))))
+              (push entry declared-args)
+              (incf current-phys-index width)))))
+    (nreverse declared-args)))

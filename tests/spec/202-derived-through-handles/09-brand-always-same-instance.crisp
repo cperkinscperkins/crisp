@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 202 -- :enforce :always, same owner on both sides: legal in every pass.
+(def-struct qp
+  (brand q-t float :subst :no :enforce :always)
+  (scale float)
+  (sample q-t))
+
+(def-type fc (cell float :address-space :global))
+
+(def-function same-owner (a)
+  (declare #'(qp => float))
+  (let ((z (+ (sample~ a) (sample~ a))))
+    (scale~ a)))
+
+(def-kernel k (&out r)
+  (declare #'(&out fc => nil))
+  (set! (~ r) (same-owner (make-qp :scale 1.0 :sample 1.0))))

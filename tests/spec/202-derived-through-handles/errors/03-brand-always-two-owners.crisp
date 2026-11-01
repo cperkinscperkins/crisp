@@ -1,0 +1,17 @@
+;; CHECK-FAIL: "Cannot operate on Q-T"
+;; Endeavour 202 -- :enforce :always must hold in the DEFAULT pass, not only under --differentiate.
+(def-struct qp
+  (brand q-t float :subst :no :enforce :always)
+  (scale float)
+  (sample q-t))
+
+(def-type fc (cell float :address-space :global))
+
+(def-function two-owners (a b)
+  (declare #'(qp qp => float))
+  (let ((z (+ (sample~ a) (sample~ b))))
+    (scale~ a)))
+
+(def-kernel k (&out r)
+  (declare #'(&out fc => nil))
+  (set! (~ r) (two-owners (make-qp :scale 1.0 :sample 1.0) (make-qp :scale 2.0 :sample 1.0))))

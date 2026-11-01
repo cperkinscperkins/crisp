@@ -1,0 +1,10 @@
+;; CHECK-FAIL: "Cannot operate on Q-C and Q-F"
+;; Endeavour 202 -- two nominal types still refuse to mix once both resolve through handles.
+(def-derived-type q-c char :subst :no)
+(def-type qc (cell q-c :address-space :global))
+(def-derived-type q-f char :subst :no)
+(def-type qf (cell q-f :address-space :global))
+
+(def-kernel k (a b &out r)
+  (declare #'(qc qf &out qc => nil))
+  (set! (~ r) (+ (~ a) (~ b))))

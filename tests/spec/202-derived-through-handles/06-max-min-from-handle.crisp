@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 202 -- max / min on derived values read through a cell; used to die with "The value NIL".
+(def-derived-type q-c char :subst :no)
+(def-type qc (cell q-c :address-space :global))
+
+(def-kernel k (a b &out hi lo)
+  (declare #'(qc qc &out qc qc => nil))
+  (set! (~ hi) (max (~ a) (~ b)))
+  (set! (~ lo) (min (~ a) (~ b))))
