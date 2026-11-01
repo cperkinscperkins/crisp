@@ -47,6 +47,13 @@ Fold note: `%unmangled-symbol` reads `*crisp-types*`.  `src/session` precedes `s
 - PTX `sm_90`: `ld.global.s8`, `max.s16`, `st.global.b8`.
 - BMG on metal: spec 08 reports `BUFFER o: 45`.
 
+## A spec that was passing by accident
+
+`035-brand/errors/16-always-will-fail` expected `Expected (NIL) but inferred (INT)`.  That error came
+from its own `compilation-error` function, which declares `(return-type nil)` and ends in an `int`.
+The brand check it exists to prove never ran.  With the gate gone it fires first, naming the stolen
+token, so the `CHECK-FAIL` now reads `Type mismatch! Expected (TOKEN-T-`.
+
 ## Not covered
 
 - `TEST-HOIST[CUDA]` on spec 08 skips locally (no `nvcc`).  It needs a pod run.
