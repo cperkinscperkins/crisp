@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;;
+;; Endeavour 205: a quantized tensor as a kernel input.  Its adjoint buffer must be float, not q-a.
+(def-qint q-a :base char :accum int)
+(def-type qv (vector q-a :address-space :global :align :compact))
+(def-type fv (vector float :address-space :global :align :compact))
+
+(def-kernel k (w s &out y)
+  (declare #'(qv fv &out fv => nil) (global-size :set-to 4))
+  (let ((i (get-global-id 0)))
+    (set! (~ y i) (to-float (~ w i) (~ s i)))))

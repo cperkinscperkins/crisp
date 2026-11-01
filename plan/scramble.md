@@ -180,6 +180,8 @@ OPEN
       tests/spec/195-atomic-load/atomic-load.md): atomic-load + atomic-store!, BMG-verified.  H100 A/B on
       the prefixsum: the relaxed POLL is neutral (760 vs 753 us); an atomic-store! PUBLISH is 20% slower
       than atomic-xchg! (913 us).  F4's L2-serialization premise does not show up in this kernel.
+- [ ] Support for DLPack.  dmlc.github.io/dlpack/latest  . Interop format for tensors. 
+      Will be extremely useful if we want to position ourselves as premier runtime kernel compiler.
 
 ### Tiles / tensors
 - [ ] hoisting: total tensor size an even multiple of the tile ("oversubscribe", identity fill
@@ -253,6 +255,8 @@ OPEN
       -l0.cpp, .perf -- keep or drop? (L503, L1134-1141, L1159, L1163)
 - [ ] self-hosted GPU runner (L1196)
 - [ ] VS Code: lisp highlighting for .crisp (L477)
+
+
 
 
 IDEAS / LATER

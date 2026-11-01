@@ -1,0 +1,30 @@
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; Endeavour 205 ON-METAL: a quantized matmul on XMX.  A SPIR-V store is one whole fragment, so
+;; narrowing happens in a second step, over the int matrix the store wrote.  Global and local sizes
+;; match the SIMD width, so one subgroup does both steps.
+;;
+;; MMA-DIMS: 16 16 32
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+;; HOIST-EXPECT: BUFFER n: 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 0 0
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 32)))
+
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix q-a-accum :address-space :global :align :compact :contiguous-term :row-major))
+(def-type n-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel xmx_two_step (A B &out C N)
+  (declare #'(a-mat a-mat &out c-mat n-mat)
+           (global-size :set-to 16) (local-size :set-to 16))
+  (let ((D (make-register-tile (accum q-a) (16 16) 0)))
+    (mma-accumulate-via-tile (8 16 32) D A B)
+    (store-tile D C (0 0))
+    (mem-fence)
+    (dotimes (row 16)
+      (dotimes (col 16)
+        (set! (~ N row col) (to-q-a (~ C row col) 0.5))))))

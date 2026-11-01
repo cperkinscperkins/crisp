@@ -4527,3 +4527,11 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         launches; removing any one group from the full set still fails.  Looks like a resource threshold
         (registers? binding table? stateless/stateful addressing?) in IGC rather than one operation.
         The contest target is NVIDIA, so the onesweep was verified on the H100 instead.
+
+[ ] 150 A DERIVED FLOAT TYPE KEEPS ITS TYPE AS AN ADJOINT.
+        (def-derived-type meters float :subst :ancestor) in a cell, under --differentiate:
+        "Type mismatch! Expected FLOAT but inferred METERS".  Found 2026-11-01; loud, not silent.
+        LIKELY CAUSE: %promote-to-float-adjoint promotes integers and enums, and leaves a derived float
+        unchanged, so the _GRAD cell is (cell meters) while the local adjoint is float.  A fix needs
+        the cell and tensor element rewrite, and %ad-promotes-to-double-p, not a one-line predicate.
+        Integer qints are not affected.  tests/spec/202-derived-through-handles/02 carries the skip.

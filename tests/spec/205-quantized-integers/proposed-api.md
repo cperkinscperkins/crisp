@@ -1,6 +1,6 @@
 # Quantized Integers and Microfloat Blocks: Proposed API
 
-Status: DRAFT for discussion, 2026-10-31.  Nothing here is implemented.
+Status: sections 2, 3 and 6 implemented in endeavours 202-205 (overlays not folded).  Section 4 is 206.
 Replaces `docs/ideal_001.md` lines 9389-9872 once agreed.
 Probe evidence: `put_temp_files_here/q205/FINDINGS.md`.
 
@@ -156,8 +156,10 @@ only through the existing MMA forms, which gain integer elements:
     (store-tile (to-q-a D mult) C (0 0))))      ; same shape as (to-half D)
 ```
 
-`mult` is `s_A * s_B / s_C`.  On NVIDIA the same kernel uses `make-wgmma-accumulator` and
-`wgmma-accumulate-via-tile`, because integer MMA there is `wgmma` only.
+`mult` is `s_A * s_B / s_C`.  **As built, this exact kernel is refused on BMG:** a SPIR-V store is one
+whole fragment, so narrow in a second step over an int matrix (D-205-1).  On NVIDIA the kernel uses
+`make-wgmma-accumulator` and `store-tile-at`, and the direct narrowing form works, because integer
+MMA there is `wgmma` only.
 
 A shape and element combination missing from the profile's typed `:mma-shapes` is a compile-time
 error at the MMA form, never a slow fallback.  So `(def-qint q :base short :accum long)` is legal, and
@@ -229,8 +231,8 @@ fills the same registry.
 
 ## 6. Autodiff
 
-Implemented last: these specs are the final rungs of the endeavour.  Until then a differentiated
-quantizing conversion is a loud error, because a silent zero looks like a working gradient.
+Implemented in 205, verified on BMG against hand-derived gradients (`fd=off`).  Integer MMA itself has
+no backward and refuses loudly (D-205-2): training runs in float through `to-q` and `to-float`.
 
 The true derivative of rounding is zero, so the useful answer is a straight-through estimator (STE):
 backward treats the rounding as if it were not there.
@@ -271,6 +273,6 @@ backward kernel.
 | 202 | Derived types through handles, casts, `:enforce :always`, operators that refuse rather than ignore an overload |
 | 203 | Done in overlay: `(accum T)` / `(base T)`, `set-accum`, real `*!`, `+!`, `-!`, `widen`, `to-sat` |
 | 204 | Done in overlay: integer MMA.  Exact on BMG and, through `wgmma`, on H100 |
-| 205 | `def-qint`, `def-qint-product`, conversions, tile narrowing, then autodiff last |
+| 205 | Done in overlay: `def-qint`, `def-qint-product`, conversions, tile narrowing, autodiff.  See `quantized-integers-205.md` |
 | 206 | Records holding handles, microfloat blocks, conversion path, then autodiff last |
 | Later | Native Blackwell `tcgen05` |

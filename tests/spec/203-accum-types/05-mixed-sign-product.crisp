@@ -1,4 +1,5 @@
 ;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "a raw (to T x) of an active integer has no backward rule"
 ;; Endeavour 203 -- a declared mixed-sign product, and (accum A B) in a type position.
 (def-derived-type q-act uchar :subst :no)
 (def-derived-type q-wt char :subst :no)

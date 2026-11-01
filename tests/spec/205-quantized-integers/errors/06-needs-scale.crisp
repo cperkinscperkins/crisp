@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "needs a scale"
+;; Endeavour 205 -- to-float of a quantized value without a scale would be a silent raw cast.
+(def-qint q-a :base char :accum int)
+(def-type fv (vector float :address-space :global :align :compact))
+(def-kernel e (&out o)
+  (declare #'(&out fv => nil) (global-size :set-to 1))
+  (let ((a (to q-a 1)))
+    (set! (~ o 0) (to-float a))))

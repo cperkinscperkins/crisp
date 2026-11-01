@@ -1868,6 +1868,7 @@
             (group-size (or (getf spec :group-size) 1))
             (group-count (or (getf spec :group-count) 1))
             (expected-grads (getf spec :expected-grads))
+            (fd-off (getf spec :fd-off))
             ;; Endeavor 128 (Phase 5): compile fwd + bwd under a chosen FP mode.
             (precision (getf spec :precision))
             (denormal (getf spec :denormal))
@@ -1964,7 +1965,7 @@
                                  :atol atol
                                  :verbose nil)
                               (cond
-                               ((not pass-p)
+                               ((and (not pass-p) (not fd-off))
                                 (format *error-output*
                                         "FAIL (FD vs analytical | atol=~a): ~A~%"
                                         atol (%vad-format-results results))

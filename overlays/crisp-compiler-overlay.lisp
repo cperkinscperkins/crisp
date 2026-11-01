@@ -2286,3 +2286,868 @@
                            (loop for nj below n-frags
                                  for idx = (+ (* mi n-frags) nj)
                                  append (one-frag (nth idx syms) mi nj)))))))))))
+
+;;; ===================================================================
+;;; Endeavour 205: quantized integers.
+;;; ===================================================================
+;;; NOTE FOR THE FOLD: def-qint and def-qint-product need exporting through src/package.lisp the way
+;;; set-accum does, and then lose the crisp-language:: spelling.  def-binary-op-analyzer below is a
+;;; macro: patch it in src/analysis/ops.lisp and drop the four re-instantiations here.
+
+;; src/globals.lisp
+(defvar *qint-roles* (make-hash-table :test 'equal)
+  "Type NAME -> (ROLE . TYPE-SYMBOL), ROLE being :base or :accum, for the types def-qint and
+   def-qint-product create.  Hand-built set-accum types are not here and keep the ordinary operators.
+   Cleared per compile.")
+
+;; src/types/hierarchy.lisp
+(defun qint-role (type-name)
+  ":base or :accum for a type made by def-qint or def-qint-product, else NIL."
+  (and type-name (symbolp type-name)
+       (car (gethash (symbol-name (resolve-type-alias type-name)) *qint-roles*))))
+
+;; src/types/hierarchy.lisp
+(defun %qint-set-role (type-name role)
+  "Records TYPE-NAME's role."
+  (setf (gethash (symbol-name (resolve-type-alias type-name)) *qint-roles*) (cons role type-name)))
+
+;; src/types/hierarchy.lisp
+(defun %qint-check-integer (type-name)
+  "Refuses a quantized type built on anything but an integer."
+  (unless (member (%accum-numeric-parts type-name) '(:signed-int :unsigned-int))
+    (error 'crisp-compiler-error
+           :message (format nil "def-qint: ~(~a~) must be an integer type at heart; it is ~(~a~).  Float codes are microfloat blocks."
+                            type-name (get-type-base (resolve-type-alias type-name))))))
+
+;; src/types/hierarchy.lisp
+(defun %register-to-qint (name)
+  "Points (to-NAME ..) at analyze-to-qint in both packages.  This replaces the cast def-derived-type
+   registered, and *expression-analyzers* is rebuilt per compile, so it cannot outlive the type."
+  (dolist (pkg (list (find-package :crisp-language) (find-package :crisp.compiler)))
+    (setf (gethash (intern (format nil "TO-~a" (symbol-name name)) pkg) *expression-analyzers*)
+          'analyze-to-qint)))
+
+;; src/types/hierarchy.lisp
+(defun register-qint (name accum)
+  "Records NAME and ACCUM as the base and accumulator of a def-qint."
+  (%qint-check-integer name)
+  (%qint-check-integer accum)
+  (%qint-set-role name :base)
+  (%qint-set-role accum :accum)
+  (%register-to-qint name)
+  (log:debug "register-qint: ~a accum ~a" name accum)
+  name)
+
+;; src/types/hierarchy.lisp
+(defun register-qint-product (name operands)
+  "Records NAME as the accumulator of a declared product of the def-qint types OPERANDS."
+  (dolist (operand operands)
+    (unless (eq (qint-role operand) :base)
+      (error 'crisp-compiler-error
+             :message (format nil "def-qint-product: ~(~a~) is not a def-qint type." operand))))
+  (%qint-set-role name :accum)
+  (log:debug "register-qint-product: ~a of ~a" name operands)
+  name)
+
+;; src/macros.lisp
+(defmacro crisp-language::def-qint (name &key base accum)
+  "Defines the quantized integer type NAME and its accumulator NAME-ACCUM, with (to-NAME ..).
+   real = scale * q, and the scale is a runtime value the author passes where it is needed.
+   Syntax: (def-qint q-a :base char :accum int)
+   Requirements:
+   - :base and :accum are integer types.
+   - :accum holds a full product of two base values.
+   Two def-qints never mix, even with identical parameters: the scale belongs to the data."
+  (let ((accum-name (intern (format nil "~a-ACCUM" (symbol-name name)) (symbol-package name))))
+    `(progn
+       (def-derived-type ,name ,base :subst :no)
+       (def-derived-type ,accum-name ,accum :subst :no)
+       (crisp-language::set-accum ,name ,accum-name)
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (register-qint ',name ',accum-name)))))
+
+;; src/macros.lisp
+(defmacro crisp-language::def-qint-product (name operands &key accum)
+  "Declares NAME the accumulator of the product of two def-qint types, which is what lets them be
+   multiplied.  Argument order matters.
+   Syntax: (def-qint-product q-dot (q-act q-wt) :accum int)"
+  `(progn
+     (def-derived-type ,name ,accum :subst :no)
+     (crisp-language::set-accum ,operands ,name)
+     (eval-when (:compile-toplevel :load-toplevel :execute)
+       (register-qint-product ',name ',operands))))
+
+;; src/analysis/ops.lisp
+(defun %check-qint-arith (op left-type right-type location)
+  "Refuses a plain arithmetic operator on quantized values.  Only accumulators add and subtract, and
+   only with themselves.  Internal lowering is unaffected: it works on the underlying primitive."
+  (let ((left (qint-role left-type)) (right (qint-role right-type)))
+    (when (or left right)
+      (flet ((refuse (fmt &rest args)
+               (error 'crisp-type-error :message (apply #'format nil fmt args) :source-location location)))
+        (unless (eq left-type right-type)
+          (refuse "(~a ~(~a~) ~(~a~)): different quantized types.  Go through float, or declare a def-qint-product."
+                  op left-type right-type))
+        (cond ((string= op "/")
+               (refuse "(/ ~(~a~) ~(~a~)): quantized values do not divide; convert to float first." left-type right-type))
+              ((eq left :accum)
+               (unless (member op '("+" "-") :test #'string=)
+                 (refuse "(~a ~(~a~) ~(~a~)): accumulators add and subtract, and nothing else." op left-type right-type)))
+              (t
+               (refuse "(~a ~(~a~) ~(~a~)): use ~a!, which widens to the accumulator." op left-type right-type op)))))))
+
+;; src/analysis/ops.lisp -- calls %check-qint-arith.  A macro, so patch it there.
+(defmacro def-binary-op-analyzer (name node-constructor op-string)
+  `(defun ,name (expr env context location)
+     ,(format nil "Analyzes a `(~a ...)` expression -- two operands; more fold left (BUG 127)." op-string)
+     (let ((instead (%nary-arith-prologue expr ,op-string location)))
+       (when instead
+         (return-from ,name (analyze-expression instead env context location))))
+     (let* ((left-node (analyze-expression (second expr) env context (append location '(1))))
+            (right-node (analyze-expression (third expr) env context (append location '(2))))
+            (left-type (get-single-value-type left-node))
+            (right-type (get-single-value-type right-node))
+            (promoted-type (progn (%check-qint-arith ,op-string left-type right-type location)
+                                  (get-promoted-type left-type right-type))))
+
+       (if promoted-type
+           (let ((result-crisp-type (gethash promoted-type *crisp-types*)))
+             ;; Ensure the resulting type is numeric and supports the op.
+             (unless (and result-crisp-type (member (crisp-type-category result-crisp-type)
+                                                    '(:signed-int :unsigned-int :float :device-vector)))
+               (error 'crisp-type-error
+                 :message (format nil "Type mismatch for operator '~a'. Cannot operate on ~a and ~a." ,op-string left-type right-type)
+                 :source-location location))
+             (,node-constructor :type promoted-type :left-arg left-node :right-arg right-node :source-location location))
+           (error 'crisp-type-error
+             :message (format nil "Type mismatch for operator '~a'. Cannot operate on ~a and ~a." ,op-string left-type right-type)
+             :source-location location)))))
+
+;; (re-instantiated for the overlay; these disappear once the macro is patched)
+(def-binary-op-analyzer analyze-add-expression make-semantic-add "+")
+(def-binary-op-analyzer %analyze-sub-binary make-semantic-sub "-")
+(def-binary-op-analyzer analyze-mul-expression make-semantic-mul "*")
+(def-binary-op-analyzer analyze-div-expression make-semantic-div "/")
+
+;; src/analysis/ops.lisp
+(defun %refuse-float-into-qint (target source-type location)
+  "A raw cast applies no scale, so a float source would silently truncate."
+  (when (and (qint-role target) (eq (%accum-numeric-parts source-type) :float))
+    (error 'crisp-type-error
+           :message (format nil "(to ~(~a~) x) applies no scale, so x cannot be ~(~a~).  Use (to-~(~a~) x scale)."
+                            target source-type target)
+           :source-location location)))
+
+;; src/analysis/ops.lisp
+(defun %qint-float-operand (node what op location)
+  "NODE, which must be float-typed, at a width to-sat takes: half widens to float."
+  (let ((type (get-single-value-type node)))
+    (multiple-value-bind (cat bits) (%hw-type-parts type)
+      (unless (eq cat :float)
+        (error 'crisp-type-error
+               :message (format nil "~(~a~): ~a must be a float; got ~(~a~)." op what type)
+               :source-location location))
+      (if (member bits '(32 64)) node (%cast-node node 'float location)))))
+
+;; src/analysis/ops.lisp
+(defun %qint-round-node (target value location)
+  "VALUE rounded to nearest, ties to even, and saturated to the integer TARGET."
+  (make-semantic-hw-op :op '%to-sat :type target :args (list value) :source-location location))
+
+;; src/analysis/ops.lisp
+(defun %qint-narrow-node (target acc multiplier op location)
+  "round(ACC * MULTIPLIER), saturated to TARGET.  The product is taken in float: an int32 accumulator
+   above 2^24 loses low bits there, but saturating to 8 bits leaves far more precision than a code
+   needs, so only a value within a few ulps of a tie could round differently."
+  (let* ((m (%qint-float-operand multiplier "the multiplier" op location))
+         (float-type (get-single-value-type m))
+         (wide (%cast-node (%cast-node acc (get-type-base (get-single-value-type acc)) location)
+                           float-type location)))
+    (%qint-round-node target
+                      (make-semantic-mul :type float-type :left-arg wide :right-arg m :source-location location)
+                      location)))
+
+;; src/analysis/ops.lisp
+(defun analyze-to-qint (expr env context location)
+  "(to-q x) is the raw cast, (to q x).  (to-q x scale) is round(x / scale), saturating, for a float x.
+   (to-q acc multiplier) is round(acc * multiplier), saturating, for an accumulator of any qint."
+  (let* ((op (first expr))
+         (target (cdr (gethash (subseq (symbol-name op) 3) *qint-roles*)))
+         (args (rest expr)))
+    (unless (member (length args) '(1 2))
+      (error 'crisp-compiler-error
+             :message (format nil "(~(~a~) ..) takes a value and a scale; got ~a arguments." op (length args))
+             :source-location location))
+    (let* ((x (analyze-expression (first args) env context (append location '(1))))
+           (x-type (get-single-value-type x)))
+      (if (null (rest args))
+          (progn
+            (%refuse-float-into-qint target x-type location)
+            (%cast-node x target location))
+          (let ((y (analyze-expression (second args) env context (append location '(2))))
+                (role (qint-role x-type)))
+            (log:debug "analyze-to-qint: ~a from ~a role ~a" target x-type role)
+            (cond
+              ((eq role :accum) (%qint-narrow-node target x y op location))
+              ((eq role :base)
+               (error 'crisp-type-error
+                      :message (format nil "(~(~a~) x m): x is ~(~a~), a base value; widen it first." op x-type)
+                      :source-location location))
+              ((eq (%accum-numeric-parts x-type) :float)
+               (let* ((value (%qint-float-operand x "the value" op location))
+                      (scale (%qint-float-operand y "the scale" op location))
+                      (float-type (get-promoted-type (get-single-value-type value) (get-single-value-type scale))))
+                 (%qint-round-node target
+                                   (make-semantic-div :type float-type
+                                                      :left-arg (%cast-node value float-type location)
+                                                      :right-arg (%cast-node scale float-type location)
+                                                      :source-location location)
+                                   location)))
+              (t
+               (error 'crisp-type-error
+                      :message (format nil "(~(~a~) x y) takes a float or an accumulator; got ~(~a~)." op x-type)
+                      :source-location location))))))))
+
+;; src/analysis/ops.lisp
+(defun analyze-scaled-float-cast (expr env context location)
+  "(to-float q scale) is scale * q, at the scale's type.  Every other float cast is the ordinary one,
+   except that a quantized value is refused: a cast without a scale would silently drop it."
+  (let ((name (symbol-name (first expr))))
+    (cond
+      ((and (= (length expr) 3) (string= name "TO-FLOAT"))
+       (let* ((q (analyze-expression (second expr) env context (append location '(1))))
+              (scale (analyze-expression (third expr) env context (append location '(2))))
+              (q-type (get-single-value-type q))
+              (scale-type (get-single-value-type scale)))
+         (unless (qint-role q-type)
+           (error 'crisp-type-error
+                  :message (format nil "(to-float x scale): only a quantized value takes a scale; x is ~(~a~)." q-type)
+                  :source-location location))
+         (unless (eq (%hw-type-parts scale-type) :float)
+           (error 'crisp-type-error
+                  :message (format nil "(to-float x scale): the scale must be a float; got ~(~a~)." scale-type)
+                  :source-location location))
+         (make-semantic-mul :type scale-type
+                            :left-arg (%cast-node (%cast-node q (get-type-base q-type) location) scale-type location)
+                            :right-arg scale :source-location location)))
+      ((/= (length expr) 2)
+       (error 'crisp-compiler-error
+              :message (format nil "(~(~a~) ..) takes one argument; got ~a." name (length (rest expr)))
+              :source-location location))
+      (t
+       (let ((node (analyze-cast-expression expr env context location)))
+         (when (and (semantic-value-cast-p node)
+                    (qint-role (get-single-value-type (semantic-value-cast-arg node))))
+           (error 'crisp-type-error
+                  :message (format nil "(~(~a~) x): x is ~(~a~), which needs a scale: (to-float x scale)."
+                                   name (get-single-value-type (semantic-value-cast-arg node)))
+                  :source-location location))
+         node)))))
+
+;; src/analysis/ops.lisp
+(defun %register-accum-analyzers ()
+  "Registers the endeavour 203 and 205 analyzers by name in both packages, and forgets the last
+   compile's quantized types."
+  (clrhash *qint-roles*)
+  (let ((pkgs (list (find-package :crisp-language) (find-package :crisp.compiler))))
+    (dolist (entry '(("*!" . analyze-accum-op) ("+!" . analyze-accum-op) ("-!" . analyze-accum-op)
+                     ("WIDEN" . analyze-widen) ("TO-SAT" . analyze-to-sat)
+                     ("TO-FLOAT" . analyze-scaled-float-cast) ("TO-DOUBLE" . analyze-scaled-float-cast)
+                     ("TO-HALF" . analyze-scaled-float-cast) ("TO-BFLOAT16" . analyze-scaled-float-cast)))
+      (dolist (pkg pkgs)
+        (setf (gethash (intern (car entry) pkg) *expression-analyzers*) (cdr entry))))))
+
+;; src/analysis/ops.lisp -- calls %refuse-float-into-qint
+(defun analyze-value-cast-expression (expr env context location)
+  "Analyzes the generic (to type value) form."
+  (let* ((type-form (second expr))
+         (value-form (third expr))
+         (orig-type-name (if (symbolp type-form) type-form (error "Generic TO expects a type symbol, got ~a" type-form)))
+         ;; Generic 'TO' Resolution
+         (type-name (loop for name = orig-type-name then (gethash name *crisp-type-aliases*)
+                          while (and (symbolp name) (gethash name *crisp-type-aliases*))
+                          finally (cl:return name)))
+         (target-type (gethash type-name *crisp-types*)))
+
+    (unless target-type
+      (error 'crisp-unknown-type-error :type-name type-name :source-location location))
+
+    (let ((arg-node (analyze-expression value-form env context (append location '(2)))))
+      (%refuse-float-into-qint type-name (get-single-value-type arg-node) location)
+      (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
+
+;; src/analysis/ops.lisp -- an undeclared pair of qints says what to declare
+(defun analyze-accum-op (expr env context location)
+  "Analyzes (*! a b), (+! a b), (-! a b).  With a declared accumulator both operands widen by their own
+   signedness and the op runs at the accumulator's width.  There is no widening add instruction: PTX
+   has no add.wide, so sext + add IS the lowering.  Otherwise this is the plain operator (decision D6)."
+  (let* ((name (symbol-name (first expr)))
+         (plain (%185-crisp-sym (subseq name 0 1)))
+         (args (rest expr)))
+    (unless (= (length args) 2)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~) takes 2 arguments; got ~a" name (length args))
+             :source-location location))
+    ;; No set-accum in this compile: nothing can widen, so take the plain path without analyzing twice.
+    (when (zerop (hash-table-count *accum-registry*))
+      (return-from analyze-accum-op
+        (analyze-expression (list plain (first args) (second args)) env context location)))
+    (let* ((left (analyze-expression (first args) env context (append location '(1))))
+           (right (analyze-expression (second args) env context (append location '(2))))
+           (left-type (get-single-value-type left))
+           (right-type (get-single-value-type right))
+           (accum (if (string= name "*!")
+                      (and (gethash (%accum-key left-type right-type) *accum-registry*)
+                           (accum-type-of left-type right-type))
+                      (let ((la (accum-type-of left-type)) (ra (accum-type-of right-type)))
+                        (and la ra (eq la ra)
+                             (or (not (eq left-type la)) (not (eq right-type la))
+                                 (gethash (%accum-key left-type right-type) *accum-registry*))
+                             la)))))
+      (log:debug "analyze-accum-op: ~a ~a ~a => accum ~a" name left-type right-type accum)
+      (when (and (null accum) (string= name "*!") (or (qint-role left-type) (qint-role right-type)))
+        (error (quote crisp-type-error)
+               :message (format nil "(*! ~(~a~) ~(~a~)): no product is declared.  Use def-qint-product." left-type right-type)
+               :source-location location))
+      (if (null accum)
+          (analyze-expression (list plain (first args) (second args)) env context location)
+          (let* ((l (%widen-node left accum location))
+                 (r (%widen-node right accum location))
+                 (prim (get-type-base accum))
+                 (op-node (cond ((string= name "*!")
+                                 (make-semantic-mul :type prim :left-arg l :right-arg r :source-location location))
+                                ((string= name "+!")
+                                 (make-semantic-add :type prim :left-arg l :right-arg r :source-location location))
+                                (t
+                                 (make-semantic-sub :type prim :left-arg l :right-arg r :source-location location)))))
+            (%cast-node op-node accum location))))))
+
+;; src/mma.lisp
+(defun %qint-narrowing-target (op)
+  "The def-qint base type behind the operator symbol TO-NAME, or NIL."
+  (when (symbolp op)
+    (let ((name (symbol-name op)))
+      (when (and (> (length name) 3) (string= "TO-" name :end2 3))
+        (let ((entry (gethash (subseq name 3) *qint-roles*)))
+          (and (eq (car entry) :base) (cdr entry)))))))
+
+;; src/mma.lisp
+(defun %196-peel-store-conversion (src)
+  "Endeavour 196.  If SRC is (to-half X) or (to-bfloat16 X), return (values X CONVERT-SYMBOL);
+   otherwise (values SRC NIL).  Only these two narrowing conversions are peeled: they are the two a
+   16-bit MMA needs on the way out (f32 accumulator -> fp16 / bf16 output).  Anything else is left
+   for the ordinary analysis, which refuses a conversion of a whole accumulator.
+   Endeavour 205: (to-q X M) peels too, and CONVERT is then the list (%to-q-narrow Q M).  A SPIR-V
+   store is one whole fragment with no per-element step, so that is refused here."
+  (cond
+    ((and (consp src) (symbolp (first src)) (= (length src) 2)
+          (member (symbol-name (first src)) '("TO-HALF" "TO-BFLOAT16") :test #'string=))
+     (values (second src) (first src)))
+    ((and (consp src) (= (length src) 3) (%qint-narrowing-target (first src)))
+     (when (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+              :message (format nil "(~(~a~) X M) as a store source: a SPIR-V store is one whole fragment.  Store X into an int matrix, then narrow its elements with (~(~a~) x m)."
+                               (first src) (first src))))
+     (values (second src) (list '%to-q-narrow (%qint-narrowing-target (first src)) (third src))))
+    (t (values src nil))))
+
+;; src/mma.lisp
+(defun %196-wrap-conversion (convert form)
+  "Endeavour 196.  (CONVERT FORM) when CONVERT is non-NIL, else FORM unchanged.
+   Endeavour 205: a list CONVERT, (%to-q-narrow Q M), wraps as (%to-q-narrow Q FORM M)."
+  (cond ((null convert) form)
+        ((consp convert) (list (first convert) (second convert) form (third convert)))
+        (t (list convert form))))
+
+;; src/mma.lisp
+(defun %196-convert-store-fragment-sources (form convert)
+  "Endeavour 196.  Wrap the FRAG argument of every (store-fragment FRAG ...) in FORM with
+   (CONVERT FRAG).  Applied to %emit-per-frag-store's expansion, which is the only producer of
+   store-fragment forms there, so the per-fragment store logic (static arms, 2-D warp grid) is
+   reused untouched rather than copied with a conversion parameter threaded through it."
+  (cond
+    ((not (consp form)) form)
+    ((and (symbolp (first form)) (string= (symbol-name (first form)) "STORE-FRAGMENT"))
+     (list* (first form) (%196-wrap-conversion convert (second form)) (cddr form)))
+    (t (mapcar (lambda (f) (%196-convert-store-fragment-sources f convert)) form))))
+
+;; src/mma.lisp
+(defun %196-refuse-converted-non-accumulator (op convert src-type location)
+  "Endeavour 196.  (store-tile (to-half X) ...) where X is not an MMA accumulator: refuse here,
+   naming the rule, rather than let the generic store analyze (to-half X) as a scalar cast of a
+   whole tile (which fails later with an unrelated message)."
+  (error 'crisp-compiler-error
+         :message (let ((*print-pretty* nil)) (format nil "~(~a~): (~(~a~) X) as a store source needs X to be an MMA accumulator (a register tile or a wgmma accumulator), whose f32 elements are converted as they are stored.  X here is ~a.  To convert a scratch or global tile, convert its elements where they are written." op (if (consp convert) (format nil "to-~a" (second convert)) convert) src-type))
+         :source-location location))
+
+;; src/mma.lisp
+(defun %199-convert-element (convert)
+  "Endeavour 199.  The 16-bit element type a peeled conversion (TO-HALF / TO-BFLOAT16) produces."
+  (cond ((null convert) nil)
+        ((consp convert)
+         (error 'crisp-compiler-error
+                :message "store-tile-at :via :tma: stmatrix moves 16-bit elements, so an 8-bit narrowing cannot use it.  Drop :via :tma."))
+        ((string= (symbol-name convert) "TO-HALF") (%199-type-symbol "HALF"))
+        (t (%199-type-symbol "BFLOAT16"))))
+
+;; src/analysis/ops.lisp
+(defun analyze-to-q-narrow (expr env context location)
+  "(%to-q-narrow Q X M): compiler-made, from (to-Q D M) as a store source.  X is one element of an
+   accumulator.  The accumulator keeps its fields at the primitive, so X is a plain integer here."
+  (destructuring-bind (target x multiplier) (rest expr)
+    (%qint-narrow-node target
+                       (analyze-expression x env context (append location '(2)))
+                       (analyze-expression multiplier env context (append location '(3)))
+                       target location)))
+
+;; src/analysis/ops.lisp
+(defun %register-accum-analyzers ()
+  "Registers the endeavour 203 and 205 analyzers by name in both packages, and forgets the last
+   compile's quantized types."
+  (clrhash *qint-roles*)
+  (let ((pkgs (list (find-package :crisp-language) (find-package :crisp.compiler))))
+    (dolist (entry '(("*!" . analyze-accum-op) ("+!" . analyze-accum-op) ("-!" . analyze-accum-op)
+                     ("WIDEN" . analyze-widen) ("TO-SAT" . analyze-to-sat)
+                     ("%TO-Q-NARROW" . analyze-to-q-narrow)
+                     ("TO-FLOAT" . analyze-scaled-float-cast) ("TO-DOUBLE" . analyze-scaled-float-cast)
+                     ("TO-HALF" . analyze-scaled-float-cast) ("TO-BFLOAT16" . analyze-scaled-float-cast)))
+      (dolist (pkg pkgs)
+        (setf (gethash (intern (car entry) pkg) *expression-analyzers*) (cdr entry))))))
+
+;; src/analysis/ops.lisp
+(defun analyze-q-raw-float (expr env context location)
+  "(%q-raw-float X LIKE): compiler-made by the backward rules.  X's value at LIKE's float type, with no
+   scale.  A non-scalar X is left alone, so a basic-type (*! vec vec) keeps its old backward."
+  (destructuring-bind (x like) (rest expr)
+    (let* ((node (analyze-expression x env context (append location '(1))))
+           (like-node (analyze-expression like env context (append location '(2))))
+           (type (get-single-value-type node)))
+      (if (%accum-numeric-parts type)
+          (%cast-node (%cast-node node (get-type-base type) location)
+                      (get-single-value-type like-node) location)
+          node))))
+
+;; src/analysis/ops.lisp
+(defun %qint-range (target)
+  "(values LO HI), the integers TARGET can hold."
+  (multiple-value-bind (cat bits) (%accum-numeric-parts target)
+    (if (eq cat :signed-int)
+        (values (- (expt 2 (1- bits))) (1- (expt 2 (1- bits))))
+        (values 0 (1- (expt 2 bits))))))
+
+;; src/analysis/ops.lisp
+(defun analyze-q-ste (expr env context location)
+  "(%q-ste KIND Q X Y): the straight-through estimate of d(to-Q X Y) / dX (KIND :value) or / dY (KIND
+   :scale).  The backward walk has no types, and which rule applies depends on whether X is an
+   accumulator, so it emits this and the choice happens here.  Both operands are ANF atoms, which makes
+   analyzing them again safe.  Zero on the rails: a saturated value no longer follows its input."
+  (destructuring-bind (kind target x y) (rest expr)
+    (let* ((accum-p (eq (qint-role (get-single-value-type
+                                    (analyze-expression x env context (append location '(3)))))
+                        :accum)))
+      (flet ((op (name &rest args) (cons (%185-crisp-sym name) args))
+             (raw (form) (list (%185-crisp-sym "%Q-RAW-FLOAT") form y)))
+        (multiple-value-bind (lo hi) (%qint-range target)
+          (let* ((value (if accum-p (op "*" (raw x) y) (op "/" x y)))
+                 (slope (ecase kind
+                          (:value (if accum-p y (op "/" (raw 1) y)))
+                          (:scale (if accum-p (raw x) (op "-" (raw 0) (op "/" x (op "*" y y)))))))
+                 (live (raw (op "IF" (op "AND" (op ">=" value (raw lo)) (op "<=" value (raw hi))) 1 0))))
+            (log:debug "analyze-q-ste: ~a ~a accum=~a" kind target accum-p)
+            (analyze-expression (op "*" slope live) env context location)))))))
+
+;; src/analysis/ops.lisp
+(defun %register-accum-analyzers ()
+  "Registers the endeavour 203 and 205 analyzers by name in both packages, and forgets the last
+   compile's quantized types."
+  (clrhash *qint-roles*)
+  (let ((pkgs (list (find-package :crisp-language) (find-package :crisp.compiler))))
+    (dolist (entry '(("*!" . analyze-accum-op) ("+!" . analyze-accum-op) ("-!" . analyze-accum-op)
+                     ("WIDEN" . analyze-widen) ("TO-SAT" . analyze-to-sat)
+                     ("%TO-Q-NARROW" . analyze-to-q-narrow)
+                     ("%Q-RAW-FLOAT" . analyze-q-raw-float) ("%Q-STE" . analyze-q-ste)
+                     ("TO-FLOAT" . analyze-scaled-float-cast) ("TO-DOUBLE" . analyze-scaled-float-cast)
+                     ("TO-HALF" . analyze-scaled-float-cast) ("TO-BFLOAT16" . analyze-scaled-float-cast)))
+      (dolist (pkg pkgs)
+        (setf (gethash (intern (car entry) pkg) *expression-analyzers*) (cdr entry))))))
+
+;; src/autodiff.lisp -- to-q is straight-through, to-float with a scale is exact, *! reads a raw value
+(defun %185-math-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of
+   them (the clause handled it), else NIL."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x))
+         (sym (n) (%185-crisp-sym n)))
+    (let ((op (car expr)))
+      (cond
+        ((and (%qint-narrowing-target op) (= (length expr) 3)) ; endeavour 205: straight-through
+         (let ((x (cadr expr)) (y (caddr expr)) (q (%qint-narrowing-target op)) (v-adj (local-adj v)))
+           (when (symbolp x)
+             (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (%q-ste :value ,q ,x ,y) ,v-adj)))))
+           (when (symbolp y)
+             (emit `(set! ,(local-adj y) (+ ,(local-adj y) (* (%q-ste :scale ,q ,x ,y) ,v-adj)))))
+           t))
+        ((and (%185-op-named-p op "TO-FLOAT") (= (length expr) 3)) ; endeavour 205: scale * q is exact
+         (let ((q (cadr expr)) (s (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp q) (emit `(set! ,(local-adj q) (+ ,(local-adj q) (* ,s ,v-adj)))))
+           (when (symbolp s) (emit `(set! ,(local-adj s) (+ ,(local-adj s) (* (%q-raw-float ,q ,s) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "SQRT")            ; d/da sqrt(a) = 0.5 / sqrt(a)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 0.5 (,(sym "SQRT") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "RSQRT")           ; d/da a^-1/2 = -0.5 rsqrt(a) / a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* -0.5 (/ (,(sym "RSQRT") ,a) ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "TANH")            ; d/da tanh(a) = 1 - tanh(a)^2
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (- 1.0 (* (,(sym "TANH") ,a) (,(sym "TANH") ,a))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ERF")             ; d/da erf(a) = 2/sqrt(pi) exp(-a^2)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 1.1283791670955126 (exp (- 0.0 (* ,a ,a)))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "EXP2")            ; d/da 2^a = ln2 2^a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 0.6931471805599453 (,(sym "EXP2") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ABS")             ; d/da |a| = sign(a)  (0 at 0)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a)
+                                            (* (- (to-float (> ,a 0.0)) (to-float (< ,a 0.0))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "CLAMP")           ; x passes through inside [lo,hi]; lo below; hi above
+         (destructuring-bind (x lo hi) (cdr expr)
+           (let ((v-adj (local-adj v)))
+             (when (symbolp x)
+               (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (to-float (* (>= ,x ,lo) (<= ,x ,hi))) ,v-adj)))))
+             (when (symbolp lo)
+               (emit `(set! ,(local-adj lo) (+ ,(local-adj lo) (* (to-float (< ,x ,lo)) ,v-adj)))))
+             (when (symbolp hi)
+               (emit `(set! ,(local-adj hi) (+ ,(local-adj hi) (* (to-float (> ,x ,hi)) ,v-adj)))))
+             t)))
+        ((%185-op-named-p op "+!")              ; endeavour 203: on the basic types +! is +
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "-!")              ; endeavour 203: on the basic types -! is -
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (- ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "WIDEN")           ; endeavour 203: the identity on basic types
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           t))
+        ((%185-op-named-p op "*!")              ; D6: *! is *
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (%q-raw-float ,b ,v-adj) ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (%q-raw-float ,a ,v-adj) ,v-adj)))))
+           t))
+        ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
+        ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
+        ((some (lambda (n) (%185-op-named-p op n))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"))
+         t)
+        (t nil)))))
+
+;; src/autodiff.lisp -- both operands of a two-argument conversion propagate
+(defun %active-scalar-vars (expr env)
+  "Set (list) of scalar symbols that DIFFERENTIABLY affect EXPR's value. ENV is an
+   alist mapping a let-bound symbol to its own active-scalar-var set."
+  (cond
+   ((symbolp expr) (let ((e (assoc expr env))) (if e (cdr e) (list expr))))
+   ((not (consp expr)) nil)                         ; numbers / other atoms
+   (t
+     (let ((name (and (symbolp (car expr)) (symbol-name (car expr)))))
+       (cond
+        ((null name) nil)
+        ;; Endeavour 170: every operand of a hardware math op propagates.
+        ((%hw-op-form-op expr) (%asv-union (cdr expr) env))
+        ;; Endeavour 173: a shuffle propagates activeness from its VALUE operand only -- the
+        ;; target lane / delta / mask is a lane coordinate and carries no gradient.
+        ((%shuffle-form-op expr) (%asv-union (list (second expr)) env))
+        ;; differentiable arithmetic — every operand propagates.
+        ;; Endeavor 146 Gap 2: REM and MOD belong here, not in a skip list.  d(rem)/da = 1
+        ;; and d(rem)/db = -trunc(a/b), so BOTH positions genuinely carry activeness.  An
+        ;; integer index expression like (rem li 8) still contributes nothing, because `li`
+        ;; is inactive — which is exactly the "structural ints fall out as inactive for
+        ;; free" property this table is built on.
+        ((member name '("+" "-" "*" "/" "REM" "MOD") :test #'string-equal)
+          (%asv-union (cdr expr) env))
+        ;; Endeavor 128: unary transcendentals propagate through their single arg.
+        ((member name '("SIN" "COS" "SQRT" "EXP" "LOG" "LOG2" "TAN"
+                        "ASIN" "ACOS" "ATAN" "TANH" "ABS") :test #'string-equal)
+          (%active-scalar-vars (cadr expr) env))
+        ;; Endeavor 128: binary transcendentals — both operands propagate.
+        ((member name '("POW" "ATAN2") :test #'string-equal)
+          (%asv-union (cdr expr) env))
+        ;; numeric conversions propagate (conservative).
+        ((and (>= (length name) 3) (string-equal (subseq name 0 3) "TO-"))
+          (%asv-union (cdr expr) env))
+        ;; tensor/cell read: no SCALAR activity (the index does not propagate; the
+        ;; tensor/cell itself flows grad via its own &out grad-handle).
+        ((string-equal name "~") nil)
+        ;; Endeavour 193: die, the asserts and the log forms produce no value -- nothing propagates.
+        ((member name '("DIE" "R-T-ASSERT" "R-T-ASSERT-0" "R-T-OUTPUT" "R-T-OUTPUT-0" "%193-LOG-MESSAGE")
+                 :test #'string=)
+          nil)
+        ;; comparisons: 0 gradient — nothing propagates.
+        ((member name '("<" ">" "<=" ">=" "=" "/=") :test #'string-equal) nil)
+        ;; conditionals: the branches propagate, the CONDITION does not.
+        ((member name '("IF" "IF+") :test #'string-equal)
+          (union (%active-scalar-vars (caddr expr) env)
+                 (%active-scalar-vars (cadddr expr) env) :test #'eq))
+        ((member name '("WHEN" "WHEN+" "UNLESS" "UNLESS+") :test #'string-equal)
+          (%active-scalar-vars (caddr expr) env))
+        ;; let: bind each var to its init's active set, then evaluate the body.
+        ((string-equal name "LET")
+          (let ((new-env env))
+            (dolist (b (cadr expr))
+              (when (and (consp b) (= (length b) 2) (symbolp (car b)))
+                    (push (cons (car b) (%active-scalar-vars (cadr b) new-env)) new-env)))
+            (%active-scalar-vars (car (last (cddr expr))) new-env)))
+        ((string-equal name "RETURN") (%asv-union (cdr expr) env))
+        ((string-equal name "PROGN") (%active-scalar-vars (car (last (cdr expr))) env))
+        ;; sub-fn / other call: over-approximate — all args propagate. Safe (a
+        ;; spuriously-active int just gets a 0-gradient slot); never runs on the
+        ;; generated structural-int machinery (this pass is source-only).
+        (t (%asv-union (cdr expr) env)))))))
+
+;; src/autodiff.lisp -- max and min, on any scalar type
+(defun %185-math-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of
+   them (the clause handled it), else NIL."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x))
+         (sym (n) (%185-crisp-sym n)))
+    (let ((op (car expr)))
+      (cond
+        ((or (%185-op-named-p op "MAX") (%185-op-named-p op "MIN")) ; endeavour 205: follows the winner
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v))
+                (ge (%185-crisp-sym ">=")) (lt (%185-crisp-sym "<"))
+                (if-sym (%185-crisp-sym "IF"))
+                (a-wins (if (%185-op-named-p op "MAX") `(,ge ,a ,b) `(,lt ,a ,b)))
+                (a-share `(%q-raw-float (,if-sym ,a-wins 1 0) ,v-adj))
+                (b-share `(%q-raw-float (,if-sym ,a-wins 0 1) ,v-adj)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,a-share ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,b-share ,v-adj)))))
+           t))
+        ((and (%qint-narrowing-target op) (= (length expr) 3)) ; endeavour 205: straight-through
+         (let ((x (cadr expr)) (y (caddr expr)) (q (%qint-narrowing-target op)) (v-adj (local-adj v)))
+           (when (symbolp x)
+             (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (%q-ste :value ,q ,x ,y) ,v-adj)))))
+           (when (symbolp y)
+             (emit `(set! ,(local-adj y) (+ ,(local-adj y) (* (%q-ste :scale ,q ,x ,y) ,v-adj)))))
+           t))
+        ((and (%185-op-named-p op "TO-FLOAT") (= (length expr) 3)) ; endeavour 205: scale * q is exact
+         (let ((q (cadr expr)) (s (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp q) (emit `(set! ,(local-adj q) (+ ,(local-adj q) (* ,s ,v-adj)))))
+           (when (symbolp s) (emit `(set! ,(local-adj s) (+ ,(local-adj s) (* (%q-raw-float ,q ,s) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "SQRT")            ; d/da sqrt(a) = 0.5 / sqrt(a)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 0.5 (,(sym "SQRT") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "RSQRT")           ; d/da a^-1/2 = -0.5 rsqrt(a) / a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* -0.5 (/ (,(sym "RSQRT") ,a) ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "TANH")            ; d/da tanh(a) = 1 - tanh(a)^2
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (- 1.0 (* (,(sym "TANH") ,a) (,(sym "TANH") ,a))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ERF")             ; d/da erf(a) = 2/sqrt(pi) exp(-a^2)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 1.1283791670955126 (exp (- 0.0 (* ,a ,a)))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "EXP2")            ; d/da 2^a = ln2 2^a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 0.6931471805599453 (,(sym "EXP2") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ABS")             ; d/da |a| = sign(a)  (0 at 0)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a)
+                                            (* (- (to-float (> ,a 0.0)) (to-float (< ,a 0.0))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "CLAMP")           ; x passes through inside [lo,hi]; lo below; hi above
+         (destructuring-bind (x lo hi) (cdr expr)
+           (let ((v-adj (local-adj v)))
+             (when (symbolp x)
+               (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (to-float (* (>= ,x ,lo) (<= ,x ,hi))) ,v-adj)))))
+             (when (symbolp lo)
+               (emit `(set! ,(local-adj lo) (+ ,(local-adj lo) (* (to-float (< ,x ,lo)) ,v-adj)))))
+             (when (symbolp hi)
+               (emit `(set! ,(local-adj hi) (+ ,(local-adj hi) (* (to-float (> ,x ,hi)) ,v-adj)))))
+             t)))
+        ((%185-op-named-p op "+!")              ; endeavour 203: on the basic types +! is +
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "-!")              ; endeavour 203: on the basic types -! is -
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (- ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "WIDEN")           ; endeavour 203: the identity on basic types
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           t))
+        ((%185-op-named-p op "*!")              ; D6: *! is *
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (%q-raw-float ,b ,v-adj) ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (%q-raw-float ,a ,v-adj) ,v-adj)))))
+           t))
+        ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
+        ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
+        ((some (lambda (n) (%185-op-named-p op n))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"))
+         t)
+        (t nil)))))
+
+;; src/autodiff.lisp
+(defun %refuse-integer-mma-backward (form)
+  "Refuses a differentiated kernel holding an integer accumulator.  The backward of C = A.B multiplies
+   float adjoints by the operands, and no hardware form takes float and int8 together, so nothing can
+   lower it.  Without this PTX compiled a _grad kernel that nobody had validated, and SPIR-V died in
+   llvm-spirv with only an exit code."
+  (when (consp form)
+    (when (and (symbolp (car form))
+               (member (symbol-name (car form)) '("MAKE-REGISTER-TILE" "MAKE-WGMMA-ACCUMULATOR") :test #'string=)
+               (consp (cdr form))
+               (%elem-integer-p (second form)))
+      (error 'crisp-compiler-error
+             :message (format nil "(~(~a~) ~(~a~) ..): integer MMA has no backward.  Train in float with to-q and to-float, or mark the kernel forward-only."
+                              (car form) (second form))))
+    (loop for rest on form
+          do (%refuse-integer-mma-backward (car rest))
+          while (consp (cdr rest)))))
+
+;; src/autodiff.lisp -- at the top of generate-backward-walk: (%refuse-integer-mma-backward flat-anf)
+(defvar *generate-backward-walk-204* (fdefinition 'generate-backward-walk)
+  "The src/ generate-backward-walk, for the overlay's wrapper below.  Goes away in the fold.")
+
+;; src/autodiff.lisp
+(defun generate-backward-walk (flat-anf &rest args)
+  "Overlay wrapper: the real walk, after refusing integer MMA.  See the note above."
+  (%refuse-integer-mma-backward flat-anf)
+  (apply *generate-backward-walk-204* flat-anf args))
+
+;; src/autodiff.lisp -- a raw qint cast refuses by name
+(defun %185-math-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of
+   them (the clause handled it), else NIL."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x))
+         (sym (n) (%185-crisp-sym n)))
+    (let ((op (car expr)))
+      (cond
+        ((and (%qint-narrowing-target op) (= (length expr) 2)) ; endeavour 205: a raw cast truncates
+         (when (symbolp (cadr expr))           ; here, not the skip list: q-int ends in INT, a silent zero
+           (error 'crisp-compiler-error
+                  :message (format nil "(~(~a~) ~(~a~)): a raw cast has no gradient.  Use (~(~a~) x scale) or (~(~a~) acc multiplier)."
+                                   op (cadr expr) op op)))
+         t)
+        ((or (%185-op-named-p op "MAX") (%185-op-named-p op "MIN")) ; endeavour 205: follows the winner
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v))
+                (ge (%185-crisp-sym ">=")) (lt (%185-crisp-sym "<"))
+                (if-sym (%185-crisp-sym "IF"))
+                (a-wins (if (%185-op-named-p op "MAX") `(,ge ,a ,b) `(,lt ,a ,b)))
+                (a-share `(%q-raw-float (,if-sym ,a-wins 1 0) ,v-adj))
+                (b-share `(%q-raw-float (,if-sym ,a-wins 0 1) ,v-adj)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,a-share ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,b-share ,v-adj)))))
+           t))
+        ((and (%qint-narrowing-target op) (= (length expr) 3)) ; endeavour 205: straight-through
+         (let ((x (cadr expr)) (y (caddr expr)) (q (%qint-narrowing-target op)) (v-adj (local-adj v)))
+           (when (symbolp x)
+             (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (%q-ste :value ,q ,x ,y) ,v-adj)))))
+           (when (symbolp y)
+             (emit `(set! ,(local-adj y) (+ ,(local-adj y) (* (%q-ste :scale ,q ,x ,y) ,v-adj)))))
+           t))
+        ((and (%185-op-named-p op "TO-FLOAT") (= (length expr) 3)) ; endeavour 205: scale * q is exact
+         (let ((q (cadr expr)) (s (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp q) (emit `(set! ,(local-adj q) (+ ,(local-adj q) (* ,s ,v-adj)))))
+           (when (symbolp s) (emit `(set! ,(local-adj s) (+ ,(local-adj s) (* (%q-raw-float ,q ,s) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "SQRT")            ; d/da sqrt(a) = 0.5 / sqrt(a)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 0.5 (,(sym "SQRT") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "RSQRT")           ; d/da a^-1/2 = -0.5 rsqrt(a) / a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* -0.5 (/ (,(sym "RSQRT") ,a) ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "TANH")            ; d/da tanh(a) = 1 - tanh(a)^2
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (- 1.0 (* (,(sym "TANH") ,a) (,(sym "TANH") ,a))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ERF")             ; d/da erf(a) = 2/sqrt(pi) exp(-a^2)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 1.1283791670955126 (exp (- 0.0 (* ,a ,a)))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "EXP2")            ; d/da 2^a = ln2 2^a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 0.6931471805599453 (,(sym "EXP2") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ABS")             ; d/da |a| = sign(a)  (0 at 0)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a)
+                                            (* (- (to-float (> ,a 0.0)) (to-float (< ,a 0.0))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "CLAMP")           ; x passes through inside [lo,hi]; lo below; hi above
+         (destructuring-bind (x lo hi) (cdr expr)
+           (let ((v-adj (local-adj v)))
+             (when (symbolp x)
+               (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (to-float (* (>= ,x ,lo) (<= ,x ,hi))) ,v-adj)))))
+             (when (symbolp lo)
+               (emit `(set! ,(local-adj lo) (+ ,(local-adj lo) (* (to-float (< ,x ,lo)) ,v-adj)))))
+             (when (symbolp hi)
+               (emit `(set! ,(local-adj hi) (+ ,(local-adj hi) (* (to-float (> ,x ,hi)) ,v-adj)))))
+             t)))
+        ((%185-op-named-p op "+!")              ; endeavour 203: on the basic types +! is +
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "-!")              ; endeavour 203: on the basic types -! is -
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (- ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "WIDEN")           ; endeavour 203: the identity on basic types
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           t))
+        ((%185-op-named-p op "*!")              ; D6: *! is *
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (%q-raw-float ,b ,v-adj) ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (%q-raw-float ,a ,v-adj) ,v-adj)))))
+           t))
+        ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
+        ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
+        ((some (lambda (n) (%185-op-named-p op n))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"))
+         t)
+        (t nil)))))

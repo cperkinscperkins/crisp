@@ -1,0 +1,4 @@
+;; CHECK-FAIL: "is not a def-qint type"
+;; Endeavour 205 -- a declared product is between two qints.
+(def-qint q-a :base char :accum int)
+(def-qint-product q-dot (q-a char) :accum int)

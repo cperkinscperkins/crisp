@@ -1,0 +1,6 @@
+;; CHECK-FAIL: "only a quantized value takes a scale"
+;; Endeavour 205 -- a dropped second argument would be silent.
+(def-type fv (vector float :address-space :global :align :compact))
+(def-kernel e (&out o)
+  (declare #'(&out fv => nil) (global-size :set-to 1))
+  (set! (~ o 0) (to-float 5 1.0)))

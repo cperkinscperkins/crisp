@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;;
+;; Endeavour 205: def-qint gives a base type, an accumulator, and the (accum T) / (base T) accessors.
+(def-qint q-a :base char :accum int)
+
+(def-function product ((a q-a) (b q-a))
+  (declare #'(q-a q-a => (accum q-a)))
+  (return (*! a b)))
+
+(def-function back ((a (base q-a-accum)))
+  (declare #'(q-a => (accum q-a-accum)))
+  (return (widen a)))
+
+(def-type iv (vector int :address-space :global :align :compact))
+
+(def-kernel accessors (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (let ((a (to q-a 3)))
+    (set! (~ o 0) (to int (+ (product a a) (back a))))))

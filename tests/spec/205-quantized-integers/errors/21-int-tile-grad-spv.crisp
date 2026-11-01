@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "integer MMA has no backward"
+;; CHECK-FAIL-FLAGS: --ir-target=spv --hardware-profile=bmg --differentiate
+;; Endeavour 205 -- this died in llvm-spirv with only an exit code.  (accum T) is an integer element too.
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 32)))
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix q-a-accum :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat) (global-size :set-to 16) (local-size :set-to 16))
+  (let ((D (make-register-tile (accum q-a) (16 16) 0)))
+    (mma-accumulate-via-tile (8 16 32) D A B)
+    (store-tile D C (0 0))))

@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "a raw cast has no gradient"
+;; CHECK-FAIL: "a raw cast has no gradient"
+;; CHECK-FAIL-FLAGS: --ir-target=spv --differentiate
+;; Endeavour 205 -- the type name ends in INT, and the AD skip list takes such a TO- name as
+;; gradient-inert, so this was a silent zero gradient.
+(def-qint q-int :base char :accum int)
+(def-type fc (cell float :address-space :global))
+(def-kernel e (x s &out y)
+  (declare #'(fc fc &out fc => nil))
+  (let ((a (to-q-int (~ x) (~ s))))
+    (let ((acc (*! a a)))
+      (set! (~ y) (to-float (to-q-int acc) (~ s))))))

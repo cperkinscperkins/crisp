@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; VERIFY-AUTODIFF: x=100.0 s=0.5 atol=1e-4 fd=off expect.x=0.0 expect.s=127.0
+;;
+;; Endeavour 205: 100 / 0.5 = 200 saturates to 127.  The value no longer follows x, so dq/dx and dq/ds
+;; are zero, which leaves dy/ds = q = 127.  A gradient of 1 here would push x further past the rail.
+(def-qint q-a :base char :accum int)
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (x s &out y)
+  (declare #'(fc fc &out fc => nil))
+  (set! (~ y) (to-float (to-q-a (~ x) (~ s)) (~ s))))

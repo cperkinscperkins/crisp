@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 200 255 0 200
+;; HOIST-EXPECT: BUFFER f: 100 50 -14 -7
+;;
+;; Endeavour 205 ON-METAL: an unsigned base.  The range is 0..255, so 1000 gives 255 and -5 gives 0.
+;; to-float must zero-extend: 200 at scale 0.5 is 100.  The last two values of f are the same bits read
+;; as signed, -56 * 0.25 and -56 * 0.125, so a sign error would show as a value matching those.
+(def-qint q-u :base uchar :accum int)
+(def-qint q-s :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+(def-type fv (vector float :address-space :global :align :compact))
+
+(def-kernel uchar_metal (&out o f)
+  (declare #'(&out iv fv => nil) (global-size :set-to 1))
+  (let ((g (to-float (get-global-id 0)))
+        (gi (to-int (get-global-id 0))))
+    (let ((u (to-q-u (+ g 200.0) 1.0))
+          (s (to q-s (+ gi -56))))
+      (set! (~ o 0) (to int u))
+      (set! (~ o 1) (to int (to-q-u (+ g 1000.0) 1.0)))
+      (set! (~ o 2) (to int (to-q-u (- g 5.0) 1.0)))
+      (set! (~ o 3) (to int (to-q-u (widen u) 1.0)))
+      (set! (~ f 0) (to-float u 0.5))
+      (set! (~ f 1) (to-float u 0.25))
+      (set! (~ f 2) (to-float s 0.25))
+      (set! (~ f 3) (to-float s 0.125)))))

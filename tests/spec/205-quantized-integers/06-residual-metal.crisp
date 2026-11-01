@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 127 200 60 72
+;;
+;; Endeavour 205 ON-METAL: the two ways to add quantized tensors, from the API draft.
+;;   Same type, so same scale: (to-q-a (+! x y) 1.0).  100 + 100 saturates to 127, and is 200 wide
+;;   Different scales go through float: 100 at 0.5 and 40 at 0.25 are 50 and 10, so 60
+(def-qint q-a :base char :accum int)
+(def-qint q-b :base char :accum int)
+(def-qint q-out :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+
+(def-kernel residual_metal (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (let ((g (to-int (get-global-id 0))))
+    (let ((x (to q-a (+ g 100)))
+          (y (to q-a (+ g 100)))
+          (z (to q-a (+ g 28)))
+          (b (to q-b (+ g 40))))
+      (set! (~ o 0) (to int (to-q-a (+! x y) 1.0)))
+      (set! (~ o 1) (to int (+! x y)))
+      (set! (~ o 2) (to int (to-q-out (+ (to-float x 0.5) (to-float b 0.25)) 1.0)))
+      (set! (~ o 3) (to int (to-q-a (-! x z) 1.0))))))

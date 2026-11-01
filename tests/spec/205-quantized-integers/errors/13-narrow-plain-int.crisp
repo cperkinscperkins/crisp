@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "takes a float or an accumulator"
+;; Endeavour 205 -- a plain int has no role here.
+(def-qint q-a :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+(def-kernel e (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (set! (~ o 0) (to int (to-q-a 5 1.0))))

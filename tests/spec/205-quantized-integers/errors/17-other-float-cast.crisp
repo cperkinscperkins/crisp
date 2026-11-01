@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "needs a scale"
+;; Endeavour 205 -- every float cast is covered, not just to-float.
+(def-qint q-a :base char :accum int)
+(def-type iv (vector double :address-space :global :align :compact))
+(def-kernel e (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (set! (~ o 0) (to-double (to q-a 1))))

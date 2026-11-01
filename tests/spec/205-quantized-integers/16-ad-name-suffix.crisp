@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; VERIFY-AUTODIFF: x=1.3 s=0.5 atol=1e-4 fd=off expect.x=1.0 expect.s=0.4
+;;
+;; Endeavour 205: spec 11 with a type whose name ends in INT.  The AD skip list treats any TO- name with
+;; an integer suffix as gradient-inert, so without care (to-q-int ..) would be a silent zero gradient.
+(def-qint q-int :base char :accum int)
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (x s &out y)
+  (declare #'(fc fc &out fc => nil))
+  (set! (~ y) (to-float (to-q-int (~ x) (~ s)) (~ s))))
