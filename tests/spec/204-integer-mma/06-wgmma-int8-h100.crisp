@@ -1,0 +1,26 @@
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; Endeavour 204 ON-METAL (H100): char x char through wgmma.  K=128 is a 128-byte swizzle block,
+;; which is four k32 slices.
+;;
+;; MMA-DIMS: 64 64 128
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_int8 (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix char (64 128)))
+        (B-tile (make-scratch-matrix char (64 128)))
+        (D      (make-wgmma-accumulator int (64 64) 0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 128) D A-tile B-tile :swizzle :128b)
+    (store-tile-at D C (0 0))))

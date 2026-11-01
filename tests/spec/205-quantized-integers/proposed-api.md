@@ -152,11 +152,12 @@ only through the existing MMA forms, which gain integer elements:
   (declare #'(in-mat in-mat float &out out-mat)
            (global-size :set-to 32) (local-size :set-to 32))
   (let ((D (make-register-tile (accum q-a) (16 16) 0)))
-    (mma-accumulate-via-tile (16 8 32) D A B)   ; shape illustrative
+    (mma-accumulate-via-tile (8 16 32) D A B)   ; XMX.  K=32 is the int8 shape
     (store-tile (to-q-a D mult) C (0 0))))      ; same shape as (to-half D)
 ```
 
-`mult` is `s_A * s_B / s_C`.
+`mult` is `s_A * s_B / s_C`.  On NVIDIA the same kernel uses `make-wgmma-accumulator` and
+`wgmma-accumulate-via-tile`, because integer MMA there is `wgmma` only.
 
 A shape and element combination missing from the profile's typed `:mma-shapes` is a compile-time
 error at the MMA form, never a slow fallback.  So `(def-qint q :base short :accum long)` is legal, and
@@ -256,10 +257,8 @@ backward kernel.
    can be handled by hand: with symmetric weights, `sum((a - za) * b) = sum(a * b) - za * sum(b)`, an
    accumulator subtraction of a precomputed term.  A zero-point key can be added later without
    breaking anything.
-2. **Mixed-sign hardware.**  `def-qint-product` is agreed; hardware support is what remains open.  PTX grammar shows independent `.s8` / `.u8` operands, and SPIR-V has
-   per-matrix sign bits.  Mixed sign on XMX is unconfirmed.  First task of the integer MMA endeavour:
-   confirm with `ptxas`, and on BMG.  Typed profile entries (`(int8 8 16 32)`) also need a way to name
-   a sign pair.
+2. **Mixed-sign hardware: settled by 204.**  Exact on BMG in all four sign pairs.  `wgmma` assembles
+   with a mixed pair at PTX 8.4, and awaits an H100 run.
 3. **Block `&out`.**  How `quantize-to` writes both handles of an output record.
 4. **Global scale.**  NVFP4 exports can carry an optional per-tensor scale besides the block scales.
 5. **Per-instance scales.**  Brands could tie values to a specific scale at compile time.  Left out
@@ -271,7 +270,7 @@ backward kernel.
 |---|---|
 | 202 | Derived types through handles, casts, `:enforce :always`, operators that refuse rather than ignore an overload |
 | 203 | Done in overlay: `(accum T)` / `(base T)`, `set-accum`, real `*!`, `+!`, `-!`, `widen`, `to-sat` |
-| 204 | Integer MMA on both backends, on metal |
+| 204 | Done in overlay: integer MMA.  Exact on BMG; `wgmma` on H100 pending a pod run |
 | 205 | `def-qint`, `def-qint-product`, conversions, tile narrowing, then autodiff last |
 | 206 | Records holding handles, microfloat blocks, conversion path, then autodiff last |
 | Later | Native Blackwell `tcgen05` |

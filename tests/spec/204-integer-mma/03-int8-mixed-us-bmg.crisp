@@ -1,0 +1,23 @@
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; Endeavour 204 ON-METAL: uchar x char, the activation x weight pairing.  Whether XMX does this was
+;; the open question in proposed-api.md.  A runs from 200 up and B straddles zero.
+;;
+;; MMA-DIMS: 16 16 32
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 32)))
+
+(def-type a-mat (matrix uchar :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel mixed_us_matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 16) (local-size :set-to 16))
+  (let ((C-tile (make-register-tile int (16 16) 0)))
+    (mma-accumulate-via-tile (8 16 32) C-tile A B)
+    (store-tile C-tile C (0 0))))

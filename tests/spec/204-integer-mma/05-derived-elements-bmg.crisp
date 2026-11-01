@@ -1,0 +1,26 @@
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; Endeavour 204 ON-METAL: derived element types and an (accum T) tile, which is what def-qint will
+;; hand to these forms in 205.
+;;
+;; MMA-DIMS: 16 16 32
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 32)))
+
+(def-derived-type q-a char :subst :no)
+(def-derived-type q-a-accum int :subst :no)
+(set-accum q-a q-a-accum)
+
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix q-a-accum :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel derived_matmul (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat)
+           (global-size :set-to 16) (local-size :set-to 16))
+  (let ((C-tile (make-register-tile (accum q-a) (16 16) 0)))
+    (mma-accumulate-via-tile (8 16 32) C-tile A B)
+    (store-tile C-tile C (0 0))))

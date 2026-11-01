@@ -1,0 +1,15 @@
+;; CHECK-FAIL: "integer and float do not mix"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
+;; Endeavour 204
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 8)))
+        (B-tile (make-scratch-matrix float (64 8)))
+        (D      (make-wgmma-accumulator int (64 64) 0)))
+    (load-tile A A-tile (0 0))
+    (load-tile B B-tile (0 0))
+    (wgmma-accumulate-via-tile (64 64 8) D A-tile B-tile)
+    (store-tile-at D C (0 0))))

@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "must be signed"
+;; CHECK-FAIL-FLAGS: --hardware-profile=bmg --ir-target=spv
+;; Endeavour 204
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 32)))
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix uint :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat) (global-size :set-to 16) (local-size :set-to 16))
+  (let ((C-tile (make-register-tile uint (16 16) 0u)))
+    (mma-accumulate-via-tile (8 16 32) C-tile A B)
+    (store-tile C-tile C (0 0))))
