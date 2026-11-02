@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 9 1 2 3
+;;
+;; Endeavour 206 ON-METAL: a record can hold a handle beside plain values, here an offset used to index it.
+
+(def-type iv (vector int :address-space :global :align :compact))
+(def-record view (data iv) (at ulong))
+
+(def-function write-at (&out v x)
+  (declare #'(&out view int => nil))
+  (set! (~ (data~ v) (at~ v)) x))
+
+(def-kernel record_view (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (let ((v (make-view :data o :at 0ul)))
+    (write-at v 9)))

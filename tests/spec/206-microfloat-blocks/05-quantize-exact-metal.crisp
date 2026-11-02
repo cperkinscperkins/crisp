@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 215 3 2 3
+;; HOIST-EXPECT: BUFFER s: 48 1 2 3
+;; HOIST-EXPECT: BUFFER y: 3 -1.5 0.75 0
+;;
+;; Endeavour 206 ON-METAL: one block, packed, by hand.  The largest element is 3, so the scale is 3 / 6 = 0.5,
+;; which e4m3 holds exactly as code 48.  Divided by it the elements are 6 -3 1.5 0, codes 7 13 3 0.  The even
+;; element takes the low nibble, so the bytes are 13 * 16 + 7 = 215, and 3.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4))
+
+(def-kernel quant_exact (&out x c s y)
+  (declare #'(&out mf-floats mf-codes mf-scales mf-floats => nil) (global-size :set-to 1))
+  (let ((w (make-mf :codes c :scales s)))
+    (set! (~ x 0) 3.0)
+    (set! (~ x 1) -1.5)
+    (set! (~ x 2) 0.75)
+    (set! (~ x 3) 0.0)
+    (mf-quantize-block x 0ul w)
+    (set! (~ y 0) (to-float w 0))
+    (set! (~ y 1) (to-float w 1))
+    (set! (~ y 2) (to-float w 2))
+    (set! (~ y 3) (to-float w 3))))

@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "only a microfloat block has a scale"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- (scale T) is only for a block.
+
+(def-qint q-a :base char :accum int)
+(def-type sv (vector (scale q-a) :address-space :global :align :compact))
+
+(def-kernel k_e (&out y)
+  (declare #'(&out sv) (global-size :set-to 1))
+  (set! (~ y 0) 0))

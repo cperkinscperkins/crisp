@@ -1,0 +1,19 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER y: 3 -1.5 1 0
+;;
+;; Endeavour 206 ON-METAL: fake-quant's forward values.  The block's largest element is 3, so the scale is 0.5.
+;;   3 / 0.5 = 6, which is 6, so 3.
+;;   -1.3 / 0.5 = -2.6, which rounds to -3, so -1.5.
+;;   0.9 / 0.5 = 1.8, which rounds to 2, so 1.
+;;   0.1 / 0.5 = 0.2, which rounds to 0.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4))
+
+(def-kernel fq_forward (&out x y)
+  (declare #'(&out mf-floats mf-floats => nil) (global-size :set-to 4) (local-size :set-to 4))
+  (loop-vector-stride x (i)
+    (set! (~ x i) (cond ((= i 0ul) 3.0) ((= i 1ul) -1.3) ((= i 2ul) 0.9) (else 0.1))))
+  (sync-workgroup)
+  (fake-quant-mf x y))

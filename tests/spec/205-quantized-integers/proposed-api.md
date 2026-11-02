@@ -167,7 +167,9 @@ it only fails if that type reaches an MMA form on hardware without that combinat
 
 ## 4. Microfloat blocks
 
-Less settled than sections 2 and 3.  The two-handle layout is agreed, the rest is a sketch.
+Built in endeavour 206: see `tests/spec/206-microfloat-blocks/microfloat-blocks.md`, which is the
+reference.  This section is the sketch it started from.  What changed: `fake-quant-NAME` is new, and a block
+cannot be a kernel parameter.
 
 ### Base types
 
@@ -261,8 +263,8 @@ backward kernel.
    breaking anything.
 2. **Mixed-sign hardware: settled by 204.**  Exact on BMG in all four sign pairs, and on the H100 for
    `uchar` x `char` through `wgmma` at PTX 8.4.
-3. **Block `&out`.**  How `quantize-to` writes both handles of an output record.
-4. **Global scale.**  NVFP4 exports can carry an optional per-tensor scale besides the block scales.
+3. **Block `&out`: settled by 206.**  `quantize-to` is one call, and a record's handles are written through it.
+4. **Global scale: deferred.**  NVFP4 exports can carry an optional per-tensor scale besides the block scales.
 5. **Per-instance scales.**  Brands could tie values to a specific scale at compile time.  Left out
    of the first cut; nominal types are enough at kernel scale.
 
@@ -274,5 +276,5 @@ backward kernel.
 | 203 | Done in overlay: `(accum T)` / `(base T)`, `set-accum`, real `*!`, `+!`, `-!`, `widen`, `to-sat` |
 | 204 | Done in overlay: integer MMA.  Exact on BMG and, through `wgmma`, on H100 |
 | 205 | Done in overlay: `def-qint`, `def-qint-product`, conversions, tile narrowing, autodiff.  See `quantized-integers-205.md` |
-| 206 | Records holding handles, microfloat blocks, conversion path, then autodiff last |
+| 206 | Done in overlay: records holding handles, microfloat blocks, conversion path, `fake-quant`.  See `microfloat-blocks.md` |
 | Later | Native Blackwell `tcgen05` |

@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER s: 112 113 108 0
+;; HOIST-EXPECT: BUFFER c: 120 250 122 0
+;; HOIST-EXPECT: BUFFER y: 1 -3 0.09375 0
+;;
+;; Endeavour 206 ON-METAL: quantize-to and dequantize-from, one block per element, with fp8-e5m2 codes and
+;; fp8-e8m0 scales, where a scale is the next power of two up from x / 57344.
+;;   1:   2^-15, code 112.  x / scale is 2^15, code 120.
+;;   -3:  2^-14, code 113.  x / scale is -1.5 * 2^15, code 250.
+;;   0.1: 2^-19, code 108.  x / scale is 52428.8, which rounds to 1.5 * 2^15, code 122.  So 0.09375.
+;;   0:   code 0, a scale of 2^-127 that a GPU may flush to zero, and zero either way.
+
+(def-microfloat-block mf :base fp8-e5m2 :scale fp8-e8m0 :accum float :shape (1))
+
+(def-kernel quant_all (&out x c s y)
+  (declare #'(&out mf-floats mf-codes mf-scales mf-floats => nil) (global-size :set-to 4) (local-size :set-to 4))
+  (let ((w (make-mf :codes c :scales s)))
+    (loop-vector-stride x (i)
+      (set! (~ x i) (cond ((= i 0ul) 1.0) ((= i 1ul) -3.0) ((= i 2ul) 0.1) (else 0.0))))
+    (quantize-to-mf x w)
+    (dequantize-from-mf w y)))

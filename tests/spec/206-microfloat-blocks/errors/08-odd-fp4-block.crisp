@@ -1,0 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "must have an even size"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- two fp4 codes share a byte.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (15))

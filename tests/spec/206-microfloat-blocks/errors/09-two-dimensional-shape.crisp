@@ -1,0 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "one positive block size"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- blocks are one-dimensional for now.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4 4))

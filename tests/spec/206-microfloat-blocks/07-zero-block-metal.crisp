@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 0 0 2 3
+;; HOIST-EXPECT: BUFFER s: 0 1 2 3
+;; HOIST-EXPECT: BUFFER y: 0 0 0 0
+;;
+;; Endeavour 206 ON-METAL: an all-zero block has scale 0.  Dividing by it would make NaN.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4))
+
+(def-kernel quant_zero (&out x c s y)
+  (declare #'(&out mf-floats mf-codes mf-scales mf-floats => nil) (global-size :set-to 1))
+  (let ((w (make-mf :codes c :scales s)))
+    (set! (~ x 0) 0.0)
+    (set! (~ x 1) 0.0)
+    (set! (~ x 2) 0.0)
+    (set! (~ x 3) 0.0)
+    (mf-quantize-block x 0ul w)
+    (set! (~ y 0) (to-float w 0))
+    (set! (~ y 1) (to-float w 1))
+    (set! (~ y 2) (to-float w 2))
+    (set! (~ y 3) (to-float w 3))))

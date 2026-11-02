@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "codes from different blocks"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- codes from different blocks have different scales, so comparing them means nothing.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+
+(def-kernel k_e (c s &out y)
+  (declare #'(mf-codes mf-scales &out mf-floats) (global-size :derive-from y :strategy :strided))
+  (let ((w (make-mf :codes c :scales s)))
+    (loop-vector-stride y (i)
+      (set! (~ y i) (to-float (max (~ w i) (~ w i)))))))

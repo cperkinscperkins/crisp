@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "is not differentiable"
+;; CHECK-FAIL: "is not differentiable"
+;; CHECK-FAIL-FLAGS: --differentiate --ir-target=ptx
+;;
+;; Endeavour 206 -- codes are packed integers, so quantize-to has no gradient.  Training uses fake-quant-NAME,
+;; and the compiler says which function stopped it.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+
+(def-kernel k_e (x &out c s)
+  (declare #'(mf-floats &out mf-codes mf-scales) (global-size :derive-from s :strategy :strided))
+  (let ((w (make-mf :codes c :scales s)))
+    (quantize-to-mf x w)))

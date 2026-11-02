@@ -4343,7 +4343,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         registers, MMA_CORRECT.  With (occupancy-target nil): 252 registers, exit 1, the hint and "too many
         resources requested for launch", no "Kernel executed successfully".  Adding (max-registers 166): 166
         registers, MMA_CORRECT.  Full CUDA audit: 1725 of 1729, 217 hoists, none skipped, none refused at
-        launch.  The 4 failures are BUG 152.
+        launch.  The 4 failures are BUG 152, in the libdevice specs.
 
 [x] 136 FIXED (endeavour 193, 2026-10-25) -- die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
         FIX: die no longer lowers to llvm.trap.  It claims the module-scope @__crisp_die_record (CAS) and
@@ -4575,5 +4575,20 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         traced; the other three fail the same way and are ASSUMED to share the cause.
         Note BUG 135's text saw these same four on 2026-10-24 failing in a full run and passing alone, as
         "order / environment".  Which toolkit that pod had is not recorded.
-        NOT DECIDED: whether a spec should pin the toolkit, or Crisp should lower this intrinsic.  A pod image
-        with an older toolkit passes around it.
+        DECIDED 2026-11-01: rent a pod image with a 12.4 toolkit when these four matter, and leave lowering the
+        intrinsic until a newer toolkit is needed.  The scripts take the toolkit from the rented image, so on a
+        12.8 image these four are expected failures.
+
+[ ] 153 FLOAT != IS FALSE WHEN AN OPERAND IS NaN.
+        src/codegen.lisp: (def-comparison-codegen semantic-neq +llvm-int-ne+ +llvm-real-one+ ..).  fcmp one is
+        ORDERED not-equal, so (!= x x) is false for a NaN, and so is (!= 1.0 NaN).  IEEE and C say true.
+        Found 2026-11-01, on BMG: endeavour 206's NaN test encoded NaN as 0.  Anything using (!= x x) as a NaN
+        test silently gets false.  LIKELY FIX: +llvm-real-une+, one word, but it changes every float !=, so it
+        needs a decision and a look at what the change does to generated code.  206 tests (= a a) instead.
+
+[ ] 154 A STRIDE INSIDE A def-grid-function CANNOT BE DIFFERENTIATED, AND THE ERROR NAMES SET!.
+        A plain kernel calling a plain grid function that holds a loop-vector-stride, with no microfloats in
+        sight, fails under --differentiate with "Function SET! is not differentiable".  Loud, not silent.
+        LIKELY CAUSE: %expand-stride-macros-in-form rewrites strides in the kernel's own forms, and a stride
+        inside a grid function is never seen.  reduce-vec had the same symptom with a macro, and 206's
+        fake-quant-NAME is a macro expanded there for the same reason.  Found 2026-11-01.

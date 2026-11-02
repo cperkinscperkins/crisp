@@ -1,0 +1,42 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 0 0 0 16
+;;
+;; Endeavour 206 ON-METAL: fp4 (E2M1) against its definition.  The values are 0 0.5 1 1.5 2 3 4 6, and
+;; code 8 and up are their negatives.
+;;   o[0]: codes that decode to the wrong value
+;;   o[1]: codes that do not survive decode then encode.  -0 encodes as 0 and is left out.
+;;   o[2]: rounding cases that go wrong.  Each tie goes to the even code; 7 saturates to 6.
+;;   o[3]: codes visited, so the zeros above are not vacuous.
+
+(def-microfloat-block m :base fp4 :scale fp8-e4m3 :accum float :shape (2))
+(def-type iv (vector int :address-space :global :align :compact))
+
+(def-function dec-miss (c want)
+  (declare #'(int float => int))
+  (if (= (m-decode-code (to-uchar c)) want) 0 1))
+
+(def-function enc-miss (x want)
+  (declare #'(float int => int))
+  (if (= (to-int (m-encode-code x)) want) 0 1))
+
+(def-kernel fp4_codes (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (let ((d 0) (r 0) (n 0))
+    (set! d (+ d (dec-miss 0 0.0) (dec-miss 1 0.5) (dec-miss 2 1.0) (dec-miss 3 1.5)
+                 (dec-miss 4 2.0) (dec-miss 5 3.0) (dec-miss 6 4.0) (dec-miss 7 6.0)))
+    (set! d (+ d (dec-miss 9 -0.5) (dec-miss 10 -1.0) (dec-miss 11 -1.5) (dec-miss 12 -2.0)
+                 (dec-miss 13 -3.0) (dec-miss 14 -4.0) (dec-miss 15 -6.0)))
+    (dotimes (c 16)
+      (let ((code (to-int c)))
+        (set! n (+ n 1))
+        (when (!= code 8)
+          (when (!= (to-int (m-encode-code (m-decode-code (to-uchar code)))) code)
+            (set! r (+ r 1))))))
+    (set! (~ o 0) d)
+    (set! (~ o 1) r)
+    (set! (~ o 2) (+ (enc-miss 0.25 0) (enc-miss 0.75 2) (enc-miss 1.25 2) (enc-miss 1.75 4)
+                     (enc-miss 2.5 4) (enc-miss 3.5 6) (enc-miss 5.0 6) (enc-miss 7.0 7)
+                     (enc-miss -7.0 15)))
+    (set! (~ o 3) n)))
