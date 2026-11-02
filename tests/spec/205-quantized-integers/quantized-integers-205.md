@@ -89,7 +89,7 @@ I left this pass to CI on 202-204, and running it here found four failing specs 
 
 | Spec | Cause | Action |
 |---|---|---|
-| 202/02 | A derived float keeps its type as an adjoint | BUG 150, `SKIP-WITH` |
+| 202/02 | A derived float keeps its type as an adjoint | BUG 151, `SKIP-WITH` |
 | 202/05, 203/02, 203/05 | A raw `(to T x)` of an active integer has no rule | `SKIP-WITH` |
 
 All four are loud errors, not wrong gradients.  None comes from 205.

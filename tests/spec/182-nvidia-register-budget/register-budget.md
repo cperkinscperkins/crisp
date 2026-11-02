@@ -196,5 +196,5 @@ does not inherit scheduling declarations (BUG 075).
 - The validators are in `overlays/spec-runner-overlay.lisp`; the runner keeps its own copies, so they belong in
   `tests/run-specs.lisp`, not `src/mma.lisp`.
 - `%cuda-emit-launch-lambda` goes to `src/hoist-cuda/main.lisp`.
-- Not yet on metal.  Run 154/03, plus one kernel with `(occupancy-target nil)` at 288 threads, which should stop
-  with the launch error and the new hint.
+- Verified on an H100 at 0c6881bd.  154/03 launches at 168 registers and is `MMA_CORRECT`.  With
+  `(occupancy-target nil)` it stops with the launch error and the hint, and `(max-registers 166)` rescues it.
