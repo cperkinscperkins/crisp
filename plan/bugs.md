@@ -4318,6 +4318,21 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         timing measurements on an H100 NVL, which suggests it worked then.  So either a compiler change
         since 154 or a driver change.  Next rental: build cb3b7199 (where the spec arrived) first; if that
         fails too, the driver is the suspect.  The rest of 140 and 154 pass on the same pod.
+        ROOT CAUSE (2026-11-01, H100 80GB HBM3, driver 595.91.07): THE KERNEL NEVER LAUNCHES.  Not a miscompile,
+        not the driver.  cuLaunchKernel returns "too many resources requested for launch"; the generated
+        harness prints that to stderr, carries on, prints "Kernel executed successfully", and compares the
+        untouched zero-filled C.  Proof: a store at the first instruction of the entry never reaches C.
+        Git bisect (each step run twice, all unanimous): last good f84b1189, first bad c11e80ce (CAS lowering
+        #40).  184 moved allocas to the entry block, SROA then promoted the accumulators, and registers per
+        thread went 168 -> 246 (252 at 970d4faa).  184 only exposed it: that change is correct.
+        Measured at 288 threads, adding .maxnreg by hand to the .ptx at 970d4faa: 166 launches and is
+        MMA_CORRECT; 180, 200, 220, 226-228, 232, 240 and 252 are refused.  168 launches (f84b1189).  The ceiling
+        is therefore 168-179, well under 65536 / 288 = 227, so per-CU register arithmetic does not predict it.
+        TWO ISSUES.  (1) The harness swallows a failed launch: %cuda-emit-launch-lambda, whose docstring says
+        the error "surfaces at the cuCtxSynchronize below".  It does not.  A failed launch can therefore pass
+        any spec whose expected output equals the buffer's initial contents.  Suite logs do not record the
+        harness's stderr, so past runs cannot be audited for this.  (2) The compiler emits no .maxnreg, so this
+        kernel cannot launch at all.
 
 [x] 136 FIXED (endeavour 193, 2026-10-25) -- die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
         FIX: die no longer lowers to llvm.trap.  It claims the module-scope @__crisp_die_record (CAS) and
