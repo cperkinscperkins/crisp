@@ -264,7 +264,7 @@
 - [check-coalesce 📝](46_static_analysys/02_check_coalesce.md)
 - [check-bank-conflicts 📝](46_static_analysys/03_check_bank_conflicts.md)
 - [check-divergence 📝](46_static_analysys/04_check_divergence.md)
-- [max-registers / warn-max-registers 📝](46_static_analysys/05_max_registers_warn_max_registers.md)
+- [max-registers / warn-max-registers ✅](46_static_analysys/05_max_registers_warn_max_registers.md)
 - [check-barriers 📝](46_static_analysys/06_check_barriers.md)
 - [miscellaneous ⚠️](46_static_analysys/07_miscellaneous.md)
 

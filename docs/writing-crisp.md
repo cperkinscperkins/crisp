@@ -336,6 +336,12 @@ Integer results (`floor`, bit ops) carry zero gradient.  See chapter 48.
   that needs more registers than the bound allows is SPILLED by ptxas, silently (BUG 124).  Leave it to the
   profile, or turn it off with `(occupancy-target nil)`; whatever you choose, check that `ptxas -v` (or a
   contest site's report) shows a stack of 0 bytes.
+- A workgroup above 256 threads has a launch limit on registers per thread: 168 at 288 threads, which is
+  less than 65536 / 288.  With `(local-size :set-to N)` the compiler tells ptxas the size and ptxas stays
+  under the limit by itself.  If a kernel still cannot launch, the harness stops with `too many resources
+  requested for launch`.  Fix the workgroup size, or set `(declare (max-registers N))`, which ptxas meets
+  by spilling.  `(declare (warn-max-registers N))` only warns.  Both go on a kernel, not on a helper
+  function.
 - `(declare (unroll t))` / unroll counts on loops.
 - Reductions: `reduce-vec`.  Matmul: the MMA paths above.  Elementwise: `loop-vector-stride`.
 - Compare against `benchmarks/` and `performance/` before claiming a speedup.

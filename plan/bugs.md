@@ -4331,8 +4331,15 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         TWO ISSUES.  (1) The harness swallows a failed launch: %cuda-emit-launch-lambda, whose docstring says
         the error "surfaces at the cuCtxSynchronize below".  It does not.  A failed launch can therefore pass
         any spec whose expected output equals the buffer's initial contents.  Suite logs do not record the
-        harness's stderr, so past runs cannot be audited for this.  (2) The compiler emits no .maxnreg, so this
-        kernel cannot launch at all.
+        harness's stderr, so past runs cannot be audited for this.  (2) The compiler gives ptxas no workgroup
+        size, so this kernel cannot launch at all.
+        FIX (2026-11-01, overlays, not yet on metal): the launch goes through CUDA_CHECK, and a resource refusal
+        also says what to do.  A compile-time workgroup above 256 threads gets .maxntid, and ptxas then holds
+        154/03 to 168 registers by itself (offline, ptxas 12.4.1).  The threshold is deliberate: stamping every
+        kernel changed the code of 229 of 408 and raised registers in 106, some from 32 to 64.  With the rule,
+        400 of 408 kernels match 970d4faa byte for byte; the other 8 are above 256 threads or new specs.  The
+        design's (max-registers N) and (warn-max-registers N) are implemented; N becomes .maxnreg.  PENDING: run
+        154/03 and one deliberately unlaunchable kernel on an H100.
 
 [x] 136 FIXED (endeavour 193, 2026-10-25) -- die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
         FIX: die no longer lowers to llvm.trap.  It claims the module-scope @__crisp_die_record (CAS) and

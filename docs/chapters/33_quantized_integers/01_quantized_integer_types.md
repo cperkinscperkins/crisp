@@ -159,7 +159,7 @@ the "sum of products" (dot-product) pattern.
 
 This means the compiler's behavior is strict and depends on your chosen output target.
 
-##### 1. When Compiling (to LLVM IR, SPIR-V, or PTX)
+##### When Compiling (to LLVM IR, SPIR-V, or PTX)
 
 This path is optimized for **maximum performance**. The compiler acts as a strict gatekeeper and maintains a "whitelist" of `qint` combinations that are known to map directly to hardware intrinsics.
 
@@ -167,12 +167,5 @@ This path is optimized for **maximum performance**. The compiler acts as a stric
 - Unsupported Combinations: If you define a type that is not on this hardware "whitelist" (e.g., `:base qb16` with `:accum qb64`), the compiler will emit a compile-time error.
 - No Emulation: The compiler will NOT silently generate a slow "emulation" path. This is a core design choice: it is better to give you a compile-time error than to let you ship a kernel that is 100x slower than you intended.
 
-##### 2. When Transpiling (to OpenCL C)
-
-This path is optimized for maximum portability and debugging, not performance. The transpiler has no way to guarantee that specific hardware intrinsics are available.
-
-- Therefore, in this mode, the strict "whitelist" rules are relaxed.
-- Crisp will generate a slow, emulated `for` loop to perform the quantized operations (like `B*B => A` and `A+A => A`).
-- This ensures the transpiled C code is portable and works, but it will have severely suboptimal performance as it will NOT use the specialized AI hardware.
 
 

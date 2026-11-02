@@ -3936,8 +3936,8 @@ For template usage, see the subequent section.
 | `to-uniform`  | `(to-uniform someVar)`      | No  | Yes | tells the compiler to MAKE the newly defined variable uniform across the entire workgroup. This is non-trivial. See [to-uniform](#to-uniform-) |
 | `forward-only` | see [Auto-Differentiation](#auto-differentiation-ad)| Yes | No | tells the compiler that this function is forward-only and should not be differentiated. Will not be compiled when the `-differentiate` flag is used. |
 | `reduction-vjp` | `(reduction-vjp argmax-local-vjp)` | Yes | No | on the combiner of a dependent multi-variable reduction: names the local VJP that makes the reduction differentiable -- (own state, result, result adjoint) => own adjoint. See [Dependent Reductions](#2-dependent-reductions). |
-| `max-registers` | `(max-registers 64)`        | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler error if it exceeds. |
-|`warn-max-registers` | `(warn-max-registers 64)` | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler warning if it exceeds. It will also name which kernel args might be candidates for `no-sroa`  |
+| `max-registers` | `(max-registers 64)`        | Yes | No | On a kernel only. Limits the registers per thread: on PTX ptxas must fit the kernel and spills what does not fit. Also warns when the compiler's estimate exceeds it. See [max-registers](#max-registers--warn-max-registers-). |
+|`warn-max-registers` | `(warn-max-registers 64)` | Yes | No | On a kernel only. Warns when the compiler's register estimate exceeds the budget, and changes nothing else. See [max-registers](#max-registers--warn-max-registers-). |
 | `no-sroa` | `(no-sroa someVar)` |             | Yes | No | The variable named (typicall a Storage Handle) will not be automatically expanded into its SROA components at the kernel boundary, but is instead brought over as a single constant memory struct. This can lower register usage, but is only available for storage handles that do NOT use mutable strides or offsets. | 
 
 
@@ -4729,10 +4729,13 @@ bound automatically to every kernel whose body has a stream loop (`loop-vector-s
 `reduce-vec`).  The declaration is for overriding that -- a different target, or `nil` -- and for
 kernels the automatic rule does not cover.
 
-**Where it has an effect.**  On PTX it becomes the entry's launch bounds, `.maxntid` (the workgroup
-size) and `.minnctapersm` (target / workgroup size) -- CUDA's `__launch_bounds__` -- from which ptxas
-derives its register budget.  The hoisting code needs no change: it sizes the grid from the
-compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
+**Where it has an effect.**  On PTX it becomes the entry's `.minnctapersm` (target / workgroup size),
+which with `.maxntid` makes up CUDA's `__launch_bounds__`, from which ptxas derives its register
+budget.  A kernel with a compile-time workgroup above 256 threads gets `.maxntid` whether or not it has
+a target, so that it stays launchable, and `(occupancy-target nil)` removes that as well.  At 256
+threads or fewer, a kernel with no target gets no bounds: `.maxntid` changes how ptxas allocates
+registers, often upward, so it is not added where it cannot help.  The hoisting code needs no change: it
+sizes the grid from the compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
 
 #### check-thread-bounds 📝
 By itself, the `global-size` expressions above doesn't result in any change to the 
@@ -11038,23 +11041,26 @@ in the warp, not just some.
 -->
 
 
-### max-registers / warn-max-registers 📝
+### max-registers / warn-max-registers ✅
 
 ```
-;; in a kernel or function progn:
+;; in a kernel:
 (declare (max-registers 64))
 (declare (warn-max-registers 64))
 ```
 
-This analysis cannot be elected in `declaim`. It is function or kernel specific.
+This analysis cannot be elected in `declaim`. It is kernel specific: on a function that is not a
+kernel it is refused, because a function is compiled into the kernel that calls it. The value is a
+positive integer literal, in registers per thread.
 
 `max-registers` and `warn-max-registers` are advanced checks. These checks are slightly 
 easier to use if you have performed compilations already
 and are looking at the register usage enumerated in the metadata file. 
 
-These check set a "performance budget" that sets an upper bound on how many registers a function or kernel requires.
-The compiler can estimate how many registers a function will require. If its estimate exceeds
-the declared budget, a warning is issued.
+These checks set a "performance budget" that sets an upper bound on how many registers a kernel requires.
+The compiler can estimate how many registers a kernel will require. If its estimate exceeds
+the declared budget, a warning is issued. The estimate counts only what the kernel explicitly
+reserves, such as `wgmma` accumulators, so a kernel can exceed its budget without a warning.
 
 For example:
 
@@ -11068,6 +11074,18 @@ For `warn-max-registers`, there is only the warning emitted, no other change occ
 the compiler will TRY TO FIT the kernel 
 to `max-registers`, which may mean that other variables will experience "register spill"
 and be moved to local memory. Only use `max-registers` if you know what you are about.
+
+On PTX it becomes the entry's `.maxnreg`, and ptxas does the fitting. If the kernel cannot fit,
+because a `wgmma` accumulator alone needs more registers than the budget, ptxas refuses it when the
+kernel is loaded. On SPIR-V there is no such limit, so it compiles with a warning and has no effect.
+
+**You rarely need this to make a kernel launch.** A GPU refuses a kernel whose registers per thread,
+times its threads per workgroup, do not fit on one compute unit. At 256 threads or fewer that limit
+cannot be reached. Above 256, a kernel with a compile-time `(local-size :set-to ...)` tells ptxas
+its workgroup size with `.maxntid`, and ptxas keeps the kernel under the true limit, for example 168
+registers at 288 threads. `max-registers` is for a kernel above 256 threads whose workgroup size is not
+fixed at compile time, or for setting a tighter budget on purpose. When a kernel still cannot launch,
+the hoisted harness prints the error, says what to do about it, and stops.
 
 
 ### check-barriers 📝

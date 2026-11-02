@@ -26,8 +26,12 @@ the raw cast, and two arguments is the scaled conversion.
 
 1. **Tile narrowing on BMG is two steps, and the direct form is refused.**  A SPIR-V store is one
    `CooperativeMatrixStoreKHR` of a whole fragment, with no per-element hook.  Doing it for the author
-   means a hidden staging tile.  I assumed SLM, which is closed, but private memory and a conversion on
-   the cooperative matrix itself are both untried, so this is a choice and not a proven limit.  So
+   means a hidden staging tile, or a conversion on the cooperative matrix.  SLM is closed, and the other
+   two routes were probed on BMG with hand-edited SPIR-V of spec 10, with a passing control beside them:
+   any conversion on the matrix (`ConvertSToF`, `SConvert`, or the whole chain to a saturating `ConvertFToS`)
+   crashes IGC with an internal compiler error, and `llvm-spirv` cannot express `MatrixTimesScalar` at all.
+   A `CooperativeMatrixStoreKHR` to private memory compiles, runs, and delivers nothing to any lane,
+   silently, while an ordinary store through the same path reads back correctly.  So
    `(store-tile (to-q-a D m) C ..)` works on NVIDIA, and on BMG the message says to store into an int
    matrix and narrow its elements (spec 10).  This differs from section 3 of the draft, where one
    kernel shape serves both.  `to-half` is refused the same way on SPIR-V, where D-196-5 recorded it as "no Intel need yet".

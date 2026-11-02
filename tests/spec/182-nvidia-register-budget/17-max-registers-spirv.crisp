@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;;
+;; BUG 135 -- SPIR-V has no register limit to set, so (max-registers N) compiles there with a warning
+;; rather than failing a kernel that is meant for both backends.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_capped_spv (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (16))
+           (max-registers 96))
+  (reduce-vec #'+ A 0.0 out))

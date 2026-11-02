@@ -3151,3 +3151,182 @@
                '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"))
          t)
         (t nil)))))
+
+;;;; ============================================================================================
+;;;; BUG 135 -- a kernel too big to launch.  Launch bounds for every fixed workgroup size, and
+;;;; (declare (max-registers N)) / (warn-max-registers N).
+;;;; Fold: src/compiler.lisp, src/analysis/core.lisp, src/codegen.lisp, src/mma.lisp.
+;;;; ============================================================================================
+
+;; src/compiler.lisp
+(defvar *kernel-register-budgets* (make-hash-table :test 'equal)
+  "BUG 135.  Kernel name -> (:max N :warn M) from (declare (max-registers N)) and
+   (declare (warn-max-registers M)).  A kernel with neither has no entry.")
+
+;; src/analysis/core.lisp
+(defun %parse-register-budget-decl (name declarations label)
+  "BUG 135.  The value of the (LABEL N) declaration among DECLARATIONS, or NIL when there is none.
+   N must be a positive integer literal: it reaches ptxas as a directive."
+  (let ((decl (find label declarations
+                    :key (lambda (x) (when (and (consp x) (symbolp (car x))) (symbol-name (car x))))
+                    :test #'string-equal)))
+    (when decl
+      (unless (and (= (length (rest decl)) 1) (integerp (second decl)) (plusp (second decl)))
+        (error 'crisp-compiler-error
+               :message (format nil "Kernel ~a: (~(~a~) ...) takes one positive integer literal, registers per thread, got ~s."
+                                name label (rest decl))
+               :source-location nil))
+      (second decl))))
+
+;; src/analysis/core.lisp
+(defun %record-register-budgets (name declarations)
+  "BUG 135.  Validates NAME's (max-registers N) and (warn-max-registers N) and records them in
+   *kernel-register-budgets*, clearing any left by an earlier compile.  Refused on a function that
+   is not an entry point: a register limit belongs to the kernel it is compiled into."
+  (when name
+    (let ((entry-p (loop for d in declarations
+                         thereis (and (listp d) (symbolp (first d))
+                                      (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+          (max-regs (%parse-register-budget-decl name declarations "MAX-REGISTERS"))
+          (warn-regs (%parse-register-budget-decl name declarations "WARN-MAX-REGISTERS")))
+      (when (and (or max-regs warn-regs) (not entry-p))
+        (error 'crisp-compiler-error
+               :message (format nil "Function ~a: a register budget belongs on a kernel, because a function is compiled into the kernel that calls it."
+                                name)
+               :source-location nil))
+      (if (or max-regs warn-regs)
+          (setf (gethash name *kernel-register-budgets*) (list :max max-regs :warn warn-regs))
+          (remhash name *kernel-register-budgets*)))))
+
+;; src/analysis/core.lisp -- on fold, one call at the top of internal-def-function
+(defvar *internal-def-function-135* (fdefinition 'internal-def-function))
+
+;; src/analysis/core.lisp
+(defun internal-def-function (name params declarations body location)
+  "BUG 135: records the kernel's register budgets, then analyzes as before."
+  (%record-register-budgets name declarations)
+  (funcall *internal-def-function-135* name params declarations body location))
+
+;; src/codegen.lisp
+(defun %report-register-budget (kname)
+  "BUG 135.  Warns when the registers KNAME is known to reserve exceed a declared budget.  The
+   estimate counts explicit reservations only, so a kernel can exceed its budget without this
+   firing.  Also says when a normative (max-registers N) has no lowering on this backend."
+  (let* ((entry (gethash kname *kernel-register-budgets*))
+         (max-regs (getf entry :max))
+         (warn-regs (getf entry :warn)))
+    (when entry
+      (let ((estimate (%kernel-registers-per-thread kname)))
+        (log:debug "Kernel ~a: register estimate ~a, budgets max ~a warn ~a"
+                   kname estimate max-regs warn-regs)
+        (dolist (budget (remove nil (list max-regs warn-regs)))
+          (when (> estimate budget)
+            (format *error-output*
+                    "WARNING: Register pressure for '~a' is estimated at ~a, exceeding the declared budget of ~a.  This may lead to reduced occupancy.~%"
+                    kname estimate budget))))
+      (when (and max-regs (not (eq *target-backend* :ptx)))
+        (format *error-output*
+                "WARNING: (max-registers ~a) on '~a' has no effect on this backend.~%"
+                max-regs kname)))))
+
+;; src/codegen.lisp
+(defun %apply-occupancy-bound (func kname module)
+  "Endeavour 182.  On PTX, stamps entry point FUNC with its launch bounds.  \"nvvm.minctasm\" (target /
+   workgroup size, the minimum number of resident workgroups per compute unit) comes from its
+   occupancy target, and LLVM lowers it to .minnctapersm.  Nothing on other backends: launch bounds
+   are a PTX construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size,
+   or a workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at
+   analysis.
+
+   BUG 135: \"nvvm.maxntid\" no longer waits for an occupancy target.  Every kernel with a compile-time
+   workgroup size gets it, because ptxas derives its register cap from .maxntid and that cap is the
+   true launch ceiling.  At 256 threads or fewer it leaves the cap at 255, the same as no bound.
+   (occupancy-target nil) still means no bounds at all.  A (max-registers N) becomes \"nvvm.maxnreg\"."
+  (%report-register-budget kname)
+  (when (eq *target-backend* :ptx)
+    (let* ((decls (gethash kname *kernel-dispatch-declarations*))
+           (local-decl (getf decls :local-size))
+           (dims (and local-decl (%declared-local-size-dims (list local-decl))))
+           (wg (and dims (reduce #'* dims)))
+           (max-regs (getf (gethash kname *kernel-register-budgets*) :max))
+           (opted-out (multiple-value-bind (declared present)
+                          (gethash kname *kernel-occupancy-targets*)
+                        (and present (null declared))))
+           (ctx (llvm-get-module-context module)))
+      (flet ((stamp (key val)
+               (llvm-add-attribute-at-index
+                func +llvm-attribute-function-index+
+                (llvm-create-string-attribute ctx key (length key) val (length val)))))
+        (when max-regs
+          (log:info "Kernel ~a: (max-registers ~a) -> .maxnreg ~a" kname max-regs max-regs)
+          (stamp "nvvm.maxnreg" (format nil "~a" max-regs)))
+        (when (and wg (not opted-out))
+          (let ((maxntid (format nil "~{~a~^,~}" dims)))
+            (log:info "Kernel ~a: workgroup ~a -> .maxntid ~a" kname wg maxntid)
+            (stamp "nvvm.maxntid" maxntid)))
+        (multiple-value-bind (target source) (%effective-occupancy-target kname)
+          (when target
+            (if (or (null wg) (< target wg))
+                (log:info "Kernel ~a: ~(~a~) occupancy target ~a not applied (workgroup ~a)"
+                          kname source target (or wg "not fixed at compile time"))
+                (let ((minctasm (format nil "~a" (floor target wg))))
+                  (log:info "Kernel ~a: ~(~a~) occupancy target ~a -> .minnctapersm ~a"
+                            kname source target minctasm)
+                  (stamp "nvvm.minctasm" minctasm)))))))))
+
+
+;; src/compiler.lisp
+(defparameter *launch-bound-workgroup-threshold* 256
+  "BUG 135.  Largest workgroup that cannot be refused at launch for its registers: 256 threads at
+   ptxas's default cap of 255 registers fit one compute unit's 65536.  Above this, a kernel with no
+   .maxntid can compile to something the GPU will not launch.")
+
+;; src/codegen.lisp
+(defun %apply-occupancy-bound (func kname module)
+  "Endeavour 182.  On PTX, stamps entry point FUNC with its launch bounds for its occupancy target:
+   \"nvvm.maxntid\" (the workgroup extents) and \"nvvm.minctasm\" (target / workgroup size, the minimum
+   number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.
+   ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX
+   construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a
+   workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis.
+
+   BUG 135: a workgroup above *launch-bound-workgroup-threshold* gets \"nvvm.maxntid\" with no target,
+   because ptxas then keeps the kernel under the true launch ceiling (168 registers at 288 threads).
+   Below it the bound must NOT be automatic: it cannot help, and on every kernel it changed the code of
+   229 of 408 and raised registers in 106, which lowers occupancy.  (occupancy-target nil) still
+   means no bounds at all.  A (max-registers N) becomes \"nvvm.maxnreg\"."
+  (%report-register-budget kname)
+  (when (eq *target-backend* :ptx)
+    (let* ((decls (gethash kname *kernel-dispatch-declarations*))
+           (local-decl (getf decls :local-size))
+           (dims (and local-decl (%declared-local-size-dims (list local-decl))))
+           (wg (and dims (reduce #'* dims)))
+           (max-regs (getf (gethash kname *kernel-register-budgets*) :max))
+           (opted-out (multiple-value-bind (declared present)
+                          (gethash kname *kernel-occupancy-targets*)
+                        (and present (null declared))))
+           (maxntid (and dims (format nil "~{~a~^,~}" dims)))
+           (ctx (llvm-get-module-context module)))
+      (flet ((stamp (key val)
+               (llvm-add-attribute-at-index
+                func +llvm-attribute-function-index+
+                (llvm-create-string-attribute ctx key (length key) val (length val)))))
+        (when max-regs
+          (log:info "Kernel ~a: (max-registers ~a) -> .maxnreg ~a" kname max-regs max-regs)
+          (stamp "nvvm.maxnreg" (format nil "~a" max-regs)))
+        (multiple-value-bind (target source) (%effective-occupancy-target kname)
+          (cl:cond
+            ((and target wg (>= target wg))
+             (let ((minctasm (format nil "~a" (floor target wg))))
+               (log:info "Kernel ~a: ~(~a~) occupancy target ~a -> .maxntid ~a, .minnctapersm ~a"
+                         kname source target maxntid minctasm)
+               (stamp "nvvm.maxntid" maxntid)
+               (stamp "nvvm.minctasm" minctasm)))
+            (t
+             (when target
+               (log:info "Kernel ~a: ~(~a~) occupancy target ~a not applied (workgroup ~a)"
+                         kname source target (or wg "not fixed at compile time")))
+             (when (and wg (> wg *launch-bound-workgroup-threshold*) (not opted-out))
+               (log:info "Kernel ~a: workgroup ~a is above ~a -> .maxntid ~a"
+                         kname wg *launch-bound-workgroup-threshold* maxntid)
+               (stamp "nvvm.maxntid" maxntid)))))))))

@@ -1,0 +1,16 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx]: validate-ptx-maxntid-288
+;;
+;; BUG 135 -- a kernel with a compile-time workgroup above 256 threads tells ptxas that size, with no declaration
+;; and no hardware profile.  ptxas derives its register cap from .maxntid, and that is the real launch
+;; ceiling: 168 registers at 288 threads, where the unbounded default of 255 cannot launch at all.
+;; There is no .minnctapersm: that one asks for occupancy, and nobody asked.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_fixed (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (288)))
+  (reduce-vec #'+ A 0.0 out))

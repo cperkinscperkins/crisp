@@ -1,0 +1,15 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx]: validate-ptx-no-launch-bounds
+;;
+;; BUG 135 -- at 256 threads or fewer the launch limit cannot be reached, so a kernel with no occupancy
+;; target gets no bound.  This is deliberate: stamping .maxntid on every kernel changed the code of 229 of
+;; 408 and raised registers in 106, so it is not added where it cannot help.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_small (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256)))
+  (reduce-vec #'+ A 0.0 out))

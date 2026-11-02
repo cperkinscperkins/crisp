@@ -347,3 +347,27 @@
           (format stream "      std::cout << std::endl;~%")
           (format stream "      delete[] ~a_h; delete[] ~a_h; delete[] ~a_h;~%" ab bb cb)
           (format stream "    }~%"))))))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-launch-lambda (stream block-x block-y shared-bytes)
+  "The launch itself: an `_crisp_launch` lambda over the final gridX/gridY/gridZ, called once for the
+   correctness readback that follows.  emit-launch anchors its cluster-grid fix-up on this lambda's
+   first line, so it must stay the first thing after ALL grid computation.  (The lambda also served
+   the --mma-bench timed relaunch loop, retired 2026-10-16.)
+
+   BUG 135: a failed launch is fatal.  The lambda returns the result and CUDA_CHECK ends the program.
+   It used to print to stderr and carry on, so the harness reported success and compared buffers
+   nothing had written.  cuCtxSynchronize does not report a launch that never happened."
+  (format stream "    auto _crisp_launch = [&]() {~%")
+  (format stream "      return cuLaunchKernel(kernel,~%")
+  (format stream "          gridX, gridY, gridZ,~%")
+  (format stream "          ~a, ~a, 1,~%" block-x block-y)
+  (format stream "          ~a, 0,~%" shared-bytes)
+  (format stream "          kernelParams, nullptr);~%")
+  (format stream "    };~%")
+  (format stream "    CUresult _crisp_launch_result = _crisp_launch();~%")
+  (format stream "    if (_crisp_launch_result == CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES) {~%")
+  (format stream "        std::cerr << \"This kernel needs more registers per thread than one workgroup can have.  \"~%")
+  (format stream "                  << \"Fix its workgroup size with (local-size :set-to N), or set (declare (max-registers N)).\" << std::endl;~%")
+  (format stream "    }~%")
+  (format stream "    CUDA_CHECK(_crisp_launch_result);~%~%"))

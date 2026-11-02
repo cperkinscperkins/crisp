@@ -469,10 +469,13 @@ bound automatically to every kernel whose body has a stream loop (`loop-vector-s
 `reduce-vec`).  The declaration is for overriding that -- a different target, or `nil` -- and for
 kernels the automatic rule does not cover.
 
-**Where it has an effect.**  On PTX it becomes the entry's launch bounds, `.maxntid` (the workgroup
-size) and `.minnctapersm` (target / workgroup size) -- CUDA's `__launch_bounds__` -- from which ptxas
-derives its register budget.  The hoisting code needs no change: it sizes the grid from the
-compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
+**Where it has an effect.**  On PTX it becomes the entry's `.minnctapersm` (target / workgroup size),
+which with `.maxntid` makes up CUDA's `__launch_bounds__`, from which ptxas derives its register
+budget.  A kernel with a compile-time workgroup above 256 threads gets `.maxntid` whether or not it has
+a target, so that it stays launchable, and `(occupancy-target nil)` removes that as well.  At 256
+threads or fewer, a kernel with no target gets no bounds: `.maxntid` changes how ptxas allocates
+registers, often upward, so it is not added where it cannot help.  The hoisting code needs no change: it
+sizes the grid from the compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
 
 #### check-thread-bounds 📝
 By itself, the `global-size` expressions above doesn't result in any change to the 

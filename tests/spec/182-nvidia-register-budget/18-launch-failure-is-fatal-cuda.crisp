@@ -1,0 +1,16 @@
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_90]: PASS
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-launch-is-fatal
+;;
+;; BUG 135 -- a refused launch printed to stderr, and the harness went on to report success and compare
+;; buffers nothing had written.  It read as a wrong answer for weeks.  The generated launch now goes
+;; through CUDA_CHECK, and a resource refusal also says what to do about it.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_launch (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256)))
+  (reduce-vec #'+ A 0.0 out))

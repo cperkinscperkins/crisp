@@ -1,0 +1,14 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "takes one positive integer literal"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; BUG 135 -- one kernel, one budget.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (max-registers 64 96))
+  (reduce-vec #'+ A 0.0 out))
