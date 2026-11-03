@@ -1,0 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "base must be fp4"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- e8m0 has no zero and no sign, so it can only be a scale.
+
+(def-microfloat-block mf :base fp8-e8m0 :scale fp8-e4m3 :accum float :shape (16))

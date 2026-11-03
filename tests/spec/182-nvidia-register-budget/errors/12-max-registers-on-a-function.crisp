@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "belongs on a kernel"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; BUG 135 -- a register limit is a property of an entry point; a helper is compiled into its caller.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-function helper ((x float))
+  (declare (return-type float) (max-registers 64))
+  (+ x 1.0))
+
+(def-kernel k_e (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided))
+  (reduce-vec #'+ A 0.0 out))

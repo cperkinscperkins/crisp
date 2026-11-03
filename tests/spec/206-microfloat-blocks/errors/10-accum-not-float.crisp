@@ -1,0 +1,7 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "accum must be float"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- the accumulator of a block is a float.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum half :shape (16))

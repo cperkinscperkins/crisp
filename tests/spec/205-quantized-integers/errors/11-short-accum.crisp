@@ -1,0 +1,3 @@
+;; CHECK-FAIL: "must be at least"
+;; Endeavour 205 -- an accumulator holds a full product.
+(def-qint q-a :base char :accum char)

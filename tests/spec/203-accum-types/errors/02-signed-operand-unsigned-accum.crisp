@@ -1,0 +1,5 @@
+;; CHECK-FAIL: "must be signed"
+;; Endeavour 203 -- a signed operand can make a negative product.
+(def-derived-type b8 char :subst :no)
+(def-derived-type a32 uint :subst :no)
+(set-accum b8 a32)

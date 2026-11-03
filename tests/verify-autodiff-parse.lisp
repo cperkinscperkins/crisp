@@ -316,6 +316,7 @@
               (inputs nil)
               (at-points nil)
               (expected-grads nil)
+              (fd-off nil)
               (structs nil)
               (atol nil)
               (h 1e-3)
@@ -406,6 +407,10 @@
                     (let ((trimmed (string-trim '(#\Space #\Tab) p)))
                       (when (> (length trimmed) 0)
                         (push trimmed structs))))))
+               ;; 205: `fd=off` for a rule that disagrees with finite differences by design,
+               ;; like a straight-through estimator.  The expect.<name> values are then the check.
+               ((string= key "fd")
+                (setf fd-off (string= val-str "off")))
                ((and (>= (length key) 7)
                      (string= "expect." (subseq key 0 7)))
                 (push (cons (subseq key 7) (%vad-parse-float val-str token))
@@ -434,7 +439,10 @@
            (error "VERIFY-AUTODIFF: missing mandatory atol=<float>"))
          (when (null inputs)
            (error "VERIFY-AUTODIFF: no input values provided (need at least one <name>=<value>)"))
+         (when (and fd-off (null expected-grads))
+           (error "VERIFY-AUTODIFF: fd=off needs at least one expect.<name>=<float>, or nothing is checked"))
          (list :inputs (nreverse inputs)
+               :fd-off fd-off
                :atol atol
                :h h
                :seed-grad seed-grad

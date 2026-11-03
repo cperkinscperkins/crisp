@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; VERIFY-AUTODIFF: x=1.3 w=0.6 s=0.5 atol=1e-4 fd=off expect.x=1.0 expect.w=0.0 expect.s=0.4
+;;
+;; Endeavour 205: max picks a = 3 over b = 1, so the gradient follows x alone.
+(def-qint q-a :base char :accum int)
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (x w s &out y)
+  (declare #'(fc fc fc &out fc => nil))
+  (set! (~ y) (to-float (max (to-q-a (~ x) (~ s)) (to-q-a (~ w) (~ s))) (~ s))))

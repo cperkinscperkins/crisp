@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 2 8 5 -3
+;; HOIST-EXPECT: BUFFER p: 5 -3 0 1
+;;
+;; Endeavour 205 ON-METAL: what each role can do.  Accumulators add and subtract.  Both roles take max,
+;; min and comparison, and these need no scale.
+(def-qint q-a :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+
+(def-kernel roles_metal (&out o p)
+  (declare #'(&out iv iv => nil) (global-size :set-to 1))
+  (let ((g (to-int (get-global-id 0))))
+    (let ((x (to q-a (+ g 5)))
+          (y (to q-a (+ g -3))))
+      (let ((a (widen x))
+            (b (widen y)))
+        (set! (~ o 0) (to int (+ a b)))
+        (set! (~ o 1) (to int (- a b)))
+        (set! (~ o 2) (to int (max x y)))
+        (set! (~ o 3) (to int (min x y)))
+        (set! (~ p 0) (to int (max a b)))
+        (set! (~ p 1) (to int (min a b)))
+        (set! (~ p 2) (if (< x y) 1 0))
+        (set! (~ p 3) (if (= x x) 1 0))))))

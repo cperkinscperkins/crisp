@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "widen it first"
+;; Endeavour 205 -- a multiplier applies to an accumulator; a base value has no accumulator scale.
+(def-qint q-a :base char :accum int)
+(def-qint q-b :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+(def-kernel e (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (set! (~ o 0) (to int (to-q-b (to q-a 1) 1.0))))

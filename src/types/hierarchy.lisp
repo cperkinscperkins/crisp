@@ -670,3 +670,141 @@
                  (error "set-derived: layout mismatch at member index ~a. Ancestor ~a has offset ~a but descendant ~a has offset ~a."
                         idx ancestor-name a-offset descendant-name d-offset))))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 203 -- accumulator types: (accum T), (base T), set-accum
+;;;; See tests/spec/203-accum-types/accum-types.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %accum-key (a b)
+  "The *accum-registry* key for the operand pair A, B, after alias resolution."
+  (cons (symbol-name (resolve-type-alias a)) (symbol-name (resolve-type-alias b))))
+
+(defun %accum-numeric-parts (type-name)
+  "(values CATEGORY BITS) of TYPE-NAME's underlying primitive, or NIL if it is not numeric."
+  (let ((ct (and (symbolp type-name) (gethash (get-type-base (resolve-type-alias type-name)) *crisp-types*))))
+    (when (and ct (member (crisp-type-category ct) '(:signed-int :unsigned-int :float)))
+      (values (crisp-type-category ct) (crisp-type-size ct)))))
+
+(defun %validate-accum-pair (a b accum)
+  "Signals unless ACCUM can hold every product of A and B exactly."
+  (multiple-value-bind (a-cat a-bits) (%accum-numeric-parts a)
+    (multiple-value-bind (b-cat b-bits) (%accum-numeric-parts b)
+      (multiple-value-bind (acc-cat acc-bits) (%accum-numeric-parts accum)
+        (unless (and a-cat b-cat acc-cat)
+          (error 'crisp-compiler-error
+                 :message (format nil "set-accum: ~a, ~a and ~a must all be numeric types." a b accum)))
+        (let ((need (+ a-bits b-bits)))
+          (unless (>= acc-bits need)
+            (error 'crisp-compiler-error
+                   :message (format nil "set-accum: accumulator ~a must be at least ~a bits to hold a product of ~a and ~a; it is ~a."
+                                    accum need a b acc-bits))))
+        (when (and (or (eq a-cat :signed-int) (eq b-cat :signed-int)) (eq acc-cat :unsigned-int))
+          (error 'crisp-compiler-error
+                 :message (format nil "set-accum: accumulator ~a must be signed: a product involving signed ~a can be negative."
+                                  accum (if (eq a-cat :signed-int) a b))))))))
+
+(defun register-accum-type (operands accum)
+  "Records ACCUM as the accumulator of OPERANDS, a type name or a list of two.  (set-accum B A) also
+   makes A its own accumulator and B its base; (set-accum (B C) A) is a mixed-operand product."
+  (let* ((pair-p (consp operands))
+         (a (if pair-p (first operands) operands))
+         (b (if pair-p (second operands) operands))
+         (key (%accum-key a b)))
+    (%validate-accum-pair a b accum)
+    (let ((existing (gethash key *accum-registry*)))
+      (when (and existing (not (eq existing accum)))
+        (error 'crisp-compiler-error
+               :message (format nil "set-accum: ~a already has an accumulator, ~a." operands existing))))
+    (setf (gethash key *accum-registry*) accum)
+    (setf (gethash (%accum-key accum accum) *accum-registry*) accum)
+    (unless pair-p
+      (setf (gethash (symbol-name (resolve-type-alias accum)) *accum-base-registry*) a))
+    (log:debug "register-accum-type: ~a -> ~a" operands accum)
+    accum))
+
+(defun accum-type-of (a &optional (b a))
+  "(accum A B).  A declared accumulator, else A itself when A and B are the same type: for the basic
+   types (accum T) is T.  NIL for an undeclared pair of different types."
+  (or (gethash (%accum-key a b) *accum-registry*)
+      (and (string= (symbol-name (resolve-type-alias a)) (symbol-name (resolve-type-alias b)))
+           (resolve-type-alias a))))
+
+(defun base-type-of (type-name)
+  "(base T): the base of a declared accumulator, else T."
+  (or (gethash (symbol-name (resolve-type-alias type-name)) *accum-base-registry*)
+      (resolve-type-alias type-name)))
+
+(defun %type-accessor-form-p (spec)
+  "T for the type forms (accum T), (accum A B), (base T) and (scale T)."
+  (and (consp spec) (symbolp (first spec))
+       (member (symbol-name (first spec)) '("ACCUM" "BASE" "SCALE") :test #'string=)
+       t))
+
+(defun resolve-type-accessor (spec)
+  "The type named by the accessor form SPEC.  The one registry a future def-type-function would fill.
+   Endeavour 206: a microfloat block answers (accum T), (base T) and (scale T) from its own definition.
+   Only a block has a scale."
+  ;; Endeavour 206: a microfloat block answers from its own definition.
+  (let* ((word (symbol-name (first spec)))
+         (block (and (= (length spec) 2) (microfloat-block-p (parse-type-specifier (second spec))))))
+    (cond (block (return-from resolve-type-accessor (getf block (intern word :keyword))))
+          ((string= word "SCALE")
+           (error 'crisp-compiler-error
+                  :message (format nil "(scale ~{~(~a~)~^ ~}): only a microfloat block has a scale type." (rest spec))))))
+  (let* ((args (mapcar #'parse-type-specifier (rest spec)))
+         (result (if (string= (symbol-name (first spec)) "BASE")
+                     (base-type-of (first args))
+                     (apply #'accum-type-of args))))
+    (unless result
+      (error 'crisp-compiler-error
+             :message (format nil "(accum ~{~(~a~)~^ ~}): no accumulator is declared for these types.  Use set-accum." args)))
+    (log:debug "resolve-type-accessor: ~s -> ~a" spec result)
+    result))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 205 -- quantized integers: roles
+;;;; See tests/spec/205-quantized-integers/quantized-integers-205.md.
+;;;; ----------------------------------------------------------------------
+
+(defun qint-role (type-name)
+  ":base or :accum for a type made by def-qint or def-qint-product, else NIL."
+  (and type-name (symbolp type-name)
+       (car (gethash (symbol-name (resolve-type-alias type-name)) *qint-roles*))))
+
+(defun %qint-set-role (type-name role)
+  "Records TYPE-NAME's role."
+  (setf (gethash (symbol-name (resolve-type-alias type-name)) *qint-roles*) (cons role type-name)))
+
+(defun %qint-check-integer (type-name)
+  "Refuses a quantized type built on anything but an integer."
+  (unless (member (%accum-numeric-parts type-name) '(:signed-int :unsigned-int))
+    (error 'crisp-compiler-error
+           :message (format nil "def-qint: ~(~a~) must be an integer type at heart; it is ~(~a~).  Float codes are microfloat blocks."
+                            type-name (get-type-base (resolve-type-alias type-name))))))
+
+(defun %register-to-qint (name)
+  "Points (to-NAME ..) at analyze-to-qint in both packages.  This replaces the cast def-derived-type
+   registered, and *expression-analyzers* is rebuilt per compile, so it cannot outlive the type."
+  (dolist (pkg (list (find-package :crisp-language) (find-package :crisp.compiler)))
+    (setf (gethash (intern (format nil "TO-~a" (symbol-name name)) pkg) *expression-analyzers*)
+          'analyze-to-qint)))
+
+(defun register-qint (name accum)
+  "Records NAME and ACCUM as the base and accumulator of a def-qint."
+  (%qint-check-integer name)
+  (%qint-check-integer accum)
+  (%qint-set-role name :base)
+  (%qint-set-role accum :accum)
+  (%register-to-qint name)
+  (log:debug "register-qint: ~a accum ~a" name accum)
+  name)
+
+(defun register-qint-product (name operands)
+  "Records NAME as the accumulator of a declared product of the def-qint types OPERANDS."
+  (dolist (operand operands)
+    (unless (eq (qint-role operand) :base)
+      (error 'crisp-compiler-error
+             :message (format nil "def-qint-product: ~(~a~) is not a def-qint type." operand))))
+  (%qint-set-role name :accum)
+  (log:debug "register-qint-product: ~a of ~a" name operands)
+  name)

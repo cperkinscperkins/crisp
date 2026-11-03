@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx]: validate-ptx-no-launch-bounds
+;;
+;; BUG 135 -- with no compile-time workgroup size there is nothing to tell ptxas, so nothing is emitted.
+;; If such a kernel is too big to launch, the harness now says so and stops.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_runtime (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided))
+  (reduce-vec #'+ A 0.0 out))

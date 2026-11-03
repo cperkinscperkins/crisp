@@ -18,7 +18,7 @@ Swizzles,16,not implemented
 "Numeric Type Promotion, Casting, Conversion",17,implemented
 Value Conversion,18,implemented
 Bit Reinterpretation,19,implemented
-Quantized Integers and Complex Numbers,20,not implemented
+"Quantized Integers, Microfloats and Complex Numbers",20,partially implemented
 Other Basic Types,21,partially implemented
 symbols,22,implemented
 keyword symbols,23,implemented
@@ -341,176 +341,179 @@ Hardware Supported Math Operations,326,implemented
 `op-abs-diff-add` Absolute Difference and Add,340,implemented
 `op-sad` Sum of Absolute Differences,341,implemented
 Autodiff of the Hardware Math Operations,342,implemented
-Quantized Integers,343,not implemented
-Quantized Integer Types,344,not implemented
-def-qint,345,not implemented
-to-XXXX,346,not implemented
-to-float,347,not implemented
-additon and subtraction,348,not implemented
-`*!` widened multiplication,349,not implemented
-max / min,350,not implemented
-"Low Precision Floats (""microfloats"")",351,not implemented
-Micro Float Types,352,not implemented
-def-microfloat-block,353,not implemented
-blockwise operations,354,not implemented
-widening multiplication,355,not implemented
-addition / subtraction,356,not implemented
-max / min,357,not implemented
-Vector Conversion Operations,358,not implemented
-quantize-to-XXXX,359,not implemented
-dequantize-from-XXXX,360,not implemented
-element-wise access,361,not implemented
-`~`,362,not implemented
-`to-float`,363,not implemented
-Complex Numbers,364,not implemented
-soa-vector and complex,365,not implemented
-Fast Fourier Transform (FFT),366,not implemented
-Fused Softmax,367,not implemented
-Builtin GPU Functions,368,implemented
-Forgotten,369,not implemented
-Strings - Compile Time and Run Time,370,not implemented
-Compile Time Strings,371,not implemented
-`string-concat`,372,not implemented
-Runtime Strings,373,implemented
-Logging and Debugging,374,partially implemented
-Compile Time Output and Assert,375,implemented
-`c-t-output`,376,implemented
-`c-t-assert`,377,partially implemented
-"`(die ""disaster"")`",378,implemented
-`r-t-assert`,379,implemented
-Runtime Logging,380,implemented
-`r-t-output`,381,implemented
-Logging Utilities,382,partially implemented
-The Log,383,implemented
-Conditional Compilation,384,implemented
-defmacro,385,implemented
-target-has / device-has,386,not implemented
-Assist defmacro Development,387,not implemented
-`is-thread-level?`,388,not implemented
-`get-return-type`,389,not implemented
-`get-signature`,390,not implemented
-`can-call?`,391,not implemented
-`get-struct-members`,392,partially implemented
-`get-struct-types`,393,partially implemented
-`get-c-t-length`,394,not implemented
-`get-current-context`,395,not implemented
-`is-logging?`,396,implemented
-`is-runtime-checking?`,397,implemented
-`is-set?`,398,not implemented
-`(declare (grid-level))`,399,implemented
-`(declare (warp-convergent))` and `(declare (workgroup-convergent))`,400,not implemented
-`entrypoint`,401,not implemented
-Static Analysys,402,not implemented
-declaim,403,partially implemented
-check-coalesce,404,not implemented
-check-bank-conflicts,405,not implemented
-check-divergence,406,not implemented
-max-registers / warn-max-registers,407,not implemented
-check-barriers,408,not implemented
-miscellaneous,409,partially implemented
-Auto Differentiation (AD),410,implemented
-`--differentiate`,411,implemented
-Promoted adjoint types,412,implemented
-Foreign Function Interface (FFI),413,implemented
-`def-foreign-function`,414,implemented
-pointers and handles: `c-pointer`,415,implemented
-`base-ptr~` accessor,416,implemented
-handles,417,implemented
-basic invocation,418,implemented
-deferred invocation,419,not implemented
-Topologically Aware Compilation,420,implemented
-Hardware Profiles,421,implemented
-`def-hardware-profile`,422,implemented
-`:mma-shapes`,423,implemented
-`:mma-lowerings`,424,implemented
-`:stream-bytes-in-flight`,425,implemented
-`:stream-occupancy-target`,426,implemented
-Probing Hardware Profile,427,implemented
-`make-async-barrier`,428,implemented
-`load-tile`,429,implemented
-`:multicast`,430,implemented
-`load-tile-at`,431,implemented
-`store-tile`,432,implemented
-`store-tile-at`,433,implemented
-`prefetch-tile`,434,implemented
-`await`,435,implemented
-`signal`,436,implemented
-More Tile helpers,437,implemented
-Sync Operations,438,implemented
-sync-cluster,439,implemented
-Split-Phase Execution (Design Sketch),440,not implemented
-sync-workgroup,441,implemented
-sync-warp,442,implemented
-Sync on Arrival,443,implemented
-Semaphore Operations,444,not implemented
-Rings,445,implemented
-`ring-get`,446,implemented
-`make-register-tile-ring`,447,implemented
-`make-async-barrier-ring`,448,implemented
-Warp Specialization,449,implemented
-Matrix Multiplication,450,implemented
-`mma-lowering`,451,implemented
-`make-register-tile`,452,implemented
-matrix-multiply-tile-stride,453,implemented
-inner-dimension,454,implemented
-outer-dimensions,455,implemented
-fill-tile,456,implemented
-Autodiff,457,implemented
-mma-accumulate-via-tile,458,implemented
-Matrix Multiply with pipelining,459,implemented
-Matrix Multiply with Pipelining via Warp Specialization,460,implemented
-Operand layout: Intel MMA operands must be `:row-major`,461,implemented
-Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile`,462,implemented
-Hoisting and `def-orchestration`,463,partially implemented
-`def-orchestration`,464,not implemented
-"""default"" orchestration",465,implemented
-gen-KERNEL_NAME,466,not implemented
-allocate-tensor and kernel_var_name::param-name,467,not implemented
-allocate-cell,468,not implemented
-copy-back,469,not implemented
-template def-orchestration,470,not implemented
-`_` as a dummy var placeholder.,471,not implemented
-launch-sequential,472,not implemented
-launch-kernel,473,not implemented
-launch-parallel,474,not implemented
-Compiler Invocation and Options,475,implemented
-Output Targeting Options,476,not implemented
-`--output-base=<NAME>`,477,not implemented
-`--transpile-to=<ID>`,478,not implemented
-`--ir-target=<ID>`,479,implemented
-`--ir-target-arch=<ID>`,480,not implemented
-`--hardware-profile=<NAME>`,481,implemented
-`--binary-gpu-target=<ID>`,482,not implemented
-`--fat-binary`,483,not implemented
-`--hoist=<ID>`,484,partially implemented
-`--metadata`,485,implemented
-`--differentiate`,486,implemented
-Other Flags,487,partially implemented
-`--runtime-checks`,488,implemented
-`--logging-output`,489,implemented
-`--logging-size=<bytes>`,490,implemented
-`--debug` or `-g`,491,implemented
-`--hoist-kernel=file|source`,492,implemented
-`--re-output-crisp=<DIRECTORY>`,493,not implemented
-`--no-inference`,494,not implemented
-`--no-static-analysis`,495,not implemented
-`--single-pass`,496,implemented
-`--skip-c-t-checks`,497,not implemented
-Compiliation Flags,498,implemented
-`-D`,499,not implemented
-Math Flags `--math-precision`,500,not implemented
-Fast Compilation,501,implemented
-Compiler Invocations and Files,502,implemented
-Hoisting Code,503,implemented
-C API for Runtime Compilation,504,implemented
-Shape of it,505,implemented
-What a caller can ask,506,implemented
-Flags,507,implemented
-How it runs,508,implemented
-Dogfood: `--hoist-kernel=source`,509,implemented
-dot product and matmul,510,not implemented
-max-pool,511,not implemented
-Average Pool,512,not implemented
-ReLU,513,not implemented
-Acknowledgements,514,implemented
-SUMMARY (Total: 514),Impl: 307 (59.7%),Not Impl: 183 (35.6%) | Part: 24 (4.7%)
+Quantized Integers,343,implemented
+def-qint,344,implemented
+"Accumulator Types: set-accum, accum, base",345,implemented
+def-qint-product,346,implemented
+Conversions,347,implemented
+Operations,348,implemented
+Refused at compile time,349,implemented
+`to-sat`,350,implemented
+The Tile-Level Path: Integer MMA,351,implemented
+Quantized Integers and Autodiff,352,implemented
+"Low Precision Floats (""microfloats"")",353,implemented
+Microfloat Formats,354,implemented
+def-microfloat-block,355,implemented
+Records Can Hold Storage Handles,356,implemented
+Operations,357,implemented
+Multiplying blocks,358,not implemented
+quantize-to-XXXX,359,implemented
+dequantize-from-XXXX,360,implemented
+element-wise access,361,implemented
+`~`,362,implemented
+`to-float`,363,implemented
+fake-quant-XXXX,364,implemented
+Microfloats and Autodiff,365,implemented
+Refused at compile time,366,implemented
+Complex Numbers,367,not implemented
+soa-vector and complex,368,not implemented
+Fast Fourier Transform (FFT),369,not implemented
+Fused Softmax,370,not implemented
+Builtin GPU Functions,371,implemented
+Forgotten,372,not implemented
+Strings - Compile Time and Run Time,373,not implemented
+Compile Time Strings,374,not implemented
+`string-concat`,375,not implemented
+Runtime Strings,376,implemented
+Logging and Debugging,377,partially implemented
+Compile Time Output and Assert,378,implemented
+`c-t-output`,379,implemented
+`c-t-assert`,380,partially implemented
+"`(die ""disaster"")`",381,implemented
+`r-t-assert`,382,implemented
+Runtime Logging,383,implemented
+`r-t-output`,384,implemented
+Logging Utilities,385,partially implemented
+The Log,386,implemented
+Conditional Compilation,387,implemented
+defmacro,388,implemented
+target-has / device-has,389,not implemented
+Assist defmacro Development,390,not implemented
+`is-thread-level?`,391,not implemented
+`get-return-type`,392,not implemented
+`get-signature`,393,not implemented
+`can-call?`,394,not implemented
+`get-struct-members`,395,partially implemented
+`get-struct-types`,396,partially implemented
+`get-c-t-length`,397,not implemented
+`get-current-context`,398,not implemented
+`is-logging?`,399,implemented
+`is-runtime-checking?`,400,implemented
+`is-set?`,401,not implemented
+`(declare (grid-level))`,402,implemented
+`(declare (warp-convergent))` and `(declare (workgroup-convergent))`,403,not implemented
+`entrypoint`,404,not implemented
+Static Analysys,405,not implemented
+declaim,406,partially implemented
+check-coalesce,407,not implemented
+check-bank-conflicts,408,not implemented
+check-divergence,409,not implemented
+max-registers / warn-max-registers,410,implemented
+check-barriers,411,not implemented
+miscellaneous,412,partially implemented
+Auto Differentiation (AD),413,implemented
+`--differentiate`,414,implemented
+Promoted adjoint types,415,implemented
+Foreign Function Interface (FFI),416,implemented
+`def-foreign-function`,417,implemented
+pointers and handles: `c-pointer`,418,implemented
+`base-ptr~` accessor,419,implemented
+handles,420,implemented
+basic invocation,421,implemented
+deferred invocation,422,not implemented
+Topologically Aware Compilation,423,implemented
+Hardware Profiles,424,implemented
+`def-hardware-profile`,425,implemented
+`:mma-shapes`,426,implemented
+`:mma-lowerings`,427,implemented
+`:stream-bytes-in-flight`,428,implemented
+`:stream-occupancy-target`,429,implemented
+Probing Hardware Profile,430,implemented
+`make-async-barrier`,431,implemented
+`load-tile`,432,implemented
+`:multicast`,433,implemented
+`load-tile-at`,434,implemented
+`store-tile`,435,implemented
+`store-tile-at`,436,implemented
+`prefetch-tile`,437,implemented
+`await`,438,implemented
+`signal`,439,implemented
+More Tile helpers,440,implemented
+Sync Operations,441,implemented
+sync-cluster,442,implemented
+Split-Phase Execution (Design Sketch),443,not implemented
+sync-workgroup,444,implemented
+sync-warp,445,implemented
+Sync on Arrival,446,implemented
+Semaphore Operations,447,not implemented
+Rings,448,implemented
+`ring-get`,449,implemented
+`make-register-tile-ring`,450,implemented
+`make-async-barrier-ring`,451,implemented
+Warp Specialization,452,implemented
+Matrix Multiplication,453,implemented
+`mma-lowering`,454,implemented
+`make-register-tile`,455,implemented
+matrix-multiply-tile-stride,456,implemented
+inner-dimension,457,implemented
+outer-dimensions,458,implemented
+fill-tile,459,implemented
+Autodiff,460,implemented
+mma-accumulate-via-tile,461,implemented
+Matrix Multiply with pipelining,462,implemented
+Matrix Multiply with Pipelining via Warp Specialization,463,implemented
+Operand layout: Intel MMA operands must be `:row-major`,464,implemented
+Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile`,465,implemented
+Hoisting and `def-orchestration`,466,partially implemented
+`def-orchestration`,467,not implemented
+"""default"" orchestration",468,implemented
+gen-KERNEL_NAME,469,not implemented
+allocate-tensor and kernel_var_name::param-name,470,not implemented
+allocate-cell,471,not implemented
+copy-back,472,not implemented
+template def-orchestration,473,not implemented
+`_` as a dummy var placeholder.,474,not implemented
+launch-sequential,475,not implemented
+launch-kernel,476,not implemented
+launch-parallel,477,not implemented
+Compiler Invocation and Options,478,implemented
+Output Targeting Options,479,not implemented
+`--output-base=<NAME>`,480,not implemented
+`--transpile-to=<ID>`,481,not implemented
+`--ir-target=<ID>`,482,implemented
+`--ir-target-arch=<ID>`,483,not implemented
+`--hardware-profile=<NAME>`,484,implemented
+`--binary-gpu-target=<ID>`,485,not implemented
+`--fat-binary`,486,not implemented
+`--hoist=<ID>`,487,partially implemented
+`--metadata`,488,implemented
+`--differentiate`,489,implemented
+Other Flags,490,partially implemented
+`--runtime-checks`,491,implemented
+`--logging-output`,492,implemented
+`--logging-size=<bytes>`,493,implemented
+`--debug` or `-g`,494,implemented
+`--hoist-kernel=file|source`,495,implemented
+`--re-output-crisp=<DIRECTORY>`,496,not implemented
+`--no-inference`,497,not implemented
+`--no-static-analysis`,498,not implemented
+`--single-pass`,499,implemented
+`--skip-c-t-checks`,500,not implemented
+Compiliation Flags,501,implemented
+`-D`,502,not implemented
+Math Flags `--math-precision`,503,not implemented
+Fast Compilation,504,implemented
+Compiler Invocations and Files,505,implemented
+Hoisting Code,506,implemented
+C API for Runtime Compilation,507,implemented
+Shape of it,508,implemented
+What a caller can ask,509,implemented
+Flags,510,implemented
+How it runs,511,implemented
+Dogfood: `--hoist-kernel=source`,512,implemented
+dot product and matmul,513,not implemented
+max-pool,514,not implemented
+Average Pool,515,not implemented
+ReLU,516,not implemented
+Acknowledgements,517,implemented
+SUMMARY (Total: 517),Impl: 331 (64.0%),Not Impl: 161 (31.1%) | Part: 25 (4.8%)

@@ -1478,9 +1478,9 @@
                          ((half bfloat16) 2)       ; Endeavour 159
                          ((int uint float) 4)
                          ((long ulong double) 8)
-                         (t (error 'crisp-compiler-error
+                         (t (if (eql (%mma-elem-bits (if (listp elem-type) (first elem-type) elem-type)) 8) 1 (error (quote crisp-compiler-error)
                               :message (format nil "load-tile :block: element type ~S needs 2, 4 or 8 bytes" elem-type)
-                              :source-location location)))))
+                              :source-location location))))))
     ;; Endeavor 140 (warp-spec leader): tag the copy node when it is analyzed inside a
     ;; with-warp-specialization role block, so codegen elects laneid==0 of the producer warp
     ;; (not global tid==0) — making consumer-first warp specialization first-class and removing

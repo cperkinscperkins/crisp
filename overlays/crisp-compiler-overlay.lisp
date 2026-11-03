@@ -5,6 +5,17 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-11-02 -- endeavours 202-206 (derived types through handles, accumulator types, integer
+;;;; MMA, quantized integers, microfloat blocks) and BUG 135 (register budgets, launch bounds) folded into src/
+;;;; by script (put_temp_files_here/206-fold/fold.py: LIVE copies by offset, plus the earlier copies an
+;;;; (fdefinition 'x) capture kept alive; every *...-206* / -204 / -135 capture defvar dropped):
+;;;;   * prepended    -> internal-def-function (%mf-refuse-block-at-boundary, %record-register-budgets),
+;;;;                     generate-backward-walk, %analyze-min/max-expression, register-struct-definition,
+;;;;                     analyze-accum-op, %check-qint-arith
+;;;;   * first clause -> analyze-scaled-float-cast, analyze-aref-expression, resolve-type-accessor,
+;;;;                     %185-math-backward (two clauses), %register-accum-analyzers (merged)
+;;;;   * base+wrapper -> canonicalize-type-specifier-base, %expand-stride-macros-in-form-base
+;;;;   * replaced / new -> everything else, under per-endeavour headers in the file its comment named
 ;;;; EMPTY as of 2026-10-30 -- endeavours 200 (sort_v2 contest: BUG 138 / 145 / 148 / 149) and 201 (look-back-scan,
 ;;;; phase 1) folded into src/ (put_temp_files_here/201-fold/fold.py: verbatim copies; wrappers folded, their
 ;;;; *200-orig-* / *201-orig-* defvars dropped):

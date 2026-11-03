@@ -1,0 +1,17 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx]: validate-ptx-opt-out-entry
+;;
+;; BUG 135 -- (occupancy-target nil) means no launch bounds, even above 256 threads.  The author has
+;; taken the launch limit on themselves, and the harness stops loudly if the kernel cannot launch.
+;; Its _GRAD kernel keeps the bound: it inherits geometry, not scheduling declarations (BUG 075), and its
+;; author has no way to opt it out.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_optout (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (288))
+           (occupancy-target nil))
+  (reduce-vec #'+ A 0.0 out))

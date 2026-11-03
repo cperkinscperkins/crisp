@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "cannot be overloaded"
+;; Endeavour 202 -- the analyzer lowers + directly, so a user definition was accepted and then never
+;; called.  It must be refused where it is written.
+(def-derived-type q-c char :subst :no)
+
+(def-function + (x y)
+  (declare #'(q-c q-c => q-c))
+  x)

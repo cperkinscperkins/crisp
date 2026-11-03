@@ -952,12 +952,14 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 ;; Endeavour 178: one new clause -- REDUCE-VEC is expanded here (then walked), because its expansion
 ;; CONTAINS a loop-vector-stride that this pre-pass must rewrite.  Left unexpanded, ANF later macroexpands
 ;; reduce-vec and meets the raw loop-vector-stride, and AD dies with "Function SET! is not differentiable".
-(defun %expand-stride-macros-in-form (form type-resolver-fn location)
+(defun %expand-stride-macros-in-form-base (form type-resolver-fn location)
   "Recursively walks FORM and rewrites tensor-stride / grid-stride /
    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride
    forms into their expansions.  Endeavor 113: also normalises
    request-load-tile-at -> load-tile-at and await-request -> nil
-   for the backward pass."
+   for the backward pass.
+
+   Endeavour 206: %expand-stride-macros-in-form (below) expands fake-quant first."
   (cond
    ((atom form) form)
    ((not (and (consp form) (symbolp (car form))))
@@ -988,6 +990,11 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                 (mapcar (lambda (sub)
                           (%expand-stride-macros-in-form sub type-resolver-fn location))
                     (cdr form)))))))))
+
+(defun %expand-stride-macros-in-form (form type-resolver-fn location)
+  "Endeavour 206: expands fake-quant first.  The whole form, because this function's calls to itself
+   may not come back through this definition."
+  (%expand-stride-macros-in-form-base (%expand-fake-quant-forms form) type-resolver-fn location))
 
 
 ;; VERBATIM re-definition of the src/ original, with ONE change: the inline
@@ -1468,14 +1475,27 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 
       `(progn ,@forms))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 206 -- an alias may name a handle with an accessor element
+;;;; See tests/spec/206-microfloat-blocks/microfloat-blocks.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %resolve-handle-element-accessor (spec)
+  "Endeavour 206.  SPEC with an accessor element resolved, as in (vector (base T) ...), so that the
+   compiler and the metadata both see the real type."
+  (if (and (consp spec) (consp (cdr spec)) (%type-accessor-form-p (second spec)))
+      (list* (first spec) (resolve-type-accessor (second spec)) (cddr spec))
+      spec))
+
 (defmacro def-type (name type-spec)
   "Defines a type alias.
    Example: (def-type T int)"
-  `(eval-when (:compile-toplevel :load-toplevel :execute)
-     (unless (crisp.compiler::valid-type-p ',type-spec)
-       (error "Unknown type '~a'." ',type-spec))
-     (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
-     (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec)))
+  (let ((type-spec (%resolve-handle-element-accessor type-spec)))
+    `(eval-when (:compile-toplevel :load-toplevel :execute)
+       (unless (crisp.compiler::valid-type-p ',type-spec)
+         (error "Unknown type '~a'." ',type-spec))
+       (setf (gethash ',name crisp.compiler::*crisp-template-aliases*) (cons nil ',type-spec))
+       (setf (gethash ',name crisp.compiler::*crisp-type-aliases*) ',type-spec))))
 
 (defmacro def-hardware-profile (name &rest proplist)
   "Endeavor 130: define a named hardware profile — a property list describing a
@@ -2443,3 +2463,294 @@ processes float inputs — integer tensor inputs contribute zero gradient."
                             for d from 0
                             collect `(= (- (get-global-id ,d) (get-global-offset ,d)) (to-ulong ,id))))
            ,@body))))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavours 203 / 205 -- set-accum, def-qint, def-qint-product
+;;;; See tests/spec/203-accum-types/accum-types.md, tests/spec/205-quantized-integers/quantized-integers-205.md.
+;;;; ----------------------------------------------------------------------
+
+(defmacro crisp-language::set-accum (operands accum)
+  "Declares ACCUM the accumulator type of OPERANDS, a type or a list of two types.
+   Syntax: (set-accum q-a q-a-accum) or (set-accum (q-act q-wt) q-dot).
+   Requirements:
+   - All types are numeric.
+   - ACCUM holds a full product: at least the sum of the operand widths.
+   - ACCUM is signed if either operand is."
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (register-accum-type ',operands ',accum)))
+
+(defmacro crisp-language::def-qint (name &key base accum)
+  "Defines the quantized integer type NAME and its accumulator NAME-ACCUM, with (to-NAME ..).
+   real = scale * q, and the scale is a runtime value the author passes where it is needed.
+   Syntax: (def-qint q-a :base char :accum int)
+   Requirements:
+   - :base and :accum are integer types.
+   - :accum holds a full product of two base values.
+   Two def-qints never mix, even with identical parameters: the scale belongs to the data."
+  (let ((accum-name (intern (format nil "~a-ACCUM" (symbol-name name)) (symbol-package name))))
+    `(progn
+       (def-derived-type ,name ,base :subst :no)
+       (def-derived-type ,accum-name ,accum :subst :no)
+       (crisp-language::set-accum ,name ,accum-name)
+       (eval-when (:compile-toplevel :load-toplevel :execute)
+         (register-qint ',name ',accum-name)))))
+
+(defmacro crisp-language::def-qint-product (name operands &key accum)
+  "Declares NAME the accumulator of the product of two def-qint types, which is what lets them be
+   multiplied.  Argument order matters.
+   Syntax: (def-qint-product q-dot (q-act q-wt) :accum int)"
+  `(progn
+     (def-derived-type ,name ,accum :subst :no)
+     (crisp-language::set-accum ,operands ,name)
+     (eval-when (:compile-toplevel :load-toplevel :execute)
+       (register-qint-product ',name ',operands))))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 206 -- microfloat blocks: def-microfloat-block and fake-quant
+;;;; See tests/spec/206-microfloat-blocks/microfloat-blocks.md.
+;;;; ----------------------------------------------------------------------
+
+(defun register-microfloat-block (name base scale accum)
+  "Endeavour 206.  Records NAME as a microfloat block, which is what (to-float w i), (~ w i), (accum T),
+   (base T) and (scale T) dispatch on."
+  (setf (gethash (symbol-name name) *microfloat-blocks*) (list :base base :scale scale :accum accum)))
+
+(defun microfloat-block-p (type)
+  "Endeavour 206.  The block's plist when TYPE names a microfloat block, else NIL."
+  (and (symbolp type) type (gethash (symbol-name type) *microfloat-blocks*)))
+
+(defparameter *microfloat-formats*
+  '(("FP4"      :bits 4 :max "6.0")
+    ("FP8-E4M3" :bits 8 :max "448.0")
+    ("FP8-E5M2" :bits 8 :max "57344.0")
+    ("FP8-E8M0" :bits 8 :max nil))
+  "Endeavour 206.  The microfloat formats.  :max is the largest finite value, and NIL means the format
+   cannot hold block elements (E8M0 has no zero and no sign, so it is a scale only).")
+
+(defun %mf-format-type-p (type)
+  "Endeavour 206.  T when TYPE is a microfloat format, such as fp4."
+  (and (symbolp type) type
+       (assoc (symbol-name type) *microfloat-formats* :test #'string=)
+       t))
+
+(defun %mf-decode-body (fmt)
+  "Endeavour 206.  Crisp source decoding the code U (an int) in format FMT to a float.  Exact: every
+   step is an integer shift or a multiply by a power of two."
+  (cond
+    ((string= fmt "FP4")
+     "(let ((m (logand u 1))
+            (e (logand (ash u -1) 3))
+            (mag (if (= e 0) (* 0.5 (to-float m)) (* 0.5 (to-float (ash (+ 2 m) (- e 1)))))))
+        (if (!= 0 (logand u 8)) (- mag) mag))")
+    ((string= fmt "FP8-E4M3")
+     "(let ((m (logand u 7))
+            (e (logand (ash u -3) 15))
+            (mag (cond ((= e 0) (* 0.001953125 (to-float m)))
+                       ((and (= e 15) (= m 7)) (* 0.0 (type-infinity float)))
+                       (else (* 0.0009765625 (to-float (ash (+ 8 m) e)))))))
+        (if (!= 0 (logand u 128)) (- mag) mag))")
+    ((string= fmt "FP8-E5M2")
+     "(let ((m (logand u 3))
+            (e (logand (ash u -2) 31))
+            (mag (cond ((= e 0) (* 0.0000152587890625 (to-float m)))
+                       ((and (= e 31) (= m 0)) (type-infinity float))
+                       ((= e 31) (* 0.0 (type-infinity float)))
+                       (else (* 0.00000762939453125
+                                (* (to-float (+ 4 m)) (to-float (ash 1 e))))))))
+        (if (!= 0 (logand u 128)) (- mag) mag))")
+    (t ;; FP8-E8M0: 2^(u - 127), and 255 is NaN
+     "(let ((k (- u 127))
+            (n (abs k))
+            (r 1.0))
+        (when (!= 0 (logand n 1)) (set! r (* r 2.0)))
+        (when (!= 0 (logand n 2)) (set! r (* r 4.0)))
+        (when (!= 0 (logand n 4)) (set! r (* r 16.0)))
+        (when (!= 0 (logand n 8)) (set! r (* r 256.0)))
+        (when (!= 0 (logand n 16)) (set! r (* r 65536.0)))
+        (when (!= 0 (logand n 32)) (set! r (* r 4294967296.0)))
+        (when (!= 0 (logand n 64)) (set! r (* r 18446744073709551616.0)))
+        (cond ((= u 255) (* 0.0 (type-infinity float)))
+              ((< k 0) (/ 1.0 r))
+              (else r)))")))
+
+(defun %mf-fp8-encode-body (op first-threshold steps mantissa-bits shift-up denorm-scale
+                            sign-bit top-code max-text extra-clause nan-code)
+  "Endeavour 206.  Crisp source encoding the float X in an E?M? format, by OP (round or ceil).  It finds
+   the exponent E, scales the magnitude by an exact power of two, and adds the rounded mantissa to E's
+   code, so a mantissa that rounds up carries into the exponent by itself.  NaN is tested with (= a a)
+   because (!= a a) is false in Crisp (BUG 153)."
+  (let ((implicit (ash 1 mantissa-bits)))
+    (format nil
+     "(let ((a (abs x))
+            (e 0)
+            (th ~a))
+        (dotimes (k ~a)
+          (when (>= a th) (set! e (+ (to-int k) 1)))
+          (set! th (* th 2.0)))
+        (let ((p (if (<= e ~a)
+                     (to-float (ash 1 (- ~a e)))
+                     (/ 1.0 (to-float (ash 1 (- e ~a))))))
+              (q (if (= a a)
+                     (cond ~a
+                           ((>= a ~a) ~a)
+                           ((= e 0) (~a (* a ~a)))
+                           (else (+ (* e ~a) (- (~a (* a p)) ~a))))
+                     ~a)))
+          (if (< x 0.0) (logior q ~a) q)))"
+     first-threshold steps shift-up shift-up shift-up extra-clause max-text top-code
+     op denorm-scale implicit op implicit nan-code sign-bit)))
+
+(defun %mf-encode-body (fmt op decode-name)
+  "Endeavour 206.  Crisp source encoding the float X in format FMT.  OP is round for a code, and ceil
+   for a scale, which must not fall below the block's largest element.  Saturates, and NaN encodes as
+   the format's NaN, or as zero where there is none."
+  (cond
+    ((string= fmt "FP4")
+     "(let ((a (abs x))
+            (c (if (= a a)
+                   (cond ((<= a 0.25) 0)
+                         ((< a 0.75) 1)
+                         ((<= a 1.25) 2)
+                         ((< a 1.75) 3)
+                         ((<= a 2.5) 4)
+                         ((< a 3.5) 5)
+                         ((<= a 5.0) 6)
+                         (else 7))
+                   0)))
+        (if (< x 0.0) (logior c 8) c))")
+    ((string= fmt "FP8-E4M3")
+     (%mf-fp8-encode-body op "0.015625" 15 3 10 "512.0" 128 126 "448.0" "" 127))
+    ((string= fmt "FP8-E5M2")
+     (%mf-fp8-encode-body op "0.00006103515625" 30 2 17 "65536.0" 128 123 "57344.0"
+                          "((= a (type-infinity float)) 124)" 127))
+    (t ;; FP8-E8M0 always rounds up: the smallest code whose value is at least X, by binary search
+     (format nil
+      "(let ((c 0))
+         (dotimes (k 8)
+           (let ((bit (ash 128 (- 0 (to-int k))))
+                 (probe (+ c (- bit 1))))
+             (when (and (<= probe 254) (< (~a (to-uchar probe)) x))
+               (set! c (+ c bit)))))
+         (min c 254))"
+      decode-name))))
+
+(defun %mf-fake-quant-form (nm n x y)
+  "Endeavour 206.  The expansion of (fake-quant-NAME x y): each element through the block's format,
+   and straight through going backward.  A macro, not a grid function, because the autodiff pass cannot
+   differentiate a stride inside a grid function (BUG 154)."
+  (let ((*package* (find-package :crisp-language)))
+    (read-from-string
+     (format nil "(loop-vector-stride ~s (%mf-i)
+                    (let ((%mf-first (* (/ %mf-i ~dul) ~dul))
+                          (%mf-sv (%mf-block-scale ~(~a~) ~s %mf-first)))
+                      (set! (~~ ~s %mf-i) (%mf-ste ~(~a~) (~~ ~s %mf-i) %mf-sv))))"
+             y n n nm x y nm x))))
+
+(defun %expand-fake-quant-forms (form)
+  "Endeavour 206.  FORM with every (fake-quant-NAME x y) expanded.  The expansion holds a stride, and
+   a stride has to be seen by %expand-stride-macros-in-form, as with reduce-vec."
+  (cond ((atom form) form)
+        ((and (symbolp (car form)) (car form)
+              (alexandria:starts-with-subseq "FAKE-QUANT-" (symbol-name (car form)))
+              (macro-function (car form)))
+         (%expand-fake-quant-forms (macroexpand-1 form)))
+        (t (cons (%expand-fake-quant-forms (car form)) (%expand-fake-quant-forms (cdr form))))))
+
+(defmacro crisp-language::def-microfloat-block (name &key base scale accum shape)
+  "Defines the block-scaled type NAME: a record over two handles, packed codes and one scale per block.
+   real = scale * decode(code).
+   Syntax: (def-microfloat-block mf-w :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+   Defines the handle types NAME-CODES, NAME-SCALES and NAME-FLOATS, make-NAME, quantize-to-NAME,
+   dequantize-from-NAME and fake-quant-NAME.  (to-float w i) and (~ w i) work on a NAME, and (accum T),
+   (base T) and (scale T) name its types.
+   Requirements:
+   - :base is fp4, fp8-e4m3 or fp8-e5m2.  :scale is any microfloat format.  :accum is float.
+   - :shape is one positive size in elements, and even for fp4, whose codes share bytes.
+   Every handle holds whole blocks.  fp4 packs the even element in the low nibble.  A scale rounds up,
+   so the block's largest element always fits.  Each generated function is ordinary Crisp."
+  (let* ((nm (symbol-name name))
+         (bname (symbol-name base))
+         (sname (symbol-name scale))
+         (bfmt (assoc bname *microfloat-formats* :test #'string=))
+         (sfmt (assoc sname *microfloat-formats* :test #'string=))
+         (n (and (consp shape) (first shape)))
+         (fail (lambda (fmt &rest args)
+                 (error 'crisp-compiler-error
+                        :message (format nil "def-microfloat-block ~(~a~): ~?" nm fmt args)))))
+    (unless (and bfmt (getf (cdr bfmt) :max))
+      (funcall fail ":base must be fp4, fp8-e4m3 or fp8-e5m2, got ~(~a~)." bname))
+    (unless sfmt
+      (funcall fail ":scale must be a microfloat format, got ~(~a~)." sname))
+    (unless (string= (symbol-name accum) "FLOAT")
+      (funcall fail ":accum must be float for now, got ~(~a~)." (symbol-name accum)))
+    (unless (and (consp shape) (null (cdr shape)) (integerp n) (plusp n))
+      (funcall fail ":shape must be one positive block size in elements, as in (16), got ~s." shape))
+    (when (and (= (getf (cdr bfmt) :bits) 4) (oddp n))
+      (funcall fail "an fp4 block must have an even size, because two codes share a byte; got ~a." n))
+    (register-microfloat-block name base scale accum)
+    (setf (macro-function (intern (format nil "FAKE-QUANT-~a" nm) :crisp-language))
+          (lambda (form env)
+            (declare (ignore env))
+            (%mf-fake-quant-form nm n (second form) (third form))))
+    (let* ((packed (= (getf (cdr bfmt) :bits) 4))
+           (top (getf (cdr bfmt) :max))
+           (src
+             (with-output-to-string (o)
+               (flet ((emit (fmt &rest args) (apply #'format o fmt args) (terpri o)))
+                 (emit "(cl:progn")
+                 (dolist (f (list bname sname))
+                   (emit "(def-derived-type ~(~a~) uchar :subst :no)" f))
+                 (emit "(def-type ~(~a~)-codes (vector uchar :address-space :global :align :compact))" nm)
+                 (emit "(def-type ~(~a~)-scales (vector ~(~a~) :address-space :global :align :compact))" nm sname)
+                 (emit "(def-type ~(~a~)-floats (vector float :address-space :global :align :compact))" nm)
+                 (emit "(def-record ~(~a~) (codes ~:*~(~a~)-codes) (scales ~:*~(~a~)-scales))" nm)
+                 (emit "(def-function ~(~a~)-decode-code (c) (declare #'(uchar => float)) (let ((u (to-int c))) ~a))"
+                       nm (%mf-decode-body bname))
+                 (emit "(def-function ~(~a~)-decode-scale (c) (declare #'(uchar => float)) (let ((u (to-int c))) ~a))"
+                       nm (%mf-decode-body sname))
+                 (emit "(def-function ~(~a~)-encode-code (x) (declare #'(float => uchar)) (to-uchar ~a))"
+                       nm (%mf-encode-body bname "round" nil))
+                 (emit "(def-function ~(~a~)-encode-scale (x) (declare #'(float => uchar)) (to-uchar ~a))"
+                       nm (%mf-encode-body sname "ceil" (format nil "~(~a~)-decode-scale" nm)))
+                 ;; raw code and decoded element
+                 (emit "(def-function ~(~a~)-code (w i) (declare #'(~(~a~) ulong => uchar))" nm nm)
+                 (if packed
+                     (emit "(let ((byte (to-int (~~ (codes~~ w) (/ i 2ul))))) (to-uchar (logand 15 (if (= 0ul (logand i 1ul)) byte (ash byte -4))))))")
+                     (emit "(~~ (codes~~ w) i))"))
+                 (emit "(def-function ~(~a~)-at (w i) (declare #'(~(~a~) ulong => float))" nm nm)
+                 (emit "(* (~(~a~)-decode-code (~(~a~)-code w i)) (~(~a~)-decode-scale (to uchar (~~ (scales~~ w) (/ i ~dul))))))"
+                       nm nm nm n)
+                 ;; a scale below the float range can flush to zero, and an all-zero block has one
+                 (emit "(def-function ~(~a~)-unscale (x sv) (declare #'(float float => float)) (if (> sv 0.0) (/ x sv) 0.0))" nm)
+                 ;; a block's scale, as a code, from its largest element
+                 (emit "(def-function ~(~a~)-block-scale (x first) (declare #'(~(~a~)-floats ulong => uchar))" nm nm)
+                 (emit "(let ((top 0.0))")
+                 (emit "(dotimes (k ~d) (set! top (max top (abs (~~ x (+ first (to-ulong k)))))))" n)
+                 (emit "(~(~a~)-encode-scale (/ top ~a))))" nm top)
+                 ;; one block
+                 (emit "(def-function ~(~a~)-quantize-block (x b &out w) (declare #'(~(~a~)-floats ulong &out ~(~a~) => nil))" nm nm nm)
+                 (emit "(let ((first (* b ~dul)) (sc (~(~a~)-block-scale x first)) (sv (~(~a~)-decode-scale sc)))" n nm nm)
+                 (emit "(set! (~~ (scales~~ w) b) (to ~(~a~) sc))" sname)
+                 (if packed
+                     (progn
+                       (emit "(dotimes (k ~d)" (/ n 2))
+                       (emit "(let ((i (+ first (* 2ul (to-ulong k))))")
+                       (emit "(lo (to-int (~(~a~)-encode-code (~:*~(~a~)-unscale (~~ x i) sv))))" nm)
+                       (emit "(hi (to-int (~(~a~)-encode-code (~:*~(~a~)-unscale (~~ x (+ i 1ul)) sv)))))" nm)
+                       (emit "(set! (~~ (codes~~ w) (/ i 2ul)) (to-uchar (logior lo (ash hi 4))))))))"))
+                     (progn
+                       (emit "(dotimes (k ~d)" n)
+                       (emit "(let ((i (+ first (to-ulong k))))")
+                       (emit "(set! (~~ (codes~~ w) i) (~(~a~)-encode-code (~:*~(~a~)-unscale (~~ x i) sv)))))))" nm)))
+                 ;; whole handles
+                 (emit "(def-grid-function quantize-to-~(~a~) (x &out w) (declare #'(~(~a~)-floats &out ~(~a~) => nil))" nm nm nm)
+                 (emit "(let ((s (scales~~ w))) (loop-vector-stride s (b) (~(~a~)-quantize-block x b w))))" nm)
+                 (emit "(def-grid-function dequantize-from-~(~a~) (w &out x) (declare #'(~(~a~) &out ~(~a~)-floats => nil))" nm nm nm)
+                 (emit "(loop-vector-stride x (i) (set! (~~ x i) (~(~a~)-at w i))))" nm)
+                 ;; training: forward through the format, backward straight through
+                 (emit "(def-function ~(~a~)-fake-element (x sv) (declare #'(float float => float))" nm)
+                 (emit "(* sv (~(~a~)-decode-code (~(~a~)-encode-code (~(~a~)-unscale x sv)))))" nm nm nm)
+                 (emit ")")))))
+      (log:debug "def-microfloat-block ~a expands to:~%~a" nm src)
+      (let ((*package* (find-package :crisp-language)))
+        (read-from-string src)))))

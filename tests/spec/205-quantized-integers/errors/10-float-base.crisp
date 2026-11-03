@@ -1,0 +1,3 @@
+;; CHECK-FAIL: "must be an integer"
+;; Endeavour 205 -- float codes are microfloat blocks, not qints.
+(def-qint q-a :base float :accum double)

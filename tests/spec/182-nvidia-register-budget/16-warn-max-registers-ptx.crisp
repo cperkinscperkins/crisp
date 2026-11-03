@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx]: validate-ptx-no-maxnreg
+;;
+;; BUG 135 -- (declare (warn-max-registers N)) only ever warns, so it changes nothing in the PTX.
+
+(def-type in-vec (vector float :address-space :global :align :compact))
+(def-type out-c  (cell float :address-space :global))
+
+(def-kernel rv_warned (A &out out)
+  (declare #'(in-vec &out out-c => nil)
+           (global-size :derive-from A :strategy :strided)
+           (local-size  :set-to (256))
+           (warn-max-registers 96))
+  (reduce-vec #'+ A 0.0 out))

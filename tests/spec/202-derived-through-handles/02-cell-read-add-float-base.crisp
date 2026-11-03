@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "BUG: a derived FLOAT keeps its type as an adjoint: Expected FLOAT but inferred METERS"
+;; Endeavour 202 -- the handle path is not 8-bit specific: a float-based derived type, :ancestor.
+(def-derived-type meters float :subst :ancestor)
+(def-type mc (cell meters :address-space :global))
+
+(def-kernel k (a b &out r)
+  (declare #'(mc mc &out mc => nil))
+  (set! (~ r) (+ (~ a) (~ b))))

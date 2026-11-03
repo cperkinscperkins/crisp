@@ -1,70 +1,64 @@
-# def-microfloat-block 📝
+# def-microfloat-block ✅
 
 
-The types above can then be used in `def-microfloat-block`.  Note that blocks can have 1D or 2D arity.
-
-```
-(def-microfloat-block mf-celcius :base fp4 :accum fp32 :scale fp8-e4m3 :shape (16))
-(def-microfloat-block mf-weights :base fp4 :accum fp32 :scale fp8-e4m3 :shape (4 4))
+```lisp
+(def-microfloat-block mf-w :base fp4 :scale fp8-e4m3 :accum float :shape (16))
 ```
 
-And just like with the quantized types, different block types cannot be intermixed,
-even if they are configured with identical parameters. However, if you absolutely must intermix them,
-you can do so by using `set-derived`.   
+- `:base` is `fp4`, `fp8-e4m3` or `fp8-e5m2`.
+- `:scale` is any microfloat format.
+- `:accum` is `float`, for now.
+- `:shape` is one positive block size in elements, and it must be even for `fp4`, whose codes share
+  bytes.
 
-`def-microfloat-block` with `mf-celcius` like above would result in
+It defines:
+
+| Name | What it is |
+|---|---|
+| `mf-w` | The block type: a record of `codes` and `scales` |
+| `make-mf-w` | `(make-mf-w :codes c :scales s)` |
+| `mf-w-codes` | `(vector uchar ..)`, the packed codes.  `fp4` packs two codes per byte |
+| `mf-w-scales` | `(vector fp8-e4m3 ..)`, one scale per block |
+| `mf-w-floats` | `(vector float ..)`, for the unquantized data |
+| `quantize-to-mf-w`, `dequantize-from-mf-w`, `fake-quant-mf-w` | See below |
+| `(accum mf-w)`, `(base mf-w)`, `(scale mf-w)` | `float`, `fp4`, `fp8-e4m3` |
+
+The three handle types are `:global` and `:compact`. `(to-float w i)` and `(~ w i)` work on a block (see
+[element-wise access](#element-wise-access-)).
+
+Conceptually, the block is:
+
+```lisp
+(def-record mf-w
+  (codes  mf-w-codes)    ; packed: two fp4 codes per byte
+  (scales mf-w-scales))  ; one fp8-e4m3 per block
 ```
-(def-type mf-celsius-base fp4)
-(def-type mf-celcius-accum fp32)
-(def-type mf-celsius-scale fp8-e4m3)
 
-(def-struct mf-celcius 
-  (scale mf-celsius-scale)
-  #| the 16 fp4 elements |#) ;; these are not strided tensors or anything. 
+and `real = scale * decode(code)`.
 
-;; accum and base are defined for ALL numeric types.
-(def-type-function accum (T:mf-celcius) mf-celcius-accum)
-(def-type-function base (T:mf-celcius) mf-celcius-base)
-;; but scale is only defined for microfloat blocks
-(def-type-function scale (T:mf-celcius) mf-celcius-scale)
+Just like the quantized types, different block types cannot be intermixed, even if they are configured
+with identical parameters.
+
+Everything `def-microfloat-block` generates is ordinary Crisp: plain `def-function`s that decode and
+encode each format, so both backends get them and a kernel can call them. Each is exact, because every
+step is an integer shift or a multiply by a power of two.
+
+**A block lives inside a kernel.** A kernel takes the two handles and builds the block with `make-NAME`.
+A block cannot be a kernel parameter, because what a host would pass for it is not defined, and the same
+goes for any record that holds a handle. Functions and grid functions may take one.
+
+```lisp
+(def-microfloat-block mf-w :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+
+(def-kernel quant (x &out c s)
+  (declare #'(mf-w-floats &out mf-w-codes mf-w-scales)
+           (global-size :derive-from s :strategy :strided))   ; one thread per block
+  (let ((w (make-mf-w :codes c :scales s)))
+    (quantize-to-mf-w x w)))
 ```
 
-<!--
-REMOVE
-For each invocation of `def-microfloat-block` Crisp will define the type identifiers
- `XXXX-base`, `XXXX-accum` and `XXXX-scale` as well as compile-time type functions
- `scale`, `count`, and `shape` . `num-rows` and `num-cols` are defined for the 2D variant.
--->
+Every handle holds whole blocks: the floats hold `16` times as many elements as the scales. This is not
+checked yet, so a float handle shorter than the scales imply reads past its end.
 
-
- Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
- are defined. These functions operate on vectors of floats and blocks. Read more below
-
-#### Illegal Combinations and Target-Specific Behavior
-
-The entire purpose of Crisp's microfloat types is to leverage the extreme performance of specialized hardware. 
-This means the compiler's behavior is strict and depends heavily on your chosen output target.
-
-1. When Compiling (to LLVM IR, SPIR-V, or PTX)
-
-This path is optimized for maximum performance. The compiler acts as a strict gatekeeper 
-and knows which combinations (e.g., :base fp8-e4m3, :accum fp32) are supported by hardware intrinsics.
-
-- Supported Combinations: The compiler generates the correct high-performance intrinsic (e.g., `OpFMulAdd` in SPIR-V or `mma.sync` in PTX).
-- Unsupported Combinations: If you define a type the hardware doesn't support (e.g., `:base fp16, :accum fp16`), the compiler will emit a compile-time error.
-- No Emulation: The compiler will not silently generate a slow "emulation" path. This is a core design choice: it is better to give you a compile-time error than to let you ship a kernel that is 100x slower than you intended.
-
-This strictness also applies to portability. A SPIR-V module compiled for 
-one hardware target (e.g., OCP MX) is not portable to another (e.g., NVIDIA). 
-The driver will reject the kernel, resulting in a fatal load-time error.
-
-2. When Transpiling (to OpenCL C)
-
-This path is optimized for maximum portability and debugging, not performance. The transpiler has no way to guarantee that specific hardware intrinsics are available.
-
-- Therefore, in this mode, the "unsupported combination" rules are relaxed.
-- Crisp will generate a slow, emulated for loop to perform the operation.
-- This ensures the transpiled C code is portable and works, but it will have severely suboptimal performance as it will not use Tensor Cores or other hardware accelerators.
-
-
+Two-dimensional blocks (`:shape (4 4)`) are not supported yet 📝.
 

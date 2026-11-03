@@ -66,7 +66,8 @@
             (right-node (analyze-expression (third expr) env context (append location '(2))))
             (left-type (get-single-value-type left-node))
             (right-type (get-single-value-type right-node))
-            (promoted-type (get-promoted-type left-type right-type)))
+            (promoted-type (progn (%check-qint-arith ,op-string left-type right-type location)
+                                  (get-promoted-type left-type right-type))))
 
        (if promoted-type
            (let ((result-crisp-type (gethash promoted-type *crisp-types*)))
@@ -316,6 +317,7 @@
       (error 'crisp-unknown-type-error :type-name type-name :source-location location))
 
     (let ((arg-node (analyze-expression value-form env context (append location '(2)))))
+      (%refuse-float-into-qint type-name (get-single-value-type arg-node) location)
       (make-semantic-value-cast :type type-name :arg arg-node :source-location location))))
 
 
@@ -1136,7 +1138,8 @@ set!  analyzer's behavior in analysis/structs.lisp."
     ;; P2: the integer bit operations
     (dolist (name *185-bit-op-names*)
       (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-bit-op)
-      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-bit-op))))
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-bit-op)))
+  (%register-accum-analyzers))
 
 (defun analyze-185-bit-op (expr env context location)
   "Analyzes ash / logand / logior / logxor / lognot / popcount (endeavour 185 P2)."
@@ -2871,11 +2874,15 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
        (if (,(if (eq which :max) '> '<) ,a ,b) ,a ,b))))
 
 (defun %analyze-min-expression (expr env context location)
-  "Analyzer for (min a b) -- expands to a comparison and delegates."
+  "Analyzer for (min a b) -- expands to a comparison and delegates.
+   Endeavour 206: refuses microfloat codes first."
+  (%mf-refuse-code-compare expr env context location)
   (analyze-expression (%175-minmax-expand expr :min location) env context location))
 
 (defun %analyze-max-expression (expr env context location)
-  "Analyzer for (max a b) -- expands to a comparison and delegates."
+  "Analyzer for (max a b) -- expands to a comparison and delegates.
+   Endeavour 206: refuses microfloat codes first."
+  (%mf-refuse-code-compare expr env context location)
   (analyze-expression (%175-minmax-expand expr :max location) env context location))
 
 (defun %grid-reduce-last-man-parts (expr)
@@ -3215,3 +3222,353 @@ Endeavor 109: adds mod / rem under both :crisp-language and :crisp.compiler."
              :message "look-back-scan: a float VALUE is not differentiable yet.  Its adjoint is a look-back-scan in the opposite tile order (endeavour 201 phase 2); until then only an integer look-back-scan -- which carries no gradient -- may appear in a kernel compiled with --differentiate."
              :source-location location))
     node))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 203 -- accumulator ops: *! +! -!, widen, to-sat
+;;;; See tests/spec/203-accum-types/accum-types.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %cast-node (node to-type location)
+  "NODE as a value cast to TO-TYPE, or NODE itself when it already has that type."
+  (if (eq (get-single-value-type node) to-type)
+      node
+      (make-semantic-value-cast :type to-type :arg node :source-location location)))
+
+(defun %widen-node (node accum location)
+  "NODE at ACCUM's underlying primitive, extended according to NODE's own signedness."
+  (%cast-node node (get-type-base accum) location))
+
+(defun analyze-accum-op (expr env context location)
+  "Analyzes (*! a b), (+! a b), (-! a b).  With a declared accumulator both operands widen by their own
+   signedness and the op runs at the accumulator's width.  There is no widening add instruction: PTX
+   has no add.wide, so sext + add IS the lowering.  Otherwise this is the plain operator (decision D6).
+   Endeavour 206: a microfloat block is refused."
+  (when (some (lambda (arg) (%mf-block-of arg env context location)) (rest expr))
+    (error 'crisp-compiler-error
+           :message (format nil "(~(~a~) ..) on a microfloat block: no target multiplies blocks directly yet.  Decode it with dequantize-from-NAME, or (to-float w i), and use the float path."
+                            (symbol-name (first expr)))
+           :source-location location))
+  (let* ((name (symbol-name (first expr)))
+         (plain (%185-crisp-sym (subseq name 0 1)))
+         (args (rest expr)))
+    (unless (= (length args) 2)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~) takes 2 arguments; got ~a" name (length args))
+             :source-location location))
+    ;; No set-accum in this compile: nothing can widen, so take the plain path without analyzing twice.
+    (when (zerop (hash-table-count *accum-registry*))
+      (return-from analyze-accum-op
+        (analyze-expression (list plain (first args) (second args)) env context location)))
+    (let* ((left (analyze-expression (first args) env context (append location '(1))))
+           (right (analyze-expression (second args) env context (append location '(2))))
+           (left-type (get-single-value-type left))
+           (right-type (get-single-value-type right))
+           (accum (if (string= name "*!")
+                      (and (gethash (%accum-key left-type right-type) *accum-registry*)
+                           (accum-type-of left-type right-type))
+                      (let ((la (accum-type-of left-type)) (ra (accum-type-of right-type)))
+                        (and la ra (eq la ra)
+                             (or (not (eq left-type la)) (not (eq right-type la))
+                                 (gethash (%accum-key left-type right-type) *accum-registry*))
+                             la)))))
+      (log:debug "analyze-accum-op: ~a ~a ~a => accum ~a" name left-type right-type accum)
+      (when (and (null accum) (string= name "*!") (or (qint-role left-type) (qint-role right-type)))
+        (error (quote crisp-type-error)
+               :message (format nil "(*! ~(~a~) ~(~a~)): no product is declared.  Use def-qint-product." left-type right-type)
+               :source-location location))
+      (if (null accum)
+          (analyze-expression (list plain (first args) (second args)) env context location)
+          (let* ((l (%widen-node left accum location))
+                 (r (%widen-node right accum location))
+                 (prim (get-type-base accum))
+                 (op-node (cond ((string= name "*!")
+                                 (make-semantic-mul :type prim :left-arg l :right-arg r :source-location location))
+                                ((string= name "+!")
+                                 (make-semantic-add :type prim :left-arg l :right-arg r :source-location location))
+                                (t
+                                 (make-semantic-sub :type prim :left-arg l :right-arg r :source-location location)))))
+            (%cast-node op-node accum location))))))
+
+(defun analyze-widen (expr env context location)
+  "(widen x): x at its accumulator type, keeping its scale.  The identity on the basic types."
+  (let* ((node (analyze-expression (second expr) env context (append location '(1))))
+         (type (get-single-value-type node))
+         (accum (accum-type-of type)))
+    (if (eq accum type)
+        node
+        (%cast-node (%widen-node node accum location) accum location))))
+
+(defun analyze-to-sat (expr env context location)
+  "(to-sat T x): float X rounded to nearest, ties to even, then saturated to integer type T, with NaN
+   going to 0."
+  (let* ((target (resolve-type-alias (second expr)))
+         (node (analyze-expression (third expr) env context (append location '(2))))
+         (source (get-single-value-type node)))
+    (multiple-value-bind (cat bits) (%accum-numeric-parts target)
+      (declare (ignore bits))
+      (unless (member cat '(:signed-int :unsigned-int))
+        (error 'crisp-compiler-error
+               :message (format nil "to-sat needs an integer target; got ~(~a~)." target)
+               :source-location location)))
+    (multiple-value-bind (cat bits) (%hw-type-parts source)
+      (unless (and (eq cat :float) (member bits '(32 64)))
+        (error 'crisp-compiler-error
+               :message (format nil "to-sat: operand must be float or double; got ~(~a~)." source)
+               :source-location location)))
+    (make-semantic-hw-op :op '%to-sat :type target :args (list node) :source-location location)))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 205 -- quantized integers: to-qint, to-float with a scale, STE
+;;;; See tests/spec/205-quantized-integers/quantized-integers-205.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %check-qint-arith (op left-type right-type location)
+  "Refuses a plain arithmetic operator on quantized values.  Only accumulators add and subtract, and
+   only with themselves.  Internal lowering is unaffected: it works on the underlying primitive.
+   Endeavour 206: also refuses plain arithmetic on microfloat codes."
+  (when (or (%mf-format-type-p left-type) (%mf-format-type-p right-type))
+    (error 'crisp-type-error
+           :message (format nil "(~a ~(~a~) ~(~a~)): a microfloat code is not a number until it is decoded.  Use (to-float w i)."
+                            op left-type right-type)
+           :source-location location))
+  (let ((left (qint-role left-type)) (right (qint-role right-type)))
+    (when (or left right)
+      (flet ((refuse (fmt &rest args)
+               (error 'crisp-type-error :message (apply #'format nil fmt args) :source-location location)))
+        (unless (eq left-type right-type)
+          (refuse "(~a ~(~a~) ~(~a~)): different quantized types.  Go through float, or declare a def-qint-product."
+                  op left-type right-type))
+        (cond ((string= op "/")
+               (refuse "(/ ~(~a~) ~(~a~)): quantized values do not divide; convert to float first." left-type right-type))
+              ((eq left :accum)
+               (unless (member op '("+" "-") :test #'string=)
+                 (refuse "(~a ~(~a~) ~(~a~)): accumulators add and subtract, and nothing else." op left-type right-type)))
+              (t
+               (refuse "(~a ~(~a~) ~(~a~)): use ~a!, which widens to the accumulator." op left-type right-type op)))))))
+
+(defun %refuse-float-into-qint (target source-type location)
+  "A raw cast applies no scale, so a float source would silently truncate."
+  (when (and (qint-role target) (eq (%accum-numeric-parts source-type) :float))
+    (error 'crisp-type-error
+           :message (format nil "(to ~(~a~) x) applies no scale, so x cannot be ~(~a~).  Use (to-~(~a~) x scale)."
+                            target source-type target)
+           :source-location location)))
+
+(defun %qint-float-operand (node what op location)
+  "NODE, which must be float-typed, at a width to-sat takes: half widens to float."
+  (let ((type (get-single-value-type node)))
+    (multiple-value-bind (cat bits) (%hw-type-parts type)
+      (unless (eq cat :float)
+        (error 'crisp-type-error
+               :message (format nil "~(~a~): ~a must be a float; got ~(~a~)." op what type)
+               :source-location location))
+      (if (member bits '(32 64)) node (%cast-node node 'float location)))))
+
+(defun %qint-round-node (target value location)
+  "VALUE rounded to nearest, ties to even, and saturated to the integer TARGET."
+  (make-semantic-hw-op :op '%to-sat :type target :args (list value) :source-location location))
+
+(defun %qint-narrow-node (target acc multiplier op location)
+  "round(ACC * MULTIPLIER), saturated to TARGET.  The product is taken in float: an int32 accumulator
+   above 2^24 loses low bits there, but saturating to 8 bits leaves far more precision than a code
+   needs, so only a value within a few ulps of a tie could round differently."
+  (let* ((m (%qint-float-operand multiplier "the multiplier" op location))
+         (float-type (get-single-value-type m))
+         (wide (%cast-node (%cast-node acc (get-type-base (get-single-value-type acc)) location)
+                           float-type location)))
+    (%qint-round-node target
+                      (make-semantic-mul :type float-type :left-arg wide :right-arg m :source-location location)
+                      location)))
+
+(defun analyze-to-qint (expr env context location)
+  "(to-q x) is the raw cast, (to q x).  (to-q x scale) is round(x / scale), saturating, for a float x.
+   (to-q acc multiplier) is round(acc * multiplier), saturating, for an accumulator of any qint."
+  (let* ((op (first expr))
+         (target (cdr (gethash (subseq (symbol-name op) 3) *qint-roles*)))
+         (args (rest expr)))
+    (unless (member (length args) '(1 2))
+      (error 'crisp-compiler-error
+             :message (format nil "(~(~a~) ..) takes a value and a scale; got ~a arguments." op (length args))
+             :source-location location))
+    (let* ((x (analyze-expression (first args) env context (append location '(1))))
+           (x-type (get-single-value-type x)))
+      (if (null (rest args))
+          (progn
+            (%refuse-float-into-qint target x-type location)
+            (%cast-node x target location))
+          (let ((y (analyze-expression (second args) env context (append location '(2))))
+                (role (qint-role x-type)))
+            (log:debug "analyze-to-qint: ~a from ~a role ~a" target x-type role)
+            (cond
+              ((eq role :accum) (%qint-narrow-node target x y op location))
+              ((eq role :base)
+               (error 'crisp-type-error
+                      :message (format nil "(~(~a~) x m): x is ~(~a~), a base value; widen it first." op x-type)
+                      :source-location location))
+              ((eq (%accum-numeric-parts x-type) :float)
+               (let* ((value (%qint-float-operand x "the value" op location))
+                      (scale (%qint-float-operand y "the scale" op location))
+                      (float-type (get-promoted-type (get-single-value-type value) (get-single-value-type scale))))
+                 (%qint-round-node target
+                                   (make-semantic-div :type float-type
+                                                      :left-arg (%cast-node value float-type location)
+                                                      :right-arg (%cast-node scale float-type location)
+                                                      :source-location location)
+                                   location)))
+              (t
+               (error 'crisp-type-error
+                      :message (format nil "(~(~a~) x y) takes a float or an accumulator; got ~(~a~)." op x-type)
+                      :source-location location))))))))
+
+(defun analyze-scaled-float-cast (expr env context location)
+  "(to-float q scale) is scale * q, at the scale's type.  Every other float cast is the ordinary one,
+   except that a quantized value is refused: a cast without a scale would silently drop it.
+   Endeavour 206: (to-float w i) on a microfloat block is the decoded, scaled element i."
+  ;; Endeavour 206: (to-float w i) on a microfloat block.
+  (let ((block-type (and (= (length expr) 3) (string= (symbol-name (first expr)) "TO-FLOAT")
+                         (%mf-block-of (second expr) env context (append location '(1))))))
+    (when block-type
+      (return-from analyze-scaled-float-cast
+        (analyze-expression (list (%mf-sym "~a-at" block-type) (second expr)
+                                  (list (%mf-sym "to-ulong") (third expr)))
+                            env context location))))
+  (let ((name (symbol-name (first expr))))
+    (cond
+      ((and (= (length expr) 3) (string= name "TO-FLOAT"))
+       (let* ((q (analyze-expression (second expr) env context (append location '(1))))
+              (scale (analyze-expression (third expr) env context (append location '(2))))
+              (q-type (get-single-value-type q))
+              (scale-type (get-single-value-type scale)))
+         (unless (qint-role q-type)
+           (error 'crisp-type-error
+                  :message (format nil "(to-float x scale): only a quantized value takes a scale; x is ~(~a~)." q-type)
+                  :source-location location))
+         (unless (eq (%hw-type-parts scale-type) :float)
+           (error 'crisp-type-error
+                  :message (format nil "(to-float x scale): the scale must be a float; got ~(~a~)." scale-type)
+                  :source-location location))
+         (make-semantic-mul :type scale-type
+                            :left-arg (%cast-node (%cast-node q (get-type-base q-type) location) scale-type location)
+                            :right-arg scale :source-location location)))
+      ((/= (length expr) 2)
+       (error 'crisp-compiler-error
+              :message (format nil "(~(~a~) ..) takes one argument; got ~a." name (length (rest expr)))
+              :source-location location))
+      (t
+       (let ((node (analyze-cast-expression expr env context location)))
+         (when (and (semantic-value-cast-p node)
+                    (qint-role (get-single-value-type (semantic-value-cast-arg node))))
+           (error 'crisp-type-error
+                  :message (format nil "(~(~a~) x): x is ~(~a~), which needs a scale: (to-float x scale)."
+                                   name (get-single-value-type (semantic-value-cast-arg node)))
+                  :source-location location))
+         node)))))
+
+(defun analyze-to-q-narrow (expr env context location)
+  "(%to-q-narrow Q X M): compiler-made, from (to-Q D M) as a store source.  X is one element of an
+   accumulator.  The accumulator keeps its fields at the primitive, so X is a plain integer here."
+  (destructuring-bind (target x multiplier) (rest expr)
+    (%qint-narrow-node target
+                       (analyze-expression x env context (append location '(2)))
+                       (analyze-expression multiplier env context (append location '(3)))
+                       target location)))
+
+(defun analyze-q-raw-float (expr env context location)
+  "(%q-raw-float X LIKE): compiler-made by the backward rules.  X's value at LIKE's float type, with no
+   scale.  A non-scalar X is left alone, so a basic-type (*! vec vec) keeps its old backward."
+  (destructuring-bind (x like) (rest expr)
+    (let* ((node (analyze-expression x env context (append location '(1))))
+           (like-node (analyze-expression like env context (append location '(2))))
+           (type (get-single-value-type node)))
+      (if (%accum-numeric-parts type)
+          (%cast-node (%cast-node node (get-type-base type) location)
+                      (get-single-value-type like-node) location)
+          node))))
+
+(defun %qint-range (target)
+  "(values LO HI), the integers TARGET can hold."
+  (multiple-value-bind (cat bits) (%accum-numeric-parts target)
+    (if (eq cat :signed-int)
+        (values (- (expt 2 (1- bits))) (1- (expt 2 (1- bits))))
+        (values 0 (1- (expt 2 bits))))))
+
+(defun analyze-q-ste (expr env context location)
+  "(%q-ste KIND Q X Y): the straight-through estimate of d(to-Q X Y) / dX (KIND :value) or / dY (KIND
+   :scale).  The backward walk has no types, and which rule applies depends on whether X is an
+   accumulator, so it emits this and the choice happens here.  Both operands are ANF atoms, which makes
+   analyzing them again safe.  Zero on the rails: a saturated value no longer follows its input."
+  (destructuring-bind (kind target x y) (rest expr)
+    (let* ((accum-p (eq (qint-role (get-single-value-type
+                                    (analyze-expression x env context (append location '(3)))))
+                        :accum)))
+      (flet ((op (name &rest args) (cons (%185-crisp-sym name) args))
+             (raw (form) (list (%185-crisp-sym "%Q-RAW-FLOAT") form y)))
+        (multiple-value-bind (lo hi) (%qint-range target)
+          (let* ((value (if accum-p (op "*" (raw x) y) (op "/" x y)))
+                 (slope (ecase kind
+                          (:value (if accum-p y (op "/" (raw 1) y)))
+                          (:scale (if accum-p (raw x) (op "-" (raw 0) (op "/" x (op "*" y y)))))))
+                 (live (raw (op "IF" (op "AND" (op ">=" value (raw lo)) (op "<=" value (raw hi))) 1 0))))
+            (log:debug "analyze-q-ste: ~a ~a accum=~a" kind target accum-p)
+            (analyze-expression (op "*" slope live) env context location)))))))
+
+(defun %register-accum-analyzers ()
+  "Registers the endeavour 203 and 205 analyzers by name in both packages, and forgets the last
+   compile's quantized types.
+   Endeavour 206: also the microfloat blocks and their forms."
+  (clrhash *microfloat-blocks*)
+  (clrhash *qint-roles*)
+  (let ((pkgs (list (find-package :crisp-language) (find-package :crisp.compiler))))
+    (dolist (entry '(("*!" . analyze-accum-op) ("+!" . analyze-accum-op) ("-!" . analyze-accum-op)
+                     ("WIDEN" . analyze-widen) ("TO-SAT" . analyze-to-sat)
+                     ("%TO-Q-NARROW" . analyze-to-q-narrow)
+                     ("%Q-RAW-FLOAT" . analyze-q-raw-float) ("%Q-STE" . analyze-q-ste)
+                     ("TO-FLOAT" . analyze-scaled-float-cast) ("TO-DOUBLE" . analyze-scaled-float-cast)
+                     ("TO-HALF" . analyze-scaled-float-cast) ("TO-BFLOAT16" . analyze-scaled-float-cast)))
+      (dolist (pkg pkgs)
+        (setf (gethash (intern (car entry) pkg) *expression-analyzers*) (cdr entry)))))
+  (dolist (pkg (list (find-package :crisp-language) (find-package :crisp.compiler)))
+    (setf (gethash (intern "%MF-STE" pkg) *expression-analyzers*) 'analyze-mf-ste
+          (gethash (intern "%MF-BLOCK-SCALE" pkg) *expression-analyzers*) 'analyze-mf-block-scale)))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 206 -- microfloat blocks: analysis
+;;;; See tests/spec/206-microfloat-blocks/microfloat-blocks.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %mf-block-of (form env context location)
+  "Endeavour 206.  The type of FORM when it is a microfloat block, else NIL.  Analysis errors mean it is
+   not one: the ordinary path reports them."
+  (let ((type (handler-case (get-single-value-type (analyze-expression form env context location))
+                (error () nil))))
+    (and (microfloat-block-p type) type)))
+
+(defun %mf-sym (fmt &rest args)
+  "Endeavour 206.  The :crisp-language symbol named by FORMAT of FMT and ARGS."
+  (intern (string-upcase (apply #'format nil fmt args)) (find-package :crisp-language)))
+
+(defun %mf-refuse-code-compare (expr env context location)
+  "Endeavour 206: min and max refuse microfloat codes.  Codes from different blocks have different
+   scales, so comparing them means nothing."
+  (dolist (arg (rest expr))
+    (let ((type (handler-case (get-single-value-type (analyze-expression arg env context location))
+                  (error () nil))))
+      (when (%mf-format-type-p type)
+        (error 'crisp-type-error
+               :message (format nil "(~(~a~) ..) on ~(~a~) codes: codes from different blocks have different scales.  Compare (to-float w i) instead."
+                                (symbol-name (first expr)) type)
+               :source-location location)))))
+
+(defun analyze-mf-block-scale (expr env context location)
+  "(%mf-block-scale NAME X FIRST): the decoded scale of the block starting at FIRST.  A form of its own
+   because the backward walk treats it as a constant: a straight-through estimate has no scale term."
+  (destructuring-bind (name x first) (rest expr)
+    (analyze-expression (list (%mf-sym "~a-decode-scale" name)
+                              (list (%mf-sym "~a-block-scale" name) x first))
+                        env context location)))
+
+(defun analyze-mf-ste (expr env context location)
+  "(%mf-ste NAME X SV): X through the block format at scale SV.  The backward walk passes X's adjoint
+   straight through, which is why this is a form and not a plain call."
+  (destructuring-bind (name x sv) (rest expr)
+    (analyze-expression (list (%mf-sym "~a-fake-element" name) x sv) env context location)))

@@ -1,0 +1,8 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; Endeavour 203 -- on the basic types +! -! *! widen are + - * and identity, and all differentiate.
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (a b &out r)
+  (declare #'(fc fc &out fc => nil))
+  (set! (~ r) (-! (+! (*! (~ a) (~ b)) (~ a)) (widen (~ b)))))

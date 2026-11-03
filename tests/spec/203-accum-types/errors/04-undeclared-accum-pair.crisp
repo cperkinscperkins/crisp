@@ -1,0 +1,13 @@
+;; CHECK-FAIL: "no accumulator is declared for"
+;; Endeavour 203 -- (accum A B) needs a declared product.
+(def-derived-type b8 char :subst :no)
+(def-derived-type w8 char :subst :no)
+(def-type ic (cell int :address-space :global))
+
+(def-function pairing (x y)
+  (declare #'(b8 w8 => (accum b8 w8)))
+  0)
+
+(def-kernel k (&out r)
+  (declare #'(&out ic => nil))
+  (set! (~ r) 1))

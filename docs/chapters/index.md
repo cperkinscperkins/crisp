@@ -29,7 +29,7 @@
 - [Type Limits: `type-min`, `type-max`, `type-infinity` ✅](07_crisp_types/02_type_limits_type_min_type_max_type_infinity.md)
 - [Vector Numeric Types ✅](07_crisp_types/03_vector_numeric_types.md)
 - [Numeric Type Promotion, Casting, Conversion ✅](07_crisp_types/04_numeric_type_promotion_casting_conversion.md)
-- [Quantized Integers and Complex Numbers 📝](07_crisp_types/05_quantized_integers_and_complex_numbers.md)
+- [Quantized Integers, Microfloats and Complex Numbers ⚠️](07_crisp_types/05_quantized_integers_microfloats_and_complex_numbers.md)
 - [Other Basic Types ⚠️](07_crisp_types/06_other_basic_types.md)
 - [Declaring Types - Functions ✅](07_crisp_types/07_declaring_types_functions.md)
 - [Function Overloading ✅](07_crisp_types/08_function_overloading.md)
@@ -214,16 +214,29 @@
 - [Integer Division ✅](32_math_operations_arithmetic/06_integer_division.md)
 - [Hardware Supported Math Operations ✅](32_math_operations_arithmetic/07_hardware_supported_math_operations.md)
 
-## Quantized Integers 📝
-- [Quantized Integer Types 📝](33_quantized_integers/01_quantized_integer_types.md)
+## Quantized Integers ✅
+- [def-qint ✅](33_quantized_integers/01_def_qint.md)
+- [Accumulator Types: set-accum, accum, base ✅](33_quantized_integers/02_accumulator_types_set_accum_accum_base.md)
+- [def-qint-product ✅](33_quantized_integers/03_def_qint_product.md)
+- [Conversions ✅](33_quantized_integers/04_conversions.md)
+- [Operations ✅](33_quantized_integers/05_operations.md)
+- [Refused at compile time ✅](33_quantized_integers/06_refused_at_compile_time.md)
+- [`to-sat` ✅](33_quantized_integers/07_to_sat.md)
+- [The Tile-Level Path: Integer MMA ✅](33_quantized_integers/08_the_tile_level_path_integer_mma.md)
+- [Quantized Integers and Autodiff ✅](33_quantized_integers/09_quantized_integers_and_autodiff.md)
 
-## Low Precision Floats ("microfloats") 📝
+## Low Precision Floats ("microfloats") ✅
 - [Format Wars](34_low_precision_floats_microfloats/01_format_wars.md)
-- [Micro Float Types 📝](34_low_precision_floats_microfloats/02_micro_float_types.md)
-- [def-microfloat-block 📝](34_low_precision_floats_microfloats/03_def_microfloat_block.md)
-- [blockwise operations 📝](34_low_precision_floats_microfloats/04_blockwise_operations.md)
-- [Vector Conversion Operations 📝](34_low_precision_floats_microfloats/05_vector_conversion_operations.md)
-- [element-wise access 📝](34_low_precision_floats_microfloats/06_element_wise_access.md)
+- [Microfloat Formats ✅](34_low_precision_floats_microfloats/02_microfloat_formats.md)
+- [def-microfloat-block ✅](34_low_precision_floats_microfloats/03_def_microfloat_block.md)
+- [Records Can Hold Storage Handles ✅](34_low_precision_floats_microfloats/04_records_can_hold_storage_handles.md)
+- [Operations ✅](34_low_precision_floats_microfloats/05_operations.md)
+- [quantize-to-XXXX ✅](34_low_precision_floats_microfloats/06_quantize_to_xxxx.md)
+- [dequantize-from-XXXX ✅](34_low_precision_floats_microfloats/07_dequantize_from_xxxx.md)
+- [element-wise access ✅](34_low_precision_floats_microfloats/08_element_wise_access.md)
+- [fake-quant-XXXX ✅](34_low_precision_floats_microfloats/09_fake_quant_xxxx.md)
+- [Microfloats and Autodiff ✅](34_low_precision_floats_microfloats/10_microfloats_and_autodiff.md)
+- [Refused at compile time ✅](34_low_precision_floats_microfloats/11_refused_at_compile_time.md)
 
 ## Complex Numbers 📝
 - [soa-vector and complex 📝](35_complex_numbers/01_soa_vector_and_complex.md)
@@ -264,7 +277,7 @@
 - [check-coalesce 📝](46_static_analysys/02_check_coalesce.md)
 - [check-bank-conflicts 📝](46_static_analysys/03_check_bank_conflicts.md)
 - [check-divergence 📝](46_static_analysys/04_check_divergence.md)
-- [max-registers / warn-max-registers 📝](46_static_analysys/05_max_registers_warn_max_registers.md)
+- [max-registers / warn-max-registers ✅](46_static_analysys/05_max_registers_warn_max_registers.md)
 - [check-barriers 📝](46_static_analysys/06_check_barriers.md)
 - [miscellaneous ⚠️](46_static_analysys/07_miscellaneous.md)
 

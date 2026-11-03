@@ -1,0 +1,25 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 7 0 2 3
+;; HOIST-EXPECT: BUFFER s: 58 1 2 3
+;; HOIST-EXPECT: BUFFER y: 7.5 0 0 0
+;;
+;; Endeavour 206 ON-METAL: the scale rounds up, so the largest element is not clipped.  7 / 6 = 1.1667 lies
+;; between the e4m3 values 1.125 and 1.25, and rounding up gives 1.25, code 58.  Then 7 / 1.25 = 5.6 rounds to
+;; 6, code 7, and decodes to 7.5.  Rounding to nearest would have chosen 1.125, and clipped 7 to 6.75.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4))
+
+(def-kernel quant_up (&out x c s y)
+  (declare #'(&out mf-floats mf-codes mf-scales mf-floats => nil) (global-size :set-to 1))
+  (let ((w (make-mf :codes c :scales s)))
+    (set! (~ x 0) 7.0)
+    (set! (~ x 1) 0.0)
+    (set! (~ x 2) 0.0)
+    (set! (~ x 3) 0.0)
+    (mf-quantize-block x 0ul w)
+    (set! (~ y 0) (to-float w 0))
+    (set! (~ y 1) (to-float w 1))
+    (set! (~ y 2) (to-float w 2))
+    (set! (~ y 3) (to-float w 3))))

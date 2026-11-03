@@ -1,5 +1,5 @@
 ;; TEST-EXPECT: PASS
-;; TEST-WITH[--hardware-profile=stream-gpu --ir-target=ptx]: validate-ptx-no-minnctapersm
+;; TEST-WITH[--hardware-profile=stream-gpu --ir-target=ptx]: validate-ptx-no-launch-bounds
 ;;
 ;; ENDEAVOUR 182 -- (declare (occupancy-target nil)) turns the profile's automatic bound OFF for this
 ;; kernel: the declaration always wins over the profile.

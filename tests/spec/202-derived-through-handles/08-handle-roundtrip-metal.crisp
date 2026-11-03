@@ -1,0 +1,20 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER o: 45
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;;
+;; Endeavour 202 ON-METAL: derived values through memory.  20 and 25 are written through a derived
+;; vector, read back through the same handle, added, and cast out through (to int ..).  The stored
+;; bytes prove the element is 8-bit, the sum proves the read types resolve, and the hoist proves the
+;; host ABI sees char for a derived element.
+(def-derived-type q-c char :subst :no)
+(def-type qv (vector q-c :address-space :global :align :compact))
+(def-type ic (cell int :address-space :global))
+
+(def-kernel roundtrip (&out v o)
+  (declare #'(&out qv ic => nil) (global-size :set-to 1))
+  (let ((x (to q-c (+ (to-int (get-global-id 0)) 20)))
+        (y (to q-c (+ (to-int (get-global-id 0)) 25))))
+    (set! (~ v 0) x)
+    (set! (~ v 1) y)
+    (set! (~ o) (to int (+ (~ v 0) (~ v 1))))))

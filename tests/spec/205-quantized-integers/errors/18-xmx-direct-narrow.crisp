@@ -1,0 +1,12 @@
+;; CHECK-FAIL: "narrow its elements"
+;; CHECK-FAIL-FLAGS: --ir-target=spv --hardware-profile=bmg
+;; Endeavour 205 -- a SPIR-V store has no per-element hook, and a hidden SLM staging tile is not the
+;; route on Intel.  Say how to do it in two steps.
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 32)))
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e (A B &out C)
+  (declare #'(a-mat a-mat &out a-mat) (global-size :set-to 16) (local-size :set-to 16))
+  (let ((D (make-register-tile (accum q-a) (16 16) 0)))
+    (mma-accumulate-via-tile (8 16 32) D A B)
+    (store-tile (to-q-a D 1.0) C (0 0))))

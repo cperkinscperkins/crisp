@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 5 6 44 -56
+;;
+;; Endeavour 205 ON-METAL: raw casts apply no scale and do not saturate.  They are for debugging and
+;; bit-level work.  (to-q-a x) with one argument IS (to q-a x).  300 truncates to 44, and 200 reads
+;; back as -56.
+(def-qint q-a :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+
+(def-kernel raw_metal (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (let ((g (to-int (get-global-id 0))))
+    (set! (~ o 0) (to int (to q-a 5)))
+    (set! (~ o 1) (to int (to-q-a (+ g 6))))
+    (set! (~ o 2) (to int (to q-a (+ g 300))))
+    (set! (~ o 3) (to int (to q-a (+ g 200))))))

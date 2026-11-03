@@ -104,34 +104,80 @@
              (if n (values n :profile) nil)))
           (t nil))))
 
+;;;; ----------------------------------------------------------------------
+;;;; BUG 135 -- register budgets reported, launch bounds stamped
+;;;; See tests/spec/182-nvidia-register-budget/register-budget.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %report-register-budget (kname)
+  "BUG 135.  Warns when the registers KNAME is known to reserve exceed a declared budget.  The
+   estimate counts explicit reservations only, so a kernel can exceed its budget without this
+   firing.  Also says when a normative (max-registers N) has no lowering on this backend."
+  (let* ((entry (gethash kname *kernel-register-budgets*))
+         (max-regs (getf entry :max))
+         (warn-regs (getf entry :warn)))
+    (when entry
+      (let ((estimate (%kernel-registers-per-thread kname)))
+        (log:debug "Kernel ~a: register estimate ~a, budgets max ~a warn ~a"
+                   kname estimate max-regs warn-regs)
+        (dolist (budget (remove nil (list max-regs warn-regs)))
+          (when (> estimate budget)
+            (format *error-output*
+                    "WARNING: Register pressure for '~a' is estimated at ~a, exceeding the declared budget of ~a.  This may lead to reduced occupancy.~%"
+                    kname estimate budget))))
+      (when (and max-regs (not (eq *target-backend* :ptx)))
+        (format *error-output*
+                "WARNING: (max-registers ~a) on '~a' has no effect on this backend.~%"
+                max-regs kname)))))
+
 (defun %apply-occupancy-bound (func kname module)
-  "Endeavour 182.  On PTX, stamps entry point FUNC with the launch bounds for its occupancy target:
+  "Endeavour 182.  On PTX, stamps entry point FUNC with its launch bounds for its occupancy target:
    \"nvvm.maxntid\" (the workgroup extents) and \"nvvm.minctasm\" (target / workgroup size, the minimum
    number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.
    ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX
    construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a
-   workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis."
+   workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis.
+
+   BUG 135: a workgroup above *launch-bound-workgroup-threshold* gets \"nvvm.maxntid\" with no target,
+   because ptxas then keeps the kernel under the true launch ceiling (168 registers at 288 threads).
+   Below it the bound must NOT be automatic: it cannot help, and on every kernel it changed the code of
+   229 of 408 and raised registers in 106, which lowers occupancy.  (occupancy-target nil) still
+   means no bounds at all.  A (max-registers N) becomes \"nvvm.maxnreg\"."
+  (%report-register-budget kname)
   (when (eq *target-backend* :ptx)
-    (multiple-value-bind (target source) (%effective-occupancy-target kname)
-      (when target
-        (let* ((decls (gethash kname *kernel-dispatch-declarations*))
-               (local-decl (getf decls :local-size))
-               (dims (and local-decl (%declared-local-size-dims (list local-decl))))
-               (wg (and dims (reduce #'* dims))))
-          (if (or (null wg) (< target wg))
-              (log:info "Kernel ~a: ~(~a~) occupancy target ~a not applied (workgroup ~a)"
-                        kname source target (or wg "not fixed at compile time"))
-              (let ((ctx (llvm-get-module-context module)))
-                (flet ((stamp (key val)
-                         (llvm-add-attribute-at-index
-                          func +llvm-attribute-function-index+
-                          (llvm-create-string-attribute ctx key (length key) val (length val)))))
-                  (let ((maxntid (format nil "~{~a~^,~}" dims))
-                        (minctasm (format nil "~a" (floor target wg))))
-                    (log:info "Kernel ~a: ~(~a~) occupancy target ~a -> .maxntid ~a, .minnctapersm ~a"
-                              kname source target maxntid minctasm)
-                    (stamp "nvvm.maxntid" maxntid)
-                    (stamp "nvvm.minctasm" minctasm))))))))))
+    (let* ((decls (gethash kname *kernel-dispatch-declarations*))
+           (local-decl (getf decls :local-size))
+           (dims (and local-decl (%declared-local-size-dims (list local-decl))))
+           (wg (and dims (reduce #'* dims)))
+           (max-regs (getf (gethash kname *kernel-register-budgets*) :max))
+           (opted-out (multiple-value-bind (declared present)
+                          (gethash kname *kernel-occupancy-targets*)
+                        (and present (null declared))))
+           (maxntid (and dims (format nil "~{~a~^,~}" dims)))
+           (ctx (llvm-get-module-context module)))
+      (flet ((stamp (key val)
+               (llvm-add-attribute-at-index
+                func +llvm-attribute-function-index+
+                (llvm-create-string-attribute ctx key (length key) val (length val)))))
+        (when max-regs
+          (log:info "Kernel ~a: (max-registers ~a) -> .maxnreg ~a" kname max-regs max-regs)
+          (stamp "nvvm.maxnreg" (format nil "~a" max-regs)))
+        (multiple-value-bind (target source) (%effective-occupancy-target kname)
+          (cl:cond
+            ((and target wg (>= target wg))
+             (let ((minctasm (format nil "~a" (floor target wg))))
+               (log:info "Kernel ~a: ~(~a~) occupancy target ~a -> .maxntid ~a, .minnctapersm ~a"
+                         kname source target maxntid minctasm)
+               (stamp "nvvm.maxntid" maxntid)
+               (stamp "nvvm.minctasm" minctasm)))
+            (t
+             (when target
+               (log:info "Kernel ~a: ~(~a~) occupancy target ~a not applied (workgroup ~a)"
+                         kname source target (or wg "not fixed at compile time")))
+             (when (and wg (> wg *launch-bound-workgroup-threshold*) (not opted-out))
+               (log:info "Kernel ~a: workgroup ~a is above ~a -> .maxntid ~a"
+                         kname wg *launch-bound-workgroup-threshold* maxntid)
+               (stamp "nvvm.maxntid" maxntid)))))))))
 
 (defvar *tma-copy-multicast* (make-hash-table :test 'eq)
   "semantic-nvvm-tma-tile-copy node -> the cluster dims it should multicast across.
@@ -2068,6 +2114,22 @@
     (%hw-intrinsic builder module "minnum" result-type lo (%hw-float-const builder module result-type 1.0))))
 
 ;; src/codegen.lisp
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 203 -- to-sat
+;;;; See tests/spec/203-accum-types/accum-types.md.
+;;;; ----------------------------------------------------------------------
+
+(defmethod %hw-lower ((op (eql '%to-sat)) builder module arg-vals arg-types result-type)
+  "to-sat: llvm.rint, which is nearest with ties to even in the default rounding mode, then
+   llvm.fpto[su]i.sat, which clamps to the target's range and sends NaN to 0."
+  (let* ((source (first arg-types))
+         (prim (get-type-base result-type))
+         (rounded (%hw-intrinsic builder module "rint" source (first arg-vals))))
+    (multiple-value-bind (cat bits) (%hw-type-parts prim)
+      (%hw-call builder module
+                (format nil "llvm.fpto~ai.sat.i~a.~a" (if (eq cat :signed-int) "s" "u") bits (%hw-type-suffix source))
+                (crisp-type-to-llvm-type prim module) (list rounded) "to_sat"))))
+
 (defmethod %hw-lower ((op (eql 'op-imad)) builder module arg-vals arg-types result-type)
   "op-imad: widen a and b to the accumulator's type (sext / zext), multiply, add c. Wraps in c's
    type like ordinary integer arithmetic."
@@ -6966,9 +7028,14 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
    Endeavour 155: BFLOAT16 lowers to a 16-BIT INTEGER, not to LLVM `bfloat`.  That is how Intel
    encodes a bf16 cooperative matrix (see header) — the type carries no float-ness and the MulAdd
    operands mask supplies it.  i16 is also the correct width for the tile ADDRESS arithmetic, so
-   one answer serves both uses."
-  (let ((e (%coop-node-elem node)))
-    (cond ((string= (symbol-name e) "HALF")     (llvm-half-type))
+   one answer serves both uses.
+
+   Endeavour 204: CHAR / UCHAR are i8 and INT / UINT are i32; the sign is the operands mask's job."
+  (let* ((e (%coop-node-elem node))
+         (prim (%elem-prim-name e)))
+    (cond ((member prim '("CHAR" "UCHAR") :test #'equal) (llvm-int8-type))
+          ((member prim '("INT" "UINT") :test #'equal)   (llvm-int32-type))
+          ((string= (symbol-name e) "HALF")     (llvm-half-type))
           ((string= (symbol-name e) "BFLOAT16") (crisp.llvm-bindings::llvm-int16-type))
           ((string= (symbol-name e) "DOUBLE")   (llvm-double-type))
           (t                                    (llvm-float-type)))))
@@ -7483,6 +7550,26 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
 
    Dispatched on the active MMA lowering; see *mma-lowering*."))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer cooperative-matrix MMA: operand signs
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *coop-mma-signs* 0
+  "The signedness bits of the MulAdd operands mask for the multiply being emitted: A 1, B 2, C 4,
+   Result 8.  LLVM integer types carry no sign, so the Crisp types have to supply them.")
+
+(defun %coop-sign-mask (a-node b-node c-node)
+  "The MatrixA/B/C/ResultSignedComponentsKHR bits for this multiply, from the operands' Crisp types."
+  (flet ((signed-p (node)
+           (let ((ty (semantic-node-type node)))
+             (and (consp ty) (eq (first ty) 'coop-matrix) (%elem-signed-p (second ty))))))
+    (let ((mask (logior (if (signed-p a-node) 1 0)
+                        (if (signed-p b-node) 2 0)
+                        (if (signed-p c-node) 12 0))))
+      (log:debug "%coop-sign-mask: ~a" mask)
+      mask)))
+
 (defmethod %coop-mma-impl ((lowering (eql :coop-matrix)) builder module a-val b-val c-val elem-llvm m n k)
   (declare (ignorable lowering))
   "Emit CooperativeMatrixMulAddKHR(A, B, C, <operands>) -> the MxN accumulator coop matrix.
@@ -7510,7 +7597,7 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
          (bf16-p (and (eq *target-backend* :spirv)
                       a-str
                       (search ", i16," a-str)))
-         (operands (if bf16-p #x40 0)))
+         (operands (logior (if bf16-p #x40 0) *coop-mma-signs*)))
     (%coop-call builder module "__spirv_CooperativeMatrixMulAddKHR"
                 c-ty (list a-ty b-ty c-ty i32)
                 (list a-val b-val c-val (crisp.llvm-bindings::llvm-const-int i32 operands nil)))))

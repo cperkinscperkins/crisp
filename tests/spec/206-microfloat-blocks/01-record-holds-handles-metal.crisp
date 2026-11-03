@@ -1,0 +1,28 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER a: 5 1 2 3
+;; HOIST-EXPECT: BUFFER b: 7 1 2 3
+;; HOIST-EXPECT: BUFFER o: 12 1 2 3
+;;
+;; Endeavour 206 ON-METAL: a record can hold handles.  One written through a function, one written
+;; directly, and both read back through a function.
+
+(def-type uv (vector uchar :address-space :global :align :compact))
+(def-type iv (vector int :address-space :global :align :compact))
+(def-record pair (a uv) (b uv))
+
+(def-function put-a (&out p i v)
+  (declare #'(&out pair ulong uchar => nil))
+  (set! (~ (a~ p) i) v))
+
+(def-function sum-at (p i)
+  (declare #'(pair ulong => int))
+  (+ (to-int (~ (a~ p) i)) (to-int (~ (b~ p) i))))
+
+(def-kernel record_handles (&out a b o)
+  (declare #'(&out uv uv iv => nil) (global-size :set-to 1))
+  (let ((p (make-pair :a a :b b)))
+    (put-a p 0ul 5uc)
+    (set! (~ (b~ p) 0) 7uc)
+    (set! (~ o 0) (sum-at p 0ul))))

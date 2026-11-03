@@ -1,0 +1,22 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER r: 10 3 2 3
+;; HOIST-EXPECT: BUFFER y: -2 3 2 3
+;;
+;; Endeavour 206 ON-METAL: (~ w i) reads a raw code and (to-float w i) a decoded, scaled element.  The byte 58
+;; is 0x3A: low nibble 10, or -1, and high nibble 3, or 1.5.  Scale code 64 is 2.  The types come from the block.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4))
+(def-type b-vec (vector (base mf) :address-space :global :align :compact))
+(def-type a-vec (vector (accum mf) :address-space :global :align :compact))
+
+(def-kernel reads (&out c s r y)
+  (declare #'(&out mf-codes mf-scales b-vec a-vec => nil) (global-size :set-to 1))
+  (let ((w (make-mf :codes c :scales s)))
+    (set! (~ c 0) 58uc)
+    (set! (~ s 0) (to fp8-e4m3 64uc))
+    (set! (~ r 0) (~ w 0))
+    (set! (~ r 1) (~ w 1))
+    (set! (~ y 0) (to-float w 0))
+    (set! (~ y 1) (to-float w 1))))

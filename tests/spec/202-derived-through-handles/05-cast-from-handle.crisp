@@ -1,0 +1,12 @@
+;; TEST-EXPECT: PASS
+;; SKIP-WITH[--differentiate]: "a raw (to T x) of an active integer has no backward rule"
+;; Endeavour 202 -- value casts out of a derived type, read through a cell.
+(def-derived-type q-c char :subst :no)
+(def-type qc (cell q-c :address-space :global))
+(def-type ic (cell int :address-space :global))
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (a &out i f)
+  (declare #'(qc &out ic fc => nil))
+  (set! (~ i) (to int (~ a)))
+  (set! (~ f) (to-float (~ a))))

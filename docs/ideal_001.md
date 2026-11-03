@@ -33,7 +33,7 @@ GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-a
 
 - **Performance With a Capital P.**  The primitives that make GEMM and Flash-Attention tractable are first-class citizens, not things you hand-roll: async tile loads (`load-tile`), pipeline `rings`, `with-warp-specialization`, and `mma-accumulate-via-tile` for tensor-core / DPAS matrix units. You get high-level abstraction without the usual performance tax — and the very same tile machinery is what goes topology-aware on a cluster. (⚠️ partially implemented)
 
-- **Precision and Numerics as a First-Class Axis.**  Numerical precision is a scoped language construct, not a global switch: `with-precision` carves `ieee` or `fast` regions lexically, `--denormal-handling` selects flush-to-zero versus preserve, and all of it composes cleanly with auto-differentiation. On the roadmap: quantized integers and low-precision "microfloat" blocks as first-class, nominally "branded," overflow-safe types — a unified, safe path to the specialized AI hardware (Tensor Cores / DPAS) for both integer and floating-point acceleration. (`with-precision` ✅ / quantized & microfloat 📝)
+- **Precision and Numerics as a First-Class Axis.**  Numerical precision is a scoped language construct, not a global switch: `with-precision` carves `ieee` or `fast` regions lexically, `--denormal-handling` selects flush-to-zero versus preserve, and all of it composes cleanly with auto-differentiation. Quantized integers and low-precision "microfloat" blocks are first-class, nominal, overflow-safe types: integer MMA through the specialized AI hardware (wgmma / XMX), block-scaled fp4 and fp8 formats, and straight-through gradients for training. (`with-precision` ✅ / quantized & microfloat ✅ / native block-scaled MMA 📝)
 
 - **Broad Reach.**  One source compiles to both Intel (SPIR-V / Level Zero) and NVIDIA (PTX / CUDA). A foreign-function interface lets you call C — and *differentiate across it* via a supplied vector-Jacobian product. The compiler doesn't stop at the kernel, either: it can emit the host-side `main()` (C++ or Python) that allocates, binds arguments, and launches. And it all compiles fast enough that the compile time itself is a measured advantage over the C++ toolchains it competes with. (✅ implemented / hoisting ⚠️)
 
@@ -575,10 +575,11 @@ Example: `(as uint someInt)`
 Note there is no equivalent shorthand for _conversion_ (ie no `to`). Use  `to-XXXX` .
 
 
-### Quantized Integers and Complex Numbers 📝
+### Quantized Integers, Microfloats and Complex Numbers ⚠️
 
-Crisp has in-language support for quantized integers a popular optimization among
-the GPU-dev-literati, as well as complex numbers. See [Quantized Integers](#quantized-integers)
+Crisp has in-language support for quantized integers ✅ and block-scaled microfloats ✅, popular
+optimizations among the GPU-dev-literati, as well as complex numbers 📝. See
+[Quantized Integers](#quantized-integers-), [Low Precision Floats](#low-precision-floats-microfloats-)
 and [Complex Numbers](#complex-numbers) below.
 
 
@@ -737,6 +738,11 @@ types of the given parameters to determine which overload should be called.
 
 As mentioned, the property access functions that some types support can be overloaded as well (discussed later), 
 but the `make-XXXX` functions CANNOT be overloaded. 
+
+The operators the compiler lowers directly CANNOT be overloaded either: `+ - * / *! < <= > >= = max min`.
+The compiler never looks for a user definition of these, so a `(def-function + ...)` would compile and
+then never be called. It is refused where it is written, with a message to use a named function
+instead. The accessors (`~`, `XXXX~`) are deliberately overloadable and are not affected.
 
 
 ### Recursion Disallowed ✅
@@ -1218,7 +1224,11 @@ Though there is no equivalent of `soa-vector` for records.
 #### Notes
 
 - Importantly, types defined by `def-record` cannot be wrapped in Storage Handles.
-- Both records and structs can be passed directly to kernels on the kernel boundary. 
+- But a record can HOLD storage handles: `(def-record pair (a uv) (b uv))`. A microfloat block is one
+  (see [Records Can Hold Storage Handles](#records-can-hold-storage-handles-)).
+- Both records and structs can be passed directly to kernels on the kernel boundary, except a record
+  that holds a handle: what a host would pass for it is not defined, so the kernel takes the handles and
+  builds the record with `make-XXXX`. 
 - - But when doing so structs are immutable and cannot have their properties changed.
 - - Records, on the other hand, are mutable in the current thread context. Any value
     change is not communicated back to the host or to other threads.
@@ -3936,8 +3946,8 @@ For template usage, see the subequent section.
 | `to-uniform`  | `(to-uniform someVar)`      | No  | Yes | tells the compiler to MAKE the newly defined variable uniform across the entire workgroup. This is non-trivial. See [to-uniform](#to-uniform-) |
 | `forward-only` | see [Auto-Differentiation](#auto-differentiation-ad)| Yes | No | tells the compiler that this function is forward-only and should not be differentiated. Will not be compiled when the `-differentiate` flag is used. |
 | `reduction-vjp` | `(reduction-vjp argmax-local-vjp)` | Yes | No | on the combiner of a dependent multi-variable reduction: names the local VJP that makes the reduction differentiable -- (own state, result, result adjoint) => own adjoint. See [Dependent Reductions](#2-dependent-reductions). |
-| `max-registers` | `(max-registers 64)`        | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler error if it exceeds. |
-|`warn-max-registers` | `(warn-max-registers 64)` | Yes | No | An opt-in static analysis usually elected at the kernel level. Compiler will analyze the number of registers a kernel requires and emit a compiler warning if it exceeds. It will also name which kernel args might be candidates for `no-sroa`  |
+| `max-registers` | `(max-registers 64)`        | Yes | No | On a kernel only. Limits the registers per thread: on PTX ptxas must fit the kernel and spills what does not fit. Also warns when the compiler's estimate exceeds it. See [max-registers](#max-registers--warn-max-registers-). |
+|`warn-max-registers` | `(warn-max-registers 64)` | Yes | No | On a kernel only. Warns when the compiler's register estimate exceeds the budget, and changes nothing else. See [max-registers](#max-registers--warn-max-registers-). |
 | `no-sroa` | `(no-sroa someVar)` |             | Yes | No | The variable named (typicall a Storage Handle) will not be automatically expanded into its SROA components at the kernel boundary, but is instead brought over as a single constant memory struct. This can lower register usage, but is only available for storage handles that do NOT use mutable strides or offsets. | 
 
 
@@ -4729,10 +4739,13 @@ bound automatically to every kernel whose body has a stream loop (`loop-vector-s
 `reduce-vec`).  The declaration is for overriding that -- a different target, or `nil` -- and for
 kernels the automatic rule does not cover.
 
-**Where it has an effect.**  On PTX it becomes the entry's launch bounds, `.maxntid` (the workgroup
-size) and `.minnctapersm` (target / workgroup size) -- CUDA's `__launch_bounds__` -- from which ptxas
-derives its register budget.  The hoisting code needs no change: it sizes the grid from the
-compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
+**Where it has an effect.**  On PTX it becomes the entry's `.minnctapersm` (target / workgroup size),
+which with `.maxntid` makes up CUDA's `__launch_bounds__`, from which ptxas derives its register
+budget.  A kernel with a compile-time workgroup above 256 threads gets `.maxntid` whether or not it has
+a target, so that it stays launchable, and `(occupancy-target nil)` removes that as well.  At 256
+threads or fewer, a kernel with no target gets no bounds: `.maxntid` changes how ptxas allocates
+registers, often upward, so it is not added where it cannot help.  The hoisting code needs no change: it
+sizes the grid from the compiled kernel's occupancy.  On SPIR-V it is accepted and has no effect.
 
 #### check-thread-bounds 📝
 By itself, the `global-size` expressions above doesn't result in any change to the 
@@ -8060,9 +8073,10 @@ be a property retrieval function (like `x~`). But technically, the `keyF` can be
 returns an orderable value (for example, it could add the `x` and `y` values of the point and return their sum).
 The astute reader will observe that could be done with an overload property function as well. 
 
-Lastly, note for `vector` of structs, that the Crisp developer can choose between overloading `>` and `<` 
-for some struct, using a custom `keyF` function, using a property access function `~x`, or and overloaded property
-access function, to influence or intercept the ordering. 
+Lastly, note for `vector` of structs, that the Crisp developer can choose between using a custom `keyF`
+function, using a property access function `~x`, or an overloaded property access function, to influence
+or intercept the ordering. (`>` and `<` themselves cannot be overloaded; see
+[Function Overloading](#function-overloading-).)
 
 But for the `soa-vector` variant, beyond simply specifying the property to key off, the only 
 intercept is via an overload that includes `soa-vector`.
@@ -9088,6 +9102,11 @@ an accumulator type.  We'll see more of this below when discuss the hardware acc
 like Quantized Integers and MicroFloat Blocks.
 
 - `*!`  => `#'(T T => (accum T))`  widening multiplication.
+- `+!`, `-!`  => `#'(T T => (accum T))`  widening addition and subtraction.  `(+! acc b)` also accumulates a base value.
+- `widen` => `#'(T => (accum T))`  the same value at the accumulator type.
+
+For the basic types these are `*`, `+`, `-` and the identity.  `(to-sat T x)` is the saturating
+float-to-integer conversion that narrows back.  See [Accumulator Types](#accumulator-types-set-accum-accum-base-).
 
 ### Integer Only Operations ✅
 
@@ -9386,231 +9405,394 @@ are not supported yet). Integer operands get promoted adjoints, as for any integ
   exactly-evaluated gradient would force you to link `libdevice.10.bc`.) For `op-sincos-approx`,
   `dx = cos(x)·ds - sin(x)·dc`.
 
-## Quantized Integers 📝
+## Quantized Integers ✅
 
-A quantized integer (`qint`) is just like a normal integer that's being used
-to "fake" a floating-point number. Commonly a `qint8` is a single byte number
-that represents any of 256 steps over some amount of number space, a gradient.
+A quantized integer (`qint`) is an ordinary integer standing in for a floating-point number. An 8-bit
+`qint` is a single byte that represents one of 256 evenly spaced steps, and a floating-point *scale*
+says how big each step is:
 
-It does this in conjunction with a "Scale" and a "Zero Point" which are both 
-floating point numbers. These two values define the "number space" that the 
-gradient is applied over. 
+```
+real = scale * q
+```
 
-So two floats (scale and zero-point) and N qints can compactly represent the 
-same values as N floats that fall in the same number space. That's a 4x space
-saving! 
+So one float (the scale) and N 8-bit qints can represent N floats that fall in the same range. That's a
+4x space saving!
 
-While it's easy to focus on the precision lost when converting a single float, this viewpoint is flawed. The true power of qints is seen at the vector level. When a Scale and Zero-Point (two floats) are well-chosen to define the number space for an entire dataset, the relationships between the numbers are preserved with high fidelity.
+While it's easy to focus on the precision lost when converting a single float, this viewpoint is flawed.
+The true power of qints is seen at the vector level. When the scale is well chosen for an entire tensor,
+the relationships between the numbers are preserved with high fidelity.
 
-This is the core trade-off: in exchange for a tiny, well-managed loss of precision, you get a 4x reduction in memory size and access to blazingly-fast, specialized integer math hardware. The results are fast, compact, and perfectly workable for domains like AI.
+This is the core trade-off: in exchange for a tiny, well-managed loss of precision, you get a 4x reduction
+in memory size and access to blazingly-fast, specialized integer math hardware. The results are fast,
+compact, and perfectly workable for domains like AI.
 
-But `qint` base types have a problem when multiplied: that result can easily
-be greater than 256, which means it's no longer representable by the base `qint` 
-type. For this a second `qint` type is needed: the accumulator. 
+But `qint` base types have a problem when multiplied: the result can easily be greater than 127, which
+means it's no longer representable by the base type. For this a second type is needed: the accumulator.
+For an 8-bit base the accumulator is usually a 32-bit `int`.
 
-For `qint8` the accumulator is usually `qint32`.  
-
-By now, gentle reader, your assignment should be clear: receive data
-as some small `qint` base type, operate on it, using temporary `qint` accumulators, 
-and get it stored away again back as a the `qint` base type before
+By now, gentle reader, your assignment should be clear: receive data as some small `qint` base type,
+operate on it, using temporary accumulators, and get it stored away again back as the base type before
 anyone notices. What could be easier?
 
-### Quantized Integer Types 📝
+The scale is a runtime float that you pass where it is needed. Operations that stay inside the integer
+world need no scale at all.
 
-These are the Crisp `qint` base types pre-defined for you.   
+Quantization in Crisp is *symmetric*: there is no zero-point, so `0` is always `0.0`. Classic asymmetric
+`uint8` activations can still be handled by hand. With symmetric weights,
+`sum((a - za) * b) = sum(a * b) - za * sum(b)`, an accumulator subtraction of a precomputed term. A
+zero-point may be added later without breaking anything.
 
-| Type   | Size    | 
-|--------|---------|
-| qb8  | 1 byte  | 
-| qb16 | 2 bytes | 
-| qb32 | 4 bytes | 
-| qb64 | 8 bytes | 
+### def-qint ✅
 
-Note that there are no mathematical operations defined for any of them. 
-But once you define your own qint type there will be
-operations defined for your type. You'll typically need to define your OWN qint type like so:
-
-#### def-qint 📝
-
-```
-(def-qint q-fahrenheit :base qb8 :accum qb32)
-(def-qint q-celcius :base qb8 :accum qb32)
-```
-Note that even though `q-fahrenheit` and `q-celsius` above have the exact same base and accumulator
-types that they CANNOT be intermixed.  This is because they might have different scale and zero-point
-references. These types are nominally-typed. The compiler will error if you try to mix different 
-classes, preventing you from accidentally combinging data with different scales.
-
-The `def-qint` for `q-celcius` above expands to
-```
-;; simple type aliases
-(def-type q-celcius qb8)
-(def-type q-celcius-accum qb32)
-
-;; a new overload of the accum type function
-(def-type-function accum (T:q-celcius) 
-   q-celcius-accum)
-;; and of the base type function, just returns same type
-(def-type-function base (T:q-celcius)
-  q-celcius)
+```lisp
+(def-qint q-a :base char :accum int)
 ```
 
-Plus the following conversion and math functions.
-Using `B` for the `:base` type and `A` for the `:accum` , here are the operations
+`:base` and `:accum` are ordinary integer types: `char` or `uchar` for the 8-bit types the tensor
+hardware reads, but any integer types are legal. The accumulator must hold a full product of two base
+values, so it is at least twice the base's width, and it is signed if the base is.
 
-<!-- 
-TO BE REMOVED
-Once `def-qint` is used it defines TWO new types: `XXXX-base` and `XXXX-accum` for you to use.
+`def-qint` defines:
 
--->
+- the base type `q-a` and the accumulator type `q-a-accum`
+- the conversion function `to-q-a` (see [Conversions](#conversions) below)
+- these type accessors:
 
-#### to-XXXX 📝
-
-For your `qint` type, a matching function `to-XXXX` is defined. It takes the floating point value in question along with scale and zerop (also floating point) and returns a scaled value in the base type `B`.
-
-Example:
-```
-(to-q-celsius <float> <zero-point> <scale>) => <q-celsius>
-;; e.g:
-(to-q-celsius 23.204:float 0.0 50.0) => temp
-```
-where `temp` would be a 1-byte `qb8` but aliased as `q-celcius` 
-
-#### to-float 📝
-
-To convert either the base type `B` or the accumulator type `A` back to a 
-floating point number, the `zero-point` and `scale`  must both be provided. 
-These should be floating point values (`float`, `double`, `bfloat16` etc)
-The value that is returned is of the same floating point type. 
-
-Note that when converting accumulators, you need to square the scale if the widening
-is the result of multiplying the base type.  If it was widened simply to handle a lot of addition (as in a reduction) then the scale remains the same. If the accumulator represents multiple multiplications, then it should be `(pow scale num-of-multiplications)`
-
-```
-(to-float B zero-point scale) => F
-
-(to-float-accum A zero-point scale-squared) => F  
+```lisp
+(base q-a)        ; => q-a
+(accum q-a)       ; => q-a-accum
+(base q-a-accum)  ; => q-a
+(accum q-a-accum) ; => q-a-accum
 ```
 
-#### additon and subtraction 📝
+These types are nominal. Two `def-qint`s with identical parameters still cannot be mixed, because the
+scale is a property of the data, not of the type:
 
-Addition and Subtraction are available for both the base type `B` and `A` but not across them.
-
-```
-(+ B B) => B
-(- B B) => B
-
-(+ A A) => A
-(- A A) => A
+```lisp
+(def-qint q-fahrenheit :base char :accum int)
+(def-qint q-celsius    :base char :accum int)
 ```
 
-Implementation note: addition and subtraction are NOT defined for any of the qint base types.
-But there are compiler-only primitives that map to the hardware instrucions (`iadd`) and these 
-are used when we overload `+` and `-` for any `def-qint` instance.
+Mixing `q-fahrenheit` and `q-celsius` is a compile-time error, which prevents you from accidentally
+combining data with different scales. In practice that means one `def-qint` per differently scaled tensor
+in a kernel.
 
-#### `*!` widened multiplication 📝
+`(def-qint q-a :base char :accum int)` expands to:
 
-Multiplication of two base types returns an accumulator type. There is no other option for 
-multiplication. 
-
-```
-(*! B B) => A
-```
-
-<!-- NOTE:
-  In theory we could provide a (* B A) affordance, but doing so 
-  means we'd also have to accompany every accumulator value with a "scale-power" that 
-  trackes how much multiplication it has captured, and then to convert
-  back (to-float-accum A zero-point original-scale scale-power)  which wouuld (pow original-scale scale-power) to get the right scaling factor.
-
-  The problem here is that this means ALL multiplication now needs to return TWO values with
-  the scale-factor being the second value. And the multiplciation of B * A would require 
-  an additional scale-factor parameter: (* B A SPi) => A SP
-
-  This is ugly as hell and no one is doing this or asking for it.  Someone can 
-  always come along and overload/macro this up if they want.  
-
-  Right now we just have (to-float-accum) require a scale-squared and we don't allow B * A multiplication. 
-  Simple. Neat.
- -->
-
-#### max / min 📝
-
-`max` and `min` are available for both base and accumulator types.
-(Spoiler Alert: `max` and `min` are NOT available for `microfloat-block` in next section)
-
-```
-(max B B) => B
-(min B B) => B
-
-(max A A) => A
-(min A A) => A
+```lisp
+(def-derived-type q-a char :subst :no)
+(def-derived-type q-a-accum int :subst :no)
+(set-accum q-a q-a-accum)
+;; plus: q-a is registered as a quantized base type, and q-a-accum as its accumulator
 ```
 
-#### all other math ops
+That last registration is what refuses the plain arithmetic operators on these types (see
+[Refused at compile time](#refused-at-compile-time)). A pair built by hand with `def-derived-type` and
+`set-accum` keeps them.
 
-For all other math operations, you'll need to conver your `qint` back to a floating point value
-and then perform the calculation on that (and then convert back). 
+### Accumulator Types: set-accum, accum, base ✅
 
-#### type promotion
+`set-accum` declares the accumulator of a type, or of the product of two types:
 
-Quantized ints have no automatic type promotion. 
+```lisp
+(set-accum q-a q-a-accum)          ; (accum q-a) is q-a-accum
+(set-accum (q-act q-wt) q-dot)     ; (accum q-act q-wt) is q-dot
+```
 
-#### scale and zero-point independence
+The rules:
 
-An interesting aspect of using quantized integers, is that the scale and zero-point
-factors are only needed to convert to and from regular floating point values.
-If conducting only the basic (admitedly limited) arithmetic, then those values aren't even
-required.
-Of course, the flip side of that, is that if you DO need to convert, then those scale and
-zero-point values will have to be passed as additional independent arguments. 
+- All the types are numeric.
+- The accumulator holds a full product: it is at least as wide as the operand widths added together, so
+  every product is exact.
+- The accumulator is signed if either operand is.
+- A type has one accumulator.
+
+`(accum T)`, `(accum A B)`, `(base T)` and, for microfloat blocks, `(scale T)` can be used in any type
+position: a signature, a `def-type`, the element of a storage handle, the element of a register tile or
+`wgmma` accumulator, and inside templates. `(accum T)` means `(accum T T)`.
+
+For the basic types (`float`, `int` etc) `(accum T)` and `(base T)` are just `T`, and the widening
+operations are their plain forms: `*!` is `*`.
+
+`accum`, `base` and `scale` are a registry the compiler's type resolver reads, in the spirit of
+`(index-t S)` for brands. They are not built with `def-type-function`, which needs a compile-time
+evaluator and is still 📝. When it comes, it will fill the same registry.
+
+### def-qint-product ✅
+
+Two different quantized types do not multiply unless their product has been declared:
+
+```lisp
+(def-qint q-act :base uchar :accum int)
+(def-qint q-wt  :base char  :accum int)
+(def-qint-product q-dot (q-act q-wt) :accum int)  ; expands to (set-accum (q-act q-wt) q-dot)
+
+(accum q-act q-wt) ; => q-dot
+```
+
+Argument order matters: `(q-act q-wt)` does not also declare `(q-wt q-act)`. This is how a mixed-sign
+product (unsigned activations, signed weights) is written, and the tensor hardware supports it.
+
+### Conversions ✅
+
+`B` is a base type, `A` is an accumulator, and `F` is a float.
+
+```lisp
+(to-q-a x scale)        ; F => q-a.  round(x / scale), saturating
+(to-float q scale)      ; B => F.    scale * q
+(to-float acc scale)    ; A => F
+(to-q-a acc multiplier) ; A => q-a.  round(acc * multiplier), saturating
+```
+
+- Rounding is round-to-nearest, ties to even. Saturation clamps to the base type's range, and NaN becomes
+  `0`.
+- The result of `to-float` has the type of its `scale` argument, which must be a float (`float`,
+  `double`, ...).
+- An accumulator's scale is the product of its operands' scales: `s_a * s_b`. Summing accumulators does
+  not change the scale.
+- `multiplier` is `s_accum / s_output`, so narrowing a matmul result into an output with scale `s_c` uses
+  `s_a * s_b / s_c`.
+- The narrowing product is computed in float. An `int` accumulator above 2^24 loses low bits there, but
+  the output has only 8, so only a value within a few ulps of a tie could round differently.
+
+```lisp
+(def-qint q-a :base char :accum int)
+
+(to-q-a 1.3 0.5)                 ; round(2.6) => 3
+(to-float (to-q-a 1.3 0.5) 0.5)  ; => 1.5
+(to-q-a (*! a b) 0.001)          ; -128 * -128 = 16384 => 16
+(to-q-a (*! a b) 0.1)            ; 1638.4 saturates => 127
+```
+
+Raw casts stay available for debugging and bit-level work. They apply no scale:
+
+```lisp
+(to int q)  ; the integer value of q
+(to q-a 5)  ; a raw integer into q-a.  A float source is refused
+```
+
+### Operations ✅
+
+| Form | Result | Notes |
+|---|---|---|
+| `(*! B B)` | `A` | Same type, or a declared product |
+| `(+! B B)`, `(-! B B)` | `A` | Widening add and subtract |
+| `(+! A B)`, `(-! A B)` | `A` | Accumulate a base value |
+| `(widen B)` | `A` | The same value at the accumulator type.  For initializing an accumulator |
+| `(+ A A)`, `(- A A)` | `A` | Same accumulator type.  Wraps on overflow |
+| `(max B B)`, `(min B B)` | `B` | Scale independent |
+| `(max A A)`, `(min A A)` | `A` | |
+| `< <= > >= = !=` | `bool` | Same type only |
+
+The overflow rule: **narrowing saturates, accumulators do not.** An `int` accumulator holds 131,072
+worst-case `char` x `char` products, or 65,793 `uchar` x `char` products.
+
+`+!` and `-!` are the add and subtract for base values, matching `*!`. Each argument widens to its
+accumulator type, then they combine, so `(+! a b)` and `(+! acc b)` both work. There is no widening add
+instruction behind them (`ptxas` refuses `add.s8` and `add.wide.s16`), so `(+! a b)` lowers exactly like
+`(+ (widen a) (widen b))`. For the basic types `+!` is `+`, just as `*!` is `*`.
+
+`*!` runs each operand's own extension (`sext` for `char`, `zext` for `uchar`), then multiplies at the
+accumulator's width. On NVIDIA that becomes `mul.wide.s16`.
+
+For all other math operations, convert your `qint` to a floating-point value, perform the calculation on
+that, and convert back. Quantized integers have no automatic type promotion.
+
+To add two quantized tensors, as in a residual connection:
+
+```lisp
+;; same type, so same scale
+(to-q-a (+! x y) 1.0)
+
+;; different scales: go through float
+(to-q-out (+ (to-float x s-x) (to-float y s-y)) s-out)
+```
+
+### Refused at compile time ✅
+
+| Form | The message says |
+|---|---|
+| `(* B B)` | use `*!` |
+| `(+ B B)`, `(- B B)` | use `+!` / `-!` |
+| `(* A A)` | accumulators add and subtract, and nothing else |
+| `(/ q q)` | convert to float first |
+| `(to-float q)`, `(to-double q)` | needs a scale |
+| `(to-float 1.5 s)` | only a quantized value takes a scale |
+| `(to q-a 1.5)` | applies no scale; use `(to-q-a x scale)` |
+| `(+ q-a q-b)` | different quantized types |
+| `(*! q-a q-b)`, undeclared | declare a `def-qint-product` |
+| `(to-q-b q-a-value m)` | a multiplier applies to an accumulator: widen it first |
+| `(def-qint q :base float ..)` | must be an integer |
+| `(def-qint q :base char :accum char)` | must be at least 16 bits |
+
+### `to-sat` ✅
+
+`(to-sat T x)` converts a float or double `x` to the integer type `T`: round to nearest, ties to even,
+saturating, and NaN to `0`. It works on the plain integer types as well as quantized ones, and is what
+`to-q-a` lowers to. Read it as `(to T x)` with saturation.
+
+```lisp
+(to-sat char 300.0)  ; => 127
+(to-sat char 2.5)    ; => 2
+(to-sat uchar -4.0)  ; => 0
+```
+
+On NVIDIA it is `cvt.rni` followed by a NaN select, so that PTX's NaN-ignoring `max` / `min` cannot leak
+the low clamp. `to-sat` has no gradient: an integer result is piecewise constant.
+
+### The Tile-Level Path: Integer MMA ✅
+
+Scalar `*!` is an ordinary integer multiply and is legal on every target. The tensor hardware is reached
+only through the existing [Matrix Multiplication](#matrix-multiplication) forms, which accept 8-bit
+integer operands (`char`, `uchar`, or a `def-qint` over them) with a 32-bit `int` accumulator. Those are
+all the hardware offers.
+
+| Target | Form | Notes |
+|---|---|---|
+| Intel XMX (BMG) | `mma-accumulate-via-tile` with `(8 16 32)` | All four sign pairs.  K=32 is the int8 shape |
+| NVIDIA Hopper (H100) | `make-wgmma-accumulator` + `wgmma-accumulate-via-tile` | K=32 per slice.  A mixed-sign kernel needs PTX 8.4 |
+| NVIDIA below Hopper | none | Synchronous `mma.sync` is refused (see below) |
+
+On NVIDIA, `wgmma` reads B as `(N K)`, so declare B `:col-major` as for the 16-bit forms.
+
+```lisp
+(def-qint q-act :base uchar :accum int)
+(def-qint q-wt  :base char  :accum int)
+(def-qint q-out :base char  :accum int)
+(def-qint-product q-dot (q-act q-wt) :accum int)
+
+(def-type a-mat (matrix q-act :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix q-wt  :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix q-out :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_narrow (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix q-act (64 128)))
+        (B-tile (make-scratch-matrix q-wt (64 128)))
+        (D      (make-wgmma-accumulator (accum q-act q-wt) (64 64) 0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 128) D A-tile B-tile :swizzle :128b)
+    (store-tile-at (to-q-out D 1.0) C (0 0))))   ; narrows each element as it is stored
+```
+
+`(to-q-out D m)` on the store's source narrows each accumulator element as it is stored, the same way
+`(to-half D)` does for 16-bit output.
+
+**On Intel, narrowing takes two steps.** A SPIR-V cooperative-matrix store writes a whole fragment, with
+no per-element hook, and every way of converting the matrix itself was probed on BMG and failed (IGC
+crashes, or the store silently delivers nothing). So `(store-tile (to-q-a D m) C ..)` is refused on
+SPIR-V. Store into an `int` matrix, then narrow its elements:
+
+```lisp
+(def-hardware-profile bmg :simd-width 16 :mma-shapes ((8 16 8) (8 16 32)))
+
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix q-a-accum :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel xmx_two_step (A B &out C N)
+  (declare #'(a-mat a-mat &out c-mat a-mat)
+           (global-size :set-to 16) (local-size :set-to 16))
+  (let ((D (make-register-tile (accum q-a) (16 16) 0)))
+    (mma-accumulate-via-tile (8 16 32) D A B)
+    (store-tile D C (0 0))
+    (mem-fence)
+    (dotimes (row 16)
+      (dotimes (col 16)
+        (set! (~ N row col) (to-q-a (~ C row col) 0.5))))))
+```
+
+`(to-half D)` on a store's source is refused on SPIR-V for the same reason.
+
+A shape and element combination the hardware does not have is a compile-time error at the MMA form. The
+compiler will NOT silently generate a slow emulation path. This is a core design choice: it is better to
+give you a compile-time error than to let you ship a kernel that is 100x slower than you intended. So
+`(def-qint q :base short :accum long)` is legal, and it only fails if that type reaches an MMA form.
+
+| Case | The message says |
+|---|---|
+| An integer operand with a float accumulator, or the reverse | integer and float do not mix |
+| A signed operand with an unsigned accumulator | must be signed |
+| An integer register tile on NVIDIA (`mma.sync`) | has no NVIDIA lowering; use `wgmma` |
+| `wgmma` int8 with K other than 32 per slice | K must be 32 |
+| XMX int8 at a non-int8 K | operands need K=32 |
+| A hardware profile with no int8 shape | is not one of the active hardware |
+| `store-tile-at (to-q D m) .. :via :tma` | the TMA store path moves 16-bit elements |
+
+> Implementation note: synchronous `mma.sync` int8 assembles, but each shape needs its own per-lane
+> register layout, which can only be proven on metal, while `wgmma` reads shared memory. So there is no
+> integer MMA below Hopper (for example, on Ada) yet.
+
+### Quantized Integers and Autodiff ✅
+
+The true derivative of rounding is zero, which is useless for training. So Crisp uses a
+*straight-through estimator* (STE): going backward, rounding is treated as if it were not there.
+
+| Form | Backward rule | Exact? |
+|---|---|---|
+| `(to-q x s)` | `dq/dx = 1/s`, `dq/ds = -x/s^2`; zero when saturated | STE |
+| `(to-float q s)` | `d/dq = s`, `d/ds = q` | Exact |
+| `(*! a b)` | Product rule | Exact |
+| `(widen q)` | Identity | Exact |
+| `(+ A A)`, `(- A A)` | Linear | Exact |
+| `(to-q A m)` | `dq/dA = m`, `dq/dm = A`; zero when saturated | STE |
+| `(max B B)`, `(min B B)` | Follows the winner | Exact |
+
+The adjoint of a quantized value is a `float`, and the gradient buffer of a quantized kernel input is a
+`float` tensor.
+
+The usual training pattern is *fake quantization*: the forward pass rounds through the quantized type,
+and the backward pass sees through it.
+
+```lisp
+(def-qint q-a :base char :accum int)
+(def-type fc (cell float :address-space :global))
+
+(def-kernel fake_quant (x s &out y)
+  (declare #'(fc fc &out fc => nil))
+  (set! (~ y) (to-float (to-q-a (~ x) (~ s)) (~ s))))
+```
+
+Here `dy/dx = 1`, and `dy/ds = q - x/s`, the Learned Step Size gradient.
+
+Training happens in float, with `to-q` and `to-float`. The integer path is for inference:
+
+- Integer MMA has no backward, and says so: `integer MMA has no backward`. Its backward would multiply
+  float adjoints by int8 operands, which no hardware form accepts.
+- A raw cast of an active value, `(to q-a x)` or a one-argument `(to-q-a x)`, has no gradient and is
+  refused.
+
+> Testing note: `VERIFY-AUTODIFF` compares against finite differences, which see the true step function,
+> so an STE gradient cannot match them. Specs of these gradients use `fd=off` with hand-derived
+> `expect.` values.
 
 
-#### Illegal Combinations and Target-Specific Behavior
 
-The entire purpose of Crisp's quantized integer types is to leverage the extreme performance 
-of specialized AI hardware (like Tensor Cores or Intel's XMX engines). 
-This hardware is not for general-purpose integer math; it is highly optimized for 
-the "sum of products" (dot-product) pattern.
+## Low Precision Floats ("microfloats") ✅
 
-This means the compiler's behavior is strict and depends on your chosen output target.
+Similar to Quantized Integers, Crisp supports "microfloats". These are very small (half byte, one byte!)
+storage formats for floats.
 
-##### 1. When Compiling (to LLVM IR, SPIR-V, or PTX)
-
-This path is optimized for **maximum performance**. The compiler acts as a strict gatekeeper and maintains a "whitelist" of `qint` combinations that are known to map directly to hardware intrinsics.
-
-- Supported Combinations: The most common (and often only) combination supported by hardware is `:base qb8` with `:accum qb32`. When the compiler sees this, it generates the correct high-performance intrinsic (e.g., `OpSDot` in SPIR-V or `mma.sync` in PTX).
-- Unsupported Combinations: If you define a type that is not on this hardware "whitelist" (e.g., `:base qb16` with `:accum qb64`), the compiler will emit a compile-time error.
-- No Emulation: The compiler will NOT silently generate a slow "emulation" path. This is a core design choice: it is better to give you a compile-time error than to let you ship a kernel that is 100x slower than you intended.
-
-##### 2. When Transpiling (to OpenCL C)
-
-This path is optimized for maximum portability and debugging, not performance. The transpiler has no way to guarantee that specific hardware intrinsics are available.
-
-- Therefore, in this mode, the strict "whitelist" rules are relaxed.
-- Crisp will generate a slow, emulated `for` loop to perform the quantized operations (like `B*B => A` and `A+A => A`).
-- This ensures the transpiled C code is portable and works, but it will have severely suboptimal performance as it will NOT use the specialized AI hardware.
-
-
-## Low Precision Floats ("microfloats") 📝
-
-Similar to Quantized Integers, Crisp supports "microfloats".  These are
-very small (half byte, one byte!) storage options for floats that need a
-widened accumulator for multiplication. 
-
-But there is a significant difference, microfloats are grouped into blocks, 
-and each block has its own individual scaling factor. For example,
-a not uncommon (*) organizations is one 8-bit scale factor followed by sixteen
-individual 4-bit values :
+But there is a significant difference: microfloats are grouped into blocks, and each block has its own
+individual scale. For example, a not uncommon (*) organization is sixteen 4-bit values sharing one 8-bit
+scale:
 
 `[fp8_scale_0] [16 x fp4_data] [fp8_scale_1] [16 x fp4_data] ...`
 
-So microfloats don't have independent scaling factors in the way that quantized integers do.
+So microfloats don't have independent scaling factors in the way that quantized integers do: the scales
+are part of the data.
+
+In memory, the codes and the scales are kept in two separate buffers. That is how NVFP4 checkpoints
+store them, and how Blackwell's block-scaled multiply reads them. A microfloat block in Crisp is
+therefore a record over two storage handles: one of packed codes and one of scales.
 
 (*) - This "not uncommon" organization is the one used by the NVIDIA Blackwell NVFP4 format.
-It is 72 bits total and is usually padded out to 128 bits. 
 
-### Format Wars 
+### Format Wars
 
 There are competing formats for these microfloat blocks.
 
@@ -9618,263 +9800,239 @@ NVidia NVFP4 / Blackwell: https://developer.nvidia.com/blog/introducing-nvfp4-fo
 
 OCP (Open Compute Project) MX Formats: https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
 
+`def-microfloat-block` is parameterized, so it can describe either:
 
-### Micro Float Types 📝
+| Format | Crisp |
+|---|---|
+| NVFP4 | `:base fp4 :scale fp8-e4m3 :shape (16)` |
+| MXFP4 | `:base fp4 :scale fp8-e8m0 :shape (32)` |
+| MXFP8 | `:base fp8-e4m3 :scale fp8-e8m0 :shape (32)` (or `fp8-e5m2`) |
 
-Crisp provides these base types for you:
+Decoding someone else's blocks follows the format definitions exactly. How a scale is *chosen* when
+quantizing is a convention, and conventions differ: Crisp rounds the scale up (see
+[quantize-to-XXXX](#quantize-to-xxxx-)), and other exporters may not. So a block Crisp writes may differ
+from one another tool would write for the same input.
 
-| Type   | Size    | 
-|--------|---------|
-| fp4  | 4 bits (half byte)  | 
-| fp8-e4m3 | one byte - 4 bit exponent, 3 bit mantissa |
-| fp8-e5m2 | one byte - 5 bit exponent, 2 bit mantissa | 
-| f8-e8m0 | one byte - 8 bit exponent, 0 bit mantissa. This has faster, but less precise dequantizing |
-| fp16 | 2 bytes |
-| fp32 | 4 bytes | 
+NVFP4's optional per-tensor global scale, in addition to the block scales, is not supported yet 📝.
 
-The `f8-e8m0` type is used for the OCP MX formats ( MXFP8, MXFP6, and MXFP4 )
+### Microfloat Formats ✅
 
-### def-microfloat-block 📝
+| Format | Bits | Largest finite value | Notes |
+|---|---|---|---|
+| `fp4` | 4 | 6.0 | E2M1.  No infinity, no NaN |
+| `fp8-e4m3` | 8 | 448.0 | No infinity.  `0x7F` / `0xFF` are NaN |
+| `fp8-e5m2` | 8 | 57344.0 | Has infinity and NaN, like IEEE |
+| `fp8-e8m0` | 8 | 2^127 | `2^(code - 127)`, and 255 is NaN.  No zero and no sign, so it is a scale only |
 
-The types above can then be used in `def-microfloat-block`.  Note that blocks can have 1D or 2D arity.
+`fp8-e8m0` is the scale of the OCP MX formats. The design's `fp16` and `fp32` are dropped because they
+duplicate `half` and `float`, and `f8-e8m0` is renamed `fp8-e8m0` to match the others.
 
-```
-(def-microfloat-block mf-celcius :base fp4 :accum fp32 :scale fp8-e4m3 :shape (16))
-(def-microfloat-block mf-weights :base fp4 :accum fp32 :scale fp8-e4m3 :shape (4 4))
-```
+These formats are types (each is a `:subst :no` derived type over `uchar`), so they can be the element of
+a storage handle. But a code is not a number until it is decoded: arithmetic on codes is refused.
 
-And just like with the quantized types, different block types cannot be intermixed,
-even if they are configured with identical parameters. However, if you absolutely must intermix them,
-you can do so by using `set-derived`.   
+### def-microfloat-block ✅
 
-`def-microfloat-block` with `mf-celcius` like above would result in
-```
-(def-type mf-celsius-base fp4)
-(def-type mf-celcius-accum fp32)
-(def-type mf-celsius-scale fp8-e4m3)
-
-(def-struct mf-celcius 
-  (scale mf-celsius-scale)
-  #| the 16 fp4 elements |#) ;; these are not strided tensors or anything. 
-
-;; accum and base are defined for ALL numeric types.
-(def-type-function accum (T:mf-celcius) mf-celcius-accum)
-(def-type-function base (T:mf-celcius) mf-celcius-base)
-;; but scale is only defined for microfloat blocks
-(def-type-function scale (T:mf-celcius) mf-celcius-scale)
+```lisp
+(def-microfloat-block mf-w :base fp4 :scale fp8-e4m3 :accum float :shape (16))
 ```
 
-<!--
-REMOVE
-For each invocation of `def-microfloat-block` Crisp will define the type identifiers
- `XXXX-base`, `XXXX-accum` and `XXXX-scale` as well as compile-time type functions
- `scale`, `count`, and `shape` . `num-rows` and `num-cols` are defined for the 2D variant.
--->
+- `:base` is `fp4`, `fp8-e4m3` or `fp8-e5m2`.
+- `:scale` is any microfloat format.
+- `:accum` is `float`, for now.
+- `:shape` is one positive block size in elements, and it must be even for `fp4`, whose codes share
+  bytes.
 
+It defines:
 
- Additionally,  `quantize-to-XXXX` and `dequantize-from-XXXX` functions
- are defined. These functions operate on vectors of floats and blocks. Read more below
+| Name | What it is |
+|---|---|
+| `mf-w` | The block type: a record of `codes` and `scales` |
+| `make-mf-w` | `(make-mf-w :codes c :scales s)` |
+| `mf-w-codes` | `(vector uchar ..)`, the packed codes.  `fp4` packs two codes per byte |
+| `mf-w-scales` | `(vector fp8-e4m3 ..)`, one scale per block |
+| `mf-w-floats` | `(vector float ..)`, for the unquantized data |
+| `quantize-to-mf-w`, `dequantize-from-mf-w`, `fake-quant-mf-w` | See below |
+| `(accum mf-w)`, `(base mf-w)`, `(scale mf-w)` | `float`, `fp4`, `fp8-e4m3` |
 
-#### Illegal Combinations and Target-Specific Behavior
+The three handle types are `:global` and `:compact`. `(to-float w i)` and `(~ w i)` work on a block (see
+[element-wise access](#element-wise-access-)).
 
-The entire purpose of Crisp's microfloat types is to leverage the extreme performance of specialized hardware. 
-This means the compiler's behavior is strict and depends heavily on your chosen output target.
+Conceptually, the block is:
 
-1. When Compiling (to LLVM IR, SPIR-V, or PTX)
-
-This path is optimized for maximum performance. The compiler acts as a strict gatekeeper 
-and knows which combinations (e.g., :base fp8-e4m3, :accum fp32) are supported by hardware intrinsics.
-
-- Supported Combinations: The compiler generates the correct high-performance intrinsic (e.g., `OpFMulAdd` in SPIR-V or `mma.sync` in PTX).
-- Unsupported Combinations: If you define a type the hardware doesn't support (e.g., `:base fp16, :accum fp16`), the compiler will emit a compile-time error.
-- No Emulation: The compiler will not silently generate a slow "emulation" path. This is a core design choice: it is better to give you a compile-time error than to let you ship a kernel that is 100x slower than you intended.
-
-This strictness also applies to portability. A SPIR-V module compiled for 
-one hardware target (e.g., OCP MX) is not portable to another (e.g., NVIDIA). 
-The driver will reject the kernel, resulting in a fatal load-time error.
-
-2. When Transpiling (to OpenCL C)
-
-This path is optimized for maximum portability and debugging, not performance. The transpiler has no way to guarantee that specific hardware intrinsics are available.
-
-- Therefore, in this mode, the "unsupported combination" rules are relaxed.
-- Crisp will generate a slow, emulated for loop to perform the operation.
-- This ensures the transpiled C code is portable and works, but it will have severely suboptimal performance as it will not use Tensor Cores or other hardware accelerators.
-
-
-
-### blockwise operations 📝
-
-The arithmetic operations on microfloats are "blockwise". This is highly optimized.
-
-The abbreviation `A` is used for the accumulator type, and `MFB` stands for the entire
-microfloat block.  
-
-#### widening multiplication 📝
-
-```
-(*! MFB_1D MFB_1D) => A     ;  vector dot-product
-(*! MFB_2D MFB_2D) => A     ;  matrix dot-product
-```
-Two microfloat blocks can be multiplied by each other, and the result is a single
-float of the accumulator type.
-
-#### addition / subtraction 📝
-```
-(+ A A ) => A   
-(- A A ) => A
-```
-Floats of the accumulator type can be added together, or subtracted.  
-
-Note that the BLOCKS themselves CANNOT be added or subtracted from one another.
-
-#### optimization note
-
-The common pattern of multipling blocks and adding to an accumulator  `A = A + (B * B)` 
-is compiled to one hardware intrinsic.  The compiler should detect this and substitute automatically,
-but if you want to ensure this use the `mfb-mult-add` macro:
-```
-(mfb-mult-add block1 block2 someA) => A
-```
-This will ensure that the correct `@llvm.fma._` LLVM intrinsic is output into the IR, which wil then
-be correctly compiled for your target.
-
-#### max / min 📝
-`max` and `min` are NOT defined for the main MFB block type.  But they are defined
-for both the base and accumulator types.
-```
-(max B B) => B
-(max A A) => A
-
-(min B B) => B
-(min A A) => A
+```lisp
+(def-record mf-w
+  (codes  mf-w-codes)    ; packed: two fp4 codes per byte
+  (scales mf-w-scales))  ; one fp8-e4m3 per block
 ```
 
-### Vector Conversion Operations 📝
+and `real = scale * decode(code)`.
 
-The conversion operations operate on entire vectors of floats and microfloat blocks. A `quantize-to-...` and 
-`dequantize-from-...` operation are defined for each invocation of `def-microfloat-block`.
+Just like the quantized types, different block types cannot be intermixed, even if they are configured
+with identical parameters.
 
-#### quantize-to-XXXX 📝
-```
-(quantize-to-XXXX float-input-vec &out microfloat-block-vec)
+Everything `def-microfloat-block` generates is ordinary Crisp: plain `def-function`s that decode and
+encode each format, so both backends get them and a kernel can call them. Each is exact, because every
+step is an integer shift or a multiply by a power of two.
 
-(quantize-to-XXXX float-input-matrix &out microfloat-block-matrix)
-```
-`quantize-to-XXXX` takes either a vector (or matrix) of floats as an input arg, and a vector (or matrix) of microfloat blocks
-as an output parameter.  
+**A block lives inside a kernel.** A kernel takes the two handles and builds the block with `make-NAME`.
+A block cannot be a kernel parameter, because what a host would pass for it is not defined, and the same
+goes for any record that holds a handle. Functions and grid functions may take one.
 
-For 1D vectors note that length of the input vector is `count` times the length 
-of the microfloat block output vector.
+```lisp
+(def-microfloat-block mf-w :base fp4 :scale fp8-e4m3 :accum float :shape (16))
 
-For 2D matrices, the length of each row of the input vector is `shape[1]` times the length of each
-row of the microfloat block output matrix. 
-
-These  are grid-level functions. 
-
-Example:
-```
-(quantize-to-mf-celsius f32-input-vec mf-celcius-output-vec)
+(def-kernel quant (x &out c s)
+  (declare #'(mf-w-floats &out mf-w-codes mf-w-scales)
+           (global-size :derive-from s :strategy :strided))   ; one thread per block
+  (let ((w (make-mf-w :codes c :scales s)))
+    (quantize-to-mf-w x w)))
 ```
 
-Possible Implementation
-```
-;; -- quantize-to-... --
-(<F A MFB>
-  (declare 
-    (type-is F #'is-floating-point?)
-    (value-is A #'is-alignment?)
-    (type-is MFB #'is-microfloat-block?))
+Every handle holds whole blocks: the floats hold `16` times as many elements as the scales. This is not
+checked yet, so a float handle shorter than the scales imply reads past its end.
 
-   ;; 1D
-  (def-grid-function quantize-to-XXXX (input-vec &out output-mfb-vec 
-                              &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (count MFB)))))
-    (declare #((in-vec F A) &out (out-vec MFB :compact)))
-    (r-t-assert-0 (= (length~ input-vec) (* (count MFB) (length~ output-mfb-vec)))
-                  "lengths don't match")
-    (c-t-assert (<= (count MFB) +warp-size+) "microfloat-block must be smaller than warp-size elements")
-    ;; 
-    (thread-stride (length~ output-mfb-vec) (ceil-pow2 (count MFB)) (warp-num)
-      ;; we may be loading a smaller tile than we declared to thread stride,
-      ;; so we can't use the short version of load-tile. 
-      (let ((identity-val (identity-of #'max F)))
-        (load-tile input-vec scratch-vec identity-val '(warp-num) '((count MFB))) 
-        (let ((max-val (if (< (warp-lane) (count MFB)) (~ scratch-vec (warp-lane)) identity-val)))
-          (reduce-warp #'max max-val identity-val) ;; max-val is now the same in every lane
-          (let ((scale-f (to (scale MFB) max-val))
-                (target-block (~ output-mfb-vec warp-num)))
-            (when-thread-in-warp-is 0 
-              (set! (scale~ target-block) scale-f))
-            (in-warp (lane-id)
-              (when (< lane-id (count MFB))
-                (set! (~ target-block lane-id) (to (base MFB) (/ (~ scratch-vec lane-id) max-val))))))))))
+Two-dimensional blocks (`:shape (4 4)`) are not supported yet 📝.
 
-    ;; 2D
-    (def-grid-function quantize-to-XXXX (input-tv &out output-mfb-tv 
-                              &optional (scratch-vec (make-scratch-vector F (ceil-pow2 (num-cols MFB)))))
-      (declare #((tensor 3 (in-vec F A)) &out (tensor 3 (out-vec MFB :compact))))
-      (r-t-assert-0 (= (num-cols input-tv) (* (num-cols MFB) (num-rows MFB))) "confusing")
-      (r-t-assert-0 (= (num-planes input-tv) (num-planes output-mfb-tv)) "number of planes not matching")
-      (r-t-assert-0 (= (num-rows intput-tv) (num-rows output-mfb-tv)) "number of rows should match")
-      
+### Records Can Hold Storage Handles ✅
 
-      ;; workgroup
+A microfloat block needed this, and it works for any `def-record`:
 
+```lisp
+(def-type uv (vector uchar :address-space :global :align :compact))
+(def-record pair (a uv) (b uv))
 
-            
-                
+(def-function put-a (&out p i v)
+  (declare #'(&out pair ulong uchar => nil))
+  (set! (~ (a~ p) i) v))
 
+(def-kernel record_handles (&out a b)
+  (declare #'(&out uv uv => nil) (global-size :set-to 1))
+  (let ((p (make-pair :a a :b b)))
+    (put-a p 0ul 5uc)
+    (set! (~ (b~ p) 0) 7uc)))
 ```
 
-#### dequantize-from-XXXX 📝
+As with a block, such a record cannot be a kernel parameter.
+
+### Operations ✅
+
+| Form | Result |
+|---|---|
+| `(quantize-to-NAME floats &out w)` | Fills the codes and scales of `w` |
+| `(dequantize-from-NAME w &out floats)` | Every element, decoded and scaled |
+| `(fake-quant-NAME x &out y)` | Each element of `x` through the format, into `y`.  For training |
+| `(to-float w i)` | Element `i`, decoded and scaled: a `float` |
+| `(~ w i)` | The raw code of element `i`, of type `(base NAME)` |
+
+Blocks cannot be added or subtracted. `+` and `-` belong to the accumulator, which is an ordinary float.
+
+`max` and `min` are not defined on codes either, because codes from different blocks have different
+scales and comparing them means nothing. Decode first.
+
+#### Multiplying blocks 📝
+
+```lisp
+(*! MFB MFB) => A
 ```
-(dequantize-from-XXXX microfloat-block-vec &out float-input-vec )
+
+is reserved for the native block-scaled multiply (Blackwell `tcgen05.mma`), which needs tensor memory
+and is a later endeavour. On every other target it is refused, with a message pointing at
+`dequantize-from`. The `mfb-mult-add` macro of the earlier design is gone for now too.
+
+Until then the path on H100 and BMG is to `dequantize-from` into `half` or `float` and use the existing
+MMA forms. That is a conversion, not an emulation. As with quantized integers, the compiler will not
+silently emulate a block multiply.
+
+### quantize-to-XXXX ✅
+
+```lisp
+(quantize-to-XXXX float-vec &out w)
 ```
-`dequantize-from-XXXX` takes a a vector of microfloat blocks as an input arg
- and an output vector of floats as an output parameter.  Note that length of the output vector is `:count` times the length of the microfloat block input vector.
 
-This is a grid-level function. 
+A grid function. It strides over the scales handle, one thread per block, so launch it with
+`(global-size :derive-from s :strategy :strided)` on the scales `s`.
 
-Possible Implementation
+For each block:
+
+1. The scale is the block's largest magnitude divided by the format's largest value (`6.0` for `fp4`),
+   encoded in the scale format **rounding up**. So the block's largest element always fits, and is never
+   clipped. Rounding to the nearest scale would give a slightly smaller error on most blocks, and clip
+   the largest element on the rest.
+2. Each element, divided by the decoded scale, is encoded round-to-nearest, ties to even, saturating.
+
+Details:
+
+- `fp4` packs the even element in the low nibble and the odd element in the high nibble. This follows
+  the NVFP4 layout as remembered, and it has not yet been checked against a real checkpoint 📝.
+- NaN encodes as the format's NaN, or as `0` in `fp4`, which has none.
+- `-0.0` encodes as `+0`. A small negative value that rounds to zero keeps its sign (code 8 in `fp4`).
+- A block of zeros gets a zero scale. `fp8-e8m0` has no zero, so there it gets its smallest code,
+  `2^-127`, a float denormal that a GPU may flush to zero. The elements are zero either way, and a zero
+  or flushed scale never produces a NaN.
+
+### dequantize-from-XXXX ✅
+
+```lisp
+(dequantize-from-XXXX w &out float-vec)
 ```
-;; -- dequantize-from-... --
-(<MFB F A>
-  (declare 
-    (type-is F #'is-floating-point?)
-    (value-is A #'is-alignment?)
-    (type-is MFB #'is-microfloat-block?))
 
-  (def-grid-function dequantize-from-XXXX (input-mfb-vec &out output-vec)
-    (declare #((in-vec MFB :compact) &out (out-vec F A)))
-    (r-t-assert-0 (= (length~ output-vec) (* (count MFB) (length~ input-mfb-vec)))
-                  "lengths don't match")
+A grid function that strides over the floats, writing `(to-float w i)` for every element.
 
-    ;; be sure to "gen-" to-float for the desired F output type
-    (loop-vector-stride output-vec (i)
-      (let ((which-block index-in-block (floor i (count MFB)))
-            (target-block (~ input-mfb-vec which-block))
-            (value (to-float target-block index-in-block)))
-        (set! (~ output-vec i) value)))))
-```
-            
+### element-wise access ✅
 
+#### `~` ✅
 
-### element-wise access 📝
+`(~ MFB index) => (base MFB)`
+The raw, unscaled code at `index`. Its type is the block's base format, so it can be stored into a
+`(vector (base mf-w) ..)`.
 
-Element-wise access to microfloat blocks is not slow (like atomic ops or reading global memory). 
-But it is not optimal.  Try to avoid element-wise block access if possible. 
-
-#### `~` 📝
-
-`(~ MFB index) => base` 
-The `~` array access expression can be used to access the raw unscaled base value of any microfloat block.
-
-#### `to-float` 📝
+#### `to-float` ✅
 
 `(to-float MFB index) => float`
-An override of `to-float` exists that can take microfloat block argument and an index. It will retrieve 
-the microfloat type at that index, scale it appropriately, and then return "regular" `float` type. 
+An overload of `to-float` that takes a microfloat block and an index. It decodes the code at that index,
+multiplies it by its block's scale, and returns a "regular" `float`.
 
+Element-wise access is not slow, but each element decodes its block's scale again. Prefer
+`dequantize-from-XXXX` for whole tensors.
+
+### fake-quant-XXXX ✅
+
+```lisp
+(fake-quant-XXXX x &out y)
+```
+
+Sends each element of `x` through the format, block by block: it chooses the scale, encodes, decodes,
+and writes the float result into `y`. Backward, it is straight through: `dy/dx = 1`. The scale is held
+constant, the usual choice.
+
+```lisp
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4))
+
+(def-kernel fq (a &out b)
+  (declare #'(mf-floats &out mf-floats) (global-size :set-to 4) (local-size :set-to 4))
+  (fake-quant-mf a b))
+```
+
+### Microfloats and Autodiff ✅
+
+Codes are integers, so `quantize-to`, `dequantize-from`, `(to-float w i)` and `(~ w i)` have no gradient.
+A kernel whose float input reaches one fails loudly, naming the function. Training runs in float through
+`fake-quant-XXXX`, as with the quantized integers' `to-q` / `to-float`.
+
+### Refused at compile time ✅
+
+| Case | The message says |
+|---|---|
+| `(*! w w)`, `(* w w)` | no target multiplies blocks directly yet |
+| `(+ w w)` | Cannot operate on .. |
+| `(max (~ w 0) (~ w 1))` | codes from different blocks have different scales |
+| `(+ (~ w 0) (~ w 1))` | a microfloat code is not a number until it is decoded |
+| A block, or a record holding a handle, as a kernel parameter | cannot be a kernel parameter |
+| `:base fp8-e8m0` | `:base` must be fp4, fp8-e4m3 or fp8-e5m2 |
+| An odd `fp4` `:shape` | must have an even size |
+| `:shape (4 4)` | one positive block size |
+| `:accum half` | `:accum` must be float for now |
+| `(scale q-a)` on a qint | only a microfloat block has a scale |
 
 
 ## Complex Numbers 📝
@@ -9894,6 +10052,12 @@ Thus to make them: `(make-complex :real someFloat :imag otherFloat)`
 Or declare their type: `(complex-type double)`
 
 The arithmetic functions fall out easily:
+
+> Design conflict: since endeavour 202, a `def-function` of `+ - * /` is refused, because the compiler
+> lowers those operators directly and would never call the overload (see
+> [Function Overloading](#function-overloading-)). The definitions below need either named functions
+> (`complex+`, ...) or operators that consult user overloads. Undecided.
+
 ```
 
 ;; this macro lets us use "a b c d" notation in the body of our
@@ -11045,23 +11209,26 @@ in the warp, not just some.
 -->
 
 
-### max-registers / warn-max-registers 📝
+### max-registers / warn-max-registers ✅
 
 ```
-;; in a kernel or function progn:
+;; in a kernel:
 (declare (max-registers 64))
 (declare (warn-max-registers 64))
 ```
 
-This analysis cannot be elected in `declaim`. It is function or kernel specific.
+This analysis cannot be elected in `declaim`. It is kernel specific: on a function that is not a
+kernel it is refused, because a function is compiled into the kernel that calls it. The value is a
+positive integer literal, in registers per thread.
 
 `max-registers` and `warn-max-registers` are advanced checks. These checks are slightly 
 easier to use if you have performed compilations already
 and are looking at the register usage enumerated in the metadata file. 
 
-These check set a "performance budget" that sets an upper bound on how many registers a function or kernel requires.
-The compiler can estimate how many registers a function will require. If its estimate exceeds
-the declared budget, a warning is issued.
+These checks set a "performance budget" that sets an upper bound on how many registers a kernel requires.
+The compiler can estimate how many registers a kernel will require. If its estimate exceeds
+the declared budget, a warning is issued. The estimate counts only what the kernel explicitly
+reserves, such as `wgmma` accumulators, so a kernel can exceed its budget without a warning.
 
 For example:
 
@@ -11075,6 +11242,18 @@ For `warn-max-registers`, there is only the warning emitted, no other change occ
 the compiler will TRY TO FIT the kernel 
 to `max-registers`, which may mean that other variables will experience "register spill"
 and be moved to local memory. Only use `max-registers` if you know what you are about.
+
+On PTX it becomes the entry's `.maxnreg`, and ptxas does the fitting. If the kernel cannot fit,
+because a `wgmma` accumulator alone needs more registers than the budget, ptxas refuses it when the
+kernel is loaded. On SPIR-V there is no such limit, so it compiles with a warning and has no effect.
+
+**You rarely need this to make a kernel launch.** A GPU refuses a kernel whose registers per thread,
+times its threads per workgroup, do not fit on one compute unit. At 256 threads or fewer that limit
+cannot be reached. Above 256, a kernel with a compile-time `(local-size :set-to ...)` tells ptxas
+its workgroup size with `.maxntid`, and ptxas keeps the kernel under the true limit, for example 168
+registers at 288 threads. `max-registers` is for a kernel above 256 threads whose workgroup size is not
+fixed at compile time, or for setting a tighter budget on purpose. When a kernel still cannot launch,
+the hoisted harness prints the error, says what to do about it, and stops.
 
 
 ### check-barriers 📝
@@ -14037,6 +14216,12 @@ someVar
 
 ## APPENDIX #2 - Math with Quantized Ints and Microfloat 
 
+> These sketches predate the built quantized-integer and microfloat API (endeavours 202-206). Where they
+> differ, [Quantized Integers](#quantized-integers-) and [Low Precision Floats](#low-precision-floats-microfloats-)
+> are the reference. In particular: there is no zero-point, an accumulator converts with
+> `(to-float acc scale)`, a base value widens with `(widen q)`, and a microfloat block is a record over
+> two handles, not an element type, so it is decoded with `dequantize-from-XXXX` before any of these run.
+
 ### dot product and matmul 📝
 
 These dot product and matmul implementations work for ALL types. 
@@ -14194,15 +14379,15 @@ not a performent version for microfloat blocks.
         (type-is T #'is-quantized-int?)))
 
   (def-grid-function average-pool (input-M win-w win-h &out output-M
-                                  &key zero-point scale)
+                                  &key scale)
     (declare #'((in-matrix T A) uint uint &out (out-matrix T A))
               (global-size :derive-from output-M :strategy :strided))
     (r-t-assert-0 (and (= (num-cols input-M) (* win-w (num-cols output-M)))
                        (= (num-rows input-M) (* win-h (num-rows output-M))))
                        "input matrix size must be output matrix size times win dim")
     (r-t-assert-0 (and (> win-w 0) (> win-h 0)) "window must have extent")
-    (c-t-assert (when (is-quantized-int? T) (nor  (nullp zero-point) (nullp scale)))
-                "using quantized int requires :zero-point and :scale keys ")
+    (c-t-assert (when (is-quantized-int? T) (not (nullp scale)))
+                "using quantized int requires the :scale key")
     (thread-stride output-M :global-size (xo yo)
       (let ((x-in-start (* xo win-w))
             (y-in-start (* yo win-y))
@@ -14215,10 +14400,10 @@ not a performent version for microfloat blocks.
                  ;; Note: No bounds check needed if we trust the assert
                  (pixel-val (~ input-M y-in x-in)))
               ;; ADD
-              (set! acc (+ acc (to (accum T) pixel-val))))))
+              (set! acc (+ acc (widen pixel-val))))))
         ;; store
         (let ((acc-f (if+ (is-quantized-int? T)
-                        (to-float-accum acc zero-point scale) ;; don't square scale
+                        (to-float acc scale) ;; a sum keeps its operands' scale
                        acc))
               (avg-val (/ acc-f win-count)))
           (set! (~ output-M yo xo) avg-val))))))
@@ -14285,6 +14470,8 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - def-constraint
 - def-type-function
 - def-qint
+- def-qint-product
+- set-accum
 - def-microfloat-block
 - def-orchestration          [T]
 

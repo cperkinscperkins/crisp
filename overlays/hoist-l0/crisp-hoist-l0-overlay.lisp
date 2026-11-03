@@ -5,4 +5,6 @@
 ;;;; %l0-global-size-size-p (new), %l0-num-workgroups-size-p (accepts it), %l0-deferred-global-scratch-block
 ;;;; (a SIZE-EXPR parameter; group count x wg_size), its caller passes it; the wrapper and
 ;;;; *201-scratch-size-expr* dropped.  %l0-scratch-symbolic-expr refuses it for LOCAL scratch.
+;;;; EMPTY as of 2026-11-02 -- endeavours 204 / 205 (integer MMA reference, quantized buffers) folded into
+;;;; src/hoist-l0/main.lisp.
 (in-package :crisp.hoist.l0)

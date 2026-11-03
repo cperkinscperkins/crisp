@@ -178,3 +178,23 @@ Reproduces the probe: the three laggards gain 14-18 points and meet `:atomic`; s
 was the one kernel already at a good budget by luck -- 40 registers at 792 groups).  `:atomic` gets 660
 groups, not 528: .minnctapersm is a MINIMUM, and ptxas fitted it in 48 registers, 5 blocks per SM.
 
+
+
+BUG 135 (2026-11-01, overlays, for the fold)
+--------------------------------------------
+
+A workgroup above 256 threads gets `.maxntid` with no target, because ptxas then keeps the kernel launchable.  At
+256 or fewer there is no automatic bound, and spec 19 pins that: stamping every kernel changed the code of 229 of
+408 and raised registers in 106.  `(max-registers N)` becomes `.maxnreg`; `(warn-max-registers N)` only warns.
+`(occupancy-target nil)` removes the bound from that kernel, and its `_GRAD` kernel keeps one, because a derivative
+does not inherit scheduling declarations (BUG 075).
+
+- `%apply-occupancy-bound`: take the LAST copy in the overlay; there are two.
+- `internal-def-function`: the wrapper becomes one call to `%record-register-budgets` at the top; drop
+  `*internal-def-function-135*`.
+- `*kernel-register-budgets*` and `*launch-bound-workgroup-threshold*` go to `src/compiler.lisp`.
+- The validators are in `overlays/spec-runner-overlay.lisp`; the runner keeps its own copies, so they belong in
+  `tests/run-specs.lisp`, not `src/mma.lisp`.
+- `%cuda-emit-launch-lambda` goes to `src/hoist-cuda/main.lisp`.
+- Verified on an H100 at 0c6881bd.  154/03 launches at 168 registers and is `MMA_CORRECT`.  With
+  `(occupancy-target nil)` it stops with the launch error and the hint, and `(max-registers 166)` rescues it.

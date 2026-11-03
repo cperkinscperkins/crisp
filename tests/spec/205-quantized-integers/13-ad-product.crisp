@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; VERIFY-AUTODIFF: x=1.3 w=0.6 s=0.5 atol=1e-4 fd=off expect.x=0.5 expect.w=1.5 expect.s=-3.1
+;;
+;; Endeavour 205: *! is the product rule.  a = 3 and b = 1, so y = 0.25 * a * b.
+;;   dy/dx = 0.25 * b / s = 0.5
+;;   dy/dw = 0.25 * a / s = 1.5
+;;   dy/ds = 0.25 * (-x/s^2 * b + a * -w/s^2) = 0.25 * (-5.2 - 7.2) = -3.1
+(def-qint q-a :base char :accum int)
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (x w s &out y)
+  (declare #'(fc fc fc &out fc => nil))
+  (set! (~ y) (to-float (*! (to-q-a (~ x) (~ s)) (to-q-a (~ w) (~ s))) 0.25)))

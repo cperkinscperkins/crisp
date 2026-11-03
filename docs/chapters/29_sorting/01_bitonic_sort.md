@@ -133,9 +133,10 @@ be a property retrieval function (like `x~`). But technically, the `keyF` can be
 returns an orderable value (for example, it could add the `x` and `y` values of the point and return their sum).
 The astute reader will observe that could be done with an overload property function as well. 
 
-Lastly, note for `vector` of structs, that the Crisp developer can choose between overloading `>` and `<` 
-for some struct, using a custom `keyF` function, using a property access function `~x`, or and overloaded property
-access function, to influence or intercept the ordering. 
+Lastly, note for `vector` of structs, that the Crisp developer can choose between using a custom `keyF`
+function, using a property access function `~x`, or an overloaded property access function, to influence
+or intercept the ordering. (`>` and `<` themselves cannot be overloaded; see
+[Function Overloading](#function-overloading-).)
 
 But for the `soa-vector` variant, beyond simply specifying the property to key off, the only 
 intercept is via an overload that includes `soa-vector`.

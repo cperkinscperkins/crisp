@@ -595,6 +595,7 @@ Body is whitespace-separated `key=value` tokens. Reserved keys:
 | `<name>=RxC@START:STEP`   | 2D matrix, row-major ramp: element (i,j) = START + STEP*(i*C + j) (endeavor 145). |
 | `at.<name>=<int>`         | Index in vector `<name>` to perturb / compare.                     |
 | `expect.<name>=<float>`   | Optional explicit expected analytical gradient. Compared with same `atol`. |
+| `fd=off`                  | Endeavour 205. Do not require finite differences to agree, for a rule that disagrees by design (a straight-through estimator). Needs at least one `expect.<name>`. |
 | `precision=fast\|ieee`    | Optional (endeavor 128). Compile the fwd + bwd kernels under this precision.       |
 | `denormal=ftz\|preserve`  | Optional (endeavor 128). Compile the fwd + bwd kernels under this denormal mode.   |
 

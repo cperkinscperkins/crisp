@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; VERIFY-AUTODIFF: x=-5.0 s=1.0 atol=1e-4 fd=off expect.x=0.0 expect.s=0.0
+;;
+;; Endeavour 205: an unsigned type saturates at zero, so -5 is on the rail: q = 0, dq/dx = 0.
+(def-qint q-u :base uchar :accum int)
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (x s &out y)
+  (declare #'(fc fc &out fc => nil))
+  (set! (~ y) (to-float (to-q-u (~ x) (~ s)) (~ s))))

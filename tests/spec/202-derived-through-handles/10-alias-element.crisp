@@ -1,0 +1,10 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 202 -- a def-type alias of a derived type as the element.  The alias is registered in
+;; *crisp-type-aliases*, not *crisp-types*, so it needs the same unmangling care.
+(def-derived-type q-c char :subst :no)
+(def-type q-alias q-c)
+(def-type qc (cell q-alias :address-space :global))
+
+(def-kernel k (a b &out r)
+  (declare #'(qc qc &out qc => nil))
+  (set! (~ r) (+ (~ a) (~ b))))

@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "scale must be a float"
+;; Endeavour 205 -- the result takes the scale's type, so an integer scale cannot work.
+(def-qint q-a :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+(def-kernel e (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (set! (~ o 0) (to int (to-float (to q-a 1) 2))))

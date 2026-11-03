@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 203 -- (accum T) with T a template parameter, at a registered type and a basic one.
+(def-derived-type q-a char :subst :no)
+(def-derived-type q-a-accum int :subst :no)
+(set-accum q-a q-a-accum)
+(def-type qc (cell q-a :address-space :global))
+(def-type ac (cell q-a-accum :address-space :global))
+(def-type ic (cell int :address-space :global))
+
+(with-template-type (T)
+  (def-function square (x)
+    (declare #'(T => (accum T)))
+    (*! x x)))
+
+(def-kernel k (a b &out r s)
+  (declare #'(qc ic &out ac ic => nil))
+  (set! (~ r) (square (~ a)))
+  (set! (~ s) (square (~ b))))

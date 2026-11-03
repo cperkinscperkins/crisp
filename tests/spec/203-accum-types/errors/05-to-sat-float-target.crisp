@@ -1,0 +1,7 @@
+;; CHECK-FAIL: "needs an integer target"
+;; Endeavour 203
+(def-type fc (cell float :address-space :global))
+
+(def-kernel k (a &out r)
+  (declare #'(fc &out fc => nil))
+  (set! (~ r) (to-sat float (~ a))))

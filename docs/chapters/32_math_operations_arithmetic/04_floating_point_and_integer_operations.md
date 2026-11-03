@@ -26,4 +26,9 @@ an accumulator type.  We'll see more of this below when discuss the hardware acc
 like Quantized Integers and MicroFloat Blocks.
 
 - `*!`  => `#'(T T => (accum T))`  widening multiplication.
+- `+!`, `-!`  => `#'(T T => (accum T))`  widening addition and subtraction.  `(+! acc b)` also accumulates a base value.
+- `widen` => `#'(T => (accum T))`  the same value at the accumulator type.
+
+For the basic types these are `*`, `+`, `-` and the identity.  `(to-sat T x)` is the saturating
+float-to-integer conversion that narrows back.  See [Accumulator Types](#accumulator-types-set-accum-accum-base-).
 

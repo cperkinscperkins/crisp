@@ -2231,11 +2231,79 @@ in single-pass mode."
                     (fail "(occupancy-target ~a) is less than one workgroup of ~a threads, so no launch bound can express it.  Use at least ~a, or nil." (list v wg wg))))
                 (values t v))))))))))
 
+;;;; ----------------------------------------------------------------------
+;;;; BUG 135 / Endeavour 206 -- register budgets; a microfloat block at the kernel boundary
+;;;; See tests/spec/182-nvidia-register-budget/register-budget.md, tests/spec/206-microfloat-blocks/microfloat-blocks.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %parse-register-budget-decl (name declarations label)
+  "BUG 135.  The value of the (LABEL N) declaration among DECLARATIONS, or NIL when there is none.
+   N must be a positive integer literal: it reaches ptxas as a directive."
+  (let ((decl (find label declarations
+                    :key (lambda (x) (when (and (consp x) (symbolp (car x))) (symbol-name (car x))))
+                    :test #'string-equal)))
+    (when decl
+      (unless (and (= (length (rest decl)) 1) (integerp (second decl)) (plusp (second decl)))
+        (error 'crisp-compiler-error
+               :message (format nil "Kernel ~a: (~(~a~) ...) takes one positive integer literal, registers per thread, got ~s."
+                                name label (rest decl))
+               :source-location nil))
+      (second decl))))
+
+(defun %record-register-budgets (name declarations)
+  "BUG 135.  Validates NAME's (max-registers N) and (warn-max-registers N) and records them in
+   *kernel-register-budgets*, clearing any left by an earlier compile.  Refused on a function that
+   is not an entry point: a register limit belongs to the kernel it is compiled into."
+  (when name
+    (let ((entry-p (loop for d in declarations
+                         thereis (and (listp d) (symbolp (first d))
+                                      (string-equal (symbol-name (first d)) "ENTRY-POINT"))))
+          (max-regs (%parse-register-budget-decl name declarations "MAX-REGISTERS"))
+          (warn-regs (%parse-register-budget-decl name declarations "WARN-MAX-REGISTERS")))
+      (when (and (or max-regs warn-regs) (not entry-p))
+        (error 'crisp-compiler-error
+               :message (format nil "Function ~a: a register budget belongs on a kernel, because a function is compiled into the kernel that calls it."
+                                name)
+               :source-location nil))
+      (if (or max-regs warn-regs)
+          (setf (gethash name *kernel-register-budgets*) (list :max max-regs :warn warn-regs))
+          (remhash name *kernel-register-budgets*)))))
+
+(defun %mf-refuse-block-at-boundary (name declarations)
+  "Endeavour 206: a kernel takes handles, and builds a record that holds them inside, because what a
+   host would pass for a record of handles is not defined.  Functions and grid functions may take one."
+  (labels ((holds-handle-p (sym)
+             (let ((def (and (symbolp sym) sym (gethash sym *crisp-structs*))))
+               (and def (some (lambda (m) (%storage-handle-type-p (second m)))
+                              (crisp-struct-definition-members def)))))
+           (walk (form)
+             (cond ((and (symbolp form) (microfloat-block-p form))
+                    (error 'crisp-compiler-error
+                           :message (format nil "Kernel ~a: a microfloat block cannot be a kernel parameter.  Take ~(~a~)-codes and ~(~a~)-scales, and build it with make-~(~a~)."
+                                            name form form form)
+                           :source-location nil))
+                   ((holds-handle-p form)
+                    (error 'crisp-compiler-error
+                           :message (format nil "Kernel ~a: a record holding handles cannot be a kernel parameter.  Take the handles, and build the ~(~a~) inside the kernel."
+                                            name form)
+                           :source-location nil))
+                   ((consp form) (walk (car form)) (walk (cdr form))))))
+    (when (loop for d in declarations
+                thereis (and (listp d) (symbolp (first d))
+                             (string-equal (symbol-name (first d)) "ENTRY-POINT")))
+      (walk declarations))))
+
 (defun internal-def-function (name params declarations body location)
   "Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the
    body analysis.  Otherwise identical to the Phase 2 definition.
    Endeavour 182: also binds *analyzing-function*, so a stream loop is attributed to the function it is
-   in (*stream-functions*), and records an entry point's (occupancy-target ...)."
+   in (*stream-functions*), and records an entry point's (occupancy-target ...).
+   BUG 135: records the kernel's register budgets.  Endeavour 206: refuses a microfloat block at the
+   kernel boundary."
+  ;; Endeavour 206: a microfloat block is refused at the kernel boundary.
+  (%mf-refuse-block-at-boundary name declarations)
+  ;; BUG 135: (max-registers N) / (warn-max-registers N).
+  (%record-register-budgets name declarations)
   (log:info "Analyzing function ~s" name)
   ;; 182: a stale mark from an earlier compile of a function with this name must not survive
   (when name (remhash name *stream-functions*))
@@ -2715,7 +2783,7 @@ in single-pass mode."
                      ;; === Brand Instance Type Checking (when --differentiate is active) ===
                      (let ((refined-return-types (function-signature-return-types augmented-signature)))
 
-                       (when *differentiate-p*
+                       (progn
                          (let ((sig-params (function-signature-parameters augmented-signature)))
 
                            ;; 1. Brand parameter type checking

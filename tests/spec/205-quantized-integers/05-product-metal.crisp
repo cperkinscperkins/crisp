@@ -1,0 +1,39 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: -600 -60 -32640 -127
+;; HOIST-EXPECT: BUFFER f: -300 -150 -60 -6
+;;
+;; Endeavour 205 ON-METAL: a declared mixed-sign product, narrowed into a third quantized type.
+;;   200 *! -3 = -600, as q-dot.  At 0.1 that is -60 in q-out
+;;   255 *! -128 = -32640, which needs a zero-extend on one side and a sign-extend on the other
+;;   -32640 at 0.0039 is -127.296, so -127
+(def-qint q-act :base uchar :accum int)
+(def-qint q-wt :base char :accum int)
+(def-qint q-out :base char :accum int)
+(def-qint-product q-dot (q-act q-wt) :accum int)
+
+(def-function dot-one ((a q-act) (w q-wt))
+  (declare #'(q-act q-wt => (accum q-act q-wt)))
+  (return (*! a w)))
+
+(def-type iv (vector int :address-space :global :align :compact))
+(def-type fv (vector float :address-space :global :align :compact))
+
+(def-kernel product_metal (&out o f)
+  (declare #'(&out iv fv => nil) (global-size :set-to 1))
+  (let ((g (to-int (get-global-id 0))))
+    (let ((a (to q-act (+ g 200)))
+          (w (to q-wt (+ g -3)))
+          (big (to q-act (+ g 255)))
+          (low (to q-wt (+ g -128))))
+      (let ((p (dot-one a w))
+            (q (*! big low)))
+        (set! (~ o 0) (to int p))
+        (set! (~ o 1) (to int (to-q-out p 0.1)))
+        (set! (~ o 2) (to int q))
+        (set! (~ o 3) (to int (to-q-out q 0.0039)))
+        (set! (~ f 0) (to-float p 0.5))
+        (set! (~ f 1) (to-float p 0.25))
+        (set! (~ f 2) (to-float (to-q-out p 0.1) 1.0))
+        (set! (~ f 3) (to-float (to-q-out p 0.1) 0.1))))))

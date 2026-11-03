@@ -39,14 +39,37 @@
 
 ;;; The Helper Functions for Unmangling (from types.lisp)
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 202 -- derived types through handles
+;;;; See tests/spec/202-derived-through-handles/derived-through-handles.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %unmangled-symbol (token-str package)
+  "The symbol a mangled template-name token stands for.  Prefers a type the user registered in
+   :crisp-language over a same-named symbol in PACKAGE: a template such as CELL lives in
+   crisp.compiler, so interning there minted CRISP.COMPILER::Q-C, which *crisp-types* has never heard
+   of, and (+ (~ a) (~ b)) died with \"Cannot operate on Q-C and Q-C\" (endeavour 202).  A symbol
+   PACKAGE already has registered wins, which keeps the shadowed primitives (CHAR, FLOAT) as they were."
+  (let ((existing (find-symbol token-str package))
+        (lang (find-symbol token-str :crisp-language)))
+    (flet ((registered-p (sym)
+             (and sym (boundp '*crisp-types*)
+                  (or (gethash sym *crisp-types*) (gethash sym *crisp-type-aliases*)))))
+      (cond ((and lang (not (eq lang existing))
+                  (not (registered-p existing))
+                  (registered-p lang))
+             (log:debug "%unmangled-symbol: ~a resolves to the registered ~s" token-str lang)
+             lang)
+            (existing existing)
+            (t (intern token-str package))))))
+
 (defun reconstruct-one-arg (tokens package)
   "Reads exactly one logical form (atom or template-expr) from tokens."
   (if (null tokens) (values nil nil)
       (let* ((token-str (first tokens))
                 (token-sym (if (char= (cl:char token-str 0) #\:)
                                (intern (subseq token-str 1) :keyword)
-                               (let ((existing (find-symbol token-str package)))
-                                 (if existing existing (intern token-str package)))))
+                               (%unmangled-symbol token-str package)))
                 (arity (and *template-arity-lookup-fn*
                             (funcall *template-arity-lookup-fn* token-sym))))
 
@@ -90,9 +113,7 @@
                                    (parse-integer token-str :junk-allowed t)
                                  (if (and n (= end (length token-str)))
                                         n  ; it's a numeric token — return the integer
-                                        (let ((existing (find-symbol token-str package)))
-                                          (if existing existing
-                                                 (intern token-str package)))))))
+                                        (%unmangled-symbol token-str package)))))
                 (arity (and (not (integerp token-sym))
                                *template-arity-lookup-fn*
                                (funcall *template-arity-lookup-fn* token-sym))))

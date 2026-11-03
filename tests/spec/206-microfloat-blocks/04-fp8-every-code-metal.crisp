@@ -1,0 +1,37 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER o: 0 0 0 0
+;;
+;; Endeavour 206 ON-METAL: every code of the three 8-bit formats survives decode then encode, on the
+;; GPU itself.  NaN codes and -0 have no round trip and are left out.
+;;   o[0]: fp8-e4m3 failures, where 0x7F and 0xFF are NaN
+;;   o[1]: fp8-e5m2 failures, where the three NaN codes of each sign are left out
+;;   o[2]: fp8-e8m0 failures, where 255 is NaN
+;;   o[3]: values that are out of order among the positive e4m3 and e5m2 codes
+;; Each decoded value was also compared once with a separate reference built from the format
+;; definitions, all 256 codes on BMG: see microfloat-blocks.md.
+
+(def-microfloat-block ma :base fp8-e4m3 :scale fp8-e8m0 :accum float :shape (2))
+(def-microfloat-block mb :base fp8-e5m2 :scale fp8-e8m0 :accum float :shape (2))
+(def-type iv (vector int :address-space :global :align :compact))
+
+(def-kernel fp8_codes (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (let ((a 0) (b 0) (s 0) (order 0))
+    (dotimes (i 256)
+      (let ((c (to-int i)) (u (to-uchar c)) (mag (logand c 127)))
+        (when (and (!= c 128) (!= mag 127))
+          (when (!= (to-int (ma-encode-code (ma-decode-code u))) c) (set! a (+ a 1))))
+        (when (and (!= c 128) (< mag 125))
+          (when (!= (to-int (mb-encode-code (mb-decode-code u))) c) (set! b (+ b 1))))
+        (when (!= c 255)
+          (when (!= (to-int (ma-encode-scale (ma-decode-scale u))) c) (set! s (+ s 1))))
+        (when (< c 126)
+          (when (>= (ma-decode-code u) (ma-decode-code (to-uchar (+ c 1)))) (set! order (+ order 1))))
+        (when (< c 123)
+          (when (>= (mb-decode-code u) (mb-decode-code (to-uchar (+ c 1)))) (set! order (+ order 1))))))
+    (set! (~ o 0) a)
+    (set! (~ o 1) b)
+    (set! (~ o 2) s)
+    (set! (~ o 3) order)))

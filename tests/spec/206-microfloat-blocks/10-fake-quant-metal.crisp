@@ -1,0 +1,13 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--differentiate]
+;; VERIFY-AUTODIFF: a=[3.0 -1.3 0.8 0.1] at.a=1 atol=1e-4 fd=off expect.a=1.0 output-vec=4
+;;
+;; Endeavour 206 ON-METAL: fake-quant runs forward through the format and is straight through backward, so
+;; dy/dx = 1, and finite differences, which see the step function, cannot check it.  The scale is held
+;; constant, the usual straight-through choice.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (4))
+
+(def-kernel fq (a &out b)
+  (declare #'(mf-floats &out mf-floats) (global-size :set-to 4) (local-size :set-to 4))
+  (fake-quant-mf a b))

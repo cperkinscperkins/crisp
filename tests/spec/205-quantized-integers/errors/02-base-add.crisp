@@ -1,0 +1,8 @@
+;; CHECK-FAIL: "use +!"
+;; Endeavour 205 -- base values do not take the plain operators.
+(def-qint q-a :base char :accum int)
+(def-type iv (vector int :address-space :global :align :compact))
+(def-kernel e (&out o)
+  (declare #'(&out iv => nil) (global-size :set-to 1))
+  (let ((a (to q-a 1)))
+    (set! (~ o 0) (to int (+ a a)))))

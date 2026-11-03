@@ -1,0 +1,26 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 247 87 2 3
+;; HOIST-EXPECT: BUFFER s: 40 56 2 3
+;; HOIST-EXPECT: BUFFER y: 1.5 -1.5 6 3
+;;
+;; Endeavour 206 ON-METAL: the second of two packed blocks lands where it should.
+;;   Block 0 is 1.5 -1.5: scale 0.25, code 40.  x / scale is 6 and -6, codes 7 and 15, byte 247.
+;;   Block 1 is 6 3: scale 1, code 56.  Codes 7 and 5, byte 87.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (2))
+
+(def-kernel quant_two (&out x c s y)
+  (declare #'(&out mf-floats mf-codes mf-scales mf-floats => nil) (global-size :set-to 1))
+  (let ((w (make-mf :codes c :scales s)))
+    (set! (~ x 0) 1.5)
+    (set! (~ x 1) -1.5)
+    (set! (~ x 2) 6.0)
+    (set! (~ x 3) 3.0)
+    (mf-quantize-block x 0ul w)
+    (mf-quantize-block x 1ul w)
+    (set! (~ y 0) (to-float w 0))
+    (set! (~ y 1) (to-float w 1))
+    (set! (~ y 2) (to-float w 2))
+    (set! (~ y 3) (to-float w 3))))

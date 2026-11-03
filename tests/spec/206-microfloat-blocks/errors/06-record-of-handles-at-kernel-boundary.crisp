@@ -1,0 +1,13 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "record holding handles cannot be"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- the same for a plain record that holds a handle.
+
+(def-type iv (vector int :address-space :global :align :compact))
+(def-record pair (a iv))
+
+(def-kernel k_e (p &out y)
+  (declare #'(pair &out iv) (global-size :derive-from y :strategy :strided))
+  (loop-vector-stride y (i)
+    (set! (~ y i) (~ (a~ p) i))))

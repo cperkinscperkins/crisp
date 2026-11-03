@@ -1,0 +1,11 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 203 -- *! on a registered type produces the accumulator type, without casts.
+(def-derived-type q-a char :subst :no)
+(def-derived-type q-a-accum int :subst :no)
+(set-accum q-a q-a-accum)
+(def-type qc (cell q-a :address-space :global))
+(def-type ac (cell q-a-accum :address-space :global))
+
+(def-kernel k (a b &out r)
+  (declare #'(qc qc &out ac => nil))
+  (set! (~ r) (*! (~ a) (~ b))))

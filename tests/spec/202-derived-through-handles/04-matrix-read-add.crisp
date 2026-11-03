@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 202 -- the same read through a matrix element.
+(def-derived-type q-c char :subst :no)
+(def-type qm (matrix q-c :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (a b &out r)
+  (declare #'(qm qm &out qm => nil) (global-size :set-to 16))
+  (let ((i (get-global-id 0)))
+    (set! (~ r 0 i) (+ (~ a 0 i) (~ b 0 i)))))

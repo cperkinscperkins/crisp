@@ -1,0 +1,14 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 203 -- +! and -! on two base values, and accumulating a base value into an accumulator.
+(def-derived-type q-a char :subst :no)
+(def-derived-type q-a-accum int :subst :no)
+(set-accum q-a q-a-accum)
+(def-type qc (cell q-a :address-space :global))
+(def-type ac (cell q-a-accum :address-space :global))
+
+(def-kernel k (a b &out s d t2 t3)
+  (declare #'(qc qc &out ac ac ac ac => nil))
+  (set! (~ s) (+! (~ a) (~ b)))
+  (set! (~ d) (-! (~ a) (~ b)))
+  (set! (~ t2) (+! (+! (~ a) (~ b)) (~ a)))
+  (set! (~ t3) (-! (widen (~ a)) (~ b))))

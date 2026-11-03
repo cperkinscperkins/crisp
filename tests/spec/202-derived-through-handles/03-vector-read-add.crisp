@@ -1,0 +1,9 @@
+;; TEST-EXPECT: PASS
+;; Endeavour 202 -- the same read through a vector element.
+(def-derived-type q-c char :subst :no)
+(def-type qv (vector q-c :address-space :global :align :compact))
+
+(def-kernel k (a b &out r)
+  (declare #'(qv qv &out qv => nil) (global-size :set-to 16))
+  (let ((i (get-global-id 0)))
+    (set! (~ r i) (+ (~ a i) (~ b i)))))

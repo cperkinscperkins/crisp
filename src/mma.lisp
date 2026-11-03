@@ -260,7 +260,13 @@
    minter and the fragment constructor cannot disagree about which record an element type maps
    to -- the same argument 159 made for the operands.
 
-   A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose."
+   A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose.
+
+   Endeavour 204: integer register tiles exist on SPIR-V only.  On NVIDIA, integer MMA is wgmma."
+  (when (and (%elem-integer-p elem) (not (eq *target-backend* :spirv)))
+    (error 'crisp-compiler-error
+           :message (format nil "A ~(~a~) register tile has no NVIDIA lowering: integer MMA there is wgmma.  Use make-wgmma-accumulator with wgmma-accumulate-via-tile."
+                            (%canonical-elem elem))))
   (if (and elem (symbolp elem) (string= (symbol-name elem) "DOUBLE"))
       'register-fragment-acc-f64-8x8
       'register-fragment-acc-f32-16x8))
@@ -985,22 +991,33 @@
    Endeavour 165 (step 3): the NVIDIA type was hardcoded to the fp32 record, which made an fp64
    accumulate mistype itself.  Deriving it from C states the real rule and covers any accumulator
    record, present or future.  The fallback keeps the historical answer when C's type cannot be
-   resolved to an accumulator record."
+   resolved to an accumulator record.
+
+   Endeavour 204: on :spirv too, C's type is the answer when it is a coop matrix, and the three
+   element types are checked against each other."
   (destructuring-bind (c-arg a-arg b-arg) (cdr expr)
     (let* ((c-node (analyze-expression c-arg env context location))
-           (c-type (get-single-value-type c-node)))
-      (make-semantic-mma-accumulate
-       :type (if (eq *target-backend* :spirv)
-                 (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-                   (declare (ignore sk)) (list 'coop-matrix 'float sm sn 2))
-                 (if (and c-type (symbolp c-type)
-                          (search "REGISTER-FRAGMENT-ACC-" (symbol-name c-type)))
-                     c-type
-                     'register-fragment-acc-f32-16x8))
-       :c-node c-node
-       :a-node (analyze-expression a-arg env context location)
-       :b-node (analyze-expression b-arg env context location)
-       :source-location location))))
+           (c-type (get-single-value-type c-node))
+           (a-node (analyze-expression a-arg env context location))
+           (b-node (analyze-expression b-arg env context location)))
+      (flet ((coop-p (ty) (and (consp ty) (eq (first ty) 'coop-matrix))))
+        (when (and (coop-p c-type) (coop-p (semantic-node-type a-node)) (coop-p (semantic-node-type b-node)))
+          (%check-mma-element-family (second (semantic-node-type a-node)) (second (semantic-node-type b-node))
+                                     (second c-type) location))
+        (make-semantic-mma-accumulate
+         :type (if (eq *target-backend* :spirv)
+                   (if (coop-p c-type)
+                       c-type
+                       (multiple-value-bind (sm sn sk) (%spv-mma-shape)
+                         (declare (ignore sk)) (list 'coop-matrix 'float sm sn 2)))
+                   (if (and c-type (symbolp c-type)
+                            (search "REGISTER-FRAGMENT-ACC-" (symbol-name c-type)))
+                       c-type
+                       'register-fragment-acc-f32-16x8))
+         :c-node c-node
+         :a-node a-node
+         :b-node b-node
+         :source-location location)))))
 
 
 
@@ -1190,7 +1207,7 @@
             ;; 16-bit inputs -- so firing it there would be noise that teaches the reader
             ;; something untrue.
             (unless (or (eq *math-precision* :fast)
-                        (eql (%mma-elem-bits (third (gethash node *wgmma-node-swizzle*))) 16))
+                        (member (%mma-elem-bits (third (gethash node *wgmma-node-swizzle*))) (quote (8 16))))
               (format *error-output*
                       "WARNING: wgmma-accumulate-via-tile uses tf32 tensor cores, but math-precision is '~(~a~)' — the IEEE accuracy request is not honored (results are tf32). Use (with-precision (fast) ...), (declaim (precision fast)), or --math-precision=fast.~%"
                       *math-precision*))
@@ -1203,14 +1220,15 @@
                   (declare (ignore bv bl))
                   (unless (and a-ptr b-ptr)
                     (error "wgmma: A/B (~ tile 0) did not yield an SMEM element pointer (a ~A b ~A)" a-ptr b-ptr))
-                  (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
-                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k elem b-major))))))
+                  (let ((*wgmma-b-elem* (gethash node *wgmma-node-b-elem*))) (%emit-nvvm-wgmma builder module c-val a-ptr b-ptr acc-type
+                                    (second (gethash acc-type *wgmma-acc-dims*)) swizzle-p k elem b-major)))))))
           (let ((c-val (gen (semantic-mma-accumulate-c-node node)))
                 (a-val (gen (semantic-mma-accumulate-a-node node)))
                 (b-val (gen (semantic-mma-accumulate-b-node node))))
             (if (eq *target-backend* :spirv)
                 (multiple-value-bind (sm sn sk) (%spv-mma-shape)
-                  (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil))
+                  (let ((*coop-mma-signs* (%coop-sign-mask (semantic-mma-accumulate-a-node node) (semantic-mma-accumulate-b-node node) (semantic-mma-accumulate-c-node node))))
+                    (values (%coop-mma builder module a-val b-val c-val (llvm-float-type) sm sn sk) nil)))
                 (%emit-nvvm-mma builder module a-val b-val c-val)))))))
 
 ;;; ===================================================================
@@ -1399,7 +1417,7 @@
    collide.  One instance of that bug is enough.
 
    ELEM defaults to FLOAT so any caller not yet threading it keeps the pre-165 record."
-  (intern (format nil "REGISTER-TILE-ACC-~a-~dX~d" (symbol-name elem) m n)
+  (intern (format nil "REGISTER-TILE-ACC-~a-~dX~d" (symbol-name (%canonical-elem elem)) m n)
           (find-package :crisp.compiler)))
 
 (defun %register-tile-type-p (type-name)
@@ -1637,12 +1655,44 @@
                  :message (format nil "mma-accumulate-via-tile: only tf32 (16 8 8) is supported without a hardware profile, got ~a." mma-shape)
                  :source-location location)))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer MMA: K must fill the instruction
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %check-int-mma-k (mma-shape a env context location)
+  "Refuses an int8 multiply at a K meant for another width.  (8 16 8) is a legal shape, but for tf32, so
+   the profile check passes it, while the operands load at K=32.  That compiled silently."
+  (when (eq *target-backend* :spirv)
+    (let ((elem (%coop-elem-of (analyze-expression a env context location))))
+      (when (%int-operand-p elem)
+        (multiple-value-bind (sm sn sk) (%spv-mma-shape elem)
+          (declare (ignore sm sn))
+          (unless (eql (third mma-shape) sk)
+            (error 'crisp-compiler-error
+                   :message (format nil "mma-accumulate-via-tile: ~(~a~) operands need K=~a on this profile; got ~a."
+                                    elem sk (third mma-shape))
+                   :source-location location)))))))
+
+(defun %check-int-tile-k (shape elem)
+  "Refuses a via-tile multiply into an integer tile at a K meant for another width.  (8 16 8) is a legal
+   shape, but for tf32, while integer operands load at K=32.  A let-bound tile is rewritten here,
+   before analysis, so this is the check real kernels reach; %check-int-mma-k covers the analyzed form."
+  (when (and shape (eq *target-backend* :spirv) (%elem-integer-p elem))
+    (multiple-value-bind (sm sn sk) (%spv-mma-shape 'char)
+      (declare (ignore sm sn))
+      (unless (eql (third shape) sk)
+        (error 'crisp-compiler-error
+               :message (format nil "mma-accumulate-via-tile: 8-bit operands need K=~a on this profile; got ~a."
+                                sk (third shape)))))))
+
 (defun analyze-mma-accumulate-via-tile (expr env context location)
   "P3b-1: (mma-accumulate-via-tile (M N K) C-TILE A B) — walk the register C-tile in
    16x8 fragments and accumulate ONE K-step (K = the shape's K) into each, set!-ing the
    accumulated tile back.  Bodyless (no accum-op / epilogue yet)."
   (destructuring-bind (mma-shape c-tile a b) (cdr expr)
     (%check-mma-shape mma-shape location)
+    (%check-int-mma-k mma-shape a env context location)
     (let* ((c-node (analyze-expression c-tile env context (append location '(1))))
            (c-type (semantic-node-type c-node)))
       (unless (%register-tile-type-p c-type)
@@ -1829,19 +1879,44 @@
 ;;;; See tests/spec/196-matmul-contest/matmul-contest.md.
 ;;;; ----------------------------------------------------------------------
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 205 -- tile narrowing to a quantized integer
+;;;; See tests/spec/205-quantized-integers/quantized-integers-205.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %qint-narrowing-target (op)
+  "The def-qint base type behind the operator symbol TO-NAME, or NIL."
+  (when (symbolp op)
+    (let ((name (symbol-name op)))
+      (when (and (> (length name) 3) (string= "TO-" name :end2 3))
+        (let ((entry (gethash (subseq name 3) *qint-roles*)))
+          (and (eq (car entry) :base) (cdr entry)))))))
+
 (defun %196-peel-store-conversion (src)
   "Endeavour 196.  If SRC is (to-half X) or (to-bfloat16 X), return (values X CONVERT-SYMBOL);
    otherwise (values SRC NIL).  Only these two narrowing conversions are peeled: they are the two a
    16-bit MMA needs on the way out (f32 accumulator -> fp16 / bf16 output).  Anything else is left
-   for the ordinary analysis, which refuses a conversion of a whole accumulator."
-  (if (and (consp src) (symbolp (first src)) (= (length src) 2)
-           (member (symbol-name (first src)) '("TO-HALF" "TO-BFLOAT16") :test #'string=))
-      (values (second src) (first src))
-      (values src nil)))
+   for the ordinary analysis, which refuses a conversion of a whole accumulator.
+   Endeavour 205: (to-q X M) peels too, and CONVERT is then the list (%to-q-narrow Q M).  A SPIR-V
+   store is one whole fragment with no per-element step, so that is refused here."
+  (cond
+    ((and (consp src) (symbolp (first src)) (= (length src) 2)
+          (member (symbol-name (first src)) '("TO-HALF" "TO-BFLOAT16") :test #'string=))
+     (values (second src) (first src)))
+    ((and (consp src) (= (length src) 3) (%qint-narrowing-target (first src)))
+     (when (eq *target-backend* :spirv)
+       (error 'crisp-compiler-error
+              :message (format nil "(~(~a~) X M) as a store source: a SPIR-V store is one whole fragment.  Store X into an int matrix, then narrow its elements with (~(~a~) x m)."
+                               (first src) (first src))))
+     (values (second src) (list '%to-q-narrow (%qint-narrowing-target (first src)) (third src))))
+    (t (values src nil))))
 
 (defun %196-wrap-conversion (convert form)
-  "Endeavour 196.  (CONVERT FORM) when CONVERT is non-NIL, else FORM unchanged."
-  (if convert (list convert form) form))
+  "Endeavour 196.  (CONVERT FORM) when CONVERT is non-NIL, else FORM unchanged.
+   Endeavour 205: a list CONVERT, (%to-q-narrow Q M), wraps as (%to-q-narrow Q FORM M)."
+  (cond ((null convert) form)
+        ((consp convert) (list (first convert) (second convert) form (third convert)))
+        (t (list convert form))))
 
 (defun %196-convert-store-fragment-sources (form convert)
   "Endeavour 196.  Wrap the FRAG argument of every (store-fragment FRAG ...) in FORM with
@@ -1851,7 +1926,7 @@
   (cond
     ((not (consp form)) form)
     ((and (symbolp (first form)) (string= (symbol-name (first form)) "STORE-FRAGMENT"))
-     (list* (first form) (list convert (second form)) (cddr form)))
+     (list* (first form) (%196-wrap-conversion convert (second form)) (cddr form)))
     (t (mapcar (lambda (f) (%196-convert-store-fragment-sources f convert)) form))))
 
 (defun %196-refuse-converted-non-accumulator (op convert src-type location)
@@ -1859,7 +1934,7 @@
    naming the rule, rather than let the generic store analyze (to-half X) as a scalar cast of a
    whole tile (which fails later with an unrelated message)."
   (error 'crisp-compiler-error
-         :message (let ((*print-pretty* nil)) (format nil "~(~a~): (~(~a~) X) as a store source needs X to be an MMA accumulator (a register tile or a wgmma accumulator), whose f32 elements are converted as they are stored.  X here is ~a.  To convert a scratch or global tile, convert its elements where they are written." op convert src-type))
+         :message (let ((*print-pretty* nil)) (format nil "~(~a~): (~(~a~) X) as a store source needs X to be an MMA accumulator (a register tile or a wgmma accumulator), whose f32 elements are converted as they are stored.  X here is ~a.  To convert a scratch or global tile, convert its elements where they are written." op (if (consp convert) (format nil "to-~a" (second convert)) convert) src-type))
          :source-location location))
 
 (defvar *196-tile-warp-shares* nil
@@ -2011,7 +2086,7 @@
    controls WHEN a fragment accumulates, not how its contraction is chopped up."
   (destructuring-bind (m n syms &optional (n-true 1) (first-true 0) operand) (cdr entry)
     (declare (ignore operand))
-    (destructuring-bind (fm . fn) (%frag-mn (%register-tile-elem-of (first entry)))
+    (destructuring-bind (fm . fn) (progn (%check-int-tile-k shape (%register-tile-elem-of (first entry))) (%frag-mn (%register-tile-elem-of (first entry))))
       ;; Endeavour 155 Phase C: honour the shape the KERNEL asked for.
       ;;
       ;; (mma-accumulate-via-tile (8 16 16) C A B) states K=16, which is the correct native
@@ -2806,6 +2881,9 @@
 (defun %199-convert-element (convert)
   "Endeavour 199.  The 16-bit element type a peeled conversion (TO-HALF / TO-BFLOAT16) produces."
   (cond ((null convert) nil)
+        ((consp convert)
+         (error 'crisp-compiler-error
+                :message "store-tile-at :via :tma: stmatrix moves 16-bit elements, so an 8-bit narrowing cannot use it.  Drop :via :tma."))
         ((string= (symbol-name convert) "TO-HALF") (%199-type-symbol "HALF"))
         (t (%199-type-symbol "BFLOAT16"))))
 
@@ -3010,24 +3088,54 @@
 (defvar *wgmma-acc-dims* (make-hash-table :test 'eq)
   "wgmma accumulator type symbol -> (list M N K).")
 
-(defun %wgmma-acc-type-name (n)
-  (intern (format nil "WGMMA-ACC-F32-64X~d" n) (find-package :crisp.compiler)))
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer wgmma: the B element and s32 accumulators
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *wgmma-node-b-elem* (make-hash-table :test 'eq)
+  "semantic-mma-accumulate node -> B's element type, for the mnemonic of a mixed-sign wgmma.")
+
+(defvar *wgmma-b-elem* nil
+  "B's element type for the wgmma being emitted, bound around %emit-nvvm-wgmma.")
+
+(defun %wgmma-acc-elem (acc-type)
+  "The integer element of a wgmma accumulator type, or FLOAT."
+  (or (fourth (gethash acc-type *wgmma-acc-dims*)) 'float))
+
+(defun %wgmma-struct-of-regs (module reg-ty nacc)
+  "The LLVM struct type { REG-TY x NACC } — the wgmma inline-asm result (NACC = N/2 accumulators)."
+  (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count nacc)))
+    (dotimes (i nacc) (setf (cffi:mem-aref elts 'llvm-type-ref i) reg-ty))
+    (llvm-struct-type-in-context (llvm-get-module-context module) elts nacc nil)))
+
+(defun %wgmma-acc-type-name (n &optional (elem 'float))
+  "The minted accumulator record name.  Every float accumulator shares the F32 record, as before."
+  (let ((e (%canonical-elem elem)))
+    (intern (if (%elem-integer-p e)
+                (format nil "WGMMA-ACC-~a-64X~d" (symbol-name e) n)
+                (format nil "WGMMA-ACC-F32-64X~d" n))
+            (find-package :crisp.compiler))))
 
 (defun %wgmma-acc-type-p (type-name)
   "T if TYPE-NAME is a minted wgmma accumulator record type."
   (and (symbolp type-name) (nth-value 1 (gethash type-name *wgmma-acc-dims*))))
 
-(defun %ensure-wgmma-acc-type (n)
-  "Mint (once) the WGMMA-ACC-F32-64xN record -- N/2 flat f32 fields (the wgmma D accumulator, N/2
-   f32 registers per thread across the 128-thread warpgroup).  Returns the type symbol."
-  (let ((name (%wgmma-acc-type-name n)))
+(defun %ensure-wgmma-acc-type (n &optional (elem 'float))
+  "Mint (once) the wgmma accumulator record -- N/2 flat fields, one per register per thread across the
+   128-thread warpgroup.  Fields are float, or ELEM for an integer accumulator, so a store of a field
+   type-checks against the destination's own element type.  Returns the type symbol."
+  (let* ((e (%canonical-elem elem))
+         (int-p (%elem-integer-p e))
+         (name (%wgmma-acc-type-name n e)))
     (unless (gethash name *crisp-structs*)
       (register-struct-definition
        name
        (loop for i below (floor n 2)
-             collect (list (intern (format nil "D~d" i) (find-package :crisp.compiler)) 'float))
+             collect (list (intern (format nil "D~d" i) (find-package :crisp.compiler))
+                           (if int-p e 'float)))
        :record))
-    (setf (gethash name *wgmma-acc-dims*) (list 64 n 8))
+    (setf (gethash name *wgmma-acc-dims*) (list 64 n 8 (and int-p e)))
     name))
 
 
@@ -3086,7 +3194,7 @@
              :message (format nil "wgmma: N must be a multiple of 8 in [8,256], got ~a.  No active hardware profile declares :wgmma-shapes, so the sm_90a instruction constraints apply." n)
              :source-location location))
     (let* ((kps (%wgmma-k-per-slice elem))
-           (what (if (= kps 16) "16-bit m64nNk16" "tf32 m64nNk8")))
+           (what (case kps (32 "int8 m64nNk32") (16 "16-bit m64nNk16") (t "tf32 m64nNk8"))))
       (if swizzle
           (unless (and (plusp k) (zerop (mod k kps)))
             (error 'crisp-compiler-error
@@ -3133,37 +3241,50 @@
 
 ;; src/mma.lisp
 (defun analyze-make-wgmma-accumulator (expr env context location)
-  "(make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,
-   each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.
+  "(make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 fields, each
+   initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.
 
    Endeavor 144: runs the Phase 2 register accounting, and tallies N/2 registers/thread for the
    Phase 3 occupancy report — keyed by SHAPE so a per-tile `(set! D (make-wgmma-accumulator ...))`
-   re-initialization is not counted as a second accumulator."
+   re-initialization is not counted as a second accumulator.
+
+   Endeavour 204: T selects an integer accumulator; any other T is fp32, as before."
   (destructuring-bind (elem dims init) (cdr expr)
-    (declare (ignore elem))              ; tf32/f32 fixed for now
     (destructuring-bind (m n) dims
-      (%check-wgmma-shape (list m n 8) location)
-      (%wgmma-acc-fit-check m n location)
-      (%ptx-note-register-demand-keyed (floor n 2) context (list :wgmma-acc m n))
-      (let ((type-name (%ensure-wgmma-acc-type n)))
-        (analyze-expression
-         `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect init))
-         env context location)))))
+      (let* ((int-p (%elem-integer-p elem))
+             (field-init (if int-p
+                             (list (intern "TO" (find-package :crisp-language)) (%canonical-elem elem) init)
+                             init)))
+        (if int-p
+            (%check-wgmma-shape (list m n 32) location nil 'char)
+            (%check-wgmma-shape (list m n 8) location))
+        (%wgmma-acc-fit-check m n location)
+        (%ptx-note-register-demand-keyed (floor n 2) context (list :wgmma-acc m n))
+        (let ((type-name (%ensure-wgmma-acc-type n elem)))
+          (analyze-expression
+           `(%construct-struct ,type-name ,@(loop repeat (floor n 2) collect field-init))
+           env context location))))))
 
 
 
 (defun %wgmma-k-per-slice (elem)
-  "K covered by ONE wgmma instruction at element type ELEM: 8 at 32 bits, 16 at 16 bits.
-   Both are 32 BYTES of K per slice, which is why the descriptor's kk*32 advance is unchanged."
-  (if (eql (%mma-elem-bits elem) 16) 16 8))
+  "K covered by ONE wgmma instruction at element type ELEM: 8 at 32 bits, 16 at 16 bits, 32 at 8 bits.
+   All are 32 BYTES of K per slice, which is why the descriptor's kk*32 advance is unchanged."
+  (case (%mma-elem-bits elem)
+    (8  32)
+    (16 16)
+    (t  8)))
 
 ;; src/mma.lisp
 (defun %wgmma-operand-mnemonic (elem)
-  "The .f32.<ab>.<ab> tail of the wgmma mnemonic for operand element type ELEM."
-  (let ((n (and elem (symbolp elem) (symbol-name elem))))
-    (cond ((and n (string= n "BFLOAT16")) "f32.bf16.bf16")
-          ((and n (string= n "HALF"))     "f32.f16.f16")
-          (t                              "f32.tf32.tf32"))))
+  "The <d>.<a>.<b> tail of the wgmma mnemonic for operand element type ELEM.  An integer multiply
+   names A and B separately, because their signs are independent."
+  (flet ((sign (e) (if (%elem-signed-p e) "s8" "u8")))
+    (let ((n (and elem (symbolp elem) (symbol-name elem))))
+      (cond ((%int-operand-p elem) (format nil "s32.~a.~a" (sign elem) (sign (or *wgmma-b-elem* elem))))
+            ((and n (string= n "BFLOAT16")) "f32.bf16.bf16")
+            ((and n (string= n "HALF"))     "f32.f16.f16")
+            (t                              "f32.tf32.tf32")))))
 
 
 (defun analyze-wgmma-accumulate-base (expr env context location)
@@ -3197,6 +3318,9 @@
                    :a-node (analyze-expression aref-a env context (append location '(2)))
                    :b-node (analyze-expression aref-b env context (append location '(3)))
                    :source-location location)))
+        (let ((b-elem (%coop-elem-of (analyze-expression b env context (append location (quote (3)))))))
+          (%check-mma-element-family elem b-elem (%wgmma-acc-elem d-type) location)
+          (setf (gethash node *wgmma-node-b-elem*) b-elem))
         (setf (gethash node *wgmma-node-swizzle*)
               (list swz (or (getf kwargs :k) (%wgmma-k-per-slice elem)) elem))
         node))))
@@ -3349,22 +3473,24 @@
   "(transA transB) immediates for the 16-bit wgmma.  Probe hook -- see the comment above.")
 
 (defun %wgmma-asm-string (nacc n &optional elem)
-  "wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.f32.<ab>.<ab> {$0..$nacc-1}, descA, descB, ...;
-   Accumulator is an '=f' OUTPUT plus a tied INPUT, so the two 'l' descriptors are $2*nacc and
+  "wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.<d>.<a>.<b> {$0..$nacc-1}, descA, descB, ...;
+   Accumulator is an OUTPUT plus a tied INPUT, so the two 'l' descriptors are $2*nacc and
    $2*nacc+1.  tf32 takes three trailing immediates; the 16-bit forms take five, adding
-   transA/transB from *wgmma-16-trans* while that pair is under investigation."
+   transA/transB from *wgmma-16-trans* while that pair is under investigation.  int8 takes one."
   (let* ((accs (format nil "~{$~d~^,~}" (loop for i below nacc collect i)))
          (kps  (%wgmma-k-per-slice elem))
-         (tail (if (= kps 16)
-                   (format nil "1, 1, 1, ~d, ~d" (first *wgmma-16-trans*) (second *wgmma-16-trans*))
-                   "1, 1, 1")))
+         (tail (case kps
+                 (32 "1")
+                 (16 (format nil "1, 1, 1, ~d, ~d" (first *wgmma-16-trans*) (second *wgmma-16-trans*)))
+                 (t  "1, 1, 1"))))
     (format nil "wgmma.mma_async.sync.aligned.m64n~dk~d.~a {~a}, $~d, $~d, ~a;"
             n kps (%wgmma-operand-mnemonic elem) accs (* 2 nacc) (1+ (* 2 nacc)) tail)))
 
 
-(defun %wgmma-constraints (nacc)
-  "NACC '=f' outputs, NACC tied inputs (0..nacc-1), 2 'l' descriptor inputs, memory clobber."
-  (let ((outs (loop for i below nacc collect "=f"))
+(defun %wgmma-constraints (nacc &optional int-p)
+  "NACC '=f' outputs ('=r' for an integer accumulator), NACC tied inputs (0..nacc-1), 2 'l' descriptor
+   inputs, memory clobber."
+  (let ((outs (loop for i below nacc collect (if int-p "=r" "=f")))
         (ties (loop for i below nacc collect (format nil "~d" i))))
     (format nil "~{~a~^,~},~{~a~^,~},l,l,~~{memory}" outs ties)))
 
@@ -3395,18 +3521,21 @@
 
 (defun %emit-wgmma-mma-only (builder module d-val a-ptr b-ptr acc-type n swizzle-p kslice-off
                              &optional elem b-mn-lbo)
-  "Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no
+  "Emit ONE m64nNk{8,16,32} wgmma.mma_async and nothing else -- no fence, no commit_group, no
    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice
    sequence, not once per slice; see %emit-nvvm-wgmma.
 
    N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)
    advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is
-   the same at both widths, which is why the descriptor build is untouched.  Returns the new D.
+   the same at every width, which is why the descriptor build is untouched.  Returns the new D.
 
    Endeavour 198: B-MN-LBO non-NIL means B is MN-major: its descriptor is %198-wgmma-make-desc-mn
    (LBO = B-MN-LBO bytes), its slice advances 16 rows of 128 bytes (kk*2048 = KSLICE-OFF*64), and
    the instruction carries transB=1 (*wgmma-16-trans* bound to (0 1))."
-  (let* ((f32 (llvm-float-type)) (i64 (llvm-int64-type))
+  (declare (ignorable module))
+  (let* ((int-p (%elem-integer-p (%wgmma-acc-elem acc-type)))
+         (reg-ty (if int-p (llvm-int32-type) (llvm-float-type)))
+         (i64 (llvm-int64-type))
          (nacc (floor n 2))
          (descA (%wgmma-make-desc builder a-ptr swizzle-p kslice-off))
          (descB (if b-mn-lbo
@@ -3416,9 +3545,9 @@
                       (llvm-build-extract-value builder d-val i (format nil "wc~d" i))))
          (asm-str     (let ((*wgmma-16-trans* (if b-mn-lbo (list (first *wgmma-16-trans*) 1) *wgmma-16-trans*)))
                         (%wgmma-asm-string nacc n elem)))
-         (constraints (%wgmma-constraints nacc))
-         (ret-ty      (%wgmma-struct-of-floats module nacc))
-         (ptypes      (append (loop repeat nacc collect f32) (list i64 i64)))
+         (constraints (%wgmma-constraints nacc int-p))
+         (ret-ty      (%wgmma-struct-of-regs module reg-ty nacc))
+         (ptypes      (append (loop repeat nacc collect reg-ty) (list i64 i64)))
          (args        (append c-ops (list descA descB)))
          (call        (%build-inline-asm-call builder ret-ty ptypes args asm-str constraints))
          (agg         (llvm-get-undef (crisp-type-to-llvm-type acc-type module))))
@@ -3828,6 +3957,58 @@
 ;;; REPLACES :1204; %spv-kernel-register-demand REPLACES :1232; %explode-register-tiles
 ;;; REPLACES :1424.
 ;;; ===================================================================
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer MMA: element families
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %elem-integer-p (elem)
+  "T for an element type whose primitive is an integer the MMA hardware takes."
+  (and (member (%elem-prim-name elem) '("CHAR" "UCHAR" "INT" "UINT") :test #'equal) t))
+
+(defun %elem-signed-p (elem)
+  "T for an element type whose primitive is a signed integer."
+  (and (member (%elem-prim-name elem) '("CHAR" "INT") :test #'equal) t))
+
+(defun %canonical-elem (elem)
+  "ELEM with a type accessor such as (accum q-a) resolved to the type it names."
+  (if (%type-accessor-form-p elem) (resolve-type-accessor elem) elem))
+
+(defun %elem-prim-name (elem)
+  "The name of ELEM's underlying primitive, as a string, for a Crisp element type that may be derived
+   or an (accum T) form.  Compared by NAME because CHAR and friends are shadowed differently across
+   the packages."
+  (let ((e (%canonical-elem elem)))
+    (and e (symbolp e) (symbol-name (get-type-base (resolve-type-alias e))))))
+
+(defun %int-operand-p (elem)
+  "T for an element type an integer MMA can take as an A or B operand: 8-bit."
+  (eql (%mma-elem-bits elem) 8))
+
+(defun %check-mma-element-family (a b c location)
+  "Refuses an MMA whose operands and accumulator do not belong together, where the failure used to
+   surface as `Expected FLOAT but inferred INT` or as a llvm-spirv exit code.  No hardware mixes the
+   two families, and no emulation is offered."
+  (let ((a-int (%elem-integer-p a)) (b-int (%elem-integer-p b)) (c-int (%elem-integer-p c)))
+    (when (or a-int b-int c-int)
+      (unless (and a-int b-int c-int)
+        (error 'crisp-compiler-error
+               :message (format nil "MMA: integer and float do not mix: A is ~(~a~), B is ~(~a~), the accumulator is ~(~a~).  An integer MMA needs 8-bit operands and an integer accumulator."
+                                a b c)
+               :source-location location))
+      (unless (and (%int-operand-p a) (%int-operand-p b))
+        (error 'crisp-compiler-error
+               :message (format nil "MMA: integer operands must be 8-bit (char or uchar); A is ~(~a~), B is ~(~a~)." a b)
+               :source-location location))
+      (unless (eql (%mma-elem-bits c) 32)
+        (error 'crisp-compiler-error
+               :message (format nil "MMA: an integer accumulator must be 32-bit; got ~(~a~)." c)
+               :source-location location))
+      (when (and (or (%elem-signed-p a) (%elem-signed-p b)) (not (%elem-signed-p c)))
+        (error 'crisp-compiler-error
+               :message (format nil "MMA: accumulator ~(~a~) must be signed: a product involving a signed operand can be negative." c)
+               :source-location location)))))
+
 (defun %elem-coop-type (elem)
   "The SPIR-V cooperative-matrix component type for a Crisp element type.
 
@@ -3836,12 +4017,14 @@
    function has not been taught about degrades to what the compiler did before rather than
    erroring in a code path that has nothing to do with the user's mistake.  Shape/type agreement
    is validated separately (see the typed :mma-shapes work); this is a lowering detail."
-  (case elem
-    ((bfloat16) 'bfloat16)
-    ((half)     'half)
-    ((float)    'float)
-    ((double)   'double)
-    (t          'float)))
+  (if (%elem-integer-p elem)
+      (get-type-base (resolve-type-alias (%canonical-elem elem)))
+      (case elem
+        ((bfloat16) 'bfloat16)
+        ((half)     'half)
+        ((float)    'float)
+        ((double)   'double)
+        (t          'float))))
 
 (defun %elem-bytes (elem)
   "Bytes per element for a Crisp element type, for the Intel GRF register model.
@@ -3850,11 +4033,11 @@
    correct to consult it now that the element type actually reaches codegen -- before endeavour
    155 every fragment was float32 regardless of what the source asked for, so 4 was the truth
    about the emitted code even when it was a lie about the source."
-  (case elem
-    ((bfloat16 half) 2)
-    ((float)         4)
-    ((double)        8)
-    (t               4)))
+  (let ((name (%elem-prim-name elem)))
+    (cond ((member name '("CHAR" "UCHAR") :test #'equal) 1)
+          ((member name '("BFLOAT16" "HALF") :test #'equal) 2)
+          ((equal name "DOUBLE") 8)
+          (t 4))))
 
 (defun %coop-elem-of (tensor-node)
   "The coop-matrix COMPONENT TYPE for an operand, derived from its tensor type's element type
@@ -4040,14 +4223,18 @@
 ;;;; ============================================================================
 (defun %mma-elem-bits (elem)
   "Bit width of a Crisp MMA element type, or NIL if unknown."
-  (and elem (symbolp elem)
-       (let ((n (symbol-name elem)))
+  (let ((n (%elem-prim-name elem)))
+    (and n
          (cond ((string= n "HALF")     16)
                ((string= n "BFLOAT16") 16)
                ((string= n "FLOAT")    32)
                ((string= n "DOUBLE")   64)
                ((string= n "INT8")      8)
                ((string= n "UINT8")     8)
+               ((string= n "CHAR")      8)
+               ((string= n "UCHAR")     8)
+               ((string= n "INT")      32)
+               ((string= n "UINT")     32)
                (t nil)))))
 
 (defun %mma-shape-entry-dims (entry)

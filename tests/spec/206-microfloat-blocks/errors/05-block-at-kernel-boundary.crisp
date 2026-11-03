@@ -1,0 +1,12 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "cannot be a kernel parameter"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx
+;;
+;; Endeavour 206 -- a kernel takes a block's two handles.  What a host would pass for a record of handles
+;; is not defined.
+
+(def-microfloat-block mf :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+
+(def-kernel k_e (w &out y)
+  (declare #'(mf &out mf-floats) (global-size :derive-from y :strategy :strided))
+  (dequantize-from-mf w y))

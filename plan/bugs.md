@@ -4305,13 +4305,45 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FIX: endeavour 192's post-opt provenance pass (load -> base kernel argument) re-applies
         !invariant.load to loads from read-only arguments -- the same walk that places :cache hints.
 
-[ ] 135 154-nvidia-perf/03-wgmma-two-warpgroups IS MMA_WRONG ON AN H100 PCIe (C all zeros, 32768 mismatches).
+[x] 135 FIXED (2026-11-01, in the overlays) -- 154-nvidia-perf/03-wgmma-two-warpgroups IS MMA_WRONG ON AN H100 PCIe (C all zeros, 32768 mismatches).
         Observed 2026-10-24 on a RunPod H100 PCIe, driver 595.91.07, during endeavour 192's full CUDA run.
         Identical on main @ a2983e5c (pre-192) built beside it on the same pod, so not caused by 192.
         Cause unknown -- not investigated.  Unknown whether it ever passed on a PCIe part (154's runs were
         on SXM?); the other 154 specs pass.  Also seen in that full run: 122/07, 128/13, 128/14, 170/43
         (libdevice FFI hoists) failed "execution failed (Code 1)" but pass when run singly on both
         builds -- order / environment, not a compiler change.
+        ALSO ON AN H100 NVL, 2026-11-01, same driver 595.91.07 (endeavour 204's pod), so not PCIe-specific.
+        3 of 3 runs fail on each of 5abdc2bf, fd3c62ed and 47d68e47 built side by side; the .ptx is
+        byte-identical across all three, so 202-204 did not cause it.  The spec's own header records
+        timing measurements on an H100 NVL, which suggests it worked then.  So either a compiler change
+        since 154 or a driver change.  Next rental: build cb3b7199 (where the spec arrived) first; if that
+        fails too, the driver is the suspect.  The rest of 140 and 154 pass on the same pod.
+        ROOT CAUSE (2026-11-01, H100 80GB HBM3, driver 595.91.07): THE KERNEL NEVER LAUNCHES.  Not a miscompile,
+        not the driver.  cuLaunchKernel returns "too many resources requested for launch"; the generated
+        harness prints that to stderr, carries on, prints "Kernel executed successfully", and compares the
+        untouched zero-filled C.  Proof: a store at the first instruction of the entry never reaches C.
+        Git bisect (each step run twice, all unanimous): last good f84b1189, first bad c11e80ce (CAS lowering
+        #40).  184 moved allocas to the entry block, SROA then promoted the accumulators, and registers per
+        thread went 168 -> 246 (252 at 970d4faa).  184 only exposed it: that change is correct.
+        Measured at 288 threads, adding .maxnreg by hand to the .ptx at 970d4faa: 166 launches and is
+        MMA_CORRECT; 180, 200, 220, 226-228, 232, 240 and 252 are refused.  168 launches (f84b1189).  The ceiling
+        is therefore 168-179, well under 65536 / 288 = 227, so per-CU register arithmetic does not predict it.
+        TWO ISSUES.  (1) The harness swallows a failed launch: %cuda-emit-launch-lambda, whose docstring says
+        the error "surfaces at the cuCtxSynchronize below".  It does not.  A failed launch can therefore pass
+        any spec whose expected output equals the buffer's initial contents.  Suite logs do not record the
+        harness's stderr, so past runs cannot be audited for this.  (2) The compiler gives ptxas no workgroup
+        size, so this kernel cannot launch at all.
+        FIX (2026-11-01, overlays): the launch goes through CUDA_CHECK, and a resource refusal
+        also says what to do.  A compile-time workgroup above 256 threads gets .maxntid, and ptxas then holds
+        154/03 to 168 registers by itself.  The threshold is deliberate: stamping every
+        kernel changed the code of 229 of 408 and raised registers in 106, some from 32 to 64.  With the rule,
+        400 of 408 kernels match 970d4faa byte for byte; the other 8 are above 256 threads or new specs.  The
+        design's (max-registers N) and (warn-max-registers N) are implemented; N becomes .maxnreg.
+        VERIFIED ON METAL, H100 80GB HBM3, driver 595.91.07, 0c6881bd.  154/03 as written: .maxntid 288, 168
+        registers, MMA_CORRECT.  With (occupancy-target nil): 252 registers, exit 1, the hint and "too many
+        resources requested for launch", no "Kernel executed successfully".  Adding (max-registers 166): 166
+        registers, MMA_CORRECT.  Full CUDA audit: 1725 of 1729, 217 hoists, none skipped, none refused at
+        launch.  The 4 failures are BUG 152, in the libdevice specs.
 
 [x] 136 FIXED (endeavour 193, 2026-10-25) -- die IS A SILENT NO-OP ON L0 -- and so are r-t-assert and every --runtime-checks bounds check.
         FIX: die no longer lowers to llvm.trap.  It claims the module-scope @__crisp_die_record (CAS) and
@@ -4521,3 +4553,42 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         launches; removing any one group from the full set still fails.  Looks like a resource threshold
         (registers? binding table? stateless/stateful addressing?) in IGC rather than one operation.
         The contest target is NVIDIA, so the onesweep was verified on the H100 instead.
+
+[ ] 151 A DERIVED FLOAT TYPE KEEPS ITS TYPE AS AN ADJOINT.  (Was also numbered 150 until 2026-11-01.)
+        (def-derived-type meters float :subst :ancestor) in a cell, under --differentiate:
+        "Type mismatch! Expected FLOAT but inferred METERS".  Found 2026-11-01; loud, not silent.
+        LIKELY CAUSE: %promote-to-float-adjoint promotes integers and enums, and leaves a derived float
+        unchanged, so the _GRAD cell is (cell meters) while the local adjoint is float.  A fix needs
+        the cell and tensor element rewrite, and %ad-promotes-to-double-p, not a one-line predicate.
+        Integer qints are not affected.  tests/spec/202-derived-through-handles/02 carries the skip.
+
+[ ] 152 FOUR libdevice SPECS FAIL ON A POD WITH CUDA 12.8: "a PTX JIT compilation failed".
+        122/07-ffi-libdevice, 128/13-sin-ptx-metal, 128/14-sin-fast-ptx-metal, 170/43-approx-metal-cuda.
+        Observed 2026-11-01, H100, driver 595.91.07, toolkit 12.8, 0c6881bd; each also fails when run alone.
+        They stop at cuModuleLoadData, before any launch, so BUG 135's fix is not involved.  For 122/07,
+        ptxas: "line 10; fatal: Parsing error near '.nvvm'", at
+            .extern .func (.param .b32 func_retval0) llvm.nvvm.tanh.approx.f32
+        The name is called once, from code that came in with libdevice, and LLVM 21's NVPTX backend passes it
+        through as a plain function.  Removing the declaration only moves the error to the call.
+        Same spec, same compiler, with the libdevice.10.bc from nvidia/cuda:12.4.1: no such name, and ptxas
+        accepts it.  So it comes from the pod's 12.8 libdevice, not from a compiler change.  Only 122/07 was
+        traced; the other three fail the same way and are ASSUMED to share the cause.
+        Note BUG 135's text saw these same four on 2026-10-24 failing in a full run and passing alone, as
+        "order / environment".  Which toolkit that pod had is not recorded.
+        DECIDED 2026-11-01: rent a pod image with a 12.4 toolkit when these four matter, and leave lowering the
+        intrinsic until a newer toolkit is needed.  The scripts take the toolkit from the rented image, so on a
+        12.8 image these four are expected failures.
+
+[ ] 153 FLOAT != IS FALSE WHEN AN OPERAND IS NaN.
+        src/codegen.lisp: (def-comparison-codegen semantic-neq +llvm-int-ne+ +llvm-real-one+ ..).  fcmp one is
+        ORDERED not-equal, so (!= x x) is false for a NaN, and so is (!= 1.0 NaN).  IEEE and C say true.
+        Found 2026-11-01, on BMG: endeavour 206's NaN test encoded NaN as 0.  Anything using (!= x x) as a NaN
+        test silently gets false.  LIKELY FIX: +llvm-real-une+, one word, but it changes every float !=, so it
+        needs a decision and a look at what the change does to generated code.  206 tests (= a a) instead.
+
+[ ] 154 A STRIDE INSIDE A def-grid-function CANNOT BE DIFFERENTIATED, AND THE ERROR NAMES SET!.
+        A plain kernel calling a plain grid function that holds a loop-vector-stride, with no microfloats in
+        sight, fails under --differentiate with "Function SET! is not differentiable".  Loud, not silent.
+        LIKELY CAUSE: %expand-stride-macros-in-form rewrites strides in the kernel's own forms, and a stride
+        inside a grid function is never seen.  reduce-vec had the same symptom with a macro, and 206's
+        fake-quant-NAME is a macro expanded there for the same reason.  Found 2026-11-01.
