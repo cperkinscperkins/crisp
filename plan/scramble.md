@@ -183,6 +183,8 @@ OPEN
 - [ ] Support for DLPack.  dmlc.github.io/dlpack/latest  . Interop format for tensors. 
       Will be extremely useful if we want to position ourselves as premier runtime kernel compiler.
 
+      
+
 ### Tiles / tensors
 - [ ] hoisting: total tensor size an even multiple of the tile ("oversubscribe", identity fill
       declared by :strategy?); --runtime-checks validates it (L636, L637)

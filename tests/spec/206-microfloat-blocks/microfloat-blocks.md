@@ -71,10 +71,13 @@ A record holding handles needed one change: an alias to a handle was not resolve
 - The gradient on BMG: `analytical=1.0 numerical=0.0`, which is the point of a straight-through estimate.
 - PTX: the 12 metal specs assemble with `ptxas -arch=sm_90a`, their harnesses compile with `nvcc`, and nothing needs
   libdevice.  In spec 05 LLVM folds the scale to `st.global.b8 [%rd3], 48`, the value derived by hand.
+- H100 80GB HBM3 (2026-11-02, `b1e691b1`, driver 595.91.07, CUDA 12.8): 24/24 specs, all 11 CUDA hoists ran
+  and every buffer matched the same `HOIST-EXPECT` lines BMG passes, including both every-code specs (0
+  mismatches).  Spec 10 (the gradient) is L0 only.  182 re-run alongside: 32/32.
 
 ## Not covered
 
-- **Nothing here has run on NVIDIA.**  The PTX is compile-checked only.
+- The gradient (spec 10) has run on BMG only.
 - `ceil` and `round` are exact in float, but `e8m0` code 0 is `2^-127`, a float denormal.  An element can only
   need it when the block is all zero or nearly so.  `NAME-unscale` keeps a flushed scale from making NaN.
 - No throughput has been measured, and none is claimed.  The conversion path is for correctness.
