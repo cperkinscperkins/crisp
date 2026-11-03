@@ -306,9 +306,26 @@
 
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 206 -- records that hold handles
+;;;; See tests/spec/206-microfloat-blocks/microfloat-blocks.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %canonicalize-record-handle-members (members)
+  "206: a record member whose type is a storage handle, alias or not, gets its canonical tensor spec."
+  (mapcar (lambda (m)
+            (if (and (consp m) (>= (length m) 2) (%storage-handle-type-p (second m)))
+                (list* (first m) (canonicalize-type-specifier (second m)) (cddr m))
+                m))
+          members))
+
 (defun register-struct-definition (name members &optional (category :struct))
   "Registers a struct or record definition in the global registry.
-   Extended: for records, validates that no (array T N) member has N > 16."
+   Extended: for records, validates that no (array T N) member has N > 16.
+   Endeavour 206: a record member may be a storage handle, named by an alias or not."
+  ;; Endeavour 206: a record member may be a storage handle, named by an alias or not.
+  (when (eq category :record)
+    (setf members (handler-case (%canonicalize-record-handle-members members) (error () members))))
   ;; Cap check: virtual arrays in records are limited to N <= 16
   (when (eq category :record)
     (dolist (m members)

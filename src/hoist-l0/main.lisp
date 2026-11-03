@@ -467,6 +467,76 @@
 
 
 ;; src/hoist-l0/main.lisp
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer MMA reference
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %l0-mma-int-elem-p (elem)
+  "T for an integer MMA element type.  Metadata has already reduced a derived type to its primitive."
+  (and elem (symbolp elem)
+       (member (symbol-name elem) '("CHAR" "UCHAR" "INT" "UINT") :test #'string-equal)
+       t))
+
+(defun %l0-mma-int-offset (role elem)
+  "Added to an integer operand's fill, so the values can expose a wrong sign bit.  CHAR straddles zero,
+   so reading it unsigned gives a wrong product.  UCHAR sits above 127, so reading it signed does too.
+   Used by BOTH the fill and the reference, like %l0-mma-fill-modulus."
+  (let ((n (symbol-name elem)))
+    (cond ((string-equal n "CHAR") (ecase role (:a -2) (:b -1)))
+          ((string-equal n "UCHAR") 200)
+          (t 0))))
+
+(defun %l0-mma-int-reference-p (allocations)
+  "T when C's element is an integer, so the host reference must be exact integer math."
+  (let ((c (find :c allocations :key (lambda (x) (getf x :mma-role)))))
+    (and c (%l0-mma-int-elem-p (getf c :elem-type)))))
+
+(defun %l0-emit-mma-int-reference (stream allocations)
+  "The integer form of %l0-emit-mma-reference: same strided sample, exact comparison, and operands
+   recomputed from the fill formula through their own C++ type, so the sign of the reference is the
+   sign the host wrote."
+  (destructuring-bind (m n k) *mma-test-dims*
+    (let* ((a (find :a allocations :key (lambda (x) (getf x :mma-role))))
+           (b (find :b allocations :key (lambda (x) (getf x :mma-role))))
+           (c (find :c allocations :key (lambda (x) (getf x :mma-role)))))
+      (when (and a b c)
+        (let* ((ab (getf a :base)) (bb (getf b :base)) (cb (getf c :base))
+               (a-elem (getf a :elem-type)) (b-elem (getf b :elem-type))
+               (a-str (crisp-type-to-cpp-type a-elem))
+               (b-str (crisp-type-to-cpp-type b-elem))
+               (c-str (crisp-type-to-cpp-type (getf c :elem-type))))
+          (format stream "~%    // Endeavour 204: exact integer MMA reference C = A.B, STRIDED 64x64 sample~%")
+          (format stream "    { int mma_ok = 1; int mma_bad = 0; uint64_t mma_checked = 0;~%")
+          (format stream "      const uint64_t mma_M = ~dULL, mma_N = ~dULL;~%" m n)
+          (format stream "      uint64_t mma_si = (mma_M + 63) / 64; if (mma_si == 0) mma_si = 1;~%")
+          (format stream "      uint64_t mma_sj = (mma_N + 63) / 64; if (mma_sj == 0) mma_sj = 1;~%")
+          (format stream "      uint64_t mma_c_extent = (mma_M - 1) * ~a_str0 + (mma_N - 1) * ~a_str1 + 1;~%" cb cb)
+          (format stream "      ~a* host_c_buf = (~a*)malloc(mma_c_extent * sizeof(~a));~%" c-str c-str c-str)
+          (format stream "      if (!host_c_buf) { mma_ok = 0; std::cout << \"  host readback allocation failed\" << std::endl; } else {~%")
+          (format stream "      zeCommandListCreate(context, device, &cmdListDesc, &cmdList);~%")
+          (format stream "      zeCommandListAppendMemoryCopy(cmdList, host_c_buf, ~a_ptr, mma_c_extent * sizeof(~a), nullptr, 0, nullptr);~%" cb c-str)
+          (format stream "      zeCommandListClose(cmdList);~%")
+          (format stream "      zeCommandQueueExecuteCommandLists(cmdQueue, 1, &cmdList, nullptr);~%")
+          (format stream "      zeCommandQueueSynchronize(cmdQueue, UINT64_MAX);~%")
+          (format stream "      zeCommandListDestroy(cmdList);~%")
+          (format stream "      for (uint64_t i = 0; i < mma_M; i += mma_si) for (uint64_t j = 0; j < mma_N; j += mma_sj) {~%")
+          (format stream "        ++mma_checked;~%")
+          (format stream "        int64_t acc = 0;~%")
+          (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
+          (format stream "            acc += (int64_t)(~a)((int)((i*~a_str0 + kk*~a_str1) % ~dULL) + (~d)) * (int64_t)(~a)((int)((kk*~a_str0 + j*~a_str1) % ~dULL) + (~d));~%"
+                  a-str ab ab (%l0-mma-fill-modulus :a) (%l0-mma-int-offset :a a-elem)
+                  b-str bb bb (%l0-mma-fill-modulus :b) (%l0-mma-int-offset :b b-elem))
+          (when (/= *mma-scale* 1)
+            (format stream "        acc = acc * ~d;   // --mma-scale~%" *mma-scale*))
+          (format stream "        int64_t got = (int64_t)host_c_buf[i*~a_str0 + j*~a_str1];~%" cb cb)
+          (format stream "        if (got != acc) { mma_ok = 0;~%")
+          (format stream "            if (mma_bad < 4) { std::cout << \"  C[\" << i << \"][\" << j << \"]=\" << got << \" ref \" << acc << std::endl; mma_bad++; } }~%")
+          (format stream "      }~%")
+          (format stream "      free(host_c_buf); }~%")
+          (format stream "      std::cout << \"  mma reference: \" << mma_checked << \" strided samples, exact\" << std::endl;~%")
+          (format stream "      std::cout << (mma_ok ? \"MMA_CORRECT\" : \"MMA_WRONG\") << std::endl; }~%"))))))
+
 (defun %l0-emit-mma-reference (stream allocations)
   "Emit a stride-agnostic host reference C = A·B, checked on a STRIDED 64x64 sample of C.
 
@@ -482,6 +552,9 @@
    the fill formula rather than read (see endeavour 155: a host dereference of USM aborts on the
    BMG/WSL driver).  The final line is still exactly MMA_CORRECT / MMA_WRONG, which is what
    HOIST-EXPECT and matmul.py match; the sample count is printed on the line before it."
+  (when (%l0-mma-int-reference-p allocations)
+    (%l0-emit-mma-int-reference stream allocations)
+    (return-from %l0-emit-mma-reference nil))
   (destructuring-bind (m n k) *mma-test-dims*
     (let ((a (find :a allocations :key (lambda (x) (getf x :mma-role))))
           (b (find :b allocations :key (lambda (x) (getf x :mma-role))))
@@ -536,6 +609,19 @@
 
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 205 -- printing quantized buffers
+;;;; See tests/spec/205-quantized-integers/quantized-integers-205.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %l0-print-prefix (elem-type)
+  "Unary + for an 8-bit element, so C++ prints a number rather than a raw byte.  Empty otherwise,
+   because + does not apply to a struct."
+  (if (and elem-type (symbolp elem-type)
+           (member (symbol-name elem-type) (quote ("CHAR" "UCHAR")) :test (function string-equal)))
+      "+"
+      ""))
+
 (defun generate-cpp-main (stream kernel-name spv-path declared-sig aliases records &optional dispatch-info)
   "Generate C++ main.  Endeavor 134: under --mma-test, appends a host-reference C=A·B check.
    Endeavor 150: buffer-print cap raised 100 -> 512 so MMA-sized output tiles are printable
@@ -563,8 +649,8 @@
         (%l0-emit-d2h-readback stream alloc)
         (format stream "        std::cout << \"BUFFER ~a: \";~%" name)
         (format stream "        for (size_t i = 0; i < ~a; i++) {~%" size-v)
-        (format stream "            std::cout << ~a[i] << (i == ~a - 1 ? \"\" : \" \");~%"
-          (or host ptr) size-v)
+        (format stream "            std::cout << ~a~a[i] << (i == ~a - 1 ? \"\" : \" \");~%"
+          (%l0-print-prefix (getf alloc :elem-type)) (or host ptr) size-v)
         (format stream "        }~%")
         (format stream "        std::cout << std::endl;~%")
         (format stream "    }~%")))
@@ -2028,8 +2114,9 @@
                (if conv
                    (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = ~a((float)(_i % ~d));~%"
                      total-elems host-var conv (%l0-mma-fill-modulus mma-role))
-                   (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)(_i % ~d);~%"
-                     total-elems host-var elem-str (%l0-mma-fill-modulus mma-role)))))
+                   (format stream "    for (size_t _i = 0; _i < ~d; _i++) ~a[_i] = (~a)((int)(_i % ~d) + (~d));~%"
+                     total-elems host-var elem-str (%l0-mma-fill-modulus mma-role)
+                     (if (%l0-mma-int-elem-p elem-type) (%l0-mma-int-offset mma-role elem-type) 0)))))
             ((eq mma-role :c)
              (format stream "    memset(~a, 0, ~d * sizeof(~a));~%" host-var total-elems elem-str))
             ((and pad-with (eql pad-with 0))

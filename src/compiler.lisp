@@ -1269,6 +1269,17 @@ from a fixed !100."
 
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer wgmma needs PTX 8.4
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %ll-needs-ptx84-p (ll-file)
+  "T when LL-FILE holds a mixed-sign wgmma, which ptxas accepts only at PTX ISA 8.4.  Read from the
+   emitted IR so that every other module keeps llc's default version."
+  (let ((text (alexandria:read-file-into-string ll-file)))
+    (and (or (search ".s32.s8.u8" text) (search ".s32.u8.s8" text)) t)))
+
 (defun compile-to-ptx (module output-path &key (compute-capability "sm_80") debug-p)
   "Compiles an LLVM Module to PTX using llc.
    Pipeline: IR -> opt -O3 (if available) -> llc -> PTX.
@@ -1315,6 +1326,8 @@ from a fixed !100."
           ;; Endeavour 192: eviction priorities and L2::NNNB need PTX ISA 7.4.  +ptx74 only ever
           ;; RAISES the version (sm_80 7.0 -> 7.4; sm_90 stays 7.8, sm_100 8.6).
           (when (plusp hint-count) (list "-mattr=+ptx74"))
+          ;; Endeavour 204: +ptx84 only ever raises the version too.
+          (when (%ll-needs-ptx84-p llc-input) (list "-mattr=+ptx84"))
           (list (namestring llc-input)
                 "-o" (namestring ptx-file)))
          :log-prefix "[PTX] ")))
@@ -1799,6 +1812,8 @@ from a fixed !100."
   (clrhash *function-table*)
   (clrhash *crisp-structs*)
   (clrhash *crisp-type-aliases*)
+  (clrhash *accum-registry*)
+  (clrhash *accum-base-registry*)
   (clrhash *crisp-template-aliases*)
   (clrhash *generic-functions*)
   (clrhash *kernel-declared-signatures*)
@@ -1995,3 +2010,20 @@ from a fixed !100."
                       thereis (and (search "atomicrmw" line)
                                    (search "fadd" line)
                                    (search "half" line)))))))
+
+;;;; ----------------------------------------------------------------------
+;;;; BUG 135 / Endeavour 206 -- register budgets, launch bounds, microfloat blocks
+;;;; See tests/spec/182-nvidia-register-budget/register-budget.md, tests/spec/206-microfloat-blocks/microfloat-blocks.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *kernel-register-budgets* (make-hash-table :test 'equal)
+  "BUG 135.  Kernel name -> (:max N :warn M) from (declare (max-registers N)) and
+   (declare (warn-max-registers M)).  A kernel with neither has no entry.")
+
+(defparameter *launch-bound-workgroup-threshold* 256
+  "BUG 135.  Largest workgroup that cannot be refused at launch for its registers: 256 threads at
+   ptxas's default cap of 255 registers fit one compute unit's 65536.  Above this, a kernel with no
+   .maxntid can compile to something the GPU will not launch.")
+
+(defvar *microfloat-blocks* (make-hash-table :test 'equal)
+  "Endeavour 206.  Block type name -> (:base B :scale S :accum A).  Rebuilt by each compile.")

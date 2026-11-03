@@ -861,12 +861,49 @@
 
 (defun %185-math-backward (v expr emit-fn local-adj-fn)
   "Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of
-   them (the clause handled it), else NIL."
+   them (the clause handled it), else NIL.
+   Endeavour 206: %mf-block-scale is a constant and %mf-ste is straight-through."
   (flet ((local-adj (x) (funcall local-adj-fn x))
          (emit (x) (funcall emit-fn x))
          (sym (n) (%185-crisp-sym n)))
     (let ((op (car expr)))
       (cond
+        ;; Endeavour 206: (%mf-block-scale ..) is a constant; (%mf-ste NAME X SV) passes V's adjoint to X.
+        ((%185-op-named-p op "%MF-BLOCK-SCALE") t)
+        ((%185-op-named-p op "%MF-STE")
+         (let ((x (third expr)))
+           (when (symbolp x)
+             (funcall emit-fn `(set! ,(funcall local-adj-fn x)
+                                     (+ ,(funcall local-adj-fn x) ,(funcall local-adj-fn v)))))
+           t))
+        ((and (%qint-narrowing-target op) (= (length expr) 2)) ; endeavour 205: a raw cast truncates
+         (when (symbolp (cadr expr))           ; here, not the skip list: q-int ends in INT, a silent zero
+           (error 'crisp-compiler-error
+                  :message (format nil "(~(~a~) ~(~a~)): a raw cast has no gradient.  Use (~(~a~) x scale) or (~(~a~) acc multiplier)."
+                                   op (cadr expr) op op)))
+         t)
+        ((or (%185-op-named-p op "MAX") (%185-op-named-p op "MIN")) ; endeavour 205: follows the winner
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v))
+                (ge (%185-crisp-sym ">=")) (lt (%185-crisp-sym "<"))
+                (if-sym (%185-crisp-sym "IF"))
+                (a-wins (if (%185-op-named-p op "MAX") `(,ge ,a ,b) `(,lt ,a ,b)))
+                (a-share `(%q-raw-float (,if-sym ,a-wins 1 0) ,v-adj))
+                (b-share `(%q-raw-float (,if-sym ,a-wins 0 1) ,v-adj)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,a-share ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,b-share ,v-adj)))))
+           t))
+        ((and (%qint-narrowing-target op) (= (length expr) 3)) ; endeavour 205: straight-through
+         (let ((x (cadr expr)) (y (caddr expr)) (q (%qint-narrowing-target op)) (v-adj (local-adj v)))
+           (when (symbolp x)
+             (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (%q-ste :value ,q ,x ,y) ,v-adj)))))
+           (when (symbolp y)
+             (emit `(set! ,(local-adj y) (+ ,(local-adj y) (* (%q-ste :scale ,q ,x ,y) ,v-adj)))))
+           t))
+        ((and (%185-op-named-p op "TO-FLOAT") (= (length expr) 3)) ; endeavour 205: scale * q is exact
+         (let ((q (cadr expr)) (s (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp q) (emit `(set! ,(local-adj q) (+ ,(local-adj q) (* ,s ,v-adj)))))
+           (when (symbolp s) (emit `(set! ,(local-adj s) (+ ,(local-adj s) (* (%q-raw-float ,q ,s) ,v-adj)))))
+           t))
         ((%185-op-named-p op "SQRT")            ; d/da sqrt(a) = 0.5 / sqrt(a)
          (let ((a (cadr expr)) (v-adj (local-adj v)))
            (when (symbolp a)
@@ -908,15 +945,29 @@
              (when (symbolp hi)
                (emit `(set! ,(local-adj hi) (+ ,(local-adj hi) (* (to-float (> ,x ,hi)) ,v-adj)))))
              t)))
+        ((%185-op-named-p op "+!")              ; endeavour 203: on the basic types +! is +
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "-!")              ; endeavour 203: on the basic types -! is -
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (- ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "WIDEN")           ; endeavour 203: the identity on basic types
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           t))
         ((%185-op-named-p op "*!")              ; D6: *! is *
          (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
-           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,b ,v-adj)))))
-           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,a ,v-adj)))))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (%q-raw-float ,b ,v-adj) ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (%q-raw-float ,a ,v-adj) ,v-adj)))))
            t))
         ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
         ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
         ((some (lambda (n) (%185-op-named-p op n))
-               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND"))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"))
          t)
         (t nil)))))
 
@@ -2668,6 +2719,28 @@
   "Endeavour 195.  Alist (PARAM-SYM . TYPE-SPEC) of the kernel being differentiated, bound around
    generate-backward-walk so a VJP can ask a place's element type (the VJP context carries none).")
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer MMA has no gradient
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %refuse-integer-mma-backward (form)
+  "Refuses a differentiated kernel holding an integer accumulator.  The backward of C = A.B multiplies
+   float adjoints by the operands, and no hardware form takes float and int8 together, so nothing can
+   lower it.  Without this PTX compiled a _grad kernel that nobody had validated, and SPIR-V died in
+   llvm-spirv with only an exit code."
+  (when (consp form)
+    (when (and (symbolp (car form))
+               (member (symbol-name (car form)) '("MAKE-REGISTER-TILE" "MAKE-WGMMA-ACCUMULATOR") :test #'string=)
+               (consp (cdr form))
+               (%elem-integer-p (second form)))
+      (error 'crisp-compiler-error
+             :message (format nil "(~(~a~) ~(~a~) ..): integer MMA has no backward.  Train in float with to-q and to-float, or mark the kernel forward-only."
+                              (car form) (second form))))
+    (loop for rest on form
+          do (%refuse-integer-mma-backward (car rest))
+          while (consp (cdr rest)))))
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                         &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
@@ -2684,7 +2757,9 @@
    backward gets one fixup on the way out.  See %ad-normalize-anf-for-backward for what
    the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings
    for the gap the fixup covers (the top-level adjoint collection below does not know the
-   ring constructors, so a ring bound at kernel top level otherwise gets no adjoint)."
+   ring constructors, so a ring bound at kernel top level otherwise gets no adjoint).
+   Endeavour 204: refuses an integer MMA first (no gradient through integers)."
+  (%refuse-integer-mma-backward flat-anf)
   (setf flat-anf (%ad-normalize-anf-for-backward flat-anf))
   ;; Endeavour 170: (S C (op-sincos-approx X)) is a multi-value binding, and the multi-value clause
   ;; in process-form only differentiates REGISTERED functions -- so it would contribute NOTHING and
@@ -4038,7 +4113,7 @@ scalar type (signed or unsigned).  Mirrors %crisp-float-type-p but for ints."
           (%asv-union (cdr expr) env))
         ;; numeric conversions propagate (conservative).
         ((and (>= (length name) 3) (string-equal (subseq name 0 3) "TO-"))
-          (%active-scalar-vars (cadr expr) env))
+          (%asv-union (cdr expr) env))
         ;; tensor/cell read: no SCALAR activity (the index does not propagate; the
         ;; tensor/cell itself flows grad via its own &out grad-handle).
         ((string-equal name "~") nil)

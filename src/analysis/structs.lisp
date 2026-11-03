@@ -425,7 +425,17 @@
      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)
 
    BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of
-   silently discarding all but the first."
+   silently discarding all but the first.
+   Endeavour 206: (~ w i) on a microfloat block is the raw code at element i."
+  ;; Endeavour 206: (~ w i) on a microfloat block.
+  (let ((block-type (and (= (length expr) 3)
+                         (%mf-block-of (second expr) env context (append location '(1))))))
+    (when block-type
+      (return-from analyze-aref-expression
+        (analyze-expression (list (%mf-sym "to") (getf (microfloat-block-p block-type) :base)
+                                  (list (%mf-sym "~a-code" block-type) (second expr)
+                                        (list (%mf-sym "to-ulong") (third expr))))
+                            env context location))))
   (let* ((op          (first expr))
          (target-sym  (if (symbolp (second expr)) (second expr) nil))
          ;; Endeavor 138: the flat-index builders splice the target into (extents~ TARGET k)

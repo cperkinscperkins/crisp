@@ -358,10 +358,32 @@
 
 
 ;;; Redefine register-function-signature to inject validation
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 202 -- operator definitions are refused
+;;;; See tests/spec/202-derived-through-handles/derived-through-handles.md.
+;;;; ----------------------------------------------------------------------
+
+(defparameter *unoverloadable-operators* '("+" "-" "*" "/" "*!" "<" "<=" ">" ">=" "=" "MAX" "MIN")
+  "Operators with an *expression-analyzers* entry that never consults *function-table*.  analyze-expression
+   tries analyzers first, so a user def-function of one of these compiled and was then silently never
+   called.  Measured per operator in endeavour 202.  Accessors (~, X~) are absent on purpose: their
+   analyzers do look for overloads, and that is a feature.")
+
+(defun %refuse-operator-definition (form location)
+  "Signals if FORM is a def-function of an operator the compiler lowers directly (endeavour 202)."
+  (when (and (consp form) (symbolp (car form)) (string-equal (symbol-name (car form)) "DEF-FUNCTION")
+             (symbolp (second form))
+             (member (symbol-name (second form)) *unoverloadable-operators* :test #'string=))
+    (error 'crisp-compiler-error
+           :message (format nil "~(~a~) cannot be overloaded: the compiler lowers it directly, so this definition would never be called.  Use a named function instead."
+                            (second form))
+           :source-location location)))
+
 (defun register-function-signature (form location)
   "Registers the signature of a def-function / def-kernel FORM in the environment.
    Endeavour 177: also records a def-function's (declare (reduction-vjp f)) in *REDUCTION-VJPS* -- or clears
    a stale entry, so in-process runs that redefine a function without it never see an old one."
+  (%refuse-operator-definition form location)
   (when (and (consp form) (symbolp (car form)) (string-equal (symbol-name (car form)) "DEF-FUNCTION")
              (second form) (symbolp (second form)))
     (let ((vjp (%declared-reduction-vjp form))
@@ -556,6 +578,8 @@
    function types like #'(int => int), and brand type applications like (token-t s).
    Extended: (array T N) is returned as-is (not mangled) before the generic path."
   (cond
+   ;; (accum T), (accum A B), (base T) -- endeavour 203
+   ((%type-accessor-form-p spec) (resolve-type-accessor spec))
    ;; (array T N) — return as a list spec unchanged, not mangled
    ((%array-type-p spec)
     spec)

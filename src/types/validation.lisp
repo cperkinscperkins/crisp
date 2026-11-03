@@ -412,14 +412,16 @@
 
 
 
-(defun canonicalize-type-specifier (spec)
+(defun canonicalize-type-specifier-base (spec)
   "Canonicalizes type specifiers.
    Extended: (array T N) is returned as-is before the template path, preventing
-   mangle to ARRAY_LONG_5 via the get-template-arity=2 path."
+   mangle to ARRAY_LONG_5 via the get-template-arity=2 path.
+
+   Endeavour 206: canonicalize-type-specifier (below) resolves a handle's accessor element type."
 
   ;; Early exit for (array T N): never mangle, preserve as list
   (when (and (consp spec) (%array-type-p spec))
-    (return-from canonicalize-type-specifier spec))
+    (return-from canonicalize-type-specifier-base spec))
 
   ;; First, apply storage handle expansion
   (when (consp spec)
@@ -427,7 +429,7 @@
 
   ;; After expansion, check again (in case alias expanded to array)
   (when (and (consp spec) (%array-type-p spec))
-    (return-from canonicalize-type-specifier spec))
+    (return-from canonicalize-type-specifier-base spec))
 
   ;; Incomplete storage handle (nil in any positional slot) — return as-is
   ;; without validating template args.  validate-template-arg would reject
@@ -438,7 +440,7 @@
              (member (symbol-name (first spec))
                      '("CELL" "VECTOR" "MATRIX" "TENSOR") :test #'string-equal)
              (some #'null (rest spec)))
-    (return-from canonicalize-type-specifier spec))
+    (return-from canonicalize-type-specifier-base spec))
 
   (let ((base (if (consp spec) (first spec) spec))
            (args (if (consp spec) (rest spec) nil)))
@@ -487,6 +489,13 @@
                          (if (consp spec) spec (list spec)))))))
       ((consp spec) spec)
       (t (list spec)))))
+
+(defun canonicalize-type-specifier (spec)
+  "Endeavour 206: a handle's element type may be an accessor, as in (vector (accum T) ...)."
+  (let ((canonical (canonicalize-type-specifier-base spec)))
+    (if (and (consp canonical) (consp (cdr canonical)) (%type-accessor-form-p (second canonical)))
+        (list* (first canonical) (resolve-type-accessor (second canonical)) (cddr canonical))
+        canonical)))
 
 
 

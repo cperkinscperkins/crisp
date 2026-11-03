@@ -218,6 +218,26 @@
         (*print-case* :downcase))
     (prin1 obj stream)))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 202 -- a derived numeric type is its primitive in metadata
+;;;; See tests/spec/202-derived-through-handles/derived-through-handles.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %host-visible-type (type-spec)
+  "TYPE-SPEC with every derived NUMERIC type replaced by its primitive.  A hoist reads metadata alone
+   and has no type registry, so `(vector q-c ..)` reached the generated C++ as an undeclared `q_c`
+   (endeavour 202).  The primitive is the true host ABI.  Derived STRUCT types are left alone: their
+   name is what the host's struct lookup wants."
+  (cond ((consp type-spec) (mapcar #'%host-visible-type type-spec))
+        ((and type-spec (symbolp type-spec) (not (keywordp type-spec))
+              (not (eq (get-type-base type-spec) type-spec)))
+         (let* ((base (get-type-base type-spec))
+                (ct (gethash base *crisp-types*)))
+           (if (and ct (member (crisp-type-category ct) '(:signed-int :unsigned-int :float)))
+               (progn (log:debug "%host-visible-type: ~a -> ~a" type-spec base) base)
+               type-spec)))
+        (t type-spec)))
+
 (defun serialize-aliases (stream aliases-hash)
   (format stream "(:aliases~%")
   (let ((aliases (alexandria:hash-table-keys aliases-hash)))
@@ -225,7 +245,7 @@
     (dolist (alias aliases)
       (let ((target (gethash alias *crisp-type-aliases*)))
         (format stream "  (def-type ~a " (strip-package-qualifiers alias))
-        (print-without-packages target stream)
+        (print-without-packages (%host-visible-type target) stream)
         (format stream ")~%"))))
   (format stream "  )~%~%"))
 
@@ -565,7 +585,7 @@
                    (end (+ start (max 0 (1- width))))
                    (entry (list :name (string-downcase (symbol-name name)))))
 
-              (setf entry (append entry (list :type (strip-package-qualifiers type))))
+              (setf entry (append entry (list :type (strip-package-qualifiers (%host-visible-type type)))))
               (setf entry (append entry (list :direction (if out-mode :out :in))))
 
               (when (%storage-handle-type-p type)
@@ -620,7 +640,7 @@
                          :kind :tensor-map
                          :describes (and (getf info :describes)
                                          (string-downcase (symbol-name (getf info :describes))))
-                         :element-type (strip-package-qualifiers (getf info :element-type))
+                         :element-type (strip-package-qualifiers (%host-visible-type (getf info :element-type)))
                          :rank (getf info :rank)
                          :box-dims (getf info :box-dims)
                          :layout (or (getf info :layout) :row-major)

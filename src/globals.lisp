@@ -320,3 +320,20 @@
 (defvar *gensym-base-checked* nil
   "T once %RESET-GENSYM-COUNTER has compared *GENSYM-COUNTER-BASE* against the image's own
    gensym count (done on the first INITIALIZE-COMPILER of the process only).")
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavours 203 / 205 -- accumulator and quantized-integer registries
+;;;; See tests/spec/205-quantized-integers/quantized-integers-205.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *accum-registry* (make-hash-table :test 'equal)
+  "(NAME-A . NAME-B) -> accumulator type symbol, filled by set-accum.  Keyed by symbol NAME so that a
+   type read through a handle cannot miss on its package (endeavour 202).  Cleared per compile.")
+
+(defvar *accum-base-registry* (make-hash-table :test 'equal)
+  "Accumulator type NAME -> its base type symbol, for a single-operand set-accum.  Cleared per compile.")
+
+(defvar *qint-roles* (make-hash-table :test 'equal)
+  "Type NAME -> (ROLE . TYPE-SYMBOL), ROLE being :base or :accum, for the types def-qint and
+   def-qint-product create.  Hand-built set-accum types are not here and keep the ordinary operators.
+   Cleared per compile.")

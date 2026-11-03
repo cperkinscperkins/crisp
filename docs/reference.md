@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-10-31T05:34:27.896775Z
+Generated on 2026-11-03T05:03:10.853639Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -2067,10 +2067,31 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%PARSE-REGISTER-BUDGET-DECL`
+- **Args**: `(NAME DECLARATIONS LABEL)`
+
+  > BUG 135.  The value of the (LABEL N) declaration among DECLARATIONS, or NIL when there is none.  >    N must be a positive integer literal: it reaches ptxas as a directive.
+
+
+---
+### DEFUN `%RECORD-REGISTER-BUDGETS`
+- **Args**: `(NAME DECLARATIONS)`
+
+  > BUG 135.  Validates NAME's (max-registers N) and (warn-max-registers N) and records them in  >    *kernel-register-budgets*, clearing any left by an earlier compile.  Refused on a function that  >    is not an entry point: a register limit belongs to the kernel it is compiled into.
+
+
+---
+### DEFUN `%MF-REFUSE-BLOCK-AT-BOUNDARY`
+- **Args**: `(NAME DECLARATIONS)`
+
+  > Endeavour 206: a kernel takes handles, and builds a record that holds them inside, because what a  >    host would pass for a record of handles is not defined.  Functions and grid functions may take one.
+
+
+---
 ### DEFUN `INTERNAL-DEF-FUNCTION`
 - **Args**: `(NAME PARAMS DECLARATIONS BODY LOCATION)`
 
-  > Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the  >    body analysis.  Otherwise identical to the Phase 2 definition.  >    Endeavour 182: also binds *analyzing-function*, so a stream loop is attributed to the function it is  >    in (*stream-functions*), and records an entry point's (occupancy-target ...).
+  > Endeavor 152: binds *current-kernel-cluster-dims* and *current-kernel-is-backward* around the  >    body analysis.  Otherwise identical to the Phase 2 definition.  >    Endeavour 182: also binds *analyzing-function*, so a stream loop is attributed to the function it is  >    in (*stream-functions*), and records an entry point's (occupancy-target ...).  >    BUG 135: records the kernel's register budgets.  Endeavour 206: refuses a microfloat block at the  >    kernel boundary.
 
 
 ---
@@ -3210,14 +3231,14 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `%ANALYZE-MIN-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (min a b) -- expands to a comparison and delegates.
+  > Analyzer for (min a b) -- expands to a comparison and delegates.  >    Endeavour 206: refuses microfloat codes first.
 
 
 ---
 ### DEFUN `%ANALYZE-MAX-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (max a b) -- expands to a comparison and delegates.
+  > Analyzer for (max a b) -- expands to a comparison and delegates.  >    Endeavour 206: refuses microfloat codes first.
 
 
 ---
@@ -3368,6 +3389,159 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%CAST-NODE`
+- **Args**: `(NODE TO-TYPE LOCATION)`
+
+  > NODE as a value cast to TO-TYPE, or NODE itself when it already has that type.
+
+
+---
+### DEFUN `%WIDEN-NODE`
+- **Args**: `(NODE ACCUM LOCATION)`
+
+  > NODE at ACCUM's underlying primitive, extended according to NODE's own signedness.
+
+
+---
+### DEFUN `ANALYZE-ACCUM-OP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (*! a b), (+! a b), (-! a b).  With a declared accumulator both operands widen by their own  >    signedness and the op runs at the accumulator's width.  There is no widening add instruction: PTX  >    has no add.wide, so sext + add IS the lowering.  Otherwise this is the plain operator (decision D6).  >    Endeavour 206: a microfloat block is refused.
+
+
+---
+### DEFUN `ANALYZE-WIDEN`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (widen x): x at its accumulator type, keeping its scale.  The identity on the basic types.
+
+
+---
+### DEFUN `ANALYZE-TO-SAT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (to-sat T x): float X rounded to nearest, ties to even, then saturated to integer type T, with NaN  >    going to 0.
+
+
+---
+### DEFUN `%CHECK-QINT-ARITH`
+- **Args**: `(OP LEFT-TYPE RIGHT-TYPE LOCATION)`
+
+  > Refuses a plain arithmetic operator on quantized values.  Only accumulators add and subtract, and  >    only with themselves.  Internal lowering is unaffected: it works on the underlying primitive.  >    Endeavour 206: also refuses plain arithmetic on microfloat codes.
+
+
+---
+### DEFUN `%REFUSE-FLOAT-INTO-QINT`
+- **Args**: `(TARGET SOURCE-TYPE LOCATION)`
+
+  > A raw cast applies no scale, so a float source would silently truncate.
+
+
+---
+### DEFUN `%QINT-FLOAT-OPERAND`
+- **Args**: `(NODE WHAT OP LOCATION)`
+
+  > NODE, which must be float-typed, at a width to-sat takes: half widens to float.
+
+
+---
+### DEFUN `%QINT-ROUND-NODE`
+- **Args**: `(TARGET VALUE LOCATION)`
+
+  > VALUE rounded to nearest, ties to even, and saturated to the integer TARGET.
+
+
+---
+### DEFUN `%QINT-NARROW-NODE`
+- **Args**: `(TARGET ACC MULTIPLIER OP LOCATION)`
+
+  > round(ACC * MULTIPLIER), saturated to TARGET.  The product is taken in float: an int32 accumulator  >    above 2^24 loses low bits there, but saturating to 8 bits leaves far more precision than a code  >    needs, so only a value within a few ulps of a tie could round differently.
+
+
+---
+### DEFUN `ANALYZE-TO-QINT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (to-q x) is the raw cast, (to q x).  (to-q x scale) is round(x / scale), saturating, for a float x.  >    (to-q acc multiplier) is round(acc * multiplier), saturating, for an accumulator of any qint.
+
+
+---
+### DEFUN `ANALYZE-SCALED-FLOAT-CAST`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (to-float q scale) is scale * q, at the scale's type.  Every other float cast is the ordinary one,  >    except that a quantized value is refused: a cast without a scale would silently drop it.  >    Endeavour 206: (to-float w i) on a microfloat block is the decoded, scaled element i.
+
+
+---
+### DEFUN `ANALYZE-TO-Q-NARROW`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (%to-q-narrow Q X M): compiler-made, from (to-Q D M) as a store source.  X is one element of an  >    accumulator.  The accumulator keeps its fields at the primitive, so X is a plain integer here.
+
+
+---
+### DEFUN `ANALYZE-Q-RAW-FLOAT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (%q-raw-float X LIKE): compiler-made by the backward rules.  X's value at LIKE's float type, with no  >    scale.  A non-scalar X is left alone, so a basic-type (*! vec vec) keeps its old backward.
+
+
+---
+### DEFUN `%QINT-RANGE`
+- **Args**: `(TARGET)`
+
+  > (values LO HI), the integers TARGET can hold.
+
+
+---
+### DEFUN `ANALYZE-Q-STE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (%q-ste KIND Q X Y): the straight-through estimate of d(to-Q X Y) / dX (KIND :value) or / dY (KIND  >    :scale).  The backward walk has no types, and which rule applies depends on whether X is an  >    accumulator, so it emits this and the choice happens here.  Both operands are ANF atoms, which makes  >    analyzing them again safe.  Zero on the rails: a saturated value no longer follows its input.
+
+
+---
+### DEFUN `%REGISTER-ACCUM-ANALYZERS`
+
+  > Registers the endeavour 203 and 205 analyzers by name in both packages, and forgets the last  >    compile's quantized types.  >    Endeavour 206: also the microfloat blocks and their forms.
+
+
+---
+### DEFUN `%MF-BLOCK-OF`
+- **Args**: `(FORM ENV CONTEXT LOCATION)`
+
+  > Endeavour 206.  The type of FORM when it is a microfloat block, else NIL.  Analysis errors mean it is  >    not one: the ordinary path reports them.
+
+
+---
+### DEFUN `%MF-SYM`
+- **Args**: `(FMT &REST ARGS)`
+
+  > Endeavour 206.  The :crisp-language symbol named by FORMAT of FMT and ARGS.
+
+
+---
+### DEFUN `%MF-REFUSE-CODE-COMPARE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 206: min and max refuse microfloat codes.  Codes from different blocks have different  >    scales, so comparing them means nothing.
+
+
+---
+### DEFUN `ANALYZE-MF-BLOCK-SCALE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (%mf-block-scale NAME X FIRST): the decoded scale of the block starting at FIRST.  A form of its own  >    because the backward walk treats it as a constant: a straight-through estimate has no scale term.
+
+
+---
+### DEFUN `ANALYZE-MF-STE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > (%mf-ste NAME X SV): X through the block format at scale SV.  The backward walk passes X's adjoint  >    straight through, which is why this is a form and not a plain call.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
 
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
@@ -3457,7 +3631,7 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)  >   >    BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of  >    silently discarding all but the first.
+  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)  >   >    BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of  >    silently discarding all but the first.  >    Endeavour 206: (~ w i) on a microfloat block is the raw code at element i.
 
 
 ---
@@ -4473,7 +4647,7 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `%185-MATH-BACKWARD`
 - **Args**: `(V EXPR EMIT-FN LOCAL-ADJ-FN)`
 
-  > Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of  >    them (the clause handled it), else NIL.
+  > Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of  >    them (the clause handled it), else NIL.  >    Endeavour 206: %mf-block-scale is a constant and %mf-ste is straight-through.
 
 
 ---
@@ -4838,10 +5012,17 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%REFUSE-INTEGER-MMA-BACKWARD`
+- **Args**: `(FORM)`
+
+  > Refuses a differentiated kernel holding an integer accumulator.  The backward of C = A.B multiplies  >    float adjoints by the operands, and no hardware form takes float and int8 together, so nothing can  >    lower it.  Without this PTX compiled a _grad kernel that nobody had validated, and SPIR-V died in  >    llvm-spirv with only an exit code.
+
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.  >   >    Endeavor 146: FLAT-ANF is normalized before anything reads it, and the assembled  >    backward gets one fixup on the way out.  See %ad-normalize-anf-for-backward for what  >    the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings  >    for the gap the fixup covers (the top-level adjoint collection below does not know the  >    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint).
+  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.  >   >    Endeavor 146: FLAT-ANF is normalized before anything reads it, and the assembled  >    backward gets one fixup on the way out.  See %ad-normalize-anf-for-backward for what  >    the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings  >    for the gap the fixup covers (the top-level adjoint collection below does not know the  >    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint).  >    Endeavour 204: refuses an integer MMA first (no gradient through integers).
 
 
 ---
@@ -5960,10 +6141,17 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%REPORT-REGISTER-BUDGET`
+- **Args**: `(KNAME)`
+
+  > BUG 135.  Warns when the registers KNAME is known to reserve exceed a declared budget.  The  >    estimate counts explicit reservations only, so a kernel can exceed its budget without this  >    firing.  Also says when a normative (max-registers N) has no lowering on this backend.
+
+
+---
 ### DEFUN `%APPLY-OCCUPANCY-BOUND`
 - **Args**: `(FUNC KNAME MODULE)`
 
-  > Endeavour 182.  On PTX, stamps entry point FUNC with the launch bounds for its occupancy target:  >    "nvvm.maxntid" (the workgroup extents) and "nvvm.minctasm" (target / workgroup size, the minimum  >    number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.  >    ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX  >    construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a  >    workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis.
+  > Endeavour 182.  On PTX, stamps entry point FUNC with its launch bounds for its occupancy target:  >    "nvvm.maxntid" (the workgroup extents) and "nvvm.minctasm" (target / workgroup size, the minimum  >    number of resident workgroups per compute unit), which LLVM lowers to .maxntid / .minnctapersm.  >    ptxas derives its register budget from them.  Nothing on other backends: launch bounds are a PTX  >    construct.  A PROFILE target this kernel cannot express (no compile-time workgroup size, or a  >    workgroup bigger than the target) is skipped with a note; a DECLARED one was refused at analysis.  >   >    BUG 135: a workgroup above *launch-bound-workgroup-threshold* gets "nvvm.maxntid" with no target,  >    because ptxas then keeps the kernel under the true launch ceiling (168 registers at 288 threads).  >    Below it the bound must NOT be automatic: it cannot help, and on every kernel it changed the code of  >    229 of 408 and raised registers in 106, which lowers occupancy.  (occupancy-target nil) still  >    means no bounds at all.  A (max-registers N) becomes "nvvm.maxnreg".
 
 
 ---
@@ -7465,7 +7653,7 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `%COOP-OP-ELEM-LLVM`
 - **Args**: `(NODE)`
 
-  > The LLVM type for a coop-op node's component type (see %coop-node-elem).  >   >    Endeavour 155: BFLOAT16 lowers to a 16-BIT INTEGER, not to LLVM `bfloat`.  That is how Intel  >    encodes a bf16 cooperative matrix (see header) — the type carries no float-ness and the MulAdd  >    operands mask supplies it.  i16 is also the correct width for the tile ADDRESS arithmetic, so  >    one answer serves both uses.
+  > The LLVM type for a coop-op node's component type (see %coop-node-elem).  >   >    Endeavour 155: BFLOAT16 lowers to a 16-BIT INTEGER, not to LLVM `bfloat`.  That is how Intel  >    encodes a bf16 cooperative matrix (see header) — the type carries no float-ness and the MulAdd  >    operands mask supplies it.  i16 is also the correct width for the tile ADDRESS arithmetic, so  >    one answer serves both uses.  >   >    Endeavour 204: CHAR / UCHAR are i8 and INT / UINT are i32; the sign is the operands mask's job.
 
 
 ---
@@ -7587,6 +7775,19 @@ Generated on 2026-10-31T05:34:27.896775Z
 ---
 ### DEFGENERIC `%COOP-MMA-IMPL`
 - **Args**: `(LOWERING BUILDER MODULE A-VAL B-VAL C-VAL ELEM-LLVM M N K)`
+
+---
+### DEFVAR `*COOP-MMA-SIGNS*`
+
+  > The signedness bits of the MulAdd operands mask for the multiply being emitted: A 1, B 2, C 4,  >    Result 8.  LLVM integer types carry no sign, so the Crisp types have to supply them.
+
+
+---
+### DEFUN `%COOP-SIGN-MASK`
+- **Args**: `(A-NODE B-NODE C-NODE)`
+
+  > The MatrixA/B/C/ResultSignedComponentsKHR bits for this multiply, from the operands' Crisp types.
+
 
 ---
 ### DEFGENERIC `%EMIT-PER-FRAG-BLOCK-LOAD-IMPL`
@@ -8119,6 +8320,13 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%LL-NEEDS-PTX84-P`
+- **Args**: `(LL-FILE)`
+
+  > T when LL-FILE holds a mixed-sign wgmma, which ptxas accepts only at PTX ISA 8.4.  Read from the  >    emitted IR so that every other module keeps llc's default version.
+
+
+---
 ### DEFUN `COMPILE-TO-PTX`
 - **Args**: `(MODULE OUTPUT-PATH &KEY (COMPUTE-CAPABILITY sm_80) DEBUG-P)`
 
@@ -8408,6 +8616,24 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFVAR `*KERNEL-REGISTER-BUDGETS*`
+
+  > BUG 135.  Kernel name -> (:max N :warn M) from (declare (max-registers N)) and  >    (declare (warn-max-registers M)).  A kernel with neither has no entry.
+
+
+---
+### DEFPARAMETER `*LAUNCH-BOUND-WORKGROUP-THRESHOLD*`
+
+  > BUG 135.  Largest workgroup that cannot be refused at launch for its registers: 256 threads at  >    ptxas's default cap of 255 registers fit one compute unit's 65536.  Above this, a kernel with no  >    .maxntid can compile to something the GPU will not launch.
+
+
+---
+### DEFVAR `*MICROFLOAT-BLOCKS*`
+
+  > Endeavour 206.  Block type name -> (:base B :scale S :accum A).  Rebuilt by each compile.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\enums.lisp`
 
 ### DEFMACRO `DEF-ENUMERATION`
@@ -8505,6 +8731,19 @@ Generated on 2026-10-31T05:34:27.896775Z
 - **Args**: `(NAME ENV RETURN-TYPES DECLARE-FORMS LOCATION)`
 
   > Helper: Registers a standard function signature (eager registration).
+
+
+---
+### DEFPARAMETER `*UNOVERLOADABLE-OPERATORS*`
+
+  > Operators with an *expression-analyzers* entry that never consults *function-table*.  analyze-expression  >    tries analyzers first, so a user def-function of one of these compiled and was then silently never  >    called.  Measured per operator in endeavour 202.  Accessors (~, X~) are absent on purpose: their  >    analyzers do look for overloads, and that is a feature.
+
+
+---
+### DEFUN `%REFUSE-OPERATOR-DEFINITION`
+- **Args**: `(FORM LOCATION)`
+
+  > Signals if FORM is a def-function of an operator the compiler lowers directly (endeavour 202).
 
 
 ---
@@ -8689,6 +8928,24 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFVAR `*GENSYM-BASE-CHECKED*`
 
   > T once %RESET-GENSYM-COUNTER has compared *GENSYM-COUNTER-BASE* against the image's own  >    gensym count (done on the first INITIALIZE-COMPILER of the process only).
+
+
+---
+### DEFVAR `*ACCUM-REGISTRY*`
+
+  > (NAME-A . NAME-B) -> accumulator type symbol, filled by set-accum.  Keyed by symbol NAME so that a  >    type read through a handle cannot miss on its package (endeavour 202).  Cleared per compile.
+
+
+---
+### DEFVAR `*ACCUM-BASE-REGISTRY*`
+
+  > Accumulator type NAME -> its base type symbol, for a single-operand set-accum.  Cleared per compile.
+
+
+---
+### DEFVAR `*QINT-ROLES*`
+
+  > Type NAME -> (ROLE . TYPE-SYMBOL), ROLE being :base or :accum, for the types def-qint and  >    def-qint-product create.  Hand-built set-accum types are not here and keep the ordinary operators.  >    Cleared per compile.
 
 
 ---
@@ -9238,7 +9495,7 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `%CUDA-EMIT-LAUNCH-LAMBDA`
 - **Args**: `(STREAM BLOCK-X BLOCK-Y SHARED-BYTES)`
 
-  > The launch itself: an `_crisp_launch` lambda over the final gridX/gridY/gridZ, called once for the  >    correctness readback that follows.  emit-launch anchors its cluster-grid fix-up on this lambda's  >    first line, so it must stay the first thing after ALL grid computation.  (The lambda also served  >    the --mma-bench timed relaunch loop, retired 2026-10-16; it is kept so the emitted code is  >    unchanged.)  Plain cuLaunchKernel, no CUDA_CHECK -- its `return` would make this void lambda  >    non-void; a launch error surfaces at the cuCtxSynchronize below.
+  > The launch itself: an `_crisp_launch` lambda over the final gridX/gridY/gridZ, called once for the  >    correctness readback that follows.  emit-launch anchors its cluster-grid fix-up on this lambda's  >    first line, so it must stay the first thing after ALL grid computation.  (The lambda also served  >    the --mma-bench timed relaunch loop, retired 2026-10-16.)  >   >    BUG 135: a failed launch is fatal.  The lambda returns the result and CUDA_CHECK ends the program.  >    It used to print to stderr and carry on, so the harness reported success and compared buffers  >    nothing had written.  cuCtxSynchronize does not report a launch that never happened.
 
 
 ---
@@ -9257,10 +9514,24 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%CUDA-MMA-INT-OFFSET`
+- **Args**: `(ROLE ELEM-STR)`
+
+  > Added to an integer operand's fill, so the values can expose a wrong sign.  CHAR straddles zero and  >    UCHAR sits above 127.  The same values as the L0 harness's %l0-mma-int-offset.
+
+
+---
 ### DEFUN `%CUDA-EMIT-MMA-REFERENCE`
 - **Args**: `(STREAM ALLOCATIONS)`
 
   > Emit a stride-agnostic host reference C = A.B (copy A/B/C back to host, compare).  >   >    Endeavour 165: the reference follows the kernel's ELEMENT TYPE instead of being emitted in  >    float throughout.  Against an fp64 kernel the old form read 8-byte buffers as 4-byte floats,  >    so MMA_WRONG would have been a statement about the HARNESS, not the kernel -- and would have  >    burned a GPU rental to say nothing.  >   >    :elem-type is already on every allocation as a C++ type string; emit-readback beside this  >    function has always used it.  Only this reference hardcoded float.  >   >    THE TOLERANCE FOLLOWS THE TYPE, which is the whole point at 64 bits.  tf32 keeps 1e-2 relative  >    because tf32 carries ~10 mantissa bits.  fp64 gets 1e-10 -- tight enough that a path which  >    silently computed in single precision FAILS, the same discriminating property the endeavour's  >    benchmark oracle has.  Run at tf32's tolerance an fp64 check would pass on an fp32 result and  >    tell us nothing.  >   >    Float emission is byte-identical to before.
+
+
+---
+### DEFUN `%CUDA-PRINT-PREFIX`
+- **Args**: `(ELEM-TYPE)`
+
+  > Unary + for an 8-bit element, so C++ prints a number rather than a raw byte.  Empty otherwise.
 
 
 ---
@@ -9395,6 +9666,34 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%L0-MMA-INT-ELEM-P`
+- **Args**: `(ELEM)`
+
+  > T for an integer MMA element type.  Metadata has already reduced a derived type to its primitive.
+
+
+---
+### DEFUN `%L0-MMA-INT-OFFSET`
+- **Args**: `(ROLE ELEM)`
+
+  > Added to an integer operand's fill, so the values can expose a wrong sign bit.  CHAR straddles zero,  >    so reading it unsigned gives a wrong product.  UCHAR sits above 127, so reading it signed does too.  >    Used by BOTH the fill and the reference, like %l0-mma-fill-modulus.
+
+
+---
+### DEFUN `%L0-MMA-INT-REFERENCE-P`
+- **Args**: `(ALLOCATIONS)`
+
+  > T when C's element is an integer, so the host reference must be exact integer math.
+
+
+---
+### DEFUN `%L0-EMIT-MMA-INT-REFERENCE`
+- **Args**: `(STREAM ALLOCATIONS)`
+
+  > The integer form of %l0-emit-mma-reference: same strided sample, exact comparison, and operands  >    recomputed from the fill formula through their own C++ type, so the sign of the reference is the  >    sign the host wrote.
+
+
+---
 ### DEFUN `%L0-EMIT-MMA-REFERENCE`
 - **Args**: `(STREAM ALLOCATIONS)`
 
@@ -9406,6 +9705,13 @@ Generated on 2026-10-31T05:34:27.896775Z
 - **Args**: `(ELEM-TYPE)`
 
   > C++ function name that converts a float TO ELEM-TYPE's 16-bit encoding, or NIL when ELEM-TYPE  >    is not a 16-bit float (in which case a plain cast is correct and is what the caller emits).
+
+
+---
+### DEFUN `%L0-PRINT-PREFIX`
+- **Args**: `(ELEM-TYPE)`
+
+  > Unary + for an 8-bit element, so C++ prints a number rather than a raw byte.  Empty otherwise,  >    because + does not apply to a struct.
 
 
 ---
@@ -10562,10 +10868,17 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM-BASE`
+- **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
+
+  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.  Endeavor 113: also normalises  >    request-load-tile-at -> load-tile-at and await-request -> nil  >    for the backward pass.  >   >    Endeavour 206: %expand-stride-macros-in-form (below) expands fake-quant first.
+
+
+---
 ### DEFUN `%EXPAND-STRIDE-MACROS-IN-FORM`
 - **Args**: `(FORM TYPE-RESOLVER-FN LOCATION)`
 
-  > Recursively walks FORM and rewrites tensor-stride / grid-stride /  >    loop-vector-stride / tile-stride / hardware-stride / workgroup-stride  >    forms into their expansions.  Endeavor 113: also normalises  >    request-load-tile-at -> load-tile-at and await-request -> nil  >    for the backward pass.
+  > Endeavour 206: expands fake-quant first.  The whole form, because this function's calls to itself  >    may not come back through this definition.
 
 
 ---
@@ -10714,6 +11027,13 @@ Generated on 2026-10-31T05:34:27.896775Z
 - **Args**: `(STRUCT-TYPE BINDINGS &BODY BODY)`
 
   > Iterates over the members of a struct type, binding accessor symbols to the provided variables.  >    Bindings: (aos-var [soa-var] [:access type])  >    Returns a PROGN containing the expanded body forms.
+
+
+---
+### DEFUN `%RESOLVE-HANDLE-ELEMENT-ACCESSOR`
+- **Args**: `(SPEC)`
+
+  > Endeavour 206.  SPEC with an accessor element resolved, as in (vector (base T) ...), so that the  >    compiler and the metadata both see the real type.
 
 
 ---
@@ -11052,6 +11372,97 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFMACRO `SET-ACCUM`
+- **Args**: `(OPERANDS ACCUM)`
+
+  > Declares ACCUM the accumulator type of OPERANDS, a type or a list of two types.  >    Syntax: (set-accum q-a q-a-accum) or (set-accum (q-act q-wt) q-dot).  >    Requirements:  >    - All types are numeric.  >    - ACCUM holds a full product: at least the sum of the operand widths.  >    - ACCUM is signed if either operand is.
+
+
+---
+### DEFMACRO `DEF-QINT`
+- **Args**: `(NAME &KEY BASE ACCUM)`
+
+  > Defines the quantized integer type NAME and its accumulator NAME-ACCUM, with (to-NAME ..).  >    real = scale * q, and the scale is a runtime value the author passes where it is needed.  >    Syntax: (def-qint q-a :base char :accum int)  >    Requirements:  >    - :base and :accum are integer types.  >    - :accum holds a full product of two base values.  >    Two def-qints never mix, even with identical parameters: the scale belongs to the data.
+
+
+---
+### DEFMACRO `DEF-QINT-PRODUCT`
+- **Args**: `(NAME OPERANDS &KEY ACCUM)`
+
+  > Declares NAME the accumulator of the product of two def-qint types, which is what lets them be  >    multiplied.  Argument order matters.  >    Syntax: (def-qint-product q-dot (q-act q-wt) :accum int)
+
+
+---
+### DEFUN `REGISTER-MICROFLOAT-BLOCK`
+- **Args**: `(NAME BASE SCALE ACCUM)`
+
+  > Endeavour 206.  Records NAME as a microfloat block, which is what (to-float w i), (~ w i), (accum T),  >    (base T) and (scale T) dispatch on.
+
+
+---
+### DEFUN `MICROFLOAT-BLOCK-P`
+- **Args**: `(TYPE)`
+
+  > Endeavour 206.  The block's plist when TYPE names a microfloat block, else NIL.
+
+
+---
+### DEFPARAMETER `*MICROFLOAT-FORMATS*`
+
+  > Endeavour 206.  The microfloat formats.  :max is the largest finite value, and NIL means the format  >    cannot hold block elements (E8M0 has no zero and no sign, so it is a scale only).
+
+
+---
+### DEFUN `%MF-FORMAT-TYPE-P`
+- **Args**: `(TYPE)`
+
+  > Endeavour 206.  T when TYPE is a microfloat format, such as fp4.
+
+
+---
+### DEFUN `%MF-DECODE-BODY`
+- **Args**: `(FMT)`
+
+  > Endeavour 206.  Crisp source decoding the code U (an int) in format FMT to a float.  Exact: every  >    step is an integer shift or a multiply by a power of two.
+
+
+---
+### DEFUN `%MF-FP8-ENCODE-BODY`
+- **Args**: `(OP FIRST-THRESHOLD STEPS MANTISSA-BITS SHIFT-UP DENORM-SCALE
+              SIGN-BIT TOP-CODE MAX-TEXT EXTRA-CLAUSE NAN-CODE)`
+
+  > Endeavour 206.  Crisp source encoding the float X in an E?M? format, by OP (round or ceil).  It finds  >    the exponent E, scales the magnitude by an exact power of two, and adds the rounded mantissa to E's  >    code, so a mantissa that rounds up carries into the exponent by itself.  NaN is tested with (= a a)  >    because (!= a a) is false in Crisp (BUG 153).
+
+
+---
+### DEFUN `%MF-ENCODE-BODY`
+- **Args**: `(FMT OP DECODE-NAME)`
+
+  > Endeavour 206.  Crisp source encoding the float X in format FMT.  OP is round for a code, and ceil  >    for a scale, which must not fall below the block's largest element.  Saturates, and NaN encodes as  >    the format's NaN, or as zero where there is none.
+
+
+---
+### DEFUN `%MF-FAKE-QUANT-FORM`
+- **Args**: `(NM N X Y)`
+
+  > Endeavour 206.  The expansion of (fake-quant-NAME x y): each element through the block's format,  >    and straight through going backward.  A macro, not a grid function, because the autodiff pass cannot  >    differentiate a stride inside a grid function (BUG 154).
+
+
+---
+### DEFUN `%EXPAND-FAKE-QUANT-FORMS`
+- **Args**: `(FORM)`
+
+  > Endeavour 206.  FORM with every (fake-quant-NAME x y) expanded.  The expansion holds a stride, and  >    a stride has to be seen by %expand-stride-macros-in-form, as with reduce-vec.
+
+
+---
+### DEFMACRO `DEF-MICROFLOAT-BLOCK`
+- **Args**: `(NAME &KEY BASE SCALE ACCUM SHAPE)`
+
+  > Defines the block-scaled type NAME: a record over two handles, packed codes and one scale per block.  >    real = scale * decode(code).  >    Syntax: (def-microfloat-block mf-w :base fp4 :scale fp8-e4m3 :accum float :shape (16))  >    Defines the handle types NAME-CODES, NAME-SCALES and NAME-FLOATS, make-NAME, quantize-to-NAME,  >    dequantize-from-NAME and fake-quant-NAME.  (to-float w i) and (~ w i) work on a NAME, and (accum T),  >    (base T) and (scale T) name its types.  >    Requirements:  >    - :base is fp4, fp8-e4m3 or fp8-e5m2.  :scale is any microfloat format.  :accum is float.  >    - :shape is one positive size in elements, and even for fp4, whose codes share bytes.  >    Every handle holds whole blocks.  fp4 packs the even element in the low nibble.  A scale rounds up,  >    so the block's largest element always fits.  Each generated function is ordinary Crisp.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
@@ -11225,6 +11636,13 @@ Generated on 2026-10-31T05:34:27.896775Z
 - **Args**: `(NAME PARAMS)`
 
   > Generates the mangled name for a struct template instance. e.g. POINT (FLOAT) -> POINT_FLOAT
+
+
+---
+### DEFUN `%UNMANGLED-SYMBOL`
+- **Args**: `(TOKEN-STR PACKAGE)`
+
+  > The symbol a mangled template-name token stands for.  Prefers a type the user registered in  >    :crisp-language over a same-named symbol in PACKAGE: a template such as CELL lives in  >    crisp.compiler, so interning there minted CRISP.COMPILER::Q-C, which *crisp-types* has never heard  >    of, and (+ (~ a) (~ b)) died with "Cannot operate on Q-C and Q-C" (endeavour 202).  A symbol  >    PACKAGE already has registered wins, which keeps the shadowed primitives (CHAR, FLOAT) as they were.
 
 
 ---
@@ -11980,6 +12398,13 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%HOST-VISIBLE-TYPE`
+- **Args**: `(TYPE-SPEC)`
+
+  > TYPE-SPEC with every derived NUMERIC type replaced by its primitive.  A hoist reads metadata alone  >    and has no type registry, so `(vector q-c ..)` reached the generated C++ as an undeclared `q_c`  >    (endeavour 202).  The primitive is the true host ABI.  Derived STRUCT types are left alone: their  >    name is what the host's struct lookup wants.
+
+
+---
 ### DEFUN `SERIALIZE-ALIASES`
 - **Args**: `(STREAM ALIASES-HASH)`
 
@@ -12059,21 +12484,21 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `%193-SERIALIZE-DIE-SITES`
 - **Args**: `(STREAM)`
 
-  > Endeavour 193.  The (:die-sites ...) section: the record's global name and every site, oldest  >    first, as (ID "FILE" LINE "MESSAGE"-or-NIL).  Nothing when the module cannot die.
+  > Endeavour 193.  The (:die-sites ...) section: the record's global name and every site, oldest  >    first, as (ID "FILE" LINE "MESSAGE"-or-NIL).  Nothing when the module cannot die.
 
 
 ---
 ### DEFUN `%193-SERIALIZE-LOG-SITES`
 - **Args**: `(STREAM)`
 
-  > Endeavour 193.  The (:log-sites ...) section: the log's global name, its data capacity in words,  >    and every site, oldest first, as (ID "FILE" LINE PIECES).  Nothing when the module never logs.
+  > Endeavour 193.  The (:log-sites ...) section: the log's global name, its data capacity in words,  >    and every site, oldest first, as (ID "FILE" LINE PIECES).  Nothing when the module never logs.
 
 
 ---
 ### DEFUN `SERIALIZE-KERNELS`
 - **Args**: `(OUTPUT-STREAM KERNEL-NAMES &KEY SOURCE OUTPUT-TARGETS)`
 
-  > Emits the (:kernels ...) section of the metacrisp file.  >    Extended to include :global-size, :local-size, :num-groups dispatch declarations.  >    Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and  >    :effective-cluster-size (what codegen BUILT).  Both, deliberately -- a degraded  >    cluster is otherwise indistinguishable from a working one.
+  > Emits the (:kernels ...) section of the metacrisp file.  >    Extended to include :global-size, :local-size, :num-groups dispatch declarations.  >    Endeavor 152: also emits :cluster-size (what the SOURCE asked for) and  >    :effective-cluster-size (what codegen BUILT).  Both, deliberately -- a degraded  >    cluster is otherwise indistinguishable from a working one.
 
 
 ---
@@ -12166,7 +12591,7 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `%FRAG-RECORD-FOR-ACC`
 - **Args**: `(ELEM)`
 
-  > The ACCUMULATOR fragment record for element type ELEM.  >   >    Endeavour 165 (2b-ii).  Sibling of %frag-record-for-operand, which has dispatched A and B  >    records by element type since endeavour 159; the accumulator was the one role still naming  >    register-fragment-acc-f32-16x8 outright at five sites.  One place decides this, so the tile  >    minter and the fragment constructor cannot disagree about which record an element type maps  >    to -- the same argument 159 made for the operands.  >   >    A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose.
+  > The ACCUMULATOR fragment record for element type ELEM.  >   >    Endeavour 165 (2b-ii).  Sibling of %frag-record-for-operand, which has dispatched A and B  >    records by element type since endeavour 159; the accumulator was the one role still naming  >    register-fragment-acc-f32-16x8 outright at five sites.  One place decides this, so the tile  >    minter and the fragment constructor cannot disagree about which record an element type maps  >    to -- the same argument 159 made for the operands.  >   >    A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose.  >   >    Endeavour 204: integer register tiles exist on SPIR-V only.  On NVIDIA, integer MMA is wgmma.
 
 
 ---
@@ -12268,7 +12693,7 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `ANALYZE-MMA-ACCUMULATE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop matrix on  >    :spirv, else the SAME RECORD AS C.  Codegen forks in generate-node-ir.  >   >    Endeavour 165 (step 3): the NVIDIA type was hardcoded to the fp32 record, which made an fp64  >    accumulate mistype itself.  Deriving it from C states the real rule and covers any accumulator  >    record, present or future.  The fallback keeps the historical answer when C's type cannot be  >    resolved to an accumulator record.
+  > P2 / F-SPV: (mma-accumulate C A B).  Node typed as the accumulator fragment — a coop matrix on  >    :spirv, else the SAME RECORD AS C.  Codegen forks in generate-node-ir.  >   >    Endeavour 165 (step 3): the NVIDIA type was hardcoded to the fp32 record, which made an fp64  >    accumulate mistype itself.  Deriving it from C states the real rule and covers any accumulator  >    record, present or future.  The fallback keeps the historical answer when C's type cannot be  >    resolved to an accumulator record.  >   >    Endeavour 204: on :spirv too, C's type is the answer when it is a coop matrix, and the three  >    element types are checked against each other.
 
 
 ---
@@ -12390,6 +12815,20 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%CHECK-INT-MMA-K`
+- **Args**: `(MMA-SHAPE A ENV CONTEXT LOCATION)`
+
+  > Refuses an int8 multiply at a K meant for another width.  (8 16 8) is a legal shape, but for tf32, so  >    the profile check passes it, while the operands load at K=32.  That compiled silently.
+
+
+---
+### DEFUN `%CHECK-INT-TILE-K`
+- **Args**: `(SHAPE ELEM)`
+
+  > Refuses a via-tile multiply into an integer tile at a K meant for another width.  (8 16 8) is a legal  >    shape, but for tf32, while integer operands load at K=32.  A let-bound tile is rewritten here,  >    before analysis, so this is the check real kernels reach; %check-int-mma-k covers the analyzed form.
+
+
+---
 ### DEFUN `ANALYZE-MMA-ACCUMULATE-VIA-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
@@ -12452,17 +12891,24 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%QINT-NARROWING-TARGET`
+- **Args**: `(OP)`
+
+  > The def-qint base type behind the operator symbol TO-NAME, or NIL.
+
+
+---
 ### DEFUN `%196-PEEL-STORE-CONVERSION`
 - **Args**: `(SRC)`
 
-  > Endeavour 196.  If SRC is (to-half X) or (to-bfloat16 X), return (values X CONVERT-SYMBOL);  >    otherwise (values SRC NIL).  Only these two narrowing conversions are peeled: they are the two a  >    16-bit MMA needs on the way out (f32 accumulator -> fp16 / bf16 output).  Anything else is left  >    for the ordinary analysis, which refuses a conversion of a whole accumulator.
+  > Endeavour 196.  If SRC is (to-half X) or (to-bfloat16 X), return (values X CONVERT-SYMBOL);  >    otherwise (values SRC NIL).  Only these two narrowing conversions are peeled: they are the two a  >    16-bit MMA needs on the way out (f32 accumulator -> fp16 / bf16 output).  Anything else is left  >    for the ordinary analysis, which refuses a conversion of a whole accumulator.  >    Endeavour 205: (to-q X M) peels too, and CONVERT is then the list (%to-q-narrow Q M).  A SPIR-V  >    store is one whole fragment with no per-element step, so that is refused here.
 
 
 ---
 ### DEFUN `%196-WRAP-CONVERSION`
 - **Args**: `(CONVERT FORM)`
 
-  > Endeavour 196.  (CONVERT FORM) when CONVERT is non-NIL, else FORM unchanged.
+  > Endeavour 196.  (CONVERT FORM) when CONVERT is non-NIL, else FORM unchanged.  >    Endeavour 205: a list CONVERT, (%to-q-narrow Q M), wraps as (%to-q-narrow Q FORM M).
 
 
 ---
@@ -12779,8 +13225,37 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFVAR `*WGMMA-NODE-B-ELEM*`
+
+  > semantic-mma-accumulate node -> B's element type, for the mnemonic of a mixed-sign wgmma.
+
+
+---
+### DEFVAR `*WGMMA-B-ELEM*`
+
+  > B's element type for the wgmma being emitted, bound around %emit-nvvm-wgmma.
+
+
+---
+### DEFUN `%WGMMA-ACC-ELEM`
+- **Args**: `(ACC-TYPE)`
+
+  > The integer element of a wgmma accumulator type, or FLOAT.
+
+
+---
+### DEFUN `%WGMMA-STRUCT-OF-REGS`
+- **Args**: `(MODULE REG-TY NACC)`
+
+  > The LLVM struct type { REG-TY x NACC } — the wgmma inline-asm result (NACC = N/2 accumulators).
+
+
+---
 ### DEFUN `%WGMMA-ACC-TYPE-NAME`
-- **Args**: `(N)`
+- **Args**: `(N &OPTIONAL (ELEM 'FLOAT))`
+
+  > The minted accumulator record name.  Every float accumulator shares the F32 record, as before.
+
 
 ---
 ### DEFUN `%WGMMA-ACC-TYPE-P`
@@ -12791,9 +13266,9 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 ---
 ### DEFUN `%ENSURE-WGMMA-ACC-TYPE`
-- **Args**: `(N)`
+- **Args**: `(N &OPTIONAL (ELEM 'FLOAT))`
 
-  > Mint (once) the WGMMA-ACC-F32-64xN record -- N/2 flat f32 fields (the wgmma D accumulator, N/2  >    f32 registers per thread across the 128-thread warpgroup).  Returns the type symbol.
+  > Mint (once) the wgmma accumulator record -- N/2 flat fields, one per register per thread across the  >    128-thread warpgroup.  Fields are float, or ELEM for an integer accumulator, so a store of a field  >    type-checks against the destination's own element type.  Returns the type symbol.
 
 
 ---
@@ -12841,21 +13316,21 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `ANALYZE-MAKE-WGMMA-ACCUMULATOR`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 f32 fields,  >    each initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.  >   >    Endeavor 144: runs the Phase 2 register accounting, and tallies N/2 registers/thread for the  >    Phase 3 occupancy report — keyed by SHAPE so a per-tile `(set! D (make-wgmma-accumulator ...))`  >    re-initialization is not counted as a second accumulator.
+  > (make-wgmma-accumulator T (64 N) INIT) -> a warpgroup D accumulator record of N/2 fields, each  >    initialized to INIT.  Mints the type on demand; rewrites to %construct-struct.  >   >    Endeavor 144: runs the Phase 2 register accounting, and tallies N/2 registers/thread for the  >    Phase 3 occupancy report — keyed by SHAPE so a per-tile `(set! D (make-wgmma-accumulator ...))`  >    re-initialization is not counted as a second accumulator.  >   >    Endeavour 204: T selects an integer accumulator; any other T is fp32, as before.
 
 
 ---
 ### DEFUN `%WGMMA-K-PER-SLICE`
 - **Args**: `(ELEM)`
 
-  > K covered by ONE wgmma instruction at element type ELEM: 8 at 32 bits, 16 at 16 bits.  >    Both are 32 BYTES of K per slice, which is why the descriptor's kk*32 advance is unchanged.
+  > K covered by ONE wgmma instruction at element type ELEM: 8 at 32 bits, 16 at 16 bits, 32 at 8 bits.  >    All are 32 BYTES of K per slice, which is why the descriptor's kk*32 advance is unchanged.
 
 
 ---
 ### DEFUN `%WGMMA-OPERAND-MNEMONIC`
 - **Args**: `(ELEM)`
 
-  > The .f32.<ab>.<ab> tail of the wgmma mnemonic for operand element type ELEM.
+  > The <d>.<a>.<b> tail of the wgmma mnemonic for operand element type ELEM.  An integer multiply  >    names A and B separately, because their signs are independent.
 
 
 ---
@@ -12910,14 +13385,14 @@ Generated on 2026-10-31T05:34:27.896775Z
 ### DEFUN `%WGMMA-ASM-STRING`
 - **Args**: `(NACC N &OPTIONAL ELEM)`
 
-  > wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.f32.<ab>.<ab> {$0..$nacc-1}, descA, descB, ...;  >    Accumulator is an '=f' OUTPUT plus a tied INPUT, so the two 'l' descriptors are $2*nacc and  >    $2*nacc+1.  tf32 takes three trailing immediates; the 16-bit forms take five, adding  >    transA/transB from *wgmma-16-trans* while that pair is under investigation.
+  > wgmma.mma_async.sync.aligned.m64n{N}k{KPS}.<d>.<a>.<b> {$0..$nacc-1}, descA, descB, ...;  >    Accumulator is an OUTPUT plus a tied INPUT, so the two 'l' descriptors are $2*nacc and  >    $2*nacc+1.  tf32 takes three trailing immediates; the 16-bit forms take five, adding  >    transA/transB from *wgmma-16-trans* while that pair is under investigation.  int8 takes one.
 
 
 ---
 ### DEFUN `%WGMMA-CONSTRAINTS`
-- **Args**: `(NACC)`
+- **Args**: `(NACC &OPTIONAL INT-P)`
 
-  > NACC '=f' outputs, NACC tied inputs (0..nacc-1), 2 'l' descriptor inputs, memory clobber.
+  > NACC '=f' outputs ('=r' for an integer accumulator), NACC tied inputs (0..nacc-1), 2 'l' descriptor  >    inputs, memory clobber.
 
 
 ---
@@ -12932,7 +13407,7 @@ Generated on 2026-10-31T05:34:27.896775Z
 - **Args**: `(BUILDER MODULE D-VAL A-PTR B-PTR ACC-TYPE N SWIZZLE-P KSLICE-OFF
               &OPTIONAL ELEM B-MN-LBO)`
 
-  > Emit ONE m64nNk{8,16} wgmma.mma_async and nothing else -- no fence, no commit_group, no  >    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice  >    sequence, not once per slice; see %emit-nvvm-wgmma.  >   >    N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)  >    advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is  >    the same at both widths, which is why the descriptor build is untouched.  Returns the new D.  >   >    Endeavour 198: B-MN-LBO non-NIL means B is MN-major: its descriptor is %198-wgmma-make-desc-mn  >    (LBO = B-MN-LBO bytes), its slice advances 16 rows of 128 bytes (kk*2048 = KSLICE-OFF*64), and  >    the instruction carries transB=1 (*wgmma-16-trans* bound to (0 1)).
+  > Emit ONE m64nNk{8,16,32} wgmma.mma_async and nothing else -- no fence, no commit_group, no  >    wait_group.  Those are GROUP-level operations and belong once around the whole k-slice  >    sequence, not once per slice; see %emit-nvvm-wgmma.  >   >    N/2 accumulators in and out, two shared-memory descriptors, and KSLICE-OFF (kk*32 bytes)  >    advancing the descriptor start address.  ELEM selects the mnemonic; the 32-byte slice stride is  >    the same at every width, which is why the descriptor build is untouched.  Returns the new D.  >   >    Endeavour 198: B-MN-LBO non-NIL means B is MN-major: its descriptor is %198-wgmma-make-desc-mn  >    (LBO = B-MN-LBO bytes), its slice advances 16 rows of 128 bytes (kk*2048 = KSLICE-OFF*64), and  >    the instruction carries transB=1 (*wgmma-16-trans* bound to (0 1)).
 
 
 ---
@@ -13002,6 +13477,48 @@ Generated on 2026-10-31T05:34:27.896775Z
 - **Args**: `(SRC TILE-ID ENTRY)`
 
   > Endeavor 145 P3b: per-fragment expansion of  >    (%load-register-tile-acc TILE SRC (TY TX)) — the exact mirror of %emit-per-frag-store,  >    reading each accumulator fragment back out of SRC with P2's load-fragment-acc instead of  >    writing it.  This is where the fragment element->lane MAPPING finally becomes  >    load-bearing: the seeded gradient is non-zero, so a wrong mapping changes the answer  >    (unlike the zero-seed of P2's own spec).
+
+
+---
+### DEFUN `%ELEM-INTEGER-P`
+- **Args**: `(ELEM)`
+
+  > T for an element type whose primitive is an integer the MMA hardware takes.
+
+
+---
+### DEFUN `%ELEM-SIGNED-P`
+- **Args**: `(ELEM)`
+
+  > T for an element type whose primitive is a signed integer.
+
+
+---
+### DEFUN `%CANONICAL-ELEM`
+- **Args**: `(ELEM)`
+
+  > ELEM with a type accessor such as (accum q-a) resolved to the type it names.
+
+
+---
+### DEFUN `%ELEM-PRIM-NAME`
+- **Args**: `(ELEM)`
+
+  > The name of ELEM's underlying primitive, as a string, for a Crisp element type that may be derived  >    or an (accum T) form.  Compared by NAME because CHAR and friends are shadowed differently across  >    the packages.
+
+
+---
+### DEFUN `%INT-OPERAND-P`
+- **Args**: `(ELEM)`
+
+  > T for an element type an integer MMA can take as an A or B operand: 8-bit.
+
+
+---
+### DEFUN `%CHECK-MMA-ELEMENT-FAMILY`
+- **Args**: `(A B C LOCATION)`
+
+  > Refuses an MMA whose operands and accumulator do not belong together, where the failure used to  >    surface as `Expected FLOAT but inferred INT` or as a llvm-spirv exit code.  No hardware mixes the  >    two families, and no emulation is offered.
 
 
 ---
@@ -13889,10 +14406,17 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%CANONICALIZE-RECORD-HANDLE-MEMBERS`
+- **Args**: `(MEMBERS)`
+
+  > 206: a record member whose type is a storage handle, alias or not, gets its canonical tensor spec.
+
+
+---
 ### DEFUN `REGISTER-STRUCT-DEFINITION`
 - **Args**: `(NAME MEMBERS &OPTIONAL (CATEGORY STRUCT))`
 
-  > Registers a struct or record definition in the global registry.  >    Extended: for records, validates that no (array T N) member has N > 16.
+  > Registers a struct or record definition in the global registry.  >    Extended: for records, validates that no (array T N) member has N > 16.  >    Endeavour 206: a record member may be a storage handle, named by an alias or not.
 
 
 ---
@@ -14376,6 +14900,104 @@ Generated on 2026-10-31T05:34:27.896775Z
 
 
 ---
+### DEFUN `%ACCUM-KEY`
+- **Args**: `(A B)`
+
+  > The *accum-registry* key for the operand pair A, B, after alias resolution.
+
+
+---
+### DEFUN `%ACCUM-NUMERIC-PARTS`
+- **Args**: `(TYPE-NAME)`
+
+  > (values CATEGORY BITS) of TYPE-NAME's underlying primitive, or NIL if it is not numeric.
+
+
+---
+### DEFUN `%VALIDATE-ACCUM-PAIR`
+- **Args**: `(A B ACCUM)`
+
+  > Signals unless ACCUM can hold every product of A and B exactly.
+
+
+---
+### DEFUN `REGISTER-ACCUM-TYPE`
+- **Args**: `(OPERANDS ACCUM)`
+
+  > Records ACCUM as the accumulator of OPERANDS, a type name or a list of two.  (set-accum B A) also  >    makes A its own accumulator and B its base; (set-accum (B C) A) is a mixed-operand product.
+
+
+---
+### DEFUN `ACCUM-TYPE-OF`
+- **Args**: `(A &OPTIONAL (B A))`
+
+  > (accum A B).  A declared accumulator, else A itself when A and B are the same type: for the basic  >    types (accum T) is T.  NIL for an undeclared pair of different types.
+
+
+---
+### DEFUN `BASE-TYPE-OF`
+- **Args**: `(TYPE-NAME)`
+
+  > (base T): the base of a declared accumulator, else T.
+
+
+---
+### DEFUN `%TYPE-ACCESSOR-FORM-P`
+- **Args**: `(SPEC)`
+
+  > T for the type forms (accum T), (accum A B), (base T) and (scale T).
+
+
+---
+### DEFUN `RESOLVE-TYPE-ACCESSOR`
+- **Args**: `(SPEC)`
+
+  > The type named by the accessor form SPEC.  The one registry a future def-type-function would fill.  >    Endeavour 206: a microfloat block answers (accum T), (base T) and (scale T) from its own definition.  >    Only a block has a scale.
+
+
+---
+### DEFUN `QINT-ROLE`
+- **Args**: `(TYPE-NAME)`
+
+  > :base or :accum for a type made by def-qint or def-qint-product, else NIL.
+
+
+---
+### DEFUN `%QINT-SET-ROLE`
+- **Args**: `(TYPE-NAME ROLE)`
+
+  > Records TYPE-NAME's role.
+
+
+---
+### DEFUN `%QINT-CHECK-INTEGER`
+- **Args**: `(TYPE-NAME)`
+
+  > Refuses a quantized type built on anything but an integer.
+
+
+---
+### DEFUN `%REGISTER-TO-QINT`
+- **Args**: `(NAME)`
+
+  > Points (to-NAME ..) at analyze-to-qint in both packages.  This replaces the cast def-derived-type  >    registered, and *expression-analyzers* is rebuilt per compile, so it cannot outlive the type.
+
+
+---
+### DEFUN `REGISTER-QINT`
+- **Args**: `(NAME ACCUM)`
+
+  > Records NAME and ACCUM as the base and accumulator of a def-qint.
+
+
+---
+### DEFUN `REGISTER-QINT-PRODUCT`
+- **Args**: `(NAME OPERANDS)`
+
+  > Records NAME as the accumulator of a declared product of the def-qint types OPERANDS.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
 
 ### DEFUN `%ARCH-SUPPORTS-CLUSTERS-P`
@@ -14707,10 +15329,17 @@ Generated on 2026-10-31T05:34:27.896775Z
 - **Args**: `(ARG TYPE NAME)`
 
 ---
+### DEFUN `CANONICALIZE-TYPE-SPECIFIER-BASE`
+- **Args**: `(SPEC)`
+
+  > Canonicalizes type specifiers.  >    Extended: (array T N) is returned as-is before the template path, preventing  >    mangle to ARRAY_LONG_5 via the get-template-arity=2 path.  >   >    Endeavour 206: canonicalize-type-specifier (below) resolves a handle's accessor element type.
+
+
+---
 ### DEFUN `CANONICALIZE-TYPE-SPECIFIER`
 - **Args**: `(SPEC)`
 
-  > Canonicalizes type specifiers.  >    Extended: (array T N) is returned as-is before the template path, preventing  >    mangle to ARRAY_LONG_5 via the get-template-arity=2 path.
+  > Endeavour 206: a handle's element type may be an accessor, as in (vector (accum T) ...).
 
 
 ---

@@ -1236,8 +1236,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
         (format stream "        ~a* h = new ~a[~d];~%" elem-str elem-str total-elems)
         (cond
           ((member mma-role '(:a :b))
-           (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)(_i % ~d);~%"
-                   total-elems elem-str (if (eq mma-role :a) 5 3)))
+           (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)((int)(_i % ~d) + (~d));~%"
+                   total-elems elem-str (if (eq mma-role :a) 5 3) (%cuda-mma-int-offset mma-role elem-str)))
           ((eq mma-role :c)
            (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)0;~%"
                    total-elems elem-str))
@@ -1341,6 +1341,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
           ((string= n "double")   "CU_TENSOR_MAP_DATA_TYPE_FLOAT64")
           ((string= n "half")     "CU_TENSOR_MAP_DATA_TYPE_FLOAT16")
           ((string= n "bfloat16") "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16")
+          ((string= n "char")     "CU_TENSOR_MAP_DATA_TYPE_UINT8")   ; TMA moves bytes; cuda.h has no INT8
+          ((member n (quote ("uchar" "unsigned char")) :test (function string=)) "CU_TENSOR_MAP_DATA_TYPE_UINT8")
           (t (error "cuTensorMapEncodeTiled: unsupported element type ~a (need float/double/half/bfloat16)"
                     elem-type)))))
 
@@ -1764,19 +1766,24 @@ overrides the runtime SM-count query in the grid-size heuristic."
   "The launch itself: an `_crisp_launch` lambda over the final gridX/gridY/gridZ, called once for the
    correctness readback that follows.  emit-launch anchors its cluster-grid fix-up on this lambda's
    first line, so it must stay the first thing after ALL grid computation.  (The lambda also served
-   the --mma-bench timed relaunch loop, retired 2026-10-16; it is kept so the emitted code is
-   unchanged.)  Plain cuLaunchKernel, no CUDA_CHECK -- its `return` would make this void lambda
-   non-void; a launch error surfaces at the cuCtxSynchronize below."
+   the --mma-bench timed relaunch loop, retired 2026-10-16.)
+
+   BUG 135: a failed launch is fatal.  The lambda returns the result and CUDA_CHECK ends the program.
+   It used to print to stderr and carry on, so the harness reported success and compared buffers
+   nothing had written.  cuCtxSynchronize does not report a launch that never happened."
   (format stream "    auto _crisp_launch = [&]() {~%")
-  (format stream "      CUresult _lr = cuLaunchKernel(kernel,~%")
+  (format stream "      return cuLaunchKernel(kernel,~%")
   (format stream "          gridX, gridY, gridZ,~%")
   (format stream "          ~a, ~a, 1,~%" block-x block-y)
   (format stream "          ~a, 0,~%" shared-bytes)
   (format stream "          kernelParams, nullptr);~%")
-  (format stream "      if (_lr != CUDA_SUCCESS) { const char* _es; cuGetErrorString(_lr, &_es);~%")
-  (format stream "        std::cerr << \"launch error: \" << _es << std::endl; }~%")
   (format stream "    };~%")
-  (format stream "    _crisp_launch();~%~%"))
+  (format stream "    CUresult _crisp_launch_result = _crisp_launch();~%")
+  (format stream "    if (_crisp_launch_result == CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES) {~%")
+  (format stream "        std::cerr << \"This kernel needs more registers per thread than one workgroup can have.  \"~%")
+  (format stream "                  << \"Fix its workgroup size with (local-size :set-to N), or set (declare (max-registers N)).\" << std::endl;~%")
+  (format stream "    }~%")
+  (format stream "    CUDA_CHECK(_crisp_launch_result);~%~%"))
 
 (defun %emit-launch-base (stream dispatch-info shared-bytes &optional compute-units)
   "Emit cuLaunchKernel call with grid/block dims from dispatch-info.
@@ -1961,6 +1968,18 @@ overrides the runtime SM-count query in the grid-size heuristic."
 ;;; -----------------------------------------------------------------------
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 204 -- integer MMA reference
+;;;; See tests/spec/204-integer-mma/integer-mma.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %cuda-mma-int-offset (role elem-str)
+  "Added to an integer operand's fill, so the values can expose a wrong sign.  CHAR straddles zero and
+   UCHAR sits above 127.  The same values as the L0 harness's %l0-mma-int-offset."
+  (cond ((string-equal elem-str "char") (if (eq role :a) -2 -1))
+        ((string-equal elem-str "unsigned char") 200)
+        (t 0)))
+
 (defun %cuda-emit-mma-reference (stream allocations)
   "Emit a stride-agnostic host reference C = A.B (copy A/B/C back to host, compare).
 
@@ -1988,12 +2007,14 @@ overrides the runtime SM-count query in the grid-size heuristic."
                (bb (getf b :base)) (bc (getf b :count)) (bt (or (getf b :elem-type) "float"))
                (cb (getf c :base)) (cc (getf c :count)) (ct (or (getf c :elem-type) "float"))
                (doublep (string= ct "double"))
+               (narrowp (and (member ct (quote ("char" "unsigned char")) :test (function string-equal)) t))
+               (intp (and (or narrowp (member ct (quote ("int" "unsigned int")) :test (function string-equal))) t))
                ;; The accumulator is the OUTPUT's type: that is what the kernel actually
                ;; produced and what we are checking.
-               (acct    ct)
-               (zero    (if doublep "0.0" "0.0f"))
-               (rel     (if doublep "1e-10" "1e-2f"))
-               (abs     (if doublep "1e-12" "1e-3f"))
+               (acct    (if narrowp "int" ct))
+               (zero    (cond (intp "0") (doublep "0.0") (t "0.0f")))
+               (rel     (cond (intp "0") (doublep "1e-10") (t "1e-2f")))
+               (abs     (cond (intp "0") (doublep "1e-12") (t "1e-3f")))
                (scale-suffix (if doublep "" "f")))
           (format stream "~%    // Endeavor 134: MMA host reference C = A.B (stride-agnostic)~%")
           (format stream "    // Endeavour 165: element type ~a, tolerance ~a rel / ~a abs~%" ct rel abs)
@@ -2013,6 +2034,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
           (when (/= *mma-scale* 1)
             (format stream "        acc = acc * ~d.0~a;   // --mma-scale (MMA fired ~d times per fragment)~%"
                     *mma-scale* scale-suffix *mma-scale*))
+          (when narrowp
+            (multiple-value-bind (lo hi) (if (string-equal ct "char") (values -128 127) (values 0 255))
+              (format stream "        if (acc < ~d) acc = ~d; if (acc > ~d) acc = ~d;~%" lo lo hi hi)))
           (format stream "        ~a got = ~a_h[i*~a_str0 + j*~a_str1];~%" acct cb cb cb)
           (format stream "        ~a d = got - acc; if (d < 0) d = -d;~%" acct)
           (format stream "        if (d > ~a * (acc < 0 ? -acc : acc) + ~a) mma_bad++;~%" rel abs)
@@ -2023,6 +2047,17 @@ overrides the runtime SM-count query in the grid-size heuristic."
           (format stream "      delete[] ~a_h; delete[] ~a_h; delete[] ~a_h;~%" ab bb cb)
           (format stream "    }~%"))))))
 
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 205 -- printing quantized buffers
+;;;; See tests/spec/205-quantized-integers/quantized-integers-205.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %cuda-print-prefix (elem-type)
+  "Unary + for an 8-bit element, so C++ prints a number rather than a raw byte.  Empty otherwise."
+  (if (member (string elem-type) (quote ("char" "unsigned char" "uchar" "CHAR" "UCHAR")) :test (function string-equal))
+      "+"
+      ""))
 
 (defun emit-readback (stream allocations)
   "Emit cuMemcpyDtoH and print buffer contents.  Endeavor 134: appends host-reference C=A·B.
@@ -2045,7 +2080,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
         (format stream "        CUDA_CHECK(cuMemcpyDtoH(h, ~a, ~a * sizeof(~a)));~%" ptr n elem-type)
         (format stream "        std::cout << \"BUFFER ~a: \";~%" name)
         (format stream "        for (size_t i = 0; i < (size_t)~a; i++) {~%" n)
-        (format stream "            std::cout << h[i] << (i == (size_t)~a - 1 ? \"\" : \" \");~%" n)
+        (format stream "            std::cout << ~ah[i] << (i == (size_t)~a - 1 ? \"\" : \" \");~%" (%cuda-print-prefix elem-type) n)
         (format stream "        }~%")
         (format stream "        std::cout << std::endl;~%")
         (format stream "        delete[] h;~%")
