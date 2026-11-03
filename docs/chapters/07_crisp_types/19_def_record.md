@@ -26,7 +26,11 @@ Though there is no equivalent of `soa-vector` for records.
 #### Notes
 
 - Importantly, types defined by `def-record` cannot be wrapped in Storage Handles.
-- Both records and structs can be passed directly to kernels on the kernel boundary. 
+- But a record can HOLD storage handles: `(def-record pair (a uv) (b uv))`. A microfloat block is one
+  (see [Records Can Hold Storage Handles](#records-can-hold-storage-handles-)).
+- Both records and structs can be passed directly to kernels on the kernel boundary, except a record
+  that holds a handle: what a host would pass for it is not defined, so the kernel takes the handles and
+  builds the record with `make-XXXX`. 
 - - But when doing so structs are immutable and cannot have their properties changed.
 - - Records, on the other hand, are mutable in the current thread context. Any value
     change is not communicated back to the host or to other threads.

@@ -25,9 +25,9 @@ bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
 | `--hardware-profile=NAME` | `bmg` (Intel Arc B580) and `h100` are built in; others are `def-hardware-profile` forms (see `benchmarks/profiles/`). Required for warp collectives on SPIR-V and for the MMA paths. |
 | `--math-precision=ieee\|fast` | `ieee` (default): correctly rounded. `fast`: approximate hardware paths. |
 | `--hoist=L0` / `--hoist=CUDA` | Also write a host `.cpp` that loads and runs the kernel (Level Zero / CUDA). |
-| `--differentiate` | Compile the BACKWARD (gradient) kernels instead — see §11. |
-| `--runtime-checks` | Compile the runtime asserts and bounds checks; a failure stops the thread — see §15. |
-| `--logging-output` | Compile `r-t-output` into the log (implies `--runtime-checks`) — see §15. |
+| `--differentiate` | Compile the BACKWARD (gradient) kernels instead — see §12. |
+| `--runtime-checks` | Compile the runtime asserts and bounds checks; a failure stops the thread — see §16. |
+| `--logging-output` | Compile `r-t-output` into the log (implies `--runtime-checks`) — see §16. |
 | `--logging-size=4M` | The log's size in bytes (`K`/`M`/`G` suffixes; default `4M`). |
 
 **PTX + transcendentals** (`exp log sin cos tan asin acos atan pow atan2 log2 tanh erf exp2`) need NVIDIA's
@@ -90,7 +90,8 @@ PTX and the `.metacrisp` (BUG 018).  Look kernels up by the lower-case name, or 
 
 ## 4. Types and literals
 
-Scalars: `int uint long ulong short ushort char uchar float double half bfloat16`.
+Scalars: `int uint long ulong short ushort char uchar float double half bfloat16`.  Quantized integers and
+block-scaled fp4 / fp8 are in §11.
 
 | Literal | Type |
 |---|---|
@@ -181,7 +182,8 @@ well supported inside the MMA paths.
 | `exp log log2 exp2 sin cos tan asin acos atan tanh erf pow atan2` | float / double.  PTX needs libdevice (§1). |
 | `ash logand logior logxor lognot popcount` | integers.  `(ash x n)`: n > 0 left, n < 0 right, defined for any n. |
 | `op-fma op-saturate op-min3 op-max3 op-rsqrt-approx` ... | hardware ops, chapter 32/07. |
-| `*!` | widening multiply; on the basic types it is `*`. |
+| `*! +! -! widen` | widening ops; on the basic types they are `* + -` and the identity.  Quantized types: §11. |
+| `to-sat` | `(to-sat char x)`: float to integer, nearest (ties to even), saturating, NaN to 0. |
 
 Not yet: the chapter 14 bit-twiddling ops (`op-count-leading-zeros`, `op-bit-reverse`, ...), the chapter 15
 pack/unpack ops, `fmin` / `fmax` (use `min` / `max`).
@@ -317,16 +319,98 @@ under the 227 KB limit.
 
 ---
 
-## 11. Automatic differentiation
+## 11. Quantized integers and microfloat blocks
+
+The design document's chapters 33 and 34 have the whole API; this is the working subset.
+
+**Quantized integers.**  `real = scale * q`, symmetric (no zero-point).  The scale is a run-time float you
+pass where a conversion needs it.
+
+```lisp
+(def-qint q-a :base char :accum int)      ; defines q-a, q-a-accum and to-q-a
+(def-type fv (vector float :address-space :global :align :compact))
+(def-type qv (vector q-a :address-space :global :align :compact))
+(def-type fc (cell float :address-space :global))
+
+(def-kernel qdot (x y s &out qx d)
+  (declare #'(fv fv fc &out qv fc => nil) (global-size :set-to 1))
+  (let ((sc  (~ s))
+        (acc (widen (to q-a 0))))             ; an accumulator, starting at 0
+    (dotimes (i (length~ x))
+      (let ((a (to-q-a (~ x i) sc))           ; round(x / sc), ties to even, saturating
+            (b (to-q-a (~ y i) sc)))
+        (set! (~ qx i) a)
+        (set! acc (+ acc (*! a b)))))         ; char x char -> int, exact
+    (set! (~ d) (to-float acc (* sc sc)))))   ; an accumulator's scale is the product of the scales
+```
+
+- **Arithmetic.**  Base values: `*!`, `+!`, `-!` (each widens to the accumulator), `max`, `min`, and
+  comparisons.  Accumulators: `+`, `-`, `max`, `min`.  Plain `+ - *` on base values is refused with "use
+  `*!`" and similar; `/` is refused.  Narrowing saturates, accumulators wrap.
+- **Conversions.**  `(to-q-a x scale)` float to q; `(to-float q scale)` q or accumulator to float, at the
+  scale's type; `(to-q-a acc multiplier)` narrows an accumulator, with `multiplier = s_a * s_b / s_out`.
+  `(to int q)` and `(to q-a 5)` are raw casts that apply no scale.  `(to-sat char x)` is the saturating
+  float-to-integer conversion on plain types.
+- **Two `def-qint`s never mix**, even with identical parameters, because the scale belongs to the data.  A
+  mixed-sign product must be declared: `(def-qint-product q-dot (q-act q-wt) :accum int)`, and then
+  `(accum q-act q-wt)` is `q-dot`.  Different scales meet in float:
+  `(to-q-out (+ (to-float x sx) (to-float b sb)) so)`.
+- `(accum T)` and `(base T)` work in any type position, including a handle's or register tile's element.
+  On the basic types both are `T`.
+- **Tensor hardware.**  Integer MMA takes 8-bit operands (`char` / `uchar` or a qint over them) and an `int`
+  accumulator.  On BMG it is `mma-accumulate-via-tile` with `(8 16 32)`, and the narrowing is a second
+  step: store the `int` tile, then `to-q-a` each element (a direct `(store-tile (to-q-a D m) ..)` is
+  refused on SPIR-V).  On NVIDIA it is `wgmma` only, K=32 per slice, with B `:col-major`, and
+  `(store-tile-at (to-q-out D m) C (r c))` narrows as it stores.  There is no integer MMA below Hopper:
+  `mma.sync` is refused.
+- **Gradients** are straight-through: `to-q` and the narrowing pass the adjoint through, zero when
+  saturated.  Train in float with the fake-quant pattern `(to-float (to-q-a x s) s)`, which gives
+  `dy/dx = 1`.  Integer MMA has no backward.  Check such gradients with `VERIFY-AUTODIFF ... fd=off
+  expect.x=...`, because finite differences see the step function.
+
+**Microfloat blocks.**  Small float codes in blocks that share a scale.  A block type is a record over
+two handles, packed codes and one scale per block:
+
+```lisp
+(def-microfloat-block mf-w :base fp4 :scale fp8-e4m3 :accum float :shape (16))   ; NVFP4
+
+(def-kernel quant (x &out c s)
+  (declare #'(mf-w-floats &out mf-w-codes mf-w-scales)
+           (global-size :derive-from s :strategy :strided))   ; one thread per block
+  (let ((w (make-mf-w :codes c :scales s)))
+    (quantize-to-mf-w x w)))
+```
+
+- Formats: `fp4` (E2M1), `fp8-e4m3`, `fp8-e5m2`, and `fp8-e8m0`, which is a scale only.  `:accum` is
+  `float`; `:shape` is one block size, even for `fp4`.
+- The block defines the handle types `NAME-codes`, `NAME-scales` and `NAME-floats`, and `make-NAME`.
+  Take the handles as kernel parameters and build the block inside: a block, or any record holding a
+  handle, cannot be a kernel parameter.
+- `quantize-to-NAME` strides over the scales, one thread per block, so size the launch from them.
+  `dequantize-from-NAME` strides over the floats; launch it from a separate kernel, because each block is
+  written by one thread and read by many.
+- One element: `(to-float w i)` decodes and scales; `(~ w i)` is the raw code.
+- Every handle must hold whole blocks.  This is not checked.
+- The scale rounds up, so a block's largest element is never clipped.  `fp4` packs the even element in
+  the low nibble.
+- No arithmetic on blocks or codes, and `(*! w w)` is refused: dequantize to `half` or `float` and use
+  the MMA paths.  (Native block-scaled MMA needs Blackwell's `tcgen05`, not yet supported.)
+- For training, `(fake-quant-NAME x y)` writes each element of `x` through the format into `y`, with
+  `dy/dx = 1` backward.  `quantize-to`, `dequantize-from` and the element reads have no gradient.
+
+---
+
+## 12. Automatic differentiation
 
 `--differentiate` compiles a kernel's backward pass: for every `&out` output it produces gradients for
 the inputs.  Most of the language is differentiable (including `sqrt`, `abs`, `clamp`, the
 transcendentals, reductions with a declared VJP, matmul).  A kernel needs inputs and at least one `&out`.
-Integer results (`floor`, bit ops) carry zero gradient.  See chapter 48.
+Integer results (`floor`, bit ops) carry zero gradient, but quantized conversions are straight-through
+(§11).  See chapter 48.
 
 ---
 
-## 12. Performance
+## 13. Performance
 
 - Start from the measured guidance in `docs/performance-levers.md`.
 - Pick the hardware profile that matches the device; it drives tile shapes, register budgets and the
@@ -389,16 +473,19 @@ local (spill) bytes the driver reports, so a spill shows up without `ptxas -v`.
 
 ---
 
-## 13. What Crisp refuses (on purpose)
+## 14. What Crisp refuses (on purpose)
 
 Recursion; unbounded loops; `let*`; `eq`-family equality; storage handles inside storage handles; incomplete
-types at the kernel boundary; `voidp` as a `def-kernel` parameter; two-argument `floor` on floats; a warp
-collective on SPIR-V without a pinned subgroup size; reusing one explicit kernel name for two template
-instantiations.  Each refusal is a compile error that says what to do instead.
+types at the kernel boundary; `voidp` as a `def-kernel` parameter; a record holding a handle (including a
+microfloat block) as a `def-kernel` parameter; two-argument `floor` on floats; a warp collective on SPIR-V
+without a pinned subgroup size; reusing one explicit kernel name for two template instantiations; defining
+an operator the compiler lowers directly (`(def-function + ...)`, also `- * / *! < <= > >= = max min`: name
+the function instead); plain `+ - *` on quantized base values (§11).  Each refusal is a compile error that
+says what to do instead.
 
 ---
 
-## 14. Checking your work
+## 15. Checking your work
 
 1. Compile for BOTH targets: `--ir-target=spv --hardware-profile=bmg` and `--ir-target=ptx`.
 2. Read the generated code when performance matters (`.ptx`, or `llvm-spirv -to-text` on the `.spv`).
@@ -413,7 +500,7 @@ instantiations.  Each refusal is a compile error that says what to do instead.
 
 ---
 
-## 15. Debugging: `die`, runtime asserts and the log
+## 16. Debugging: `die`, runtime asserts and the log
 
 None of this changes the host code that launches a kernel.  The die record and the log are module
 globals; the generated launchers (`--hoist=L0` / `--hoist=CUDA`) read them back after the kernel and print

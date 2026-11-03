@@ -18,6 +18,8 @@
 - def-constraint
 - def-type-function
 - def-qint
+- def-qint-product
+- set-accum
 - def-microfloat-block
 - def-orchestration          [T]
 

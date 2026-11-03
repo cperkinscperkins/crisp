@@ -13,4 +13,9 @@ types of the given parameters to determine which overload should be called.
 As mentioned, the property access functions that some types support can be overloaded as well (discussed later), 
 but the `make-XXXX` functions CANNOT be overloaded. 
 
+The operators the compiler lowers directly CANNOT be overloaded either: `+ - * / *! < <= > >= = max min`.
+The compiler never looks for a user definition of these, so a `(def-function + ...)` would compile and
+then never be called. It is refused where it is written, with a message to use a named function
+instead. The accessors (`~`, `XXXX~`) are deliberately overloadable and are not affected.
+
 

@@ -16,6 +16,12 @@ Thus to make them: `(make-complex :real someFloat :imag otherFloat)`
 Or declare their type: `(complex-type double)`
 
 The arithmetic functions fall out easily:
+
+> Design conflict: since endeavour 202, a `def-function` of `+ - * /` is refused, because the compiler
+> lowers those operators directly and would never call the overload (see
+> [Function Overloading](#function-overloading-)). The definitions below need either named functions
+> (`complex+`, ...) or operators that consult user overloads. Undecided.
+
 ```
 
 ;; this macro lets us use "a b c d" notation in the body of our
