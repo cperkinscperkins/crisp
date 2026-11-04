@@ -42,6 +42,18 @@ NEXT  (housekeeping-oct)
      plus we added :via :tma support, but don't see ANY kernel using that 
 - [ ] matmul contest for GPU Mode needs B200 and teneg05? support ( follow up to wgmma )
 - [ ] benchmarks need above, plus incorporation of :via :tma and possibly other code changes introduced by matmul-contest branch.  And then rerun.
+- [ ] tcgen05 for B200 
+- [ ] MMA benchmarking of new quantized ints and microfloat bloacks
+- - PLAN ??
+- - [ ] complex
+- - [ ] FFI
+- - [ ] SOA Vector / Matrix 
+- - [ ] bitonic and radix sort
+
+
+
+
+
 
 
 OPEN
@@ -183,7 +195,7 @@ OPEN
 - [ ] Support for DLPack.  dmlc.github.io/dlpack/latest  . Interop format for tensors. 
       Will be extremely useful if we want to position ourselves as premier runtime kernel compiler.
 
-      
+
 
 ### Tiles / tensors
 - [ ] hoisting: total tensor size an even multiple of the tile ("oversubscribe", identity fill

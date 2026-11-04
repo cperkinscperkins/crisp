@@ -314,18 +314,23 @@ So:
 
 ### Working with the H100 (or any rented pod)
 
-The pod bills by the minute; the API bills by the request. Division of labour:
+The pod bills by the minute; the API bills by the request. Pods are rented and released by
+`scripts/pod-session.sh`, never by hand-driven MCP calls:
 
-- **Chris owns the pod's life** -- rents it, confirms it's up, kills it. The clock never
-  runs on my mistake.
-- **Claude owns the session** -- ONE batched script via `scripts/bench-on-pod.sh` /
-  `run-on-pod.sh`, output redirected to a file ON THE POD, then
-  `scripts/pull-runpod-results.sh` and read only the compact JSON.
+- **Before renting**, Claude says what will run, on which GPU, and the cost ceiling the script
+  prints (price x `--max-minutes`), and what would make it a wasted rental. Most compiler work
+  needs no GPU at all -- develop and compile-verify locally first.
+- **One rental = one `pod-session.sh` call**, run with `run_in_background`. It creates the pod
+  with no persistent volume, arms a dead-man inside the pod (terminates it at `--max-minutes`
+  even if this machine dies), runs ONE batched command (`bench-on-pod.sh` / `run-on-pod.sh` +
+  `pull-runpod-results.sh`), then Stops and Terminates the pod and confirms it is gone.
+- Read only the compact JSON / the tail the script prints, never the run log.
+- **If the script prints the `COULD NOT BE CONFIRMED TERMINATED` banner**, Claude runs
+  `./scripts/pod-session.sh --cleanup` immediately and tells Chris.
+- The RunPod MCP is for read-only looking around (GPU availability and prices, `list-pods` to
+  confirm nothing is left). Claude never stops or deletes a pod it did not create in the session.
+- Chris can always see and kill everything at https://console.runpod.io/pods.
 
-Do NOT poll or stream live output back. A long blocking call is ONE request no matter how
-long it runs; forty status checks are forty. Before asking for a pod, say what will be run
-and what would make it a wasted rental -- and prefer to develop and compile-verify locally
-first, since most compiler work needs no GPU at all.
 
 
 Thanks again for your help. 
