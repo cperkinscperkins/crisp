@@ -157,6 +157,7 @@ int main() {
         std::printf("  :mma-shapes '((16 8 8)                 ; ARCH: tf32 -- MANDATORY, see header\n");
         std::printf("                (16 8 4)                 ;   tf32 short-K\n");
         std::printf("                (16 8 16)                ;   fp16 / bf16\n");
+        std::printf("                (16 8 32)                ;   int8 mma.sync m16n8k32 (Endeavour 207)\n");
         std::printf("                (:double 8 8 4))         ;   fp64 DMMA -- TYPED entry.  Omitting\n");
         std::printf("                                         ;   it makes `double` resolve to a\n");
         std::printf("                                         ;   non-intrinsic shape that emits an\n");

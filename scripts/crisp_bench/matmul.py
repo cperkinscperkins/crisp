@@ -477,7 +477,7 @@ def run_bin(path, M, N, K, warmup, iters, env_extra=None):
 def build_harness():
     harness = HERE / "crisp" / "bench_harness.cu"
     if harness.exists():
-        sh(["nvcc", "-O3", "-arch=sm_90", *nvcc_math_flags("ieee", False),
+        sh(["nvcc", "-O3", "-arch=" + HW["arch_target"], *nvcc_math_flags("ieee", False),
             str(harness), "-lcuda", "-o", str(HERE/"crisp/matmul_crisp")], check=True)
 
 
@@ -625,10 +625,12 @@ def l0_fixture_env(crisp_src, metacrisp):
     # CRISP_MATMUL_ELEM unset and the fixture SILENTLY defaulted to "f32" -- 4-byte buffers,
     # half the shared memory, an FLOAT32 tensormap, and a GFLOPS number for a run that moved
     # half the data.  `double` is listed FIRST so it cannot be shadowed by a prefix match.
-    m = re.search(r"matrix\s+(double|bfloat16|half|float)", src)
+    # Endeavour 207: `char` / `uchar` are the 8-bit integer operands (C is then s32).
+    m = re.search(r"matrix\s+(double|bfloat16|half|float|uchar|char)\b", src)
     if m:
         env["CRISP_MATMUL_ELEM"] = {"double": "f64", "bfloat16": "bf16",
-                                    "half": "f16", "float": "f32"}[m.group(1)]
+                                    "half": "f16", "float": "f32",
+                                    "char": "s8", "uchar": "u8"}[m.group(1)]
 
     m = re.search(r":selected-registers-per-thread\s+(\d+)", meta)
     if m:
@@ -762,10 +764,18 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
     # CRISP_MATMUL_ELEM unset and the fixture SILENTLY defaulted to "f32" -- 4-byte buffers,
     # half the shared memory, an FLOAT32 tensormap, and a GFLOPS number for a run that moved
     # half the data.  `double` is listed FIRST so it cannot be shadowed by a prefix match.
-    m = re.search(r"matrix\s+(double|bfloat16|half|float)", src)
+    # Endeavour 207: `char` / `uchar` are the 8-bit integer operands (C is then s32).
+    # Endeavour 207: an int8 kernel that REQUANTIZES its output (to-q on the store) states its
+    # multiplier in a BENCH-REQUANT-MULTIPLIER line; the fixture then reads C as s8 and applies the
+    # same rule (fp32 multiply, nearest-even, saturate).  Read, never inferred.
+    m = re.search(r";;\s*BENCH-REQUANT-MULTIPLIER:\s*([0-9.eE+-]+)", src)
+    if m:
+        env["CRISP_MATMUL_REQUANT"] = m.group(1)
+    m = re.search(r"matrix\s+(double|bfloat16|half|float|uchar|char)\b", src)
     if m:
         env["CRISP_MATMUL_ELEM"] = {"double": "f64", "bfloat16": "bf16",
-                                    "half": "f16", "float": "f32"}[m.group(1)]
+                                    "half": "f16", "float": "f32",
+                                    "char": "s8", "uchar": "u8"}[m.group(1)]
 
     km = re.search(r"\(def-kernel\s+([A-Za-z0-9_\-]+)", src)
     if km:
@@ -990,7 +1000,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
         print(f"cuda-fixed: fixture binary {harness_bin} not built", file=sys.stderr)
         return empty
     try:
-        dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90",
+        dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=" + HW["arch_target"],
                                  *hw_profile_flags(), *prec_flags,
                                  "--log-level=off", str(src)])
     except subprocess.CalledProcessError:
@@ -1005,7 +1015,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     # from it is what lets the fixture bind a staged kernel at all: for these kernels the scratch
     # tiles occupy the FIRST argument slots, so A/B/C sit at 18/27/36 rather than 0/9/18.
     try:
-        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=sm_90",
+        sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=" + HW["arch_target"],
             *hw_profile_flags(), *prec_flags, "--log-level=off", str(src)],
            capture_output=True, text=True)
     except Exception:
@@ -1102,6 +1112,18 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
                           competitor=comp_name, precision=precision,
                           denormal_handling="ftz" if ftz else "preserve", results=results)
 
+def _detect_nvidia_arch():
+    """sm_XY of GPU 0 from nvidia-smi's compute_cap ("8.0" -> "sm_80"), or None (Endeavour 207)."""
+    try:
+        p = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                           capture_output=True, text=True, timeout=10)
+        cap = (p.stdout or "").strip().splitlines()[0].strip() if p.returncode == 0 else ""
+        if re.fullmatch(r"\d+\.\d+", cap):
+            return "sm_" + cap.replace(".", "")
+    except Exception:
+        pass
+    return None
+
 def nvcc_math_flags(prec, ftz):
     b = lambda x: "true" if x else "false"
     return [f"-ftz={b(ftz)}",
@@ -1168,6 +1190,12 @@ def main():
     HW["profile_matched"]       = matched
     HW["profile_provenance"]    = provenance
     HW["hardware_profile_file"] = profile_src
+    # Endeavour 207: the NVIDIA arch is DETECTED, not assumed.  Every -arch / --ir-target-arch below
+    # used to say sm_90, which is right on an H100 and wrong on the A100 / Ada pods the int8 sync
+    # lane runs on (and on a B200).  Falls back to sm_90 when nvidia-smi cannot say.
+    if a.platform == "nvidia":
+        HW["arch_target"] = _detect_nvidia_arch() or HW["arch_target"]
+        print(f"NVIDIA arch: {HW['arch_target']}", flush=True)
     # flush=True so the gate's verdict reaches a pod terminal BEFORE the first subprocess
     # writes over it; ASCII only, because a cp1252 console mangles an em-dash to '?'.
     print(f"Hardware detected: {HW['gpu_model']}", flush=True)
@@ -1255,8 +1283,8 @@ def main():
         print(f"\n--- Running Suite with precision={prec}, ftz={ftz} ---")
         
         nv_math = nvcc_math_flags(prec, ftz)
-        nvcc_flags   = ["-O3", "-arch=sm_90", *nv_math]
-        cublas_flags = ["-O3", "-arch=sm_90", "-lcublas", *nv_math]
+        nvcc_flags   = ["-O3", "-arch=" + HW["arch_target"], *nv_math]
+        cublas_flags = ["-O3", "-arch=" + HW["arch_target"], "-lcublas", *nv_math]
         if prec == "fast":
             cublas_flags.append("-DFAST_MATH")
         sycl_flags   = ["-fsycl", "-O3", *icpx_math_flags(prec, ftz)]
@@ -1319,7 +1347,7 @@ def main():
                     return
                 crisp_prec = [f"--math-precision={prec}",
                               f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=sm_90", *hw_profile_flags(), *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
+                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=" + HW["arch_target"], *hw_profile_flags(), *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
                 all_c_ms = dev_c_ms
                 if use_fixture:
                     # THE REVIEWED FIXTURE.  (The generated harness, retired 2026-10-16, was 16-bit
@@ -1719,6 +1747,32 @@ def main():
                            f"CUBLAS_Optimal_{_tag}", cublas_flags, is_cublas=True)
 
             # §3 Situational — CLUSTERS + TMA MULTICAST (DSMEM)
+            # §2 Top — INT8 (Endeavour 207).  C (s32) = A (s8) . B (s8); "gflops" is integer GOPS.
+            # wgmma exists only on Hopper, so the wgmma kernel runs there and the mma.sync m16n8k32
+            # kernel is THE Crisp contender on A100 / Ada (and a variant on Hopper).  The peer is
+            # cuBLASLt's IMMA path in its native TN layout.
+            _hopper = HW["arch_target"].startswith("sm_90")
+            if _hopper:
+                run_target("sec2_top_int8", "matmul_int8.crisp", "matmul_int8.ptx", "Crisp",
+                           [], is_crisp=True, use_fixture=True)
+            run_target("sec2_top_int8", "matmul_int8_sync.crisp", "matmul_int8_sync.ptx",
+                       "Crisp_V_sync" if _hopper else "Crisp", [], is_crisp=True, use_fixture=True)
+            # VARIANT: the sync kernel over 8 warps (128x128 tile, 32x64 per warp) -- the 1-warp
+            # chapter-5 geometry spills its 128 accumulator registers.
+            run_target("sec2_top_int8", "matmul_int8_sync_w8.crisp", "matmul_int8_sync_w8.ptx",
+                       "Crisp_V_sync_w8", [], is_crisp=True, use_fixture=True)
+            run_target("sec2_top_int8", "cublaslt_int8.cu", "cublaslt_int8", "CUBLASLt_INT8",
+                       cublas_flags + ["-lcublasLt"], is_cublas=True)
+
+            # §4 int8 epilogue — REQUANTIZE (Endeavour 207): C (s8) = sat8(rne(acc * m)).  The Crisp
+            # kernel narrows in its store (205's to-q on wgmma, Hopper only); the peer is cuBLASLt with
+            # an s8 output and a float alpha -- the same work in one library call.
+            if _hopper:
+                run_target("sec4_int8_requant", "matmul_int8_requant.crisp", "matmul_int8_requant.ptx",
+                           "Crisp_Requant", [], is_crisp=True, use_fixture=True)
+            run_target("sec4_int8_requant", "cublaslt_int8_requant.cu", "cublaslt_int8_requant",
+                       "CUBLASLt_Requant", cublas_flags + ["-lcublasLt"], is_cublas=True)
+
             run_target("sec3_cluster_multicast", "matmul_tile128.crisp",
                        "matmul_tile128.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("sec3_cluster_multicast", "matmul_tile128_multicast.crisp",
@@ -1967,6 +2021,18 @@ def main():
             # because SYCL-TLA lacks fp16 on Xe2 (it is TF32 it does not implement).
             run_target("sec2_top_fp16", "sycl_tla_peer_fp16.cpp", "sycl_tla_peer_fp16", "SYCL-TLA_FP16", sycl_tla_flags, is_sycl=True)
             run_target("sec2_top_fp16", "onemkl_fp16.cpp", "onemkl_fp16", "OneMKL_FP16", sycl_flags, is_sycl=True, is_cublas=True)
+
+            # §2 Top — INT8 (Endeavour 207).  C (s32) = A (s8) . B (s8); the "gflops" field is
+            # integer GOPS.  The Crisp kernel is the fp16 peer geometry with the XMX int8 shape.
+            # The peer is oneDNN, not oneMKL: oneMKL's integer GEMM is a CPU routine.
+            run_l0_crisp("sec2_top_int8", "matmul_bmg_int8.crisp")
+            # VARIANTS: K one MMA deep (32) and four deep (128) around the shipped 64, and the
+            # shipped kernel with its prefetch removed (what the 1-byte prefetch buys).
+            run_l0_crisp("sec2_top_int8", "matmul_bmg_int8_k32.crisp", "Crisp_V_k32")
+            run_l0_crisp("sec2_top_int8", "matmul_bmg_int8_k128.crisp", "Crisp_V_k128")
+            run_l0_crisp("sec2_top_int8", "matmul_bmg_int8_pf0.crisp", "Crisp_V_pf0")
+            run_target("sec2_top_int8", "onednn_int8.cpp", "onednn_int8", "OneDNN_INT8",
+                       sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
             # §4 Activation Ch 1 — Fused ReLU
             run_l0_crisp("sec4_fused_relu", "matmul_bmg_prefetch_relu.crisp",

@@ -1,0 +1,43 @@
+;; Section 2 top MMA kernel -- NVIDIA A100 / Ada (sm_80 / sm_89), int8 through mma.sync (Endeavour 207).
+;;
+;; C (s32) = A (s8) . B (s8) through mma.sync.aligned.m16n8k32.  wgmma does not exist before Hopper, so
+;; this is the int8 kernel for the A100 / Ada pods.  A port of chap5_multistage_ring_bf16: one warp per
+;; 64x64 output tile, a 2-deep cp.async ring through shared memory, B :col-major (mma.sync's .col B).
+;; K is walked 32 at a time -- one m16n8k32 deep, the same 64 bytes per row as the bf16 kernel's 16 x 2.
+;; It is the ladder's chapter-5 geometry, not a tuned top kernel; see the endeavour doc.
+;;
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-ring (make-scratch-matrix-ring char (64 32) :ring-count 2))
+        (B-ring (make-scratch-matrix-ring char (32 64) :ring-count 2))
+        (C-tile (make-register-tile int (64 64) 0))
+        (K      (inner-dimension A B))
+        (bars   (make-async-barrier-ring :ring-count 2 :mode :linear :arrivals 2)))
+    (tile-stride C (64 64) (grid-y grid-x)
+
+      (fill-tile C-tile 0)
+
+
+      (dotimes (i 2)
+        (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get bars (to-ulong i)))
+        (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get bars (to-ulong i))))
+
+
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+        (let ((slot (mod grid-k (to-ulong 2))))
+          (await (ring-get bars slot))
+          (mma-accumulate-via-tile (16 8 32) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+          (sync-workgroup)
+          (let ((next-k (+ grid-k (to-ulong 2))))
+            (let ((more-k? (to-workgroup-uniform (< next-k (/ (to-ulong K) (to-ulong 32))))))
+              (when more-k?
+                (load-tile A (ring-get A-ring slot) (grid-y next-k) :barrier (ring-get bars slot))
+                (load-tile B (ring-get B-ring slot) (next-k grid-x) :barrier (ring-get bars slot)))))))
+
+
+      (store-tile C-tile C (grid-y grid-x)))))

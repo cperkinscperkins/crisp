@@ -1,0 +1,33 @@
+;; COMPILE-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100]: PASS
+;; SKIP-DEFAULT-PASS
+;;
+;; Endeavour 207 ON-METAL (A100 / Ada): uchar x char -> int through mma.sync m16n8k32.  This is the
+;; spec 204 could not write -- nothing local proves a lane layout; a wrong one compiles, emits the
+;; right instruction and computes garbage.  64 x 64 x 128: 32 output fragments walked by one warp,
+;; four K-steps of 32 through SLM, so the A and B K-offsets (+16 bytes in the second register pair)
+;; and the tile-to-tile offsets are all exercised.
+;;
+;; MMA-DIMS: 64 64 128
+;; HOIST-ARCH: sm_80
+;; HOIST-HARDWARE-PROFILE: h100
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix uchar :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel sync_u8s8_metal (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((A-tile (make-scratch-matrix uchar (16 32)))
+        (B-tile (make-scratch-matrix char (32 8)))
+        (C-tile (make-register-tile int (16 8) 0))
+        (K      (inner-dimension A B)))
+    (matrix-multiply-tile-stride C C-tile K 32 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (16 8 32) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

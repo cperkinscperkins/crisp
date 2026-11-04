@@ -6,7 +6,7 @@
 //
 // POINTERS ARE void* device pointers from cudaMalloc (or a CUdeviceptr cast to void*), so every harness
 // calls the same functions regardless of how it spells its element type.  The encoding is named
-// explicitly: "f32" | "f64" | "f16" | "bf16".  Naming the wrong one fails verification, never silently.
+// explicitly: "f32" | "f64" | "f16" | "bf16" | "s8" | "u8".  Naming the wrong one fails verification, never silently.
 //
 // CONTEXT.  These run in the runtime's PRIMARY context.  A harness that creates its own context through
 // the driver API (the Crisp fixture did) must use the primary one instead, or these kernels cannot
@@ -36,6 +36,12 @@ __global__ void crisp_fill_f64_kernel(double *p, uint64_t n, uint32_t mod, doubl
 }
 
 // 16-bit operands: host-encoded bit patterns, never a float converted on the device (fill_patterns16).
+// Endeavour 207: 8-bit integer operands.  0..4 is the same byte in s8 and u8.
+__global__ void crisp_fill_u8_kernel(uint8_t *p, uint64_t n, uint32_t mod) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) p[i] = (uint8_t)(i % mod);
+}
+
 __global__ void crisp_fill_u16_kernel(uint16_t *p, uint64_t n, uint32_t mod,
                                     uint16_t p0, uint16_t p1, uint16_t p2, uint16_t p3, uint16_t p4) {
     const uint64_t i = (uint64_t)blockIdx.x * (uint64_t)blockDim.x + (uint64_t)threadIdx.x;
@@ -69,6 +75,8 @@ inline void cuda_fill_encoded(void *ptr, uint64_t n, uint32_t mod, const char *e
         crisp_fill_f32_kernel<<<grid, block>>>(static_cast<float *>(ptr), n, mod);
     } else if (e == "f64") {
         crisp_fill_f64_kernel<<<grid, block>>>(static_cast<double *>(ptr), n, mod, FILL_F64_SCALE);
+    } else if (e == "s8" || e == "u8") {
+        crisp_fill_u8_kernel<<<grid, block>>>(static_cast<uint8_t *>(ptr), n, mod);
     } else if (e == "f16" || e == "bf16") {
         uint16_t pat[5];
         fill_patterns16(enc, pat);
@@ -87,14 +95,26 @@ inline void cuda_zero(void *ptr, size_t bytes) {
 }
 
 // Strided verification of C (M x N) through its strides; reads back only the sampled spans.
-// `enc` is C's encoding: "f32" (everything but fp64) or "f64" (which also switches on the oracle's scale
-// and tolerance).  POST applies a section-4 activation to the expected value.
+// `enc` is C's encoding: "f32" (every float type but fp64), "f64" (which also switches on the oracle's
+// scale and tolerance) or "s32" (the 8-bit integer MMAs, Endeavour 207; exact).  POST applies a section-4 activation to the expected value.
 inline VerifyResult cuda_verify(const void *C, const char *enc, uint64_t M, uint64_t N, uint64_t K,
                                 Strides a, Strides b, Strides c,
                                 const std::function<double(double)> &post = {}) {
     const bool f64 = std::string(enc) == "f64";
+    const bool s32 = std::string(enc) == "s32";   // Endeavour 207: the 8-bit integer MMAs' accumulator
+    const bool s8  = std::string(enc) == "s8";    // Endeavour 207: a requantized (narrowed) C
     ReadSpan read = [&](uint64_t first, uint64_t count, std::vector<double> &out) {
-        if (f64) {
+        if (s8) {
+            std::vector<int8_t> buf((size_t)count);
+            detail::cuda_must(cudaMemcpy(buf.data(), static_cast<const char *>(C) + first,
+                                         (size_t)count, cudaMemcpyDeviceToHost), "readback");
+            out.assign(buf.begin(), buf.end());
+        } else if (s32) {
+            std::vector<int32_t> buf((size_t)count);
+            detail::cuda_must(cudaMemcpy(buf.data(), static_cast<const char *>(C) + first * sizeof(int32_t),
+                                         (size_t)count * sizeof(int32_t), cudaMemcpyDeviceToHost), "readback");
+            out.assign(buf.begin(), buf.end());
+        } else if (f64) {
             std::vector<double> buf((size_t)count);
             detail::cuda_must(cudaMemcpy(buf.data(), static_cast<const char *>(C) + first * sizeof(double),
                                          (size_t)count * sizeof(double), cudaMemcpyDeviceToHost), "readback");

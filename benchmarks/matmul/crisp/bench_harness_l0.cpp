@@ -30,7 +30,7 @@
 //          CRISP_MATMUL_LOCAL   local size "x,y,z"                            (default "16,1,1")
 //          CRISP_MATMUL_GRID    "strided" | "one-thread-per"                  (default "strided")
 //          CRISP_MATMUL_TILE    output tile "TM,TN", for GRID=strided         (default "32,64")
-//          CRISP_MATMUL_ELEM    A/B element type: "f32" | "bf16" | "f16"      (default "f32")
+//          CRISP_MATMUL_ELEM    A/B element type: "f32" | "bf16" | "f16" | "s8" | "u8"  (default "f32"; s8/u8 make C s32)
 //          CRISP_MATMUL_ARG_A   A's FIRST argument index                      (default 0)
 //          CRISP_MATMUL_ARG_B   B's FIRST argument index                      (default 9)
 //          CRISP_MATMUL_ARG_C   C's FIRST argument index                      (default 18)
@@ -159,7 +159,10 @@ int main(int argc, char **argv) {
     const std::string build_flags = bf_env ? std::string(bf_env) : std::string("-ze-opt-large-register-file");
 
     const bool ab16 = (elem == "bf16" || elem == "f16");
-    const size_t ab_bytes = ab16 ? 2 : 4;
+    // Endeavour 207: 8-bit integer operands.  C is then s32 (the accumulator), not f32 -- same
+    // 4 bytes, so only the readback below has to know.
+    const bool ab8 = (elem == "s8" || elem == "u8");
+    const size_t ab_bytes = ab16 ? 2 : ab8 ? 1 : 4;
 
     // Argument layout, from the metacrisp via matmul.py (see SCRATCH in the header).
     const uint32_t iA = (uint32_t)std::strtoul(env_or("CRISP_MATMUL_ARG_A", "0").c_str(), nullptr, 10);
@@ -278,7 +281,8 @@ int main(int argc, char **argv) {
     }
     // f32 operands: fill_f32.  16-bit operands (f16, bf16): fill_u16, writing host-encoded bit patterns
     // (see fill_patterns16 in common/fill_verify.h for why the device never converts a float here).
-    const std::string fill_kname = ab16 ? "fill_u16" : "fill_f32";
+    // 8-bit operands (s8, u8): fill_u8 -- 0..4 is the same byte in both encodings (207).
+    const std::string fill_kname = ab16 ? "fill_u16" : ab8 ? "fill_u8" : "fill_f32";
     ze_kernel_desc_t fkdesc{ZE_STRUCTURE_TYPE_KERNEL_DESC};
     fkdesc.pKernelName = fill_kname.c_str();
     ze_kernel_handle_t fill_kernel;
@@ -519,16 +523,21 @@ int main(int argc, char **argv) {
         auto must = [](ze_result_t rc, const char *what) {
             if (rc != ZE_RESULT_SUCCESS) { std::cerr << what << " failed: 0x" << std::hex << rc << std::endl; std::exit(2); }
         };
+        // C is f32 for every float element type and s32 for the 8-bit integer ones (207).  Both
+        // are 4 bytes; reading s32 bits as float would turn an exact 640 into 9e-43.
         std::vector<float> buf((size_t)count);
+        std::vector<int32_t> ibuf(ab8 ? (size_t)count : 0);
+        void *dst = ab8 ? (void *)ibuf.data() : (void *)buf.data();
         ze_command_list_handle_t cl_back;
         must(zeCommandListCreate(ctx, device, &cld, &cl_back), "clBack");
-        must(zeCommandListAppendMemoryCopy(cl_back, buf.data(), (char *)C + first * sizeof(float),
+        must(zeCommandListAppendMemoryCopy(cl_back, dst, (char *)C + first * sizeof(float),
                                            count * sizeof(float), nullptr, 0, nullptr), "d2hSpan");
         must(zeCommandListClose(cl_back), "closeBack");
         must(zeCommandQueueExecuteCommandLists(queue, 1, &cl_back, nullptr), "execBack");
         must(zeCommandQueueSynchronize(queue, UINT64_MAX), "syncBack");
         zeCommandListDestroy(cl_back);
-        out.assign(buf.begin(), buf.end());
+        if (ab8) out.assign(ibuf.begin(), ibuf.end());
+        else     out.assign(buf.begin(), buf.end());
     };
     // A is M x K, B is K x N, C is M x N, all row-major as bound above.
     const crisp_bench::VerifyResult vr = crisp_bench::verify_sampled(

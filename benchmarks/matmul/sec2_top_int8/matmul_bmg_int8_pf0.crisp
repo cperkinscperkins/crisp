@@ -1,0 +1,27 @@
+;; Section 2 top MMA kernel -- Intel BMG, int8 (Endeavour 207).
+;;
+;; C (s32) = A (s8) . B (s8).  A port of sec2_top_fp16/matmul_bmg_fp16_wg256_pf2.crisp -- the
+;; peer geometry (256x256 output tile over 32 subgroups, prefetch distance 2) -- with the
+;; element types swapped and the XMX int8 shape (8 16 32).  K is walked 64 at a time -- two int8 MMAs
+;; deep, the same 64 bytes per row as the fp16 kernel's K step of 32.  K=32 (one MMA deep) measured
+;; 169-175 TOPS at 4096-8192 against this kernel's 184-193; see matmul_bmg_int8_k32.crisp.
+;;
+;; VARIANT PF0: NO PREFETCH -- the control for the warp-partitioned prefetch in matmul_bmg_int8.
+
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 512))
+  (let ((A-tile (make-register-tile char (256 64) 0 :operand :a :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile char (64 256) 0 :operand :b :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile int (256 256) 0 :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true))))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 64 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 32) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

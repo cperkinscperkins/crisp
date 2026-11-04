@@ -1,0 +1,34 @@
+;; Section 2 top MMA kernel -- Intel BMG, int8 (Endeavour 207).
+;; VARIANT K32: K walked 32 at a time (one int8 MMA deep).  The shipped kernel walks 64.
+;;
+;; C (s32) = A (s8) . B (s8).  A port of sec2_top_fp16/matmul_bmg_fp16_wg256_pf2.crisp -- the
+;; peer geometry (256x256 output tile over 32 subgroups, prefetch distance 2) -- with the
+;; element types swapped and the XMX int8 shape (8 16 32).  K is walked 32 at a time, which is
+;; ONE int8 MMA deep and half the bytes per row of the fp16 kernel's K step.
+;;
+;; THE PREFETCH IS WARP-PARTITIONED in 32x32 blocks (32 rows of 32 bytes), the 1-byte analogue
+;; of the fp16 kernel's 32x16.  Crisp gained the 1-byte shape in 207 (D-207-2); an unpartitioned
+;; prefetch of the whole 256-row footprint is not a legal 8-bit block (height must be <= 32).
+
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 512))
+  (let ((A-tile (make-register-tile char (256 32) 0 :operand :a :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (B-tile (make-register-tile char (32 256) 0 :operand :b :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (C-tile (make-register-tile int (256 256) 0 :warps '(true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true true)))
+        (n-k-steps (/ (to-ulong (inner-dimension A B)) (to-ulong 32))))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 32 (grid-y grid-x grid-k)
+      (let ((prefetch-k (+ grid-k (to-ulong 2))))
+      (when (< prefetch-k n-k-steps)
+        (prefetch-tile A (grid-y prefetch-k) :size (256 32) :warp-partitioned true)
+        (prefetch-tile B (prefetch-k grid-x) :size (32 256) :warp-partitioned true))
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 32) C-tile A-tile B-tile))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))
