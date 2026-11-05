@@ -40,6 +40,102 @@ that the host provides and the hoist matches.  Q2: metal testing on RunPod via `
     `./scripts/pod-session.sh --gpu "NVIDIA B200" --image cu128 --max-minutes 25 -- bash -c 'put_temp_files_here/208/metal/on-pod.sh {host} {port}'`
     The ceiling is $3.33.
 
+## Phase 4: block-scaled microfloats (APPROVED 2026-11-05)
+
+**Chris approved** D-208-10/11 (a matrix of a block type is its codes; scales are a separate tensor tied by
+`scale-layout`), D-208-16 (the `(*! w w)` refusal stays; the plan is corrected), and the deferrals.
+
+- **D-208-17 `matrix-multiply-tile-stride` accepts a tcgen05 accumulator** (added after Chris asked).
+  - Before this, the macro failed: it reads the tile shape with `(extents~ C-tile)`, which a tcgen05
+    accumulator does not have.  Its reset for a non-register tile is `fill-tile` + a workgroup sync,
+    which is wrong for tensor memory.
+  - Now the tile shape comes from the accumulator's (M N).  The per-tile reset is the re-initialisation
+    `(%tcgen05-reset D)`, which costs nothing because the first MMA overwrites.
+  - It covers the synchronous form.  A warp-specialized pipeline splits the K loop between roles, so it
+    stays `tile-stride` + `with-warp-specialization`, as on Hopper.
+
+## Phase 4 proposal: block-scaled microfloats (for review, 2026-11-05)
+
+**What the hardware does.**  The multiply reads fp4 / fp8 codes from shared memory, as before.  It reads
+one scale per 16 or 32 K-elements of each row from **tensor memory**: two more address operands.  The
+scales reach tensor memory from shared memory by `tcgen05.cp`.  The accumulator is f32.  There are
+three kinds, all M = 128 (from the CUTLASS SM100 atoms and the PTX ISA, section 9.7.18.10.7):
+
+| block (206) | kind | scale | per | K / instr | K per 128-byte atom |
+|---|---|---|---|---|---|
+| `:base fp4 :scale fp8-e4m3 :shape (16)` = **NVFP4** | `mxf4nvf4.block_scale.scale_vec::4X` | ue4m3 | 16 | 64 | 256 |
+| `:base fp4 :scale fp8-e8m0 :shape (32)` = **MXFP4** | `mxf4.block_scale.scale_vec::2X` | ue8m0 | 32 | 64 | 256 |
+| `:base fp8-e4m3` or `fp8-e5m2` `:scale fp8-e8m0 :shape (32)` = **MXFP8** | `mxf8f6f4.block_scale` (1X) | ue8m0 | 32 | 32 | 128 |
+
+**The scale layout (Q1, decided (b)).**  There is one layout, and it is cuBLASLt's, CUTLASS's
+(`Sm1xxBlockScaledBasicChunk`) and torchao's `to_blocked`.  Scales come in 512-byte atoms of 128 rows x 4
+scales.  Within an atom, row r and scale c sit at `(r mod 32)*16 + (r div 32)*4 + c`.  Atoms run along
+K first, then down the rows.  So a checkpoint's scales, or cuBLASLt's, can be used as they are.
+
+**Proposed surface:**
+
+```lisp
+(def-microfloat-block nvfp4 :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+
+(def-type a-mat (matrix nvfp4 :address-space :global :align :compact :contiguous-term :row-major))  ; A's codes, (M K)
+(def-type a-scl (vector (scale nvfp4) :address-space :global :align :compact))                     ; A's scales
+
+(def-kernel k (A SA B SB &out C)
+  (declare #'(a-mat a-scl b-mat b-scl &out c-mat)
+           (scale-layout SA :of A :blocked-128x4)
+           (scale-layout SB :of B :blocked-128x4))
+  (let ((A-tile (make-scratch-matrix nvfp4 (128 256)))          ; codes AND scales, in shared memory
+        (B-tile (make-scratch-matrix nvfp4 (256 256)))
+        (D      (make-tcgen05-accumulator float (128 256) 0.0)) ...)
+    (load-tile A A-tile (gy gk) :scales SA :barrier bar :swizzle :128b)
+    (load-tile B B-tile (gx gk) :scales SB :barrier bar :swizzle :128b)
+    (await bar)
+    (tcgen05-accumulate-via-tile (128 256 256) D A-tile B-tile :swizzle :128b)
+    (store-tile-at (to-bfloat16 D) C (row col) :via :tma)))
+```
+
+- **D-208-10 A matrix of a block type is its codes.**  `(matrix nvfp4 ..)` holds the packed codes of an
+  (M K) matrix, K-major: an fp4 row of K elements is K/2 bytes, with the even element in the low nibble
+  (D-206-3).  The block type carries the format, scale format and block size, so the compiler picks
+  the kind and checks everything from one name.  That way codes cannot be paired with the wrong
+  scales' format.
+- **D-208-11 The scales are a separate kernel tensor**, as in 206, where codes and scales are two
+  handles.  `(scale-layout SA :of A :blocked-128x4)` is the declare Q1 asked for.  It names the layout and
+  ties SA to A's extents.  The hoist sizes, fills and documents SA from it.  `:blocked-128x4` is the only
+  layout offered.  A's rows must be a multiple of 128 and its K a multiple of 4 blocks (the atom).
+  Other extents are refused when they are compile-time constants, and the host must pad otherwise,
+  as cuBLASLt's does.
+- **D-208-12 A scratch tile of a block type holds codes and scales.**  `load-tile .. :scales SA`
+  TMA-loads the codes (128-byte swizzle, as today) and bulk-copies the tile's scale atoms.  They are
+  contiguous in this layout: a 128 x 256 NVFP4 tile is 4 atoms, 2 KB.  Both arrive on the same
+  barrier.
+- **D-208-13 The compiler stages the scales into tensor memory.**  Just before the multiplies, the
+  issuing thread runs `tcgen05.cp.32x128b.warpx4` from the tile's scale atoms into scale columns that
+  the compiler assigns beside the accumulators.  They count toward the 512: an NVFP4 128 x 256 x 256
+  step takes 16 + 16 columns.  The author writes nothing for it.
+- **D-208-14 K per call is one 128-byte atom of codes**: 256 for fp4, 128 for fp8.  This matches every
+  earlier kind.
+- **D-208-15 Forward-only**, as D-208-8 (SKIP-WITH).
+- **D-208-16 206's refusal of `(*! w w)` stays.**  The plan said this phase would replace it.  But
+  `*!` is a 1-D product of two blocks, while tcgen05 is a tile multiply.  Tiles are the MMA surface
+  here, as for every other element type.  I propose correcting the plan, not adding a 1-D MMA path.
+- **Not in this phase:**
+  - NVFP4's per-tensor fp32 global scale (D-206-9 deferred it).  An epilogue multiply would carry it.
+  - fp6 (e2m3 / e3m2), which 206 has no format for.
+  - Mixed formats such as e4m3 x e5m2.  These are allowed by `mxf8f6f4`, and are easy to add later.
+- **Metal.**  The CUDA harness fills the codes and the scales in the blocked layout.  Its reference is
+  built from 206's decode, in C.  An MMA_CORRECT therefore also checks D-206-3's nibble order against
+  the hardware.
+
+**Steps:**
+1. ISA ground truth: the tensor-memory scale layout and the `tcgen05.cp` descriptor.
+2. fp4 / fp8 scratch tiles and TMA.
+3. The scale load and copy.
+4. The three kinds.
+5. Error specs.
+6. The harness.
+7. One B200 rental.
+
 ## Phase 3 (2026-11-05): int8 / qint, built, and MMA_CORRECT on a B200 (specs 08-11)
 
 - **The surface is the other MMA paths' integer surface, unchanged:**

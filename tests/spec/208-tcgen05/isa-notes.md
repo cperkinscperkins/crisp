@@ -145,3 +145,49 @@ K-major with 128B swizzle has the canonical layout `Swizzle<3,4,3> o ((8,n),2):(
   columns of its lane.  N is in {1, 2, 4, ..., 128}.
 - `tcgen05.wait::ld.sync.aligned;` must come before the registers are used for memory ordering.
 - `.pack::16b` packs two 16-bit columns into one register.
+
+## Phase 4: block scaling (pinned 2026-11-05)
+
+Sources: PTX ISA 9.7.18.10.7 (text dump at `put_temp_files_here/208/ptxisa/ptx.txt`, figures not in it);
+CUTLASS `mma_sm100_desc.hpp` (`InstrDescriptorBlockScaled`), `mma_sm100_umma.hpp`
+(`SM100_MMA_MXF8F6F4_SS`, `SM100_MMA_MXF4_SS`), `detail/sm100_blockscaled_layout.hpp`
+(`Sm1xxBlockScaledBasicChunk`), `collective/sm100_blockscaled_mma_warpspecialized.hpp` (the MMA loop),
+`atom/mma_traits_sm100.hpp` (`get_utccp_smem_desc_tensor`).
+
+**Instructions** (M = 128 only, N a multiple of 8 in [8, 256]; ptxas 12.8 wants the `scale_vec::NX`
+spelling, `.block16/.block32` need CUDA 12.9):
+
+    tcgen05.mma.cta_group::1.kind::mxf8f6f4.block_scale              [d], adesc, bdesc, idesc, [sfa], [sfb], p;  // 1X, K=32
+    tcgen05.mma.cta_group::1.kind::mxf4.block_scale.scale_vec::2X     [d], adesc, bdesc, idesc, [sfa], [sfb], p;  // K=64
+    tcgen05.mma.cta_group::1.kind::mxf4nvf4.block_scale.scale_vec::4X [d], adesc, bdesc, idesc, [sfa], [sfb], p;  // K=64
+
+**Block-scaled instruction descriptor** (no c_format; D is always f32):
+bits [4,6) b_sf_id; [7,10) a_format; [10,13) b_format; 15/16 a/b major (0 = K); [17,23) N>>3;
+**bit 23 scale_format (0 UE4M3, 1 UE8M0)**; [24,29) M>>4; **[29,31) a_sf_id**; bit 31 k_size (0).
+Formats: kind::mxf8f6f4 E4M3 0, E5M2 1, E2M3 3, E3M2 4, E2M1 5 (unpacked, 1 byte each);
+kind::mxf4 / mxf4nvf4: E2M1 = 1 (packed, 2 per byte).
+
+**Global scale layout (`:blocked-128x4`)** = cuBLASLt / CUTLASS `SfKMajorAtom` / torchao `to_blocked`.
+512-byte atoms of 128 rows x 4 scales: row r, scale c at `(r mod 32)*16 + (r div 32)*4 + c`.  Atoms run
+along K first: atom (rb, kb) at `(rb * ceil(Ksf/4) + kb) * 512`, Ksf = K / block-size.
+
+**Tensor-memory scale layout.**  `tcgen05.cp.cta_group::1.32x128b.warpx4 [taddr], sdesc` copies one atom
+(32 rows x 16 bytes) into 4 columns of the 32-lane partition and multicasts it to all four (the ISA:
+"scale factor for B needs to be duplicated to all 32 lane partitions").  So row r is lane r mod 32,
+column word r div 32, and the word's 4 bytes are 4 consecutive K-block scales.  For B with N > 128 the
+column is n div 32: atom j at columns 4j..4j+3 (CUTLASS's N=64 / N=192 tiles shift SFB by 2 words per
+64 columns).
+- 4X (nvfp4, K=64 = 4 scales): instruction kk uses its own atom, SF_ID 0.
+- 2X (mxf4, K=64 = 2 scales): two instructions share an atom; SF_ID = 0, 2 (half-word offset, in bytes).
+- 1X (mxf8, K=32 = 1 scale): four instructions share an atom; SF_ID = 0..3 (byte).
+SF_ID is in the instruction descriptor, so each kk has its own constant idesc.
+
+**tcgen05.cp source descriptor** (`get_utccp_smem_desc_tensor` = `make_umma_desc<K>` over the atom's core
+matrices, INTERLEAVE): start >> 4, SBO = 128 bytes (8-row core matrices are 128 B apart), layout 0,
+version 1 (bit 46).  LBO is the stride along K, and a 128-bit-wide copy has one core matrix along K.
+**LBO = 0 is my reading, unverified until metal.**
+
+**Ordering.**  CUTLASS issues the copies from the same elected thread right before the MMAs, with no
+fence between, into the SAME scale columns every K-step.  The tensor pipe keeps one thread's tcgen05
+ops in order.  The `tcgen05.commit` after the MMAs also covers the copies, so the `:on-complete`
+slot release is still correct.

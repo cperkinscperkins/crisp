@@ -1,0 +1,35 @@
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_100a]: validate-ptx-tcgen05-loop
+;; SKIP-DEFAULT-PASS
+;; SKIP-WITH[--differentiate]: "tcgen05 has no backward yet (D-208-8)"
+;;
+;; Endeavour 208 D-208-17 -- spec 02's kernel written with matrix-multiply-tile-stride.  The macro takes the
+;; tile shape from the tcgen05 accumulator's (M N), and a :let-bound accumulator is fresh every output tile,
+;; so there is no reset to write (bound outside, the macro emits (set! D (%tcgen05-reset D))).  Both forms
+;; compile to PTX instruction-identical to spec 02's hand-written tile-stride + dotimes (checked by hand,
+;; only labels and comments differ), so spec 02's validator applies unchanged.
+;;
+;; MMA-DIMS: 256 256 256
+;; HOIST-ARCH: sm_100a
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tcgen05_mmts (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 256) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix bfloat16 (128 64)))
+        (B-tile (make-scratch-matrix bfloat16 (128 64)))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :block)))
+    (matrix-multiply-tile-stride C D K 64 (grid-y grid-x grid-k)
+      :let ((D (make-tcgen05-accumulator float (128 128) 0.0)))
+      :body
+      (load-tile A A-tile (grid-y grid-k) :barrier bar :swizzle :128b)
+      (load-tile B B-tile (grid-x grid-k) :barrier bar :swizzle :128b)
+      (await bar)
+      (tcgen05-accumulate-via-tile (128 128 64) D A-tile B-tile :swizzle :128b)
+      :epilogue
+      (store-tile D C (grid-y grid-x)))))

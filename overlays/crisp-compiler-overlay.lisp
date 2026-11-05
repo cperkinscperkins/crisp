@@ -2375,3 +2375,100 @@
                                                                (third (gethash src-type *tcgen05-acc-dims*)))
                                 env context location))
           (analyze-store-tile-at-mma expr env context location)))))
+
+;;;; ======================================================================
+;;;; Endeavour 208 D-208-17 -- matrix-multiply-tile-stride with a tcgen05 accumulator.
+;;;; See tests/spec/208-tcgen05/tcgen05.md.
+;;;; ======================================================================
+
+;; src/analysis/control.lisp
+(defvar *mmts-tcgen05-tile* nil
+  "Endeavour 208 (D-208-17).  While a matrix-multiply-tile-stride whose C-tile is a tcgen05 accumulator
+   is lowered: that C-tile's symbol.  %mmts-reset-forms then resets it by re-initialisation instead of
+   fill-tile + a workgroup sync.  NIL otherwise.")
+
+;; src/analysis/control.lisp
+(defun %mmts-reset-forms (c-tile let-bindings tile-spec reset-value fill-sym sync-sym)
+  "The per-OUTPUT-TILE accumulator reset (BUG 036), decided by WHERE the C-tile is bound.
+
+   Measured 2026-09-17 by compiling both shapes and reading the LLVM IR: a register tile
+   bound INSIDE tile-stride emits its zero CompositeConstruct + store in the grid-x loop
+   body, after grid-x is stored and before the K loop is entered -- precisely the slot this
+   function's fill would occupy.  Bound in the ENCLOSING let it lands in the kernel entry
+   block instead, once per WORKGROUP, which is the BUG 036 exposure.
+
+   So:
+     * register tile in :let      -> NOTHING.  The binding already is the per-tile reset;
+                                    a fill here would be a redundant full-tile zero-write on
+                                    the hot path, correct and invisible to MMA_CORRECT.
+     * register tile outside      -> fill to its DECLARED INIT (pre-167 behaviour, kept).
+     * scratch tile, either place -> fill to 0.0 PLUS a barrier.  make-scratch-matrix takes
+                                    no init, so a scratch tile never self-resets wherever it
+                                    is bound; and fill-tile on scratch is a workgroup-
+                                    collective write that inserts no barrier of its own, so
+                                    the macro (its caller) supplies one.  Endeavour 167
+                                    behaviour change: before this, %mmts-lower gated the
+                                    reset on REGISTER-P and scratch got nothing, leaving
+                                    every scratch call site to hand-write it.
+     * tcgen05 accumulator        -> Endeavour 208 (D-208-17), C-TILE eq *mmts-tcgen05-tile*.
+                                    Bound in :let: NOTHING, the binding is fresh every tile.
+                                    Bound outside: (set! D (%tcgen05-reset D)), which marks it
+                                    FRESH so the first MMA overwrites -- no write to tensor
+                                    memory, no barrier."
+  (let* ((entry      (and (listp let-bindings) (assoc c-tile let-bindings)))
+         (register-p (and (listp tile-spec) tile-spec (every #'integerp tile-spec))))
+    (cond
+      ;; Endeavour 208: a tcgen05 accumulator resets by re-initialisation (or its :let binding).
+      ((and *mmts-tcgen05-tile* (eq c-tile *mmts-tcgen05-tile*))
+       (if entry
+           nil
+           (list (list (intern "SET!" (find-package :crisp-language)) c-tile
+                       (list (intern "%TCGEN05-RESET" (find-package :crisp.compiler)) c-tile)))))
+      ;; Bound in :let and it is a register tile -> the binding resets it. Emit nothing.
+      ((and entry (%register-tile-init-form-p (second entry))) nil)
+      ;; Register tile bound in the enclosing let.
+      ((and register-p (null entry)) (list (list fill-sym c-tile reset-value)))
+      ;; Everything else is a scratch accumulator: fill + barrier.
+      (t (list (list fill-sym c-tile 0.0) (list sync-sym))))))
+
+;; src/analysis/control.lisp
+(defun analyze-matrix-multiply-tile-stride-expression (expr env context location)
+  "Analyzer for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) SECTIONS...).
+
+   A register C-tile needs a COMPILE-TIME (M N) size-list tile-spec (a register tile has no
+   extents), a scratch C-tile is a real tensor and passes itself as the spec.  Pre-167 the
+   register case could only be recognised by the pre-lowering in src/mma.lisp, which reads
+   the ENCLOSING let; when the tile is bound in :let the constructor is right here, so this
+   path handles it and the emitted inner let trips the SROA explosion on its own.
+
+   Endeavour 208 (D-208-17): a tcgen05 accumulator C-tile -- bound in :let or outside -- takes its
+   tile-spec from its (M N) (it has no extents~), and *mmts-tcgen05-tile* tells %mmts-reset-forms
+   to reset it by re-initialisation."
+  (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
+      (%mmts-parse expr location)
+    (let* ((entry     (%mmts-let-accumulator-entry c-tile body location))
+           (ctor      (and entry (second entry)))
+           (reg-ctor  (and ctor (%register-tile-init-form-p ctor) ctor))
+           ;; A :let-bound C-tile cannot name ITSELF as the tile-spec: tile-stride reads the
+           ;; spec outside the let the lowering emits, where the symbol is not yet bound
+           ;; ("Unknown variable C-TILE").  Both tile constructors carry compile-time dims in
+           ;; the same position -- (make-register-tile elem (M N) init) and
+           ;; (make-scratch-matrix elem (M N)) -- so the spec comes from the binding.
+           (tile-spec (if (and ctor (consp ctor) (listp (third ctor))
+                               (every #'integerp (third ctor)))
+                          (third ctor)
+                          c-tile))
+           (reset-val (if reg-ctor (fourth reg-ctor) 0.0))
+           ;; Endeavour 208: an outer-bound tcgen05 accumulator (a :let one is caught above).
+           (tc-type   (and (null entry) (symbolp c-tile) (%208-source-type c-tile env context location)))
+           (tc-dims   (and tc-type (%tcgen05-acc-type-p tc-type) (gethash tc-type *tcgen05-acc-dims*)))
+           (tc-p      (or tc-dims
+                          (and ctor (consp ctor) (symbolp (first ctor))
+                               (string-equal (symbol-name (first ctor)) "MAKE-TCGEN05-ACCUMULATOR")))))
+      (when tc-dims
+        (setf tile-spec (list (first tc-dims) (second tc-dims))))
+      (log:debug "208 matrix-multiply-tile-stride: C-tile ~a tcgen05 ~a tile-spec ~a" c-tile (and tc-p t) tile-spec)
+      (let ((*mmts-tcgen05-tile* (and tc-p c-tile)))
+        (analyze-expression
+         (%mmts-lower c-form c-tile tile-spec k-form k-step gy gx gk body location reset-val)
+         env context location)))))
