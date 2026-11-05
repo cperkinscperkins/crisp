@@ -63,7 +63,13 @@ Epilogue variants (the quantization-specific part):
    <= 32 and width <= 64 build; 64x32, 256x32 and 32x128 fail.  32x32 keeps the 32-byte row of the
    16-bit 32x16.  The probe was negative-controlled (it does fail the known-bad 256x32).  `ocloc` is a
    cheap legality oracle for any future 2D-block question -- no GPU needed.
-3. **D-207-3 — the Intel int8 peer is oneDNN, not oneMKL.**  oneMKL's integer GEMM is a CPU routine.
+3. **D-207-3 — the Intel int8 peer is oneDNN, not oneMKL.**  ~~oneMKL's integer GEMM is a CPU
+   routine.~~  **WRONG, corrected 2026-11-04 (Chris caught it).**  oneMKL 2025.3's SYCL interface
+   declares `gemm<int8_t,int8_t,int32_t,float>` and `gemm_bias` for all four sign pairs, and both run
+   on the BMG GPU, exact: `sec2_top_int8/onemkl_int8.cpp` measured 124 / 158 / 207 / 222 TOPS (gemm)
+   and 122 / 156 / 206 / 221 (gemm_bias) at 1024..8192 against oneDNN's 126 / 160 / 207 / 225 -- the
+   same kernel family, within noise.  The claim was asserted, never checked.  Proposed: oneMKL
+   becomes the Ceiling (as in every other Intel table) and oneDNN a reference row.
 
 4. **D-207-4 — `mma.sync` int8 (m16n8k32) is built** (overlay, `src/mma.lisp`): s8/u8 A and B
    records (the SIGN is in the record name, since char and uchar are both LLVM i8), an s32

@@ -2024,7 +2024,9 @@ def main():
 
             # §2 Top — INT8 (Endeavour 207).  C (s32) = A (s8) . B (s8); the "gflops" field is
             # integer GOPS.  The Crisp kernel is the fp16 peer geometry with the XMX int8 shape.
-            # The peer is oneDNN, not oneMKL: oneMKL's integer GEMM is a CPU routine.
+            # The peer is oneDNN.  (An earlier note here said oneMKL's integer GEMM is CPU-only.
+            # That was wrong: onemkl_int8.cpp runs gemm<s8,s8,s32> on the BMG at oneDNN's speed.
+            # Not wired in yet -- see D-207-3.)
             run_l0_crisp("sec2_top_int8", "matmul_bmg_int8.crisp")
             # VARIANTS: K one MMA deep (32) and four deep (128) around the shipped 64, and the
             # shipped kernel with its prefetch removed (what the 1-byte prefetch buys).
