@@ -1,0 +1,22 @@
+;; CHECK-FAIL: "needs an architecture-specific target: --ir-target=ptx --ir-target-arch=sm_100a"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_100
+;; Endeavour 208 -- tcgen05 is architecture-specific: PTX for plain .target sm_100 refuses it, so the
+;; plain sm_100 target is refused here, by name, instead of at cuModuleLoad.  With --ir-target-arch=sm_100a
+;; this kernel compiles (it is ../01).
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix bfloat16 (128 64)))
+        (B-tile (make-scratch-matrix bfloat16 (128 64)))
+        (D      (make-tcgen05-accumulator float (128 128) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (tcgen05-accumulate-via-tile (128 128 64) D A-tile B-tile :swizzle :128b)
+    (store-tile D C (0 0))))

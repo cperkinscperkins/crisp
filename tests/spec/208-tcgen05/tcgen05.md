@@ -1,6 +1,62 @@
 # Endeavour 208: tcgen05 (Blackwell tensor cores)
 
-**Status: PROPOSAL (2026-11-05), awaiting Chris's review of the API and phasing.  Nothing built yet.**
+**Status: APPROVED 2026-11-05.**  D-208-1 to D-208-8 confirmed by Chris.  Q1 decided as (b): a declared scale layout
+that the host provides and the hoist matches.  Q2: metal testing on RunPod via `pod-session.sh`.
+
+**Progress.**
+- **Phase 0 done:** `isa-notes.md`, plus the CUDA 12.8 image for `ptxas -arch=sm_100a`.
+- **Phase 1 built in the overlays, and compile-verified:**
+  - spec 01 passes its PTX validator, and ptxas accepts the module (42 registers, no spills);
+  - errors/01-07 pass, and each hits its own message (checked by hand);
+  - errors/04 and errors/06 are positive-controlled.
+- **Specs 02 and 03 compile, pass their validators, and ptxas accepts them:**
+  - 02 is a K loop with per-tile re-init over 2 CTAs;
+  - 03 is warp-specialized with the producer FIRST, so the issuer is lane 0 of warp 1.
+- **Spec 04 (the asynchronous three-role pipeline: `:on-complete`, `tcgen05-commit`) compiles, and
+  ptxas accepts it.**  It has exactly two commits and no compiler-owned mbarrier.  It needed the
+  VOID-branch fix below.
+- **Suites (2026-11-05):** E2E 1777/1777, negative 477/477, unit 392/392.
+  - The first E2E run failed 13 193-logging-output metal specs.  My let pre-pass copied every let
+    body, so die / log sites lost their file:line and printed `?:0`.
+  - The pre-pass now returns the same conses when it rewrites nothing.  193 is 25/25 again.
+- **IR corpus:** 2309 existing jobs are byte-identical to the 207 fold's `after/`.  The only
+  differences are metacrisp paths, and one transient Windows temp-file error, re-run identical.
+- **Not yet run on metal.**  B200 and B300 were out of stock on RunPod (secure and community,
+  CUDA 12.8-13.0) at 09:32 on 2026-11-05.  No pod was created.
+  - The batch is built locally (`put_temp_files_here/208/metal/`): a bf16 `mma.sync` control, specs
+    01-03 as `--mma-test` harnesses, and the hardware-profile query.  The pod only runs nvcc.
+  - Run it with:
+    `./scripts/pod-session.sh --gpu "NVIDIA B200" --image cu128 --max-minutes 25 -- bash -c 'put_temp_files_here/208/metal/on-pod.sh {host} {port}'`
+    The ceiling is $3.33.
+
+## Found along the way (for review)
+
+- **D-208-9: a role body ending in `(signal ..)` broke `with-warp-specialization`.**
+  - The lowering nests the role bodies in `if`s, and `ensure-branch-compatibility` treated only
+    `nil` as void.  Statement nodes typed with the symbol `VOID` (dotimes, store-tile) counted as a
+    real type.  So an epilogue ending in `signal`, which is ULONG, next to a producer ending in
+    `dotimes` was refused with "Branch type mismatch in IF".
+  - This is pre-existing: no H100 kernel happened to end a role with `signal`.
+  - The fix adds two clauses before the error, so `VOID` takes the one-void-branch rule.  It only
+    turns an error into acceptance, so nothing that compiled before can change.
+
+## Phase 1 notes
+
+- **The 16-bit `--mma-test` harness was broken, and is fixed in `overlays/hoist-cuda`.**
+  - The hoist maps half and bfloat16 to `uint16_t`, so the role fill wrote small integers as raw bit
+    patterns, and the reference multiplied those integers.  Every 16-bit MMA_CORRECT / MMA_WRONG was
+    about the harness, not the kernel.  That is why no 16-bit wgmma spec ever had a metal check.
+  - A 16-bit A / B is now encoded on fill and decoded in the reference.  Other types are unchanged.
+- **The Blackwell smem descriptor for a K-major 128B-swizzled tile is wgmma's plus the version bit
+  (46).**  The 3-bit layout field's SWIZZLE_128B = 2 at [61,64) is the same bit as wgmma's 1 at [62,64).
+- **ptxas accepts `tcgen05.mma` without the disable-output-lane vector.**
+- **Static shared memory grows by the TMEM slot and one mbarrier per synchronous site.**  The TMA
+  tiles live in dynamic shared memory after it.  wgmma ran on metal with a static mbarrier ahead
+  of its swizzled tiles, so this is expected to be fine.  If the first B200 run says MMA_WRONG,
+  tile alignment under the 128B swizzle is the first suspect.
+- **`with-warp-specialization` role bodies now lower to `(%in-warp-role FIRST COUNT ..)`**, analysed
+  as `progn` with the role's warps bound.  That is how the issuing thread (D-208-7) and the epilogue
+  rule (D-208-6) know the role.  The backward (ungated) lowering is unchanged.
 
 Goal: native MMA on the B200, for 16-bit floats first, then for the quantized integers of 204/205/207
 and the microfloat blocks of 206.  The block multiply that 206 reserved and refused, `(*! w w)`, is
@@ -108,7 +164,14 @@ done in hardware: no decode and no emulation.
   199's and 205's paths.
 - **D-208-7 Issuing thread.**  The accumulate elects the first thread of whatever executes it.  In a
   pipelined kernel that is a one-warp `:mma` role of `with-warp-specialization`.
-- **D-208-8 Forward-only.**  As with wgmma.  Specs carry `SKIP-WITH[--differentiate]`.
+- **D-208-8 Forward-only, for now.**  Specs carry `SKIP-WITH[--differentiate]`.
+  - **CORRECTION (2026-11-05):** the proposal said "as with wgmma", which was wrong.  wgmma has
+    differentiated since endeavour 146.  The AD normalizer rewrites it to the sync MMA
+    (`%ad-canonicalize-wgmma`), so the existing tile VJP supplies the backward.
+  - tcgen05 can take the same route later, by canonicalizing the accumulator, the accumulate and
+    the TMEM store to the register-tile forms.  That would make the SKIP-WITH a real gap claim.
+  - The decision stands for phase 1, but the reason is "not built yet", not "wgmma does the same".
+  - The hardware chapter's "wgmma is forward-only" sentence (ch 59, §5) is stale for the same reason.
 
 A sketch of the pipelined kernel (phase 2).  It is not yet compiled; the barrier forms are the
 existing ones.
@@ -170,8 +233,9 @@ sparsity, and B300 / `sm_103a`.
   - (a) the compiler rearranges scales as it stages them;
   - (b) a block declares its scale layout, and the host writes it that way.
 
-  Leaning (b), but the exact layout gets verified first.
-- **Q2 Where metal testing happens.**  A B200 rental per phase through `pod-session.sh`, one batched run
+  **DECIDED (b)** (Chris, 2026-11-05): a declare names the layout the kernel expects, and the host
+  provides it.  The generated hoist code matches it.  The exact layout gets verified in phase 0/4.
+- **Q2 Where metal testing happens.  DECIDED: RunPod** (Chris, 2026-11-05).  A B200 rental per phase through `pod-session.sh`, one batched run
   each, at a ceiling of roughly 30 to 60 minutes at the re-queried price.  Or GPU MODE's free B200, if
   it is back.
 
