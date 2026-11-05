@@ -1,0 +1,25 @@
+;; CHECK-FAIL: "no product is declared.  Use def-qint-product"
+;; CHECK-FAIL-FLAGS: --ir-target=spv --hardware-profile=bmg
+;; Endeavour 207 follow-up -- q-a x q-b at the MMA needs a def-qint-product, as (*! q-a q-b) does in
+;; scalar code.  With `(def-qint-product q-dot (q-a q-b) :accum int)` and an (accum q-a q-b)
+;; accumulator this kernel compiles.
+
+(def-qint q-a :base char :accum int)
+(def-qint q-b :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix q-b :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix (accum q-a) :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((A-tile (make-register-tile q-a (32 32) 0 :operand :a))
+        (B-tile (make-register-tile q-b (32 32) 0 :operand :b))
+        (C-tile (make-register-tile (accum q-a) (32 32) 0)))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 32 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 32) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

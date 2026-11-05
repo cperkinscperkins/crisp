@@ -1,0 +1,14 @@
+;; CHECK-FAIL: "mma.sync accumulates signed 32-bit"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100
+;; Endeavour 207 -- the NVIDIA sync int8 MMA accumulates s32 only, so a uint register tile is refused
+;; (SPIR-V accepts one; its MMA has a result-sign bit).
+
+(def-type a-mat (matrix uchar :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix uchar :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix uint :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat) (global-size :set-to 32) (local-size :set-to 32))
+  (let ((C-tile (make-register-tile uint (16 8) 0)))
+    (mma-accumulate-via-tile (16 8 32) C-tile A B)
+    (store-tile C-tile C (0 0))))

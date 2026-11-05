@@ -1,0 +1,55 @@
+;; Section 4, int8 epilogue -- REQUANTIZE (Endeavour 207), NVIDIA H100 (sm_90).
+;;
+;; sec2_top_int8/matmul_int8.crisp with its output narrowed in the store: C (s8) = sat8(rne(acc * m)), which is what
+;; an int8-to-int8 layer does.  Written with def-qint types because that is the only spelling of a
+;; narrowing -- `(to-q-a D m)` on the store's source narrows each accumulator element as it is stored
+;; (205).  The multiplier m = s_a * s_b / s_out is a literal here; the harness reads it from the line
+;; below so its oracle applies the same rule (fp32 multiply, nearest-even, saturate).
+;; BENCH-REQUANT-MULTIPLIER: 0.003
+;;
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 288))          ; 2 consumer warpgroups (8 warps) + 1 producer warp
+  (let ((A0-ring (make-scratch-matrix-ring char (64 128)  :ring-count 4))
+        (A1-ring (make-scratch-matrix-ring char (64 128)  :ring-count 4))
+        (B-ring  (make-scratch-matrix-ring char (256 128) :ring-count 4))
+        (D0      (make-wgmma-accumulator (accum q-a) (64 256) 0))
+        (D1      (make-wgmma-accumulator (accum q-a) (64 256) 0))
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 8 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 3 :initial-state :waiting)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer0 4 :consumer1 4 :producer 1)
+        (:consumer0
+          (set! D0 (make-wgmma-accumulator (accum q-a) (64 256) 0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 128) D0 (ring-get A0-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at (to-q-a D0 0.003) C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256)))))
+        (:consumer1
+          (set! D1 (make-wgmma-accumulator (accum q-a) (64 256) 0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 128) D1 (ring-get A1-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at (to-q-a D1 0.003) C ((+ (* grid-y (to-ulong 128)) (to-ulong 64)) (* grid-x (to-ulong 256)))))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A0-ring slot) ((* grid-y (to-ulong 2)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile A (ring-get A1-ring slot) ((+ (* grid-y (to-ulong 2)) (to-ulong 1)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b))))))))

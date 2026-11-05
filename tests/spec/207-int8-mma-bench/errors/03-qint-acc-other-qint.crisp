@@ -1,0 +1,24 @@
+;; CHECK-FAIL: "accumulate into (accum q-a), not (accum q-b)"
+;; CHECK-FAIL-FLAGS: --ir-target=spv --hardware-profile=bmg
+;; Endeavour 207 follow-up -- two def-qints never mix, at the MMA as in scalar code.  q-a operands
+;; carry q-a's scale; an (accum q-b) tile claims another.  Before 2026-11-04 the tile path checked
+;; only the LOWERED element types (both char), so this compiled.
+
+(def-qint q-a :base char :accum int)
+(def-qint q-b :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix (accum q-b) :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((A-tile (make-register-tile q-a (32 32) 0 :operand :a))
+        (B-tile (make-register-tile q-a (32 32) 0 :operand :b))
+        (C-tile (make-register-tile (accum q-b) (32 32) 0)))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 32 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 32) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

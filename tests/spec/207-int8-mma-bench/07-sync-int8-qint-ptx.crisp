@@ -1,0 +1,28 @@
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-int8-sync-mma
+;; SKIP-DEFAULT-PASS
+;; FAIL-WITH[--differentiate]: "integer MMA has no backward"
+;;
+;; Endeavour 207 follow-up -- def-qint types through the NVIDIA mma.sync path: q-a scratch operands
+;; and an (accum q-a) register tile, the exact fix errors/05's message asks for.  Three gaps stopped
+;; this compiling before 2026-11-04, none reachable on SPIR-V:
+;;   - the register-tile fit check called SYMBOL-NAME on the raw (accum q-a) form;
+;;   - the s8 fragment record holds char, and the q-a operand reads were not cast;
+;;   - the s32 fragment's int elements were stored into a q-a-accum element uncast.
+;; And one silent cost: 197's packed pair store was dropped for a derived element type.  With all
+;; four fixed, this kernel's PTX entry is IDENTICAL to its plain char / int twin (checked by hand,
+;; registers and block numbers normalised) -- the qint types cost nothing on this path either.
+
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix q-a :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix (accum q-a) :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel sync_qint (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat) (global-size :set-to 32) (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix q-a (16 32)))
+        (B-tile (make-scratch-matrix q-a (32 8)))
+        (C-tile (make-register-tile (accum q-a) (16 8) 0)))
+    (load-tile A A-tile (0 0))
+    (load-tile B B-tile (0 0))
+    (mma-accumulate-via-tile (16 8 32) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

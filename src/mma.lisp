@@ -227,6 +227,8 @@
     (cond ((= k (llvm-get-type-kind (llvm-half-type)))   :fp16)
           ((= k (llvm-get-type-kind (llvm-bfloat-type))) :bf16)
           ((= k (llvm-get-type-kind (llvm-double-type))) :f64)
+          ;; Endeavour 207: an i8 field can only be an int8 fragment (char and uchar alike).
+          ((cffi:pointer-eq llvm-elem-type (llvm-int8-type)) :int8)
           (t :tf32))))
 
 ;; src/mma.lisp
@@ -239,8 +241,13 @@
 
    Endeavour 165 (step 3): fp64's m8n8k4 operands, A 8x4 and B 4x8, one double per lane each."
   (let ((bits (%mma-elem-bits elem))
-        (name (and elem (symbolp elem) (symbol-name elem))))
+        (name (or (%elem-prim-name elem) (and elem (symbolp elem) (symbol-name elem)))))
     (cond
+      ;; Endeavour 207: int8 m16n8k32.  The record carries the sign (see register-mma-types).
+      ((eql bits 8)
+       (if (member name '("UCHAR" "UINT8") :test #'equal)
+           (ecase operand (:a 'register-fragment-a-u8-16x32) (:b 'register-fragment-b-u8-32x8))
+           (ecase operand (:a 'register-fragment-a-s8-16x32) (:b 'register-fragment-b-s8-32x8))))
       ((eql bits 64)
        (ecase operand (:a 'register-fragment-a-f64-8x4) (:b 'register-fragment-b-f64-4x8)))
       ((eql bits 16)
@@ -262,11 +269,16 @@
 
    A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose.
 
-   Endeavour 204: integer register tiles exist on SPIR-V only.  On NVIDIA, integer MMA is wgmma."
+   Endeavour 204: integer register tiles existed on SPIR-V only.  Endeavour 207: on NVIDIA an int
+   tile is the s32 accumulator of mma.sync m16n8k32 (a uint tile is refused)."
+  ;; Endeavour 207: on NVIDIA an int register tile is the s32 accumulator of the sync int8 MMA.
+  ;; mma.sync accumulates SIGNED 32-bit only, so a uint tile is still refused.
   (when (and (%elem-integer-p elem) (not (eq *target-backend* :spirv)))
-    (error 'crisp-compiler-error
-           :message (format nil "A ~(~a~) register tile has no NVIDIA lowering: integer MMA there is wgmma.  Use make-wgmma-accumulator with wgmma-accumulate-via-tile."
-                            (%canonical-elem elem))))
+    (unless (equal (%elem-prim-name elem) "INT")
+      (error 'crisp-compiler-error
+             :message (format nil "A ~(~a~) register tile has no NVIDIA lowering: mma.sync accumulates signed 32-bit, so declare the tile int."
+                              (%canonical-elem elem))))
+    (return-from %frag-record-for-acc 'register-fragment-acc-s32-16x8))
   (if (and elem (symbolp elem) (string= (symbol-name elem) "DOUBLE"))
       'register-fragment-acc-f64-8x8
       'register-fragment-acc-f32-16x8))
@@ -330,6 +342,26 @@
                               :record)
   (register-struct-definition 'register-fragment-b-bf16-16x8
                               '((b0 bfloat16) (b1 bfloat16) (b2 bfloat16) (b3 bfloat16))
+                              :record)
+  ;; Endeavour 207 -- int8 m16n8k32 (mma.sync).  A is 16x32 = 16 bytes per lane (4 registers), B is
+  ;; 32x8 = 8 bytes per lane (2 registers), one field per element as for the 16-bit records.  The
+  ;; SIGN lives in the record name (s8 / u8), because char and uchar are the same LLVM i8 and the
+  ;; emitter must still choose between the .s8 and .u8 instructions.  The accumulator is s32 and
+  ;; has the f32 accumulator's 16x8 lane layout exactly.
+  (register-struct-definition 'register-fragment-a-s8-16x32
+                              (loop for i below 16 collect (list (intern (format nil "A~d" i) :crisp.compiler) 'char))
+                              :record)
+  (register-struct-definition 'register-fragment-a-u8-16x32
+                              (loop for i below 16 collect (list (intern (format nil "A~d" i) :crisp.compiler) 'uchar))
+                              :record)
+  (register-struct-definition 'register-fragment-b-s8-32x8
+                              (loop for i below 8 collect (list (intern (format nil "B~d" i) :crisp.compiler) 'char))
+                              :record)
+  (register-struct-definition 'register-fragment-b-u8-32x8
+                              (loop for i below 8 collect (list (intern (format nil "B~d" i) :crisp.compiler) 'uchar))
+                              :record)
+  (register-struct-definition 'register-fragment-acc-s32-16x8
+                              '((r0 int) (r1 int) (r2 int) (r3 int))
                               :record)
   (register-builtin-hardware-profiles))
 
@@ -401,7 +433,7 @@
      ;; `.extern .func` CALL with no diagnostic.  fp64 has exactly ONE tensor-core shape,
      ;; m8n8k4, so it is stated outright instead of being inferred from a rule that has no way
      ;; to know that.
-     :mma-shapes ((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4)))))
+     :mma-shapes ((16 8 8) (16 8 4) (16 8 16) (16 8 32) (:double 8 8 4)))))
 
 
 
@@ -597,6 +629,22 @@
       (t 1))))
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 207 -- a derived integer accumulator tile is stored through a raw cast
+;;;; See tests/spec/207-int8-mma-bench/int8-mma-bench.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %store-frag-elem-cast (elem form)
+  "FORM, one fragment element being stored, raw-cast to ELEM when ELEM is a DERIVED integer type
+   ((accum q-a) -> q-a-accum).  The s32 fragment record holds plain int; the destination element
+   holds exactly its own type.  A plain element gets FORM back unchanged, so its code is as before.
+   Endeavour 207 follow-up."
+  (let ((c (%canonical-elem elem)))
+    (if (and c (symbolp c) (%elem-integer-p c)
+             (not (string= (symbol-name (resolve-type-alias c)) (or (%elem-prim-name c) ""))))
+        (list (intern "TO" (find-package :crisp-language)) c form)
+        form)))
+
 (defun analyze-store-fragment (expr env context location)
   "P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR
    (accumulator, row-major); else the NVIDIA per-lane writes.
@@ -610,7 +658,10 @@
    is one (%store-pair ...) under a per-fragment (%pair-ok-p ...) of the lane's first pair; the
    scalar set!s are the fallback branch (odd origin, unaligned base, strided last dimension).  The
    row+8 pair shares the guard: 8 rows move the address by 8 x the row stride, an even number of
-   elements."
+   elements.
+
+   Endeavour 207 follow-up: an element of a DERIVED integer tile such as (accum q-a) is raw-cast
+   to that type (%store-frag-elem-cast); the fragment record holds the primitive."
   ;; Endeavour 165 (2b-ii): an optional 4th argument carries the ELEMENT TYPE, supplied by
   ;; the store-tile walks (which know it) and defaulting to FLOAT for a hand-written
   ;; store-fragment.  The alternative -- inferring it from the fragment's own type -- would mean
@@ -639,7 +690,7 @@
                    :tx (analyze-expression `(to-int ,tx) env context (append location '(4)))
                    :source-location location))))
             (let ((if-sym (intern "IF" (find-package :crisp-language))))
-            (flet ((elt-of (i) (%196-wrap-conversion convert `(%extract-struct-member frag-val ,i))))
+            (flet ((elt-of (i) (%store-frag-elem-cast elem (%196-wrap-conversion convert `(%extract-struct-member frag-val ,i)))))
               (if (eql (%mma-elem-bits elem) 64)
                   ;; fp64 m8n8k4 C/D, decoded from CuTe MMA_Traits<SM80_8x8x4_F64F64F64F64_TN>:
                   ;; CLayout = Layout<Shape<Shape<_4,_8>,_2>, Stride<Stride<_16,_1>,_8>> gives
@@ -689,8 +740,31 @@
 ;;; ===================================================================
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 207 -- a def-qint operand's int8 fragment reads are raw-cast to the record's primitive
+;;;; See tests/spec/207-int8-mma-bench/int8-mma-bench.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %frag-src-derived-p (probe elem)
+  "T when the operand PROBE's SOURCE element type (a def-qint such as q-a) is not ELEM, the
+   primitive its fragment record holds, so each read needs a raw cast.  Endeavour 207 follow-up."
+  (let* ((canon (ignore-errors (%ts-canonicalize-tensor-type (get-single-value-type probe))))
+         (src-elem (and (consp canon) (>= (length canon) 2) (second canon))))
+    (and src-elem (symbolp src-elem) elem (symbolp elem)
+         (not (string= (symbol-name src-elem) (symbol-name elem))))))
+
+(defun %frag8-read (src elem cast-p rr cc)
+  "One element read of an int8 fragment load: (~ SRC RR CC), raw-cast to ELEM when CAST-P.  A raw
+   cast applies no scale -- the bytes are the bytes; the qint's scale lives in the accumulator's
+   type.  Endeavour 207 follow-up."
+  (if cast-p
+      (list (intern "TO" (find-package :crisp-language)) elem (list '~ src rr cc))
+      (list '~ src rr cc)))
+
 (defun analyze-load-fragment-a (expr env context location)
-  "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
+  "Endeavour 207 follow-up: a def-qint operand's int8 reads are raw-cast to the
+   fragment's primitive (%frag8-read).
+   P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,
    16x8, row-major); else the NVIDIA per-lane read.
 
@@ -723,6 +797,7 @@
           ;; ---- NVIDIA / PTX ----
           (let* ((probe (analyze-expression src env context (append location '(1))))
                  (elem  (%coop-elem-of probe))
+                 (frag-cast-p (%frag-src-derived-p probe elem))
                  (rec   (%nvvm-frag-record :a elem)))
             (if (eql (%mma-elem-bits elem) 64)
                 ;; fp64 m8n8k4 A (8x4): m = lane/4, k = lane%4, ONE double per lane.
@@ -733,6 +808,20 @@
                     (let ((g (/ lane 4)) (tg (rem lane 4)))
                       (let ((r (+ (* ,ty 8) g)) (c (+ (* ,tk 4) tg)))
                         (%construct-struct ,rec (~ ,src r c)))))
+                 env context location)
+            (if (eql (%mma-elem-bits elem) 8)
+                ;; Endeavour 207: int8 m16n8k32 A (16x32).  PTX ISA: a0..a15 in four .b32 registers;
+                ;; row = g (+8 for a4..a7, a12..a15), col = 4*tid + (i & 3) (+16 for a8..a15).
+                ;; The 16-bit table with K doubled: each register holds FOUR adjacent K elements.
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 32) (* tg 4))))
+                        (%construct-struct ,rec
+                          ,(%frag8-read src elem frag-cast-p 'r 'c)              ,(%frag8-read src elem frag-cast-p 'r '(+ c 1))        ,(%frag8-read src elem frag-cast-p 'r '(+ c 2))        ,(%frag8-read src elem frag-cast-p 'r '(+ c 3))
+                          ,(%frag8-read src elem frag-cast-p '(+ r 8) 'c)        ,(%frag8-read src elem frag-cast-p '(+ r 8) '(+ c 1))  ,(%frag8-read src elem frag-cast-p '(+ r 8) '(+ c 2))  ,(%frag8-read src elem frag-cast-p '(+ r 8) '(+ c 3))
+                          ,(%frag8-read src elem frag-cast-p 'r '(+ c 16))       ,(%frag8-read src elem frag-cast-p 'r '(+ c 17))       ,(%frag8-read src elem frag-cast-p 'r '(+ c 18))       ,(%frag8-read src elem frag-cast-p 'r '(+ c 19))
+                          ,(%frag8-read src elem frag-cast-p '(+ r 8) '(+ c 16)) ,(%frag8-read src elem frag-cast-p '(+ r 8) '(+ c 17)) ,(%frag8-read src elem frag-cast-p '(+ r 8) '(+ c 18)) ,(%frag8-read src elem frag-cast-p '(+ r 8) '(+ c 19))))))
                  env context location)
             (if (eql (%mma-elem-bits elem) 16)
                 (analyze-expression
@@ -751,7 +840,7 @@
                       (let ((r (+ (* ,ty 16) g)) (c (+ (* ,tk 8) tg)))
                         (%construct-struct ,rec
                           (~ ,src r c) (~ ,src (+ r 8) c) (~ ,src r (+ c 4)) (~ ,src (+ r 8) (+ c 4))))))
-                 env context location))))))))
+                 env context location)))))))))
 
 (defun analyze-load-fragment-b (expr env context location)
   "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
@@ -780,6 +869,7 @@
           ;; ---- NVIDIA / PTX ----
           (let* ((probe (analyze-expression src env context (append location '(1))))
                  (elem  (%coop-elem-of probe))
+                 (frag-cast-p (%frag-src-derived-p probe elem))
                  (rec   (%nvvm-frag-record :b elem)))
             (if (eql (%mma-elem-bits elem) 64)
                 ;; fp64 m8n8k4 B (4x8): k = lane%4, n = lane/4, ONE double per lane.
@@ -791,6 +881,17 @@
                     (let ((g (/ lane 4)) (tg (rem lane 4)))
                       (let ((r (+ (* ,tk 4) tg)) (c (+ (* ,tx 8) g)))
                         (%construct-struct ,rec (~ ,src r c)))))
+                 env context location)
+            (if (eql (%mma-elem-bits elem) 8)
+                ;; Endeavour 207: int8 m16n8k32 B (32x8).  PTX ISA: b0..b7 in two .b32 registers;
+                ;; row = 4*tid + (i & 3) (+16 for b4..b7), col = g.  K-major, so the ROW doubles.
+                (analyze-expression
+                 `(let ((lane (to-int (warp-lane))))
+                    (let ((g (/ lane 4)) (tg (rem lane 4)))
+                      (let ((r (+ (* ,tk 32) (* tg 4))) (c (+ (* ,tx 8) g)))
+                        (%construct-struct ,rec
+                          ,(%frag8-read src elem frag-cast-p 'r 'c)        ,(%frag8-read src elem frag-cast-p '(+ r 1) 'c)  ,(%frag8-read src elem frag-cast-p '(+ r 2) 'c)  ,(%frag8-read src elem frag-cast-p '(+ r 3) 'c)
+                          ,(%frag8-read src elem frag-cast-p '(+ r 16) 'c) ,(%frag8-read src elem frag-cast-p '(+ r 17) 'c) ,(%frag8-read src elem frag-cast-p '(+ r 18) 'c) ,(%frag8-read src elem frag-cast-p '(+ r 19) 'c)))))
                  env context location)
             (if (eql (%mma-elem-bits elem) 16)
                 (analyze-expression
@@ -807,33 +908,39 @@
                       (let ((r (+ (* ,tk 8) tg)) (c (+ (* ,tx 8) g)))
                         (%construct-struct ,rec
                           (~ ,src r c) (~ ,src (+ r 4) c)))))
-                 env context location))))))))
+                 env context location)))))))))
 
 
 
 (defun %prefetch-block-shape (elem-bytes location)
   "The legal Subgroup2DBlockPrefetchINTEL block shape (ROWS . COLS) for an ELEM-BYTES element.
 
-   Only 2-byte elements are supported, and that is a REFUSAL rather than a guess: the legal shape
-   is element-width dependent, a 16-bit block is at most 16 COLUMNS wide, and an illegal :size
-   resolves to an IGC builtin that does not exist (e.g.
+   Only verified widths are supported, and anything else is a REFUSAL rather than a guess: the
+   legal shape is element-width dependent, a 16-bit block is at most 16 COLUMNS wide, and an
+   illegal :size resolves to an IGC builtin that does not exist (e.g.
    __internal_intel_sub_group_2d_block_prefetch_16b_32r32x1c).  That fails at MODULE BUILD, long
    after compilation, with a message about a missing symbol rather than about the kernel -- see
    benchmarks/matmul/_kdepth/pf1_k32.crisp.  Refusing here converts it into a compile-time error
    that names the cause.
 
-   32x16 is the shape verified in use.  A 16x16 block would let a 128x32 footprint tile into
-   exactly 16 blocks -- one per warp, with no duplication (see %prefetch-warp-plan) -- but its
-   legality is unverified and can only be established on metal, so it is not assumed here."
+   2 bytes: 32x16 is the shape verified in use.  A 16x16 block would let a 128x32 footprint tile
+   into exactly 16 blocks -- one per warp, with no duplication (see %prefetch-warp-plan) -- but its
+   legality is unverified and can only be established on metal, so it is not assumed here.
+
+   1 byte (Endeavour 207): 32x32 -- 32 rows of 32 bytes, the same 32-byte row as the 16-bit block.
+   Verified with ocloc (-device bmg) on 2026-11-03: every 8-bit block of height <= 32 and width
+   <= 64 builds (1x32, 8x32, 16x32, 32x16, 32x32, 32x64, 16x64, 4x64), while 64x32, 256x32 and
+   32x128 fail with 'For element size of 8 bits, unsupported block configuration'."
   (case elem-bytes
     (2 (cons 32 16))
+    (1 (cons 32 32))
     (t (error 'crisp-compiler-error
-         :message (format nil "prefetch-tile :warp-partitioned is implemented for 2-byte operands ~
-                               (bfloat16 / half) only, got a ~a-byte element.  The legal 2D block ~
-                               prefetch shape is element-width dependent, and an illegal one fails ~
-                               at MODULE BUILD rather than at compile time, so Crisp refuses rather ~
-                               than guessing.  Omit :warp-partitioned to keep the unpartitioned ~
-                               one-block-per-subgroup behaviour." elem-bytes)
+         :message (format nil "prefetch-tile :warp-partitioned is implemented for 1- and 2-byte ~
+                               operands (char / uchar, bfloat16 / half) only, got a ~a-byte element.  ~
+                               The legal 2D block prefetch shape is element-width dependent, and an ~
+                               illegal one fails at MODULE BUILD rather than at compile time, so Crisp ~
+                               refuses rather than guessing.  Omit :warp-partitioned to keep the ~
+                               unpartitioned one-block-per-subgroup behaviour." elem-bytes)
          :source-location location))))
 
 ;; src/mma.lisp
@@ -1063,6 +1170,94 @@
                    agg)))
     (values result nil)))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 207 -- mma.sync int8 (m16n8k32): operand signs ride the fragment RECORD
+;;;; See tests/spec/207-int8-mma-bench/int8-mma-bench.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *nvvm-int8-signs* nil
+  "(A-SIGNED . B-SIGNED) for the sync int8 MMA being emitted, or NIL (= both signed).  Bound by the
+   generate-node-ir :around method on semantic-mma-accumulate, because the emitter receives only LLVM
+   values and char / uchar are the same LLVM i8.")
+
+(defun %nvvm-int8-signs-of (node)
+  "(A-SIGNED . B-SIGNED) of a sync MMA node, read from its operand FRAGMENT RECORD names (-U8- is
+   unsigned).  NIL when the operands are not int8 fragments."
+  (flet ((sign (n)
+           (let ((ty (and n (semantic-node-type n))))
+             (and ty (symbolp ty)
+                  (let ((nm (symbol-name ty)))
+                    (cond ((search "-U8-" nm) :u)
+                          ((search "-S8-" nm) :s)))))))
+    (let ((sa (sign (semantic-mma-accumulate-a-node node)))
+          (sb (sign (semantic-mma-accumulate-b-node node))))
+      (when (or sa sb)
+        (cons (not (eq sa :u)) (not (eq sb :u)))))))
+
+(defun %emit-nvvm-mma-int8 (builder module a-val b-val c-val)
+  "The NVIDIA sync int8 MMA: llvm.nvvm.mma.m16n8k32.row.col.{s8|u8}[.{s8|u8}], s32 accumulate.
+
+   OPERANDS ARE PACKED BYTES.  Each 32-bit register holds four adjacent K elements; they are built as
+   a <4 x i8> with the LOWER-numbered element in lane 0 (the order the ISA tables list them and the
+   order analyze-load-fragment-a/-b fill the fields in) and bitcast to i32, which puts element 0 in
+   the low byte.  A is 4 registers, B is 2, C/D are 4 x i32.
+
+   THE NAME.  Same-sign pairs are spelled once (.s8, .u8); mixed pairs name both (.s8.u8, .u8.s8).
+   All four lower to mma.sync.aligned.m16n8k32.row.col.s32.<a>.<b>.s32 on bin/llc.exe -mcpu=sm_80
+   (checked 2026-11-03).  As with every NVVM MMA name, a wrong spelling is SILENT (an external call),
+   so the spec validator matches the full mnemonic.  No .satfinite: the accumulator wraps, as the
+   wgmma integer path does."
+  (let* ((i8  (llvm-int8-type))
+         (i32 (llvm-int32-type))
+         (v4  (llvm-vector-type i8 4))
+         (a-elems (loop for i below 16 collect (llvm-build-extract-value builder a-val i (format nil "a~d" i))))
+         (b-elems (loop for i below 8  collect (llvm-build-extract-value builder b-val i (format nil "b~d" i))))
+         (pack (lambda (elems name)
+                 (let ((v (llvm-get-undef v4)))
+                   (loop for e in elems for j from 0
+                         do (setf v (llvm-build-insert-element builder v e (llvm-const-int i32 j nil)
+                                                               (format nil "~a_~d" name j))))
+                   (llvm-build-bit-cast builder v i32 (format nil "~a_i" name)))))
+         (a-ops (loop for r below 4 collect (funcall pack (subseq a-elems (* 4 r) (+ 4 (* 4 r))) (format nil "av~d" r))))
+         (b-ops (loop for r below 2 collect (funcall pack (subseq b-elems (* 4 r) (+ 4 (* 4 r))) (format nil "bv~d" r))))
+         (c-ops (loop for i below 4 collect (llvm-build-extract-value builder c-val i (format nil "c~d" i))))
+         (signs (or *nvvm-int8-signs* (cons t t)))
+         (sa (if (car signs) "s8" "u8"))
+         (sb (if (cdr signs) "s8" "u8"))
+         (fn-name (if (string= sa sb)
+                      (format nil "llvm.nvvm.mma.m16n8k32.row.col.~a" sa)
+                      (format nil "llvm.nvvm.mma.m16n8k32.row.col.~a.~a" sa sb)))
+         (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count 4)))
+                   (dotimes (i 4) (setf (cffi:mem-aref elts 'llvm-type-ref i) i32))
+                   (llvm-struct-type-in-context (llvm-get-module-context module) elts 4 nil)))
+         (fn-ty (let ((arr (cffi:foreign-alloc 'llvm-type-ref :count 10)))
+                  (dotimes (i 10) (setf (cffi:mem-aref arr 'llvm-type-ref i) i32))
+                  (llvm-function-type ret-ty arr 10 nil)))
+         (fn (let ((existing (llvm-get-named-function module fn-name)))
+               (if (cffi:null-pointer-p existing) (llvm-add-function module fn-name fn-ty) existing)))
+         (args (append a-ops b-ops c-ops))
+         (args-arr (let ((arr (cffi:foreign-alloc 'llvm-value-ref :count 10)))
+                     (loop for i from 0 for v in args do (setf (cffi:mem-aref arr 'llvm-value-ref i) v))
+                     arr))
+         (call (llvm-build-call2 builder fn-ty fn args-arr 10 "mma8"))
+         (acc-ty (crisp-type-to-llvm-type 'register-fragment-acc-s32-16x8 module))
+         (result (let ((agg (llvm-get-undef acc-ty)))
+                   (dotimes (i 4)
+                     (setf agg (llvm-build-insert-value builder agg
+                                (llvm-build-extract-value builder call i (format nil "d~d" i))
+                                i (format nil "acc~d" i))))
+                   agg)))
+    (log:debug "207 %emit-nvvm-mma-int8: ~a" fn-name)
+    (values result nil)))
+
+(defmethod generate-node-ir :around ((node semantic-mma-accumulate) builder module var-env di-builder di-scope location-map)
+  "Endeavour 207: binds *nvvm-int8-signs* for the sync int8 emitter (NVIDIA only)."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*nvvm-int8-signs* (unless (eq *target-backend* :spirv) (%nvvm-int8-signs-of node))))
+    (when *nvvm-int8-signs*
+      (log:debug "207 sync int8 MMA signs: ~a" *nvvm-int8-signs*))
+    (call-next-method)))
+
 (defun %emit-nvvm-mma (builder module a-val b-val c-val)
   "The NVIDIA sync MMA.  Endeavour 159: dispatches on the A fragment's ELEMENT TYPE, emitting
    the tf32 m16n8k8, fp16 m16n8k16, or bf16 m16n8k16 instruction.  Returns (values acc nil).
@@ -1092,6 +1287,9 @@
          (i32 (llvm-int32-type))
          (a0  (llvm-build-extract-value builder a-val 0 "a0"))
          (fmt (%nvvm-frag-format (llvm-type-of a0))))
+    (if (eq fmt :int8)
+        ;; Endeavour 207: packed bytes, s32 accumulate -- its own emitter.
+        (%emit-nvvm-mma-int8 builder module a-val b-val c-val)
     (if (eq fmt :f64)
         ;; Endeavour 165 step 3: fp64 shares none of the packing below -- one double per operand,
         ;; two for the accumulator -- so it is its own emitter rather than another arm here.
@@ -1179,7 +1377,7 @@
                                       (llvm-build-extract-value builder call i (format nil "d~d" i))
                                       i (format nil "acc~d" i))))
                          agg)))
-          (values result nil))))))
+          (values result nil)))))))
 
 
 (defun %coop-mma (builder module a-val b-val c-val elem-llvm m n k)
@@ -1662,29 +1860,43 @@
 
 (defun %check-int-mma-k (mma-shape a env context location)
   "Refuses an int8 multiply at a K meant for another width.  (8 16 8) is a legal shape, but for tf32, so
-   the profile check passes it, while the operands load at K=32.  That compiled silently."
-  (when (eq *target-backend* :spirv)
-    (let ((elem (%coop-elem-of (analyze-expression a env context location))))
-      (when (%int-operand-p elem)
-        (multiple-value-bind (sm sn sk) (%spv-mma-shape elem)
-          (declare (ignore sm sn))
-          (unless (eql (third mma-shape) sk)
+   the profile check passes it, while the operands load at K=32.  That compiled silently.
+
+   Endeavour 207: on NVIDIA the only int8 sync shape is (16 8 32) -- mma.sync m16n8k32."
+  (let ((elem (%coop-elem-of (analyze-expression a env context location))))
+    (when (%int-operand-p elem)
+      (if (eq *target-backend* :spirv)
+          (multiple-value-bind (sm sn sk) (%spv-mma-shape elem)
+            (declare (ignore sm sn))
+            (unless (eql (third mma-shape) sk)
+              (error 'crisp-compiler-error
+                     :message (format nil "mma-accumulate-via-tile: ~(~a~) operands need K=~a on this profile; got ~a."
+                                      elem sk (third mma-shape))
+                     :source-location location)))
+          (unless (equal mma-shape '(16 8 32))
             (error 'crisp-compiler-error
-                   :message (format nil "mma-accumulate-via-tile: ~(~a~) operands need K=~a on this profile; got ~a."
-                                    elem sk (third mma-shape))
-                   :source-location location)))))))
+                   :message (format nil "mma-accumulate-via-tile: ~(~a~) operands on NVIDIA need the mma.sync shape (16 8 32); got ~a."
+                                    elem mma-shape)
+                   :source-location location))))))
 
 (defun %check-int-tile-k (shape elem)
   "Refuses a via-tile multiply into an integer tile at a K meant for another width.  (8 16 8) is a legal
    shape, but for tf32, while integer operands load at K=32.  A let-bound tile is rewritten here,
-   before analysis, so this is the check real kernels reach; %check-int-mma-k covers the analyzed form."
-  (when (and shape (eq *target-backend* :spirv) (%elem-integer-p elem))
-    (multiple-value-bind (sm sn sk) (%spv-mma-shape 'char)
-      (declare (ignore sm sn))
-      (unless (eql (third shape) sk)
-        (error 'crisp-compiler-error
-               :message (format nil "mma-accumulate-via-tile: 8-bit operands need K=~a on this profile; got ~a."
-                                sk (third shape)))))))
+   before analysis, so this is the check real kernels reach; %check-int-mma-k covers the analyzed form.
+
+   Endeavour 207: on NVIDIA an int tile is the s32 accumulator of mma.sync (16 8 32), the only shape."
+  (when (and shape (%elem-integer-p elem))
+    (if (eq *target-backend* :spirv)
+        (multiple-value-bind (sm sn sk) (%spv-mma-shape 'char)
+          (declare (ignore sm sn))
+          (unless (eql (third shape) sk)
+            (error 'crisp-compiler-error
+                   :message (format nil "mma-accumulate-via-tile: 8-bit operands need K=~a on this profile; got ~a."
+                                    sk (third shape)))))
+        (unless (equal shape '(16 8 32))
+          (error 'crisp-compiler-error
+                 :message (format nil "mma-accumulate-via-tile: an int tile on NVIDIA is the mma.sync (16 8 32) accumulator; got ~a."
+                                  shape))))))
 
 (defun analyze-mma-accumulate-via-tile (expr env context location)
   "P3b-1: (mma-accumulate-via-tile (M N K) C-TILE A B) — walk the register C-tile in
@@ -1972,30 +2184,35 @@
 
    Endeavour 196 (D-196-10): a tile distributed over N-TRUE warps (:warps) costs each thread
    ceil(fragments / N-TRUE) fragments -- the share it actually allocates -- looked up in
-   *196-tile-warp-shares* by (M N ELEM)."
+   *196-tile-warp-shares* by (M N ELEM).
+
+   Endeavour 207: ELEM may be a type accessor such as (accum q-a); it and the share entries are
+   compared after %canonical-elem."
   (unless (eq *target-backend* :spirv)
-    (destructuring-bind (fr . fc) (%acc-frag-mn elem)
-      (%register-tile-dims-must-divide m n location fr fc)
-      (let* ((share         (or (fourth (find-if (lambda (e) (and (eql (first e) m) (eql (second e) n)
-                                                                      (equal (symbol-name (third e))
-                                                                             (symbol-name elem))))
-                                                     *196-tile-warp-shares*))
-                                1))
-             (nfrags-all    (* (floor m fr) (floor n fc)))
-             (nfrags        (ceiling nfrags-all share))
-             (regs-per-frag 4)
-             (total-regs    (* nfrags regs-per-frag))
-             (budget        (or (%hp-registers-per-thread-default)
-                                *default-max-registers-per-thread*)))
-        (log:debug "196 fit-check ~ax~a ~a: ~a fragments over ~a warp(s) -> ~a regs (budget ~a)"
-                   m n elem nfrags-all share total-regs budget)
-        (when (> total-regs budget)
-          (error 'crisp-compiler-error
-                 :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs~a), exceeding the register budget of ~a.  Use a smaller tile shape, distribute it over more warps (:warps), or a hardware profile with a larger :max-registers-per-thread."
-                                  m n total-regs nfrags regs-per-frag
-                                  (if (> share 1) (format nil ", ~a-way :warps share" share) "")
-                                  budget)
-                 :source-location location))))))
+    (flet ((enm (x) (let ((c (%canonical-elem x)))
+                      (if (symbolp c) (symbol-name c) (format nil "~a" c)))))
+      (let ((elem (%canonical-elem elem)))
+        (destructuring-bind (fr . fc) (%acc-frag-mn elem)
+          (%register-tile-dims-must-divide m n location fr fc)
+          (let* ((share         (or (fourth (find-if (lambda (e) (and (eql (first e) m) (eql (second e) n)
+                                                                          (equal (enm (third e)) (enm elem))))
+                                                         *196-tile-warp-shares*))
+                                    1))
+                 (nfrags-all    (* (floor m fr) (floor n fc)))
+                 (nfrags        (ceiling nfrags-all share))
+                 (regs-per-frag 4)
+                 (total-regs    (* nfrags regs-per-frag))
+                 (budget        (or (%hp-registers-per-thread-default)
+                                    *default-max-registers-per-thread*)))
+            (log:debug "196 fit-check ~ax~a ~a: ~a fragments over ~a warp(s) -> ~a regs (budget ~a)"
+                       m n elem nfrags-all share total-regs budget)
+            (when (> total-regs budget)
+              (error 'crisp-compiler-error
+                     :message (format nil "make-register-tile: a ~ax~a accumulator tile needs ~a registers/thread (~a fragments × ~a regs~a), exceeding the register budget of ~a.  Use a smaller tile shape, distribute it over more warps (:warps), or a hardware profile with a larger :max-registers-per-thread."
+                                      m n total-regs nfrags regs-per-frag
+                                      (if (> share 1) (format nil ", ~a-way :warps share" share) "")
+                                      budget)
+                     :source-location location))))))))
 
 (defun %subst-accum (form binding-sym frag-var acc-set)
   "F3: substitute a mma-accumulate-via-tile body per fragment — the accum-binding symbol
@@ -2834,13 +3051,135 @@
 
 
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 207 -- qint roles at the MMA
+;;;; See tests/spec/207-int8-mma-bench/int8-mma-bench.md.
+;;;; ----------------------------------------------------------------------
+
+;;; The tile MMA path checked only the LOWERED element types (q-a is already char there), so no qint rule
+;;; reached it: q-a operands into (accum q-b), q-a x q-b with no product, and q-a into a plain int all
+;;; compiled.  The rule (agreed with Chris 2026-11-04) -- only operands that ARE qints count; plain
+;;; bytes are untyped:
+;;;   no qint operand             -> any 32-bit integer accumulator, including any (accum T)
+;;;   one qint T (T.T or T.plain) -> the accumulator must be (accum T)
+;;;   two different qints T, U    -> a def-qint-product must be declared; the accumulator is (accum T U)
+;;; Checked from the LET analyzer BEFORE tile explosion, the one point where the constructors, kernel
+;;; parameters (ENV) and the C tile's name are all still visible.  An operand that cannot be resolved
+;;; there is SKIPPED: a missed refusal is a gap, a false one would break a valid kernel.
+(defun %qint-type-display (ty)
+  "TY as an author writes it: (accum T) for a qint's own accumulator, else its name."
+  (let ((base (and (symbolp ty) (eq (qint-role ty) :accum) (base-type-of ty))))
+    (if (and base (not (string= (symbol-name (resolve-type-alias base))
+                                (symbol-name (resolve-type-alias ty)))))
+        (format nil "(accum ~(~a~))" base)
+        (format nil "~(~a~)" ty))))
+
+(defun %check-mma-qint-roles (a b c location)
+  "Refuses an MMA whose quantized operands A, B do not accumulate into C (all SOURCE element types,
+   possibly accessor forms).  See the endeavour 207 follow-up header above for the rule.  Plain
+   operands are untyped and accepted into any accumulator."
+  (let* ((a (%canonical-elem a)) (b (%canonical-elem b)) (c (%canonical-elem c))
+         (qa (and (symbolp a) (eq (qint-role a) :base) a))
+         (qb (and (symbolp b) (eq (qint-role b) :base) b)))
+    (flet ((nm (ty) (symbol-name (resolve-type-alias ty)))
+           (refuse (fmt &rest args)
+             (error 'crisp-type-error :message (apply #'format nil fmt args) :source-location location)))
+      (log:debug "%check-mma-qint-roles: A ~a B ~a C ~a (qints ~a ~a)" a b c qa qb)
+      (when (or qa qb)
+        (let ((implied
+                (if (and qa qb (string/= (nm qa) (nm qb)))
+                    (if (gethash (%accum-key qa qb) *accum-registry*)
+                        (accum-type-of qa qb)
+                        (refuse "MMA: (~(~a~) x ~(~a~)): no product is declared.  Use def-qint-product."
+                                qa qb))
+                    (accum-type-of (or qa qb)))))
+          (unless (and (symbolp c) implied (string= (nm c) (nm implied)))
+            (refuse "MMA: operands ~(~a~) x ~(~a~) accumulate into ~a, not ~a.  The scale belongs to the data: declare the accumulator ~a, or make the operands plain."
+                    a b (%qint-type-display implied) (%qint-type-display c)
+                    (%qint-type-display implied))))))))
+
+(defun %qint-mma-binding-elems (bindings)
+  "Alist (SYM . SOURCE-ELEM) for BINDINGS.  A tile / scratch / wgmma-accumulator constructor gives
+   its element type; any other binding maps to NIL, so it SHADOWS an outer name as unknown."
+  (let ((out '()))
+    (dolist (b bindings (nreverse out))
+      (cond ((and (consp b) (symbolp (first b)))
+             (let ((init (second b)))
+               (push (cons (first b)
+                           (and (consp init) (symbolp (first init))
+                                (member (symbol-name (first init))
+                                        '("MAKE-REGISTER-TILE" "MAKE-REGISTER-TILE-RING"
+                                          "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-MATRIX-RING"
+                                          "MAKE-WGMMA-ACCUMULATOR")
+                                        :test #'string=)
+                                (%canonical-elem (second init))))
+                     out)))
+            ((and b (symbolp b))
+             (push (cons b nil) out))))))
+
+(defun %qint-mma-elem-of-type (type)
+  "The element type of a register tile, wgmma accumulator or tensor TYPE, or NIL."
+  (let ((rt (gethash type *register-tile-dims*))
+        (wa (gethash type *wgmma-acc-dims*)))
+    (cond (rt (and (third rt) (%canonical-elem (third rt))))
+          (wa (and (fourth wa) (%canonical-elem (fourth wa))))
+          (t (let ((canon (ignore-errors (%ts-canonicalize-tensor-type type))))
+               (and (consp canon) (>= (length canon) 2) (symbolp (second canon))
+                    (%canonical-elem (second canon))))))))
+
+(defun %qint-mma-src-elem (form lex env)
+  "The SOURCE element type of an MMA operand or accumulator FORM: a symbol, or (ring-get SYM I).
+   LEX (from enclosing LET bindings) wins over ENV.  NIL when it cannot be known here."
+  (cond ((and (consp form) (symbolp (first form)) (string= (symbol-name (first form)) "RING-GET")
+              (= (length form) 3))
+         (%qint-mma-src-elem (second form) lex env))
+        ((and form (symbolp form))
+         (let ((hit (assoc form lex)))
+           (if hit
+               (cdr hit)
+               (let ((pd (find-variable-in-env form env)))
+                 (and pd (%qint-mma-elem-of-type (parameter-def-type pd)))))))
+        (t nil)))
+
+(defun %qint-mma-walk (form lex env location)
+  "Walks FORM applying %check-mma-qint-roles to every mma-accumulate-via-tile, wgmma-accumulate and
+   wgmma-accumulate-via-tile, extending LEX through nested LETs.  A check runs only when A, B and C
+   are all known."
+  (when (consp form)
+    (let* ((head (first form))
+           (hn (and (symbolp head) (symbol-name head))))
+      (labels ((src (f) (%qint-mma-src-elem f lex env))
+               (check (c a b)
+                 (let ((cs (src c)) (as (src a)) (bs (src b)))
+                   (when (and cs as bs)
+                     (%check-mma-qint-roles as bs cs location))))
+               (walk-all (forms l)
+                 (loop for x on forms while (consp x) do (%qint-mma-walk (car x) l env location))))
+        (cond
+          ((and hn (member hn '("LET" "LET*") :test #'string=) (listp (second form)))
+           (dolist (b (second form))
+             (when (consp b) (walk-all (cdr b) lex)))
+           (walk-all (cddr form) (append (%qint-mma-binding-elems (second form)) lex)))
+          ((and hn (member hn '("MMA-ACCUMULATE-VIA-TILE" "WGMMA-ACCUMULATE-VIA-TILE") :test #'string=)
+                (>= (length form) 5))
+           (check (nth 2 form) (nth 3 form) (nth 4 form))
+           (walk-all (cdr form) lex))
+          ((and hn (string= hn "WGMMA-ACCUMULATE") (>= (length form) 4))
+           (check (nth 1 form) (nth 2 form) (nth 3 form))
+           (walk-all (cdr form) lex))
+          (t (walk-all form lex)))))))
+
 (defun analyze-let-with-tile-explosion (expr env context location)
   "let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),
    then explode register-tile bindings into per-fragment mutable variables (register residency,
    Endeavor 132), then defer to the normal let analysis.
 
    Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of
-   the body analysis, so operand-shape checks in the expression analyzers can see them."
+   the body analysis, so operand-shape checks in the expression analyzers can see them.
+
+   Endeavour 207: first checks the qint roles of every MMA in the LET (%qint-mma-walk), while the
+   source element types are still visible."
+  (%qint-mma-walk expr nil env location)
   (let ((lowered (%explode-register-tiles
                   (%expand-matmul-tile-stride-register-forms expr location)
                   location context)))
@@ -4044,17 +4383,21 @@
    (NOT hardcoded).  Mirrors %coop-layout-of, which derives the MemoryLayout the same way and
    for the same reason: at a load site the operand is usually a kernel parameter carrying a
    MANGLED type symbol, which only %TS-CANONICALIZE-TENSOR-TYPE can expand.
-
    Endeavour 155.  load-fragment-a / -b previously built `(coop-matrix float ...)` outright, so
    a bf16 operand was loaded as float32 -- the emitted SPIR-V for the bf16 benchmark kernel
    contained exactly one float type (32-bit) and no 16-bit type at all.
-
    Unresolvable types keep FLOAT, the historical behaviour.  ACCUMULATORS ARE DELIBERATELY NOT
    ROUTED THROUGH HERE: XMX/DPAS and the NVIDIA tensor cores take bf16 operands and accumulate in
-   fp32, so an f32 accumulator paired with bf16 operands is correct, not an oversight."
+   fp32, so an f32 accumulator paired with bf16 operands is correct, not an oversight.
+
+   Endeavour 207: an INTEGER element is returned as its primitive base (q-a -> CHAR), the same
+   answer %elem-coop-type gives a register tile of that element.  A derived name here made a q-a
+   operand load disagree with the q-a register tile it was loaded into.  Floats are unchanged."
   (let* ((canon (%ts-canonicalize-tensor-type (get-single-value-type tensor-node)))
          (elem  (and (consp canon) (>= (length canon) 2) (second canon))))
-    (if (and elem (symbolp elem)) elem 'float)))
+    (cond ((not (and elem (symbolp elem))) 'float)
+          ((%elem-integer-p elem) (%elem-coop-type elem))
+          (t elem))))
 
 ;; tests/run-specs.lisp
 (defun %spv-float-ids (txt width)
@@ -4282,14 +4625,18 @@
 
 (defun %register-tile-elems-from-bindings (bindings)
   "Alist (SYM . ELEM) for every register-tile or register-tile-ring binding in BINDINGS.
-   Both constructors put the element type in the same position: (make-register-tile* ELEM (M N) ...)."
+   Both constructors put the element type in the same position: (make-register-tile* ELEM (M N) ...).
+
+   Endeavour 207: ELEM may be a type ACCESSOR such as (accum q-a).  It is recorded resolved
+   (%canonical-elem -> Q-A-ACCUM); before, anything but a symbol was dropped, and the tile then read
+   back as FLOAT."
   (let ((out '()))
     (dolist (b bindings (nreverse out))
       (when (and (consp b) (= (length b) 2) (symbolp (first b))
                  (consp (second b))
                  (or (%register-tile-init-form-p (second b))
                      (%register-tile-ring-init-form-p (second b))))
-        (let ((elem (second (second b))))
+        (let ((elem (%canonical-elem (second (second b)))))
           (when (symbolp elem)
             (push (cons (first b) elem) out)))))))
 

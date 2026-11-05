@@ -84,6 +84,17 @@ struct VerifyResult {
 // supplies it, because only the harness knows its runtime and C's element width.
 using ReadSpan = std::function<void(uint64_t first, uint64_t count, std::vector<double> &out)>;
 
+// Endeavour 207 -- the REQUANTIZE oracle, as a POST for verify_sampled: s8 = sat8(rne(float(acc) * m)).
+// The multiply is done in fp32 on purpose, because that is what the kernel does (Crisp's to-q and
+// cuBLASLt's float alpha alike); the accumulator itself is exact below 2^24, which every size here is.
+inline std::function<double(double)> requant_s8(float m) {
+    return [m](double acc) {
+        const float p = static_cast<float>(acc) * m;
+        const float r = std::nearbyint(p);              // default rounding mode: nearest, ties to even
+        return (double)std::max(-128.0f, std::min(127.0f, r));
+    };
+}
+
 // A strided ~64 x 64 sample over the WHOLE of C (M x N), C = scale * (A . B), A is M x K, B is K x N.
 // Stops at the first mismatch, like the fixtures always have.
 inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,

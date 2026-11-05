@@ -42,7 +42,7 @@
 //          CRISP_MATMUL_LOCAL    block size "x,y,z"                            (default "32,1,1")
 //          CRISP_MATMUL_GRID     "strided" | "one-thread-per"                  (default "strided")
 //          CRISP_MATMUL_TILE     output tile "TM,TN", for GRID=strided         (default "32,64")
-//          CRISP_MATMUL_ELEM     A/B element type: "f32"|"bf16"|"f16"|"f64"    (default "f32")
+//          CRISP_MATMUL_ELEM     A/B element type: "f32"|"bf16"|"f16"|"f64"|"s8"|"u8" (default "f32"; s8/u8 make C s32)
 //          CRISP_MATMUL_ARGC     total kernel argument count                   (default 27)
 //          CRISP_MATMUL_ARG_A    A's FIRST argument index                      (default 0)
 //          CRISP_MATMUL_ARG_B    B's FIRST argument index                      (default 9)
@@ -135,10 +135,18 @@ int main(int argc, char **argv) {
     // Endeavour 165: f64 = 8.  This one value already feeds shared-memory sizing, the host
     // A/B buffers, scratch-tile extents and the tensormap row stride, so widening it here is
     // what makes those four correct rather than four separate edits.
-    const uint64_t ebytes = (elem == "f32") ? 4 : (elem == "f64") ? 8 : 2;
+    // Endeavour 207: s8 / u8 = 1 (C is then s32).
+    const bool int8 = (elem == "s8" || elem == "u8");
+    const uint64_t ebytes = (elem == "f32") ? 4 : (elem == "f64") ? 8 : int8 ? 1 : 2;
     // C's width.  Separate from ebytes because a 16-bit MMA accumulates in fp32 -- C is wider
     // than A/B there -- while fp64 is fp64 throughout.
-    const uint64_t cbytes = (elem == "f64") ? 8 : 4;
+    // Endeavour 207 -- the REQUANTIZE epilogue.  CRISP_MATMUL_REQUANT=<m> says the kernel stores C as
+    // s8 = sat8(rne(float(acc) * m)) (to-q on the store's source).  C is then 1 byte, and the oracle
+    // applies the same rule: the exact integer accumulator, an fp32 multiply, nearest-even, saturate.
+    const char *rq_env = std::getenv("CRISP_MATMUL_REQUANT");
+    const bool requant = rq_env && *rq_env;
+    const float rq_m = requant ? std::strtof(rq_env, nullptr) : 1.0f;
+    const uint64_t cbytes = (elem == "f64") ? 8 : requant ? 1 : 4;
 
     // B's orientation, resolved BEFORE anything uses it.  It governs THREE things that must
     // agree: the tensormap's global dims, the kernel's B tensor strides, and the host reference's
@@ -329,6 +337,7 @@ int main(int argc, char **argv) {
         if      (elem == "bf16") dt = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
         else if (elem == "f16")  dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT16;
         else if (elem == "f64")  dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT64;
+        else if (int8)           dt = CU_TENSOR_MAP_DATA_TYPE_UINT8;   // 207: bytes; the sign is the MMA's
         else                     dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT32;
 
         uint64_t gdim[2] = { e1, e0 };                 // reversed: innermost first
@@ -444,8 +453,9 @@ int main(int argc, char **argv) {
     // K x N either row-major or column-major as the kernel stages it (b_is_nk); C is row-major.  At
     // fp64 the fill carries the precision oracle and the check runs at 1e-10 relative, as before.
     const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(
-        (void *)dC, elem == "f64" ? "f64" : "f32", M, N, K,
-        crisp_bench::rm(K), b_is_nk ? crisp_bench::cm(K) : crisp_bench::rm(N), crisp_bench::rm(N));
+        (void *)dC, elem == "f64" ? "f64" : requant ? "s8" : int8 ? "s32" : "f32", M, N, K,
+        crisp_bench::rm(K), b_is_nk ? crisp_bench::cm(K) : crisp_bench::rm(N), crisp_bench::rm(N),
+        requant ? crisp_bench::requant_s8(rq_m) : std::function<double(double)>{});
     const bool verified = vr.verified;
     const double max_abs_err = vr.max_abs_err;
     const uint64_t checked = vr.checked;

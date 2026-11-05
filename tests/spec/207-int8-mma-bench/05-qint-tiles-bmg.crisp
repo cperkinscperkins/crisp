@@ -1,0 +1,29 @@
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; Endeavour 207 ON-METAL (BMG): def-qint types through the register-tile + tile-stride path that the
+;; int8 benchmark kernel uses -- q-a OPERAND tiles and an (accum q-a) accumulator tile.  Two gaps
+;; failed this at compile time before 207: the (accum q-a) tile read back as FLOAT inside the
+;; tile-stride macro, and a q-a operand loaded as (coop-matrix q-a ..) into a (coop-matrix char ..)
+;; tile.  64 x 64 x 128: four 32x32 output tiles over one subgroup, four K-steps.
+;; MMA-DIMS: 64 64 128
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix (accum q-a) :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel qint_tiles (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((A-tile (make-register-tile q-a (32 32) 0 :operand :a))
+        (B-tile (make-register-tile q-a (32 32) 0 :operand :b))
+        (C-tile (make-register-tile (accum q-a) (32 32) 0)))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 32 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 32) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

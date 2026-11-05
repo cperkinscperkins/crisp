@@ -360,9 +360,18 @@ pass where a conversion needs it.
 - **Tensor hardware.**  Integer MMA takes 8-bit operands (`char` / `uchar` or a qint over them) and an `int`
   accumulator.  On BMG it is `mma-accumulate-via-tile` with `(8 16 32)`, and the narrowing is a second
   step: store the `int` tile, then `to-q-a` each element (a direct `(store-tile (to-q-a D m) ..)` is
-  refused on SPIR-V).  On NVIDIA it is `wgmma` only, K=32 per slice, with B `:col-major`, and
-  `(store-tile-at (to-q-out D m) C (r c))` narrows as it stores.  There is no integer MMA below Hopper:
-  `mma.sync` is refused.
+  refused on SPIR-V).  On NVIDIA Hopper it is `wgmma`, K=32 per slice, with B `:col-major`, and
+  `(store-tile-at (to-q-out D m) C (r c))` narrows as it stores.  On A100 / Ada (and Hopper) it is also
+  `mma-accumulate-via-tile` with `(16 8 32)` into an `int` register tile, B `:col-major` -- the
+  `mma.sync` m16n8k32 instruction.  That tile must be `int` (or an `(accum T)` over `int`): `mma.sync`
+  accumulates signed 32-bit.
+- **Which accumulator a quantized MMA takes.**  Only operands that ARE qints constrain it; plain `char` /
+  `uchar` operands are untyped bytes.  Both plain: any 32-bit integer accumulator, including any
+  `(accum T)` (the accumulator's type then asserts the scale; that is your claim).  One qint `T`: the
+  accumulator must be `(accum T)`, not plain `int` and not another qint's.  Two different qints: they
+  need a `def-qint-product`, and the accumulator is `(accum T U)`.  This is looser than scalar code,
+  where `(*! q-a char)` is refused: an MMA operand is usually a raw host buffer.  Typed and plain
+  kernels emit the same instructions.
 - **Gradients** are straight-through: `to-q` and the narrowing pass the adjoint through, zero when
   saturated.  Train in float with the fake-quant pattern `(to-float (to-q-a x s) s)`, which gives
   `dy/dx = 1`.  Integer MMA has no backward.  Check such gradients with `VERIFY-AUTODIFF ... fd=off

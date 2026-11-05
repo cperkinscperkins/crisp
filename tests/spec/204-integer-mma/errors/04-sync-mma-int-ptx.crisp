@@ -1,6 +1,8 @@
-;; CHECK-FAIL: "has no NVIDIA lowering"
+;; CHECK-FAIL: "is the mma.sync (16 8 32) accumulator"
 ;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
-;; Endeavour 204 -- sync mma has no integer lowering here; the message points at wgmma.
+;; Endeavour 204 -- sync mma had no integer lowering; the message pointed at wgmma.
+;; Endeavour 207 -- sync int8 exists now (mma.sync m16n8k32), so an int tile at the tf32 shape (16 8 8)
+;; is refused for its SHAPE: the only int8 sync shape is (16 8 32).
 (def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
 (def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
 

@@ -4592,3 +4592,18 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         LIKELY CAUSE: %expand-stride-macros-in-form rewrites strides in the kernel's own forms, and a stride
         inside a grid function is never seen.  reduce-vec had the same symptom with a macro, and 206's
         fake-quant-NAME is a macro expanded there for the same reason.  Found 2026-11-01.
+
+[ ] 155 THE FULL E2E SUITE SEGFAULTS INTERMITTENTLY (rc 139), AT A DIFFERENT SPEC EACH TIME.
+        `sbcl --script tests/run-specs.lisp` died 3 times in 7 full runs on 2026-11-03/04:
+          - once AT EXIT, after printing 1759/1759;
+          - once mid-suite in 124-ad-issues, with a 2314-job compile corpus running in parallel;
+          - once mid-suite in 176-reduce-multi (18-grid-reduce-dependent-metal, Default pass), with
+            nothing heavy alongside.
+        Each crashing directory passes alone, and the other four full runs passed (1759/1759 before 207's last specs; 1766/1766 after).  No
+        "heap exhausted", GC or control-stack message precedes the crash; the log just stops.
+        HYPOTHESES (untested): a foreign-memory fault in LLVM-C.dll late in a long single process (the
+        suite compiles ~1766 specs in one image), or SBCL 2.5.11 on Windows under load.  First seen
+        right after endeavour 207's overlay work, but 207's changes are compile-time Lisp and the
+        corpus is byte-identical across the fold, so the timing may be coincidence.
+        TO TRY: run the suite in halves (--filter) to see if it needs the long process; watch the
+        process's memory; check CI (Linux), which has not been seen to crash.

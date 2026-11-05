@@ -10,9 +10,25 @@ all the hardware offers.
 |---|---|---|
 | Intel XMX (BMG) | `mma-accumulate-via-tile` with `(8 16 32)` | All four sign pairs.  K=32 is the int8 shape |
 | NVIDIA Hopper (H100) | `make-wgmma-accumulator` + `wgmma-accumulate-via-tile` | K=32 per slice.  A mixed-sign kernel needs PTX 8.4 |
-| NVIDIA below Hopper | none | Synchronous `mma.sync` is refused (see below) |
+| NVIDIA A100 / Ada (and Hopper) | `mma-accumulate-via-tile` with `(16 8 32)` into an `int` register tile | `mma.sync` m16n8k32.  B `:col-major`.  s8·s8 and u8·s8 proven on an A100; the other two pairs lower to the matching instruction |
 
 On NVIDIA, `wgmma` reads B as `(N K)`, so declare B `:col-major` as for the 16-bit forms.
+
+**Which accumulator a quantized MMA takes.** The scalar rule holds at the tile: the scale belongs to the
+data, so two `def-qint`s never mix. Only operands that ARE qints constrain the accumulator. Plain `char` /
+`uchar` operands are untyped bytes.
+
+| Operands | Accumulator |
+|---|---|
+| both plain | any 32-bit integer accumulator: `int`, or any `(accum T)` |
+| one qint `T` (`T`·`T`, or `T` and a plain operand) | `(accum T)` |
+| two different qints `T`, `U` | `(accum T U)`, which needs a `def-qint-product` |
+
+Plain operands are accepted into an `(accum T)` on purpose. An MMA operand is usually a raw buffer from
+the host, where declaring it `T` buys nothing, so the accumulator's type asserts the scale and that claim
+is the author's. Scalar code is stricter (`(*! q-a char)` is refused), because a scalar product sits
+mid-computation, where mixing is far more likely a mistake. The typed and plain forms of a kernel emit
+the same instructions on all three targets.
 
 ```lisp
 (def-qint q-act :base uchar :accum int)
@@ -76,13 +92,19 @@ give you a compile-time error than to let you ship a kernel that is 100x slower 
 |---|---|
 | An integer operand with a float accumulator, or the reverse | integer and float do not mix |
 | A signed operand with an unsigned accumulator | must be signed |
-| An integer register tile on NVIDIA (`mma.sync`) | has no NVIDIA lowering; use `wgmma` |
+| An `int` register tile on NVIDIA at a shape other than `(16 8 32)` | is the mma.sync (16 8 32) accumulator |
+| A `uint` register tile on NVIDIA | mma.sync accumulates signed 32-bit |
 | `wgmma` int8 with K other than 32 per slice | K must be 32 |
 | XMX int8 at a non-int8 K | operands need K=32 |
 | A hardware profile with no int8 shape | is not one of the active hardware |
 | `store-tile-at (to-q D m) .. :via :tma` | the TMA store path moves 16-bit elements |
+| qint operands into another qint's accumulator, e.g. `q-a` into `(accum q-b)` | accumulate into (accum q-a), not (accum q-b) |
+| qint operands into a plain `int` accumulator | accumulate into (accum q-a), not int |
+| Two different qints with no `def-qint-product` | no product is declared |
 
-> Implementation note: synchronous `mma.sync` int8 assembles, but each shape needs its own per-lane
-> register layout, which can only be proven on metal, while `wgmma` reads shared memory. So there is no
-> integer MMA below Hopper (for example, on Ada) yet.
+> Implementation note: synchronous `mma.sync` int8 (m16n8k32) has been built since endeavour 207. Its
+> per-lane register layout is the 16-bit m16n8k16 layout with every K coordinate doubled (four bytes
+> per 32-bit register), and it was proven on an A100 for `char x char` and `uchar x char`. The
+> operand SIGN travels in the fragment record (`char` and `uchar` are the same 8-bit LLVM type), so
+> mixed-sign pairs pick the matching `.s8.u8` / `.u8.s8` instruction.
 

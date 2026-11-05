@@ -277,7 +277,7 @@ def _skeleton(device: str, platform: str) -> str:
     else:
         lines += [
             "  :max-registers-per-thread 255         ; a SCALAR on NVIDIA",
-            "  :mma-shapes '((16 8 8) (16 8 4) (16 8 16) (:double 8 8 4))",
+            "  :mma-shapes '((16 8 8) (16 8 4) (16 8 16) (16 8 32) (:double 8 8 4))  ; (16 8 32): int8 mma.sync (207)",
             "                                        ; the TYPED fp64 entry is required: without it",
             "                                        ; `double` picks a non-intrinsic shape and emits",
             "                                        ; an .extern .func call with NO diagnostic.",

@@ -24,6 +24,7 @@
 
 (def-type fill-f32  (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
 (def-type fill-u16  (matrix ushort   :address-space :global :align :compact :contiguous-term :row-major))
+(def-type fill-u8   (matrix uchar    :address-space :global :align :compact :contiguous-term :row-major))
 
 (def-kernel fill_f32 (&out X nrows ncols modulus)
   (declare #'(&out fill-f32 ulong ulong ulong => nil)
@@ -49,3 +50,15 @@
                     (if (= r (to-ulong 1)) p1
                         (if (= r (to-ulong 2)) p2
                             (if (= r (to-ulong 3)) p3 p4))))))))))
+
+;; Endeavour 207 -- 8-bit integer operands (s8 and u8).  The values 0..4 have the same byte in
+;; both encodings, so ONE unsigned fill serves both; the kernel under test decides the sign.
+(def-kernel fill_u8 (&out X nrows ncols modulus)
+  (declare #'(&out fill-u8 ulong ulong ulong => nil)
+           (global-size :derive-from X :strategy :one-thread-per)
+           (local-size :set-to (16 16)))
+  (let ((row (to-ulong (get-global-id 0)))
+        (col (to-ulong (get-global-id 1))))
+    (when (< row nrows)
+      (when (< col ncols)
+        (set! (~ X row col) (to-uchar (rem (+ (* row ncols) col) modulus)))))))

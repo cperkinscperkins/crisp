@@ -42,6 +42,18 @@ NEXT  (housekeeping-oct)
      plus we added :via :tma support, but don't see ANY kernel using that 
 - [ ] matmul contest for GPU Mode needs B200 and teneg05? support ( follow up to wgmma )
 - [ ] benchmarks need above, plus incorporation of :via :tma and possibly other code changes introduced by matmul-contest branch.  And then rerun.
+- [ ] tcgen05 for B200 
+- [ ] MMA benchmarking of new quantized ints and microfloat bloacks
+- - PLAN ??
+- - [ ] complex
+- - [ ] FFI
+- - [ ] SOA Vector / Matrix 
+- - [ ] bitonic and radix sort
+
+
+
+
+
 
 
 OPEN
@@ -79,6 +91,13 @@ OPEN
 - [ ] benchmark A|D? (L940)
 - [ ] SAXPY in the cross-platform set (L995)
 - [/] RunPod as a GitHub Actions target (hoist tests only? separate .yml) (L985)
+- [ ] int8 follow-ups from endeavour 207 (details: tests/spec/207-int8-mma-bench/int8-mma-bench.md "Next"):
+  - [ ] packed int8 operand loads / `ldmatrix` for `mma.sync` (A100 at 15% of cuBLASLt; 24 byte loads per MMA)
+  - [ ] packed narrowing store for `store-tile-at (to-q D m)` (requantize at 53-68% of cuBLASLt vs 76-80% plain)
+  - [ ] `:xe-native` int8 on BMG (16-bit only today; BMG int8 at 87% of oneMKL without it)
+  - [ ] SPIR-V integer epilogues (narrow / dequantize in the register tile; today a second global pass)
+  - [ ] dequantize-to-fp16 epilogue variant, per-row x per-column scales (not built anywhere)
+  - [ ] Ada (sm_89) on metal: int8 `mma.sync` compiles + assembles for sm_89, never run there
 
 ### Compiler hygiene / refactor
 - [x] src/specials.lisp tail -> src/globals.lisp (hand-written, loaded right after specials; generated file now
@@ -183,7 +202,7 @@ OPEN
 - [ ] Support for DLPack.  dmlc.github.io/dlpack/latest  . Interop format for tensors. 
       Will be extremely useful if we want to position ourselves as premier runtime kernel compiler.
 
-      
+
 
 ### Tiles / tensors
 - [ ] hoisting: total tensor size an even multiple of the tile ("oversubscribe", identity fill

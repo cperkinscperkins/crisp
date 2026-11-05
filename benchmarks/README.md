@@ -67,6 +67,9 @@ benchmarks/
     sec2_top_bf16/              # bf16       (native 270+ TFLOPS matrix engines)
     sec2_top_fp16/              # fp16       (shares one implementation with bf16)
     sec2_top_f64/               # fp64 DMMA  (Crisp vs CUTLASS DMMA/SIMT vs cuBLAS 64F)
+    sec2_top_int8/              # int8 -> s32, SLIM lane (Crisp + variants vs oneMKL / cuBLASLt;
+                                #        oneDNN and Hopper's mma.sync as reference rows).
+                                #        XMX (8 16 32) on BMG, wgmma on Hopper, mma.sync on A100/Ada
 
     # §3 — Situational Techniques
     sec3_cluster_multicast/     # TMA multicast controlled pairs (64x128 vs 64x256)
@@ -75,6 +78,9 @@ benchmarks/
     # §4 — MMA + Activation (fused epilogues)
     sec4_fused_relu/            # Ch 1: Standard epilogue (fused ReLU)
     sec4_fused_custom/          # Ch 2: Custom epilogue (arbitrary user function)
+    sec4_int8_requant/          # int8 GEMM narrowed to s8 as it stores (vs cuBLASLt s8 C).
+                                #        Hopper only until SPIR-V has an integer epilogue.
+                                #        Reported in §2 beside sec2_top_int8.
 
     _probe_*/  _variant_*/      # FENCED experiments, not canonical results.  A leading
     _iso/  _kdepth/             # underscore keeps them out of the report; several hold

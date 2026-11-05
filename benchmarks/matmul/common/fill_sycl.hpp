@@ -42,6 +42,9 @@ inline void sycl_fill_patterns(sycl::queue &q, void *ptr, size_t n, uint32_t mod
 // Fill n elements of a USM buffer with (flat % mod) in the buffer's own element encoding.
 inline void sycl_fill(sycl::queue &q, float *p, size_t n, uint32_t mod)  { detail::sycl_fill_values(q, p, n, mod); }
 inline void sycl_fill(sycl::queue &q, double *p, size_t n, uint32_t mod) { detail::sycl_fill_values(q, p, n, mod); }
+// Endeavour 207: 8-bit integer operands.  0..4 is exact (and the same byte) in s8 and u8.
+inline void sycl_fill(sycl::queue &q, int8_t *p, size_t n, uint32_t mod)  { detail::sycl_fill_values(q, p, n, mod); }
+inline void sycl_fill(sycl::queue &q, uint8_t *p, size_t n, uint32_t mod) { detail::sycl_fill_values(q, p, n, mod); }
 inline void sycl_fill(sycl::queue &q, sycl::half *p, size_t n, uint32_t mod) {
     detail::sycl_fill_patterns(q, p, n, mod, "f16");
 }

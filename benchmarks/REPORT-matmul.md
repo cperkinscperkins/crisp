@@ -4,9 +4,10 @@
 
 | device | data captured | source | hardware profile |
 |---|---|---|---|
-| Intel(R) Graphics [0xe20b] | 2026-09-14 | Crisp `5999fa7c` (docker) | `bmg` (validated) |
-| NVIDIA H100 80GB HBM3 | 2026-09-13 | Crisp `cc116e8c` (runpod) | `h100-80gb-hbm3` (queried*) |
+| Intel(R) Graphics [0xe20b] | 2026-11-05 | Crisp `1432b489` (docker) | `bmg` (validated) |
+| NVIDIA H100 80GB HBM3 | 2026-11-04 | Crisp `e20cf277` (runpod) | `h100-80gb-hbm3` (queried*) |
 | NVIDIA H200 | 2026-09-13 | Crisp `66a7911d` (runpod) | `h200` (queried*) |
+| NVIDIA A100-SXM4-80GB | 2026-11-04 | Crisp `da445a6e` (runpod) | `a100-sxm4-80gb` (queried*) |
 
 > \* **queried / supplied**: the profile's QUERIED keys were read off the device, but its MEASURED keys (`:tile-visit-strip-width` above all) were never swept for this part and are absent, which selects safe defaults rather than tuned ones. Such a row is honest about the hardware it ran on and fair to compare *within* the device; it may understate Crisp against a row whose profile was fully tuned. A **NONE** row was compiled with no profile at all and is not comparable to published figures.
 
@@ -967,6 +968,67 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 </details>
 
+### Intel(R) Graphics [0xe20b] · int8 · `fast` *(s8 · s8 → s32 integer tensor cores · cells are TOPS)*
+
+*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (oneMKL); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*
+
+Crisp is **outside-in**: the user picks the configuration, exactly as a template library's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 4 variants measured.
+
+| N | Crisp INT8<br>**envelope** | Crisp INT8<br>best single (`base`) | **Ceiling**<br>oneMKL_INT8 | vs Ceiling |
+|---:|---:|---:|---:|---:|
+| 1024 | 114.1 (0.019) `base` | 114.1 | 124.4 (0.017) | 92% |
+| 2048 | 132.0 (0.130) `base` | 132.0 | 157.3 (0.109) | 84% |
+| 4096 | 184.0 (0.747) `base` | 184.0 | 207.1 (0.664) | 89% |
+| 8192 | 193.3 (5.688) `base` | 193.3 | 222.8 (4.934) | 87% |
+
+**Reference builds (INT8).** Not in the columns above, which stay one build per class: a second library of the Ceiling's class, or a Crisp build that uses a different instruction rather than a different configuration.
+
+| reference | N=1024 | N=2048 | N=4096 | N=8192 |
+|---|---:|---:|---:|---:|
+| oneDNN (`OneDNN_INT8`), the library an int8 inference stack calls | 125.1 | 157.0 | 207.0 | 225.7 |
+
+
+<details><summary><b>Compilation & Build Overhead (INT8)</b></summary>
+
+| contender | class | device codegen (SPIR-V) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 695 ms | 696 ms | 1.00× |
+| **oneMKL_INT8** | Ceiling | *precompiled* | 8.27 s | — |
+
+</details>
+
+### NVIDIA A100-SXM4-80GB · int8 · `fast` *(s8 · s8 → s32 integer tensor cores · cells are TOPS)*
+
+*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (cuBLASLt); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*
+
+Crisp is **outside-in**: the user picks the configuration, exactly as a template library's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 2 variants measured.
+
+| N | Crisp INT8<br>**envelope** | Crisp INT8<br>best single (`base`) | **Ceiling**<br>cuBLASLt_INT8 | vs Ceiling |
+|---:|---:|---:|---:|---:|
+| 1024 | 19.4 (0.111) `sync_w8` | 16.6 | 93.2 (0.023) | 21% |
+| 2048 | 31.8 (0.540) `base` | 31.8 | 230.4 (0.075) | 14% |
+| 4096 | 42.1 (3.261) `base` | 42.1 | 331.0 (0.415) | 13% |
+| 8192 | 55.6 (19.768) `base` | 55.6 | 352.3 (3.121) | 16% |
+
+> **⚠ SIGN FLIPS — these variants reverse with problem size.**
+> Each wins somewhere and loses somewhere, both beyond the measured run-to-run
+> spread, so a single fixed choice is not available and the envelope above is
+> assembled from *different kernels*. Picking by one size will mislead you at another.
+
+> | variant | wins at | loses at |
+> |---|---|---|
+> | `sync_w8` | 1024 (+17%) | **2048 (-7%)**, **4096 (-13%)**, **8192 (-32%)** |
+
+
+<details><summary><b>Compilation & Build Overhead (INT8)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 1.12 s | 1.12 s | 1.00× |
+| **cuBLASLt_INT8** | Ceiling | *precompiled* | 2.76 s | — |
+
+</details>
+
 ### NVIDIA H100 80GB HBM3 · tf32 · `fast`
 
 | N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
@@ -1110,6 +1172,53 @@ Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's 
 | **Crisp** | Crisp | 353 ms | 354 ms | 1.00× |
 | **CUTLASS_F64** | Peer | 2.08 s | 7.35 s | **5.9× slower** |
 | **cuBLAS_F64** | Ceiling | *precompiled* | 1.67 s | — |
+
+</details>
+
+### NVIDIA H100 80GB HBM3 · int8 · `fast` *(s8 · s8 → s32 integer tensor cores · cells are TOPS)*
+
+*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (cuBLASLt); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*
+
+| N | Crisp INT8 | **Ceiling**<br>cuBLASLt_INT8 | vs Ceiling |
+|---:|---:|---:|---:|
+| 1024 | 132.7 (0.016) | 183.9 (0.012) | 72% |
+| 2048 | 577.2 (0.030) | 549.5 (0.031) | 105% |
+| 4096 | 1019.5 (0.135) | 1338.8 (0.103) | 76% |
+| 8192 | 1136.0 (0.968) | 1415.3 (0.777) | 80% |
+
+**Reference builds (INT8).** Not in the columns above, which stay one build per class: a second library of the Ceiling's class, or a Crisp build that uses a different instruction rather than a different configuration.
+
+| reference | N=1024 | N=2048 | N=4096 | N=8192 |
+|---|---:|---:|---:|---:|
+| Crisp `mma.sync` m16n8k32 (the A100 / Ada instruction, run on Hopper) | 27.1 | 50.7 | 80.0 | 92.8 |
+
+
+<details><summary><b>Compilation & Build Overhead (INT8)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 1.07 s | 1.07 s | 1.00× |
+| **cuBLASLt_INT8** | Ceiling | *precompiled* | 2.43 s | — |
+
+</details>
+
+### NVIDIA H100 80GB HBM3 · int8→s8 · `fast` *(requantized s8 output · cells are TOPS)*
+
+*The int8 GEMM above with its s32 accumulator narrowed to s8 on the way out: `(store-tile-at (to-q-a D m) C ..)`, m = 0.003, fp32 multiply, nearest-even, saturate. The Ceiling is cuBLASLt with an s8 C and alpha = m. Exact against that oracle (max_abs_err 0). Cells read **TOPS (kernel ms)**.*
+
+| N | Crisp INT8→S8 | **Ceiling**<br>cuBLASLt_INT8→S8 | vs Ceiling |
+|---:|---:|---:|---:|
+| 1024 | 94.0 (0.023) | 191.2 (0.011) | 49% |
+| 2048 | 442.6 (0.039) | 715.8 (0.024) | 62% |
+| 4096 | 800.1 (0.172) | 1511.2 (0.091) | 53% |
+| 8192 | 1138.8 (0.965) | 1663.8 (0.661) | 68% |
+
+<details><summary><b>Compilation & Build Overhead (INT8→S8)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 754 ms | 755 ms | 1.00× |
+| **cuBLASLt_INT8→S8** | Ceiling | *precompiled* | 2.19 s | — |
 
 </details>
 
@@ -1469,4 +1578,75 @@ Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowerin
 
 Debug and exploratory runs are written to `benchmarks/results/scratch/`, which the report never reads into canonical tables.
 
-*No scratch runs present.*
+| timestamp | suite | chapter | competitor | sizes |
+|---|---|---|---|---|
+| 2026-10-11 17:22 | matmul | chap5_multistage_ring | Crisp | `4096,8192` |
+| 2026-10-11 17:22 | matmul | chap5_multistage_ring | SYCL_Apples | `4096,8192` |
+| 2026-10-11 17:22 | matmul | sec2_top | Crisp | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top | SYCL_Apples | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top | OneMKL_Optimal | `4096` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_pfw1 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_pfw2 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_pfw3 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_pfw4 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_wg256 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_wg256pf1 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_wg256pf2 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_wg256xe | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_wg256xepf2 | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec2_top_fp16 | Crisp_V_wg256pf2cc | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec3_mma_lowering | Crisp_Coop_Bare | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec3_mma_lowering | Crisp_XeNative_Bare | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec3_mma_lowering | Crisp_Coop_Tuned | `4096,8192` |
+| 2026-10-11 17:23 | matmul | sec3_mma_lowering | Crisp_XeNative_Tuned | `4096,8192` |
+| 2026-10-11 17:24 | matmul | sec2_top_fp16 | SYCL_Apples_FP16 | `4096,8192` |
+| 2026-10-11 17:25 | matmul | sec2_top_fp16 | SYCL-TLA_FP16 | `4096,8192` |
+| 2026-10-11 17:25 | matmul | sec2_top_fp16 | OneMKL_FP16 | `4096,8192` |
+| 2026-10-11 17:26 | matmul | chap5_multistage_ring | Crisp | `4096,8192` |
+| 2026-10-11 17:26 | matmul | chap5_multistage_ring | SYCL_Apples | `4096,8192` |
+| 2026-10-11 17:26 | matmul | sec2_top | Crisp | `4096,8192` |
+| 2026-10-11 17:26 | matmul | sec2_top | SYCL_Apples | `4096,8192` |
+| 2026-10-11 17:26 | matmul | sec2_top | OneMKL_Optimal | `4096` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_pfw1 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_pfw2 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_pfw3 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_pfw4 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_wg256 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_wg256pf1 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_wg256pf2 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_wg256xe | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_wg256xepf2 | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | Crisp_V_wg256pf2cc | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec3_mma_lowering | Crisp_Coop_Bare | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec3_mma_lowering | Crisp_XeNative_Bare | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec3_mma_lowering | Crisp_Coop_Tuned | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec3_mma_lowering | Crisp_XeNative_Tuned | `4096,8192` |
+| 2026-10-11 17:27 | matmul | sec2_top_fp16 | SYCL_Apples_FP16 | `4096,8192` |
+| 2026-10-11 17:29 | matmul | sec2_top_fp16 | SYCL-TLA_FP16 | `4096,8192` |
+| 2026-10-11 17:29 | matmul | sec2_top_fp16 | OneMKL_FP16 | `4096,8192` |
+| 2026-10-16 22:36 | matmul | chap1_handrolled_mma | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:36 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:36 | matmul | chap2_tiling | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:36 | matmul | chap2_tiling | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:36 | matmul | chap3_async | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:36 | matmul | chap3_async | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:41 | matmul | chap1_handrolled_mma | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:41 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:41 | matmul | chap2_tiling | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:41 | matmul | chap2_tiling | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:41 | matmul | chap3_async | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:41 | matmul | chap3_async | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:43 | matmul | chap1_handrolled_mma | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:43 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:43 | matmul | chap2_tiling | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:44 | matmul | chap2_tiling | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 22:44 | matmul | chap3_async | Crisp | `256,512,1024,2048,4096` |
+| 2026-10-16 22:44 | matmul | chap3_async | SYCL_Apples | `256,512,1024,2048,4096` |
+| 2026-10-16 23:05 | matmul | chap0_naive | Crisp | `256,512` |
+| 2026-10-16 23:06 | matmul | chap0_naive | SYCL_Apples | `256,512` |
+| 2026-10-16 23:06 | matmul | chap1_handrolled_mma | Crisp | `256,512` |
+| 2026-10-16 23:06 | matmul | chap1_handrolled_mma | SYCL_Apples | `256,512` |
+| 2026-11-04 07:45 | matmul | sec2_top_int8 | Crisp_V_k64 | `1024,2048,4096,8192` |
+| 2026-11-04 07:45 | matmul | sec2_top_int8 | Crisp_V_pf3 | `1024,2048,4096,8192` |

@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; CHECK-FAIL: "uses 262144 bytes of local/shared memory"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90a --hardware-profile=h100
+;; Endeavour 207 follow-up -- a def-qint scratch ring is sized at its PRIMITIVE's width.
+;;
+;; 4 slots x 256 x 256 q-a = 262144 elements.  q-a is char, so 262144 BYTES, which is over the
+;; H100 profile's 232448 and refused.  The number in the message is the point of this spec: before
+;; the fix the implicit-scratch metadata said `(tensor q-a ..)`, every width table matches primitive
+;; names, and the same ring was counted at 4 bytes (1048576).  The CUDA hoist read the same entry
+;; and requested 4x the shared memory at launch.  With :ring-count 3 this kernel compiles.
+
+(def-qint q-a :base char :accum int)
+(def-type c-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (&out C)
+  (declare #'(&out c-mat) (global-size :set-to 32) (local-size :set-to 32))
+  (let ((R (make-scratch-matrix-ring q-a (256 256) :ring-count 4)))
+    (set! (~ C 0 0) (~ (ring-get R 0) 0 0))))

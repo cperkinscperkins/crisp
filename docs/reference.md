@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-11-03T06:40:55.060798Z
+Generated on 2026-11-05T05:36:11.630882Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1316,7 +1316,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%197-PAIR-ELEM-BYTES`
 - **Args**: `(ELEM-TYPE)`
 
-  > Endeavour 197.  Bytes per element for a packable element type (2, 4 or 8), else NIL.  NIL turns  >    %pair-ok-p into a constant 0 and %store-pair into two plain set!s.
+  > Endeavour 197.  Bytes per element for a packable element type (2, 4 or 8), else NIL.  NIL turns  >    %pair-ok-p into a constant 0 and %store-pair into two plain set!s.  >    Endeavour 207: a DERIVED numeric type (q-a-accum over int) packs at its primitive's width.
 
 
 ---
@@ -7660,7 +7660,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%COOP-COERCE-SCALAR`
 - **Args**: `(BUILDER VAL WANT-TY NAME)`
 
-  > Coerce scalar VAL to WANT-TY, if it is not already that type.  >   >    Float-to-float goes by fptrunc / fpext (Endeavour 155, fp16).  >   >    FLOAT TO i16 IS THE bf16 FILL.  A bf16 cooperative matrix has INTEGER components, so filling  >    one with a literal `0.0` means storing that float's BF16 BIT PATTERN as an i16.  bfloat16 is  >    the top half of an IEEE f32, so the encoding is a bitcast to i32, a 16-bit logical shift right,  >    and a truncate — no bfloat type is introduced anywhere, which is the entire point (see the bf16  >    header).  This truncates rather than round-to-nearest; for the 0.0 that fills every accumulator  >    and operand tile it is exact, and a rounding form would need a bfloat type or a carry chain to  >    express.  >   >    LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 would route  >    through f32; that path cannot arise from a literal today.
+  > Coerce scalar VAL to WANT-TY, if it is not already that type.  >   >    Float-to-float goes by fptrunc / fpext (Endeavour 155, fp16).  >   >    FLOAT TO i16 IS THE bf16 FILL.  A bf16 cooperative matrix has INTEGER components, so filling  >    one with a literal `0.0` means storing that float's BF16 BIT PATTERN as an i16.  bfloat16 is  >    the top half of an IEEE f32, so the encoding is a bitcast to i32, a 16-bit logical shift right,  >    and a truncate — no bfloat type is introduced anywhere, which is the entire point (see the bf16  >    header).  This truncates rather than round-to-nearest; for the 0.0 that fills every accumulator  >    and operand tile it is exact, and a rounding form would need a bfloat type or a carry chain to  >    express.  >   >    INTEGER TO INTEGER IS THE int8 FILL (Endeavour 207).  A `char` operand tile filled with the  >    literal `0` arrives as an i32 and must become an i8, or the CompositeConstruct call disagrees  >    with its own declaration and llvm-spirv refuses the module ('Can't translate function  >    pointer').  Narrowing truncates and widening sign-extends; the sign of a cooperative-matrix  >    element is the MulAdd operands mask's job, so sign-extension is only ever applied to a literal.  >   >    LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 would route  >    through f32; that path cannot arise from a literal today.
 
 
 ---
@@ -12477,7 +12477,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `GENERATE-IMPLICIT-SIGNATURE`
 - **Args**: `(SIG DECLARED-PARAMS)`
 
-  > Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap  >    descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.
+  > Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap  >    descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.  >    Endeavour 207: a scratch entry's :type goes through %host-visible-type, as the declared  >    signature's does, so a def-qint ring is sized and declared at its primitive's width.
 
 
 ---
@@ -12591,7 +12591,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%FRAG-RECORD-FOR-ACC`
 - **Args**: `(ELEM)`
 
-  > The ACCUMULATOR fragment record for element type ELEM.  >   >    Endeavour 165 (2b-ii).  Sibling of %frag-record-for-operand, which has dispatched A and B  >    records by element type since endeavour 159; the accumulator was the one role still naming  >    register-fragment-acc-f32-16x8 outright at five sites.  One place decides this, so the tile  >    minter and the fragment constructor cannot disagree about which record an element type maps  >    to -- the same argument 159 made for the operands.  >   >    A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose.  >   >    Endeavour 204: integer register tiles exist on SPIR-V only.  On NVIDIA, integer MMA is wgmma.
+  > The ACCUMULATOR fragment record for element type ELEM.  >   >    Endeavour 165 (2b-ii).  Sibling of %frag-record-for-operand, which has dispatched A and B  >    records by element type since endeavour 159; the accumulator was the one role still naming  >    register-fragment-acc-f32-16x8 outright at five sites.  One place decides this, so the tile  >    minter and the fragment constructor cannot disagree about which record an element type maps  >    to -- the same argument 159 made for the operands.  >   >    A 16-bit MMA accumulates in fp32, so half/bfloat16 keep the f32 record on purpose.  >   >    Endeavour 204: integer register tiles existed on SPIR-V only.  Endeavour 207: on NVIDIA an int  >    tile is the s32 accumulator of mma.sync m16n8k32 (a uint tile is refused).
 
 
 ---
@@ -12648,17 +12648,38 @@ Generated on 2026-11-03T06:40:55.060798Z
 
 
 ---
+### DEFUN `%STORE-FRAG-ELEM-CAST`
+- **Args**: `(ELEM FORM)`
+
+  > FORM, one fragment element being stored, raw-cast to ELEM when ELEM is a DERIVED integer type  >    ((accum q-a) -> q-a-accum).  The s32 fragment record holds plain int; the destination element  >    holds exactly its own type.  A plain element gets FORM back unchanged, so its code is as before.  >    Endeavour 207 follow-up.
+
+
+---
 ### DEFUN `ANALYZE-STORE-FRAGMENT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR  >    (accumulator, row-major); else the NVIDIA per-lane writes.  >   >    Endeavour 196: FRAG may be (to-half F) / (to-bfloat16 F).  The conversion wraps each element  >    read in the per-lane writes, so it costs one cvt per element at the store and nothing else.  >    NVIDIA only: on SPIR-V the store is one CooperativeMatrixStoreKHR of the whole fragment, which  >    would need the fragment converted first (OpFConvert on a cooperative matrix) -- not built.  >   >    Endeavour 197: each lane's elements are adjacent column PAIRS (col, col+1), so on NVIDIA a pair  >    is one (%store-pair ...) under a per-fragment (%pair-ok-p ...) of the lane's first pair; the  >    scalar set!s are the fallback branch (odd origin, unaligned base, strided last dimension).  The  >    row+8 pair shares the guard: 8 rows move the address by 8 x the row stride, an even number of  >    elements.
+  > P1 / F-SPV: (store-fragment FRAG DEST (TY TX)).  :spirv -> CooperativeMatrixStoreKHR  >    (accumulator, row-major); else the NVIDIA per-lane writes.  >   >    Endeavour 196: FRAG may be (to-half F) / (to-bfloat16 F).  The conversion wraps each element  >    read in the per-lane writes, so it costs one cvt per element at the store and nothing else.  >    NVIDIA only: on SPIR-V the store is one CooperativeMatrixStoreKHR of the whole fragment, which  >    would need the fragment converted first (OpFConvert on a cooperative matrix) -- not built.  >   >    Endeavour 197: each lane's elements are adjacent column PAIRS (col, col+1), so on NVIDIA a pair  >    is one (%store-pair ...) under a per-fragment (%pair-ok-p ...) of the lane's first pair; the  >    scalar set!s are the fallback branch (odd origin, unaligned base, strided last dimension).  The  >    row+8 pair shares the guard: 8 rows move the address by 8 x the row stride, an even number of  >    elements.  >   >    Endeavour 207 follow-up: an element of a DERIVED integer tile such as (accum q-a) is raw-cast  >    to that type (%store-frag-elem-cast); the fragment record holds the primitive.
+
+
+---
+### DEFUN `%FRAG-SRC-DERIVED-P`
+- **Args**: `(PROBE ELEM)`
+
+  > T when the operand PROBE's SOURCE element type (a def-qint such as q-a) is not ELEM, the  >    primitive its fragment record holds, so each read needs a raw cast.  Endeavour 207 follow-up.
+
+
+---
+### DEFUN `%FRAG8-READ`
+- **Args**: `(SRC ELEM CAST-P RR CC)`
+
+  > One element read of an int8 fragment load: (~ SRC RR CC), raw-cast to ELEM when CAST-P.  A raw  >    cast applies no scale -- the bytes are the bytes; the qint's scale lives in the accumulator's  >    type.  Endeavour 207 follow-up.
 
 
 ---
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-A`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,  >    16x8, row-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: the NVIDIA branch DISPATCHES ON THE OPERAND'S ELEMENT WIDTH, using the same  >    %coop-elem-of the SPV branch already used.  A 16-bit operand reads the m16n8k16 A layout  >    (8 elements/lane) instead of the m16n8k8 tf32 one (4 floats/lane); fp16 and bf16 share that  >    layout exactly and differ only in which record they fill.  >   >    PTX ISA mma.m16n8k16 A layout, 32 lanes, groupID = lane/4, tid = lane%4.  Each lane holds  >    8 elements as 4 register pairs, and the PAIR ORDER IS LOAD-BEARING -- it is the order the  >    intrinsic's 4 A operands are consumed in:  >        Ra0 = (groupID,   2*tid), (groupID,   2*tid+1)  >        Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)  >        Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)  >        Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)  >    Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns.
+  > Endeavour 207 follow-up: a def-qint operand's int8 reads are raw-cast to the  >    fragment's primitive (%frag8-read).  >    P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,  >    16x8, row-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: the NVIDIA branch DISPATCHES ON THE OPERAND'S ELEMENT WIDTH, using the same  >    %coop-elem-of the SPV branch already used.  A 16-bit operand reads the m16n8k16 A layout  >    (8 elements/lane) instead of the m16n8k8 tf32 one (4 floats/lane); fp16 and bf16 share that  >    layout exactly and differ only in which record they fill.  >   >    PTX ISA mma.m16n8k16 A layout, 32 lanes, groupID = lane/4, tid = lane%4.  Each lane holds  >    8 elements as 4 register pairs, and the PAIR ORDER IS LOAD-BEARING -- it is the order the  >    intrinsic's 4 A operands are consumed in:  >        Ra0 = (groupID,   2*tid), (groupID,   2*tid+1)  >        Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)  >        Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)  >        Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)  >    Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns.
 
 
 ---
@@ -12672,7 +12693,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%PREFETCH-BLOCK-SHAPE`
 - **Args**: `(ELEM-BYTES LOCATION)`
 
-  > The legal Subgroup2DBlockPrefetchINTEL block shape (ROWS . COLS) for an ELEM-BYTES element.  >   >    Only 2-byte elements are supported, and that is a REFUSAL rather than a guess: the legal shape  >    is element-width dependent, a 16-bit block is at most 16 COLUMNS wide, and an illegal :size  >    resolves to an IGC builtin that does not exist (e.g.  >    __internal_intel_sub_group_2d_block_prefetch_16b_32r32x1c).  That fails at MODULE BUILD, long  >    after compilation, with a message about a missing symbol rather than about the kernel -- see  >    benchmarks/matmul/_kdepth/pf1_k32.crisp.  Refusing here converts it into a compile-time error  >    that names the cause.  >   >    32x16 is the shape verified in use.  A 16x16 block would let a 128x32 footprint tile into  >    exactly 16 blocks -- one per warp, with no duplication (see %prefetch-warp-plan) -- but its  >    legality is unverified and can only be established on metal, so it is not assumed here.
+  > The legal Subgroup2DBlockPrefetchINTEL block shape (ROWS . COLS) for an ELEM-BYTES element.  >   >    Only verified widths are supported, and anything else is a REFUSAL rather than a guess: the  >    legal shape is element-width dependent, a 16-bit block is at most 16 COLUMNS wide, and an  >    illegal :size resolves to an IGC builtin that does not exist (e.g.  >    __internal_intel_sub_group_2d_block_prefetch_16b_32r32x1c).  That fails at MODULE BUILD, long  >    after compilation, with a message about a missing symbol rather than about the kernel -- see  >    benchmarks/matmul/_kdepth/pf1_k32.crisp.  Refusing here converts it into a compile-time error  >    that names the cause.  >   >    2 bytes: 32x16 is the shape verified in use.  A 16x16 block would let a 128x32 footprint tile  >    into exactly 16 blocks -- one per warp, with no duplication (see %prefetch-warp-plan) -- but its  >    legality is unverified and can only be established on metal, so it is not assumed here.  >   >    1 byte (Endeavour 207): 32x32 -- 32 rows of 32 bytes, the same 32-byte row as the 16-bit block.  >    Verified with ocloc (-device bmg) on 2026-11-03: every 8-bit block of height <= 32 and width  >    <= 64 builds (1x32, 8x32, 16x32, 32x16, 32x32, 32x64, 16x64, 4x64), while 64x32, 256x32 and  >    32x128 fail with 'For element size of 8 bits, unsupported block configuration'.
 
 
 ---
@@ -12701,6 +12722,26 @@ Generated on 2026-11-03T06:40:55.060798Z
 - **Args**: `(BUILDER MODULE A-VAL B-VAL C-VAL)`
 
   > Emit the fp64 tensor-core MMA: llvm.nvvm.mma.m8n8k4.row.col.f64.  >   >    Endeavour 165 step 3.  Operands are ONE double each and the accumulator is TWO, so unlike the  >    tf32 and 16-bit paths there is no packing, no bitcast and no vector: doubles are passed as  >    doubles.  That is the whole reason this is a separate function rather than another arm of  >    %emit-nvvm-mma's operand-format cond -- it shares none of that machinery.  >   >    THE NAME IS THE ONE VERIFIED SPELLING.  On bin/llc.exe (LLVM 21.1.5, -mcpu=sm_90) this lowers  >    to `mma.sync.aligned.m8n8k4.row.col.f64.f64.f64.f64`, while the sm_90 f64 shapes  >    (m16n8k4 / k8 / k16) assemble cleanly and emit an `.extern .func` CALL with no diagnostic at  >    all.  A wrong spelling here is therefore SILENT, so this must never be checked by prefix --  >    the same trap endeavour 159 documented for the 16-bit names.
+
+
+---
+### DEFVAR `*NVVM-INT8-SIGNS*`
+
+  > (A-SIGNED . B-SIGNED) for the sync int8 MMA being emitted, or NIL (= both signed).  Bound by the  >    generate-node-ir :around method on semantic-mma-accumulate, because the emitter receives only LLVM  >    values and char / uchar are the same LLVM i8.
+
+
+---
+### DEFUN `%NVVM-INT8-SIGNS-OF`
+- **Args**: `(NODE)`
+
+  > (A-SIGNED . B-SIGNED) of a sync MMA node, read from its operand FRAGMENT RECORD names (-U8- is  >    unsigned).  NIL when the operands are not int8 fragments.
+
+
+---
+### DEFUN `%EMIT-NVVM-MMA-INT8`
+- **Args**: `(BUILDER MODULE A-VAL B-VAL C-VAL)`
+
+  > The NVIDIA sync int8 MMA: llvm.nvvm.mma.m16n8k32.row.col.{s8|u8}[.{s8|u8}], s32 accumulate.  >   >    OPERANDS ARE PACKED BYTES.  Each 32-bit register holds four adjacent K elements; they are built as  >    a <4 x i8> with the LOWER-numbered element in lane 0 (the order the ISA tables list them and the  >    order analyze-load-fragment-a/-b fill the fields in) and bitcast to i32, which puts element 0 in  >    the low byte.  A is 4 registers, B is 2, C/D are 4 x i32.  >   >    THE NAME.  Same-sign pairs are spelled once (.s8, .u8); mixed pairs name both (.s8.u8, .u8.s8).  >    All four lower to mma.sync.aligned.m16n8k32.row.col.s32.<a>.<b>.s32 on bin/llc.exe -mcpu=sm_80  >    (checked 2026-11-03).  As with every NVVM MMA name, a wrong spelling is SILENT (an external call),  >    so the spec validator matches the full mnemonic.  No .satfinite: the accumulator wraps, as the  >    wgmma integer path does.
 
 
 ---
@@ -12818,14 +12859,14 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%CHECK-INT-MMA-K`
 - **Args**: `(MMA-SHAPE A ENV CONTEXT LOCATION)`
 
-  > Refuses an int8 multiply at a K meant for another width.  (8 16 8) is a legal shape, but for tf32, so  >    the profile check passes it, while the operands load at K=32.  That compiled silently.
+  > Refuses an int8 multiply at a K meant for another width.  (8 16 8) is a legal shape, but for tf32, so  >    the profile check passes it, while the operands load at K=32.  That compiled silently.  >   >    Endeavour 207: on NVIDIA the only int8 sync shape is (16 8 32) -- mma.sync m16n8k32.
 
 
 ---
 ### DEFUN `%CHECK-INT-TILE-K`
 - **Args**: `(SHAPE ELEM)`
 
-  > Refuses a via-tile multiply into an integer tile at a K meant for another width.  (8 16 8) is a legal  >    shape, but for tf32, while integer operands load at K=32.  A let-bound tile is rewritten here,  >    before analysis, so this is the check real kernels reach; %check-int-mma-k covers the analyzed form.
+  > Refuses a via-tile multiply into an integer tile at a K meant for another width.  (8 16 8) is a legal  >    shape, but for tf32, while integer operands load at K=32.  A let-bound tile is rewritten here,  >    before analysis, so this is the check real kernels reach; %check-int-mma-k covers the analyzed form.  >   >    Endeavour 207: on NVIDIA an int tile is the s32 accumulator of mma.sync (16 8 32), the only shape.
 
 
 ---
@@ -12942,7 +12983,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%REGISTER-TILE-FIT-CHECK`
 - **Args**: `(M N LOCATION &OPTIONAL (ELEM 'FLOAT))`
 
-  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque  >    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is  >    separate (Phase 4).  Else: (M/fr)x(N/fc) accumulator fragments x regs-per-fragment <=  >    :max-registers-per-thread.  >   >    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since  >    :max-registers-per-thread may be a scalar OR a list of selectable modes.  >   >    Endeavour 165 (BUG 058): also refuses a tile too SMALL to hold one fragment.  A tile that  >    overflows the register budget and a tile that holds nothing are the same kind of mistake and  >    are named by the same function, at compile time, rather than discovered as a spill or as an  >    empty kernel.  >   >    Endeavour 165 (2b-i): takes ELEM so both bounds use the element type's own fragment geometry.  >    Inert while %acc-frag-mn answers 16x8 for everything.  >   >    Endeavour 196 (D-196-10): a tile distributed over N-TRUE warps (:warps) costs each thread  >    ceil(fragments / N-TRUE) fragments -- the share it actually allocates -- looked up in  >    *196-tile-warp-shares* by (M N ELEM).
+  > F1 register FIT-CHECK — NVIDIA per-thread register model only.  On :spirv the tile is opaque  >    cooperative matrices (the driver owns register residency), so SKIP — Intel GRF accounting is  >    separate (Phase 4).  Else: (M/fr)x(N/fc) accumulator fragments x regs-per-fragment <=  >    :max-registers-per-thread.  >   >    Endeavor 144 (D4): reads the budget through %hp-registers-per-thread-default, since  >    :max-registers-per-thread may be a scalar OR a list of selectable modes.  >   >    Endeavour 165 (BUG 058): also refuses a tile too SMALL to hold one fragment.  A tile that  >    overflows the register budget and a tile that holds nothing are the same kind of mistake and  >    are named by the same function, at compile time, rather than discovered as a spill or as an  >    empty kernel.  >   >    Endeavour 165 (2b-i): takes ELEM so both bounds use the element type's own fragment geometry.  >    Inert while %acc-frag-mn answers 16x8 for everything.  >   >    Endeavour 196 (D-196-10): a tile distributed over N-TRUE warps (:warps) costs each thread  >    ceil(fragments / N-TRUE) fragments -- the share it actually allocates -- looked up in  >    *196-tile-warp-shares* by (M N ELEM).  >   >    Endeavour 207: ELEM may be a type accessor such as (accum q-a); it and the share entries are  >    compared after %canonical-elem.
 
 
 ---
@@ -13145,10 +13186,52 @@ Generated on 2026-11-03T06:40:55.060798Z
 
 
 ---
+### DEFUN `%QINT-TYPE-DISPLAY`
+- **Args**: `(TY)`
+
+  > TY as an author writes it: (accum T) for a qint's own accumulator, else its name.
+
+
+---
+### DEFUN `%CHECK-MMA-QINT-ROLES`
+- **Args**: `(A B C LOCATION)`
+
+  > Refuses an MMA whose quantized operands A, B do not accumulate into C (all SOURCE element types,  >    possibly accessor forms).  See the endeavour 207 follow-up header above for the rule.  Plain  >    operands are untyped and accepted into any accumulator.
+
+
+---
+### DEFUN `%QINT-MMA-BINDING-ELEMS`
+- **Args**: `(BINDINGS)`
+
+  > Alist (SYM . SOURCE-ELEM) for BINDINGS.  A tile / scratch / wgmma-accumulator constructor gives  >    its element type; any other binding maps to NIL, so it SHADOWS an outer name as unknown.
+
+
+---
+### DEFUN `%QINT-MMA-ELEM-OF-TYPE`
+- **Args**: `(TYPE)`
+
+  > The element type of a register tile, wgmma accumulator or tensor TYPE, or NIL.
+
+
+---
+### DEFUN `%QINT-MMA-SRC-ELEM`
+- **Args**: `(FORM LEX ENV)`
+
+  > The SOURCE element type of an MMA operand or accumulator FORM: a symbol, or (ring-get SYM I).  >    LEX (from enclosing LET bindings) wins over ENV.  NIL when it cannot be known here.
+
+
+---
+### DEFUN `%QINT-MMA-WALK`
+- **Args**: `(FORM LEX ENV LOCATION)`
+
+  > Walks FORM applying %check-mma-qint-roles to every mma-accumulate-via-tile, wgmma-accumulate and  >    wgmma-accumulate-via-tile, extending LEX through nested LETs.  A check runs only when A, B and C  >    are all known.
+
+
+---
 ### DEFUN `ANALYZE-LET-WITH-TILE-EXPLOSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),  >    then explode register-tile bindings into per-fragment mutable variables (register residency,  >    Endeavor 132), then defer to the normal let analysis.  >   >    Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of  >    the body analysis, so operand-shape checks in the expression analyzers can see them.
+  > let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),  >    then explode register-tile bindings into per-fragment mutable variables (register residency,  >    Endeavor 132), then defer to the normal let analysis.  >   >    Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of  >    the body analysis, so operand-shape checks in the expression analyzers can see them.  >   >    Endeavour 207: first checks the qint roles of every MMA in the LET (%qint-mma-walk), while the  >    source element types are still visible.
 
 
 ---
@@ -13539,7 +13622,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%COOP-ELEM-OF`
 - **Args**: `(TENSOR-NODE)`
 
-  > The coop-matrix COMPONENT TYPE for an operand, derived from its tensor type's element type  >    (NOT hardcoded).  Mirrors %coop-layout-of, which derives the MemoryLayout the same way and  >    for the same reason: at a load site the operand is usually a kernel parameter carrying a  >    MANGLED type symbol, which only %TS-CANONICALIZE-TENSOR-TYPE can expand.  >   >    Endeavour 155.  load-fragment-a / -b previously built `(coop-matrix float ...)` outright, so  >    a bf16 operand was loaded as float32 -- the emitted SPIR-V for the bf16 benchmark kernel  >    contained exactly one float type (32-bit) and no 16-bit type at all.  >   >    Unresolvable types keep FLOAT, the historical behaviour.  ACCUMULATORS ARE DELIBERATELY NOT  >    ROUTED THROUGH HERE: XMX/DPAS and the NVIDIA tensor cores take bf16 operands and accumulate in  >    fp32, so an f32 accumulator paired with bf16 operands is correct, not an oversight.
+  > The coop-matrix COMPONENT TYPE for an operand, derived from its tensor type's element type  >    (NOT hardcoded).  Mirrors %coop-layout-of, which derives the MemoryLayout the same way and  >    for the same reason: at a load site the operand is usually a kernel parameter carrying a  >    MANGLED type symbol, which only %TS-CANONICALIZE-TENSOR-TYPE can expand.  >    Endeavour 155.  load-fragment-a / -b previously built `(coop-matrix float ...)` outright, so  >    a bf16 operand was loaded as float32 -- the emitted SPIR-V for the bf16 benchmark kernel  >    contained exactly one float type (32-bit) and no 16-bit type at all.  >    Unresolvable types keep FLOAT, the historical behaviour.  ACCUMULATORS ARE DELIBERATELY NOT  >    ROUTED THROUGH HERE: XMX/DPAS and the NVIDIA tensor cores take bf16 operands and accumulate in  >    fp32, so an f32 accumulator paired with bf16 operands is correct, not an oversight.  >   >    Endeavour 207: an INTEGER element is returned as its primitive base (q-a -> CHAR), the same  >    answer %elem-coop-type gives a register tile of that element.  A derived name here made a q-a  >    operand load disagree with the q-a register tile it was loaded into.  Floats are unchanged.
 
 
 ---
@@ -13630,7 +13713,7 @@ Generated on 2026-11-03T06:40:55.060798Z
 ### DEFUN `%REGISTER-TILE-ELEMS-FROM-BINDINGS`
 - **Args**: `(BINDINGS)`
 
-  > Alist (SYM . ELEM) for every register-tile or register-tile-ring binding in BINDINGS.  >    Both constructors put the element type in the same position: (make-register-tile* ELEM (M N) ...).
+  > Alist (SYM . ELEM) for every register-tile or register-tile-ring binding in BINDINGS.  >    Both constructors put the element type in the same position: (make-register-tile* ELEM (M N) ...).  >   >    Endeavour 207: ELEM may be a type ACCESSOR such as (accum q-a).  It is recorded resolved  >    (%canonical-elem -> Q-A-ACCUM); before, anything but a symbol was dropped, and the tile then read  >    back as FLOAT.
 
 
 ---

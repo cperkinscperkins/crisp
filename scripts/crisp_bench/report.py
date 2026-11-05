@@ -401,6 +401,13 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
     gpus = sorted(matmul_data.keys())
     for gpu in gpus:
         platform = _platform_of(gpu)
+        # A GPU measured only on other sections (the A100, which ran only the int8 lane in
+        # endeavour 207) has no ladder here.  Its sizes come from EVERY chapter, so without this it
+        # printed a full grid of dashes under its own heading -- a table that claims a measurement
+        # was attempted.  Absent is honest; an empty table is not.
+        _ladder_keys = [k for t in MMA_TECHNIQUES for k in [t["key"], *t.get("alt_keys", [])]]
+        if not any(matmul_data[gpu].get(k, {}).get("fast") for k in _ladder_keys):
+            continue
         lines.append(f"### {gpu} · tf32 · `fast`\n")
 
         # Collect standard sizes present
@@ -773,6 +780,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         peer_label = "CUTLASS" if platform == "nvidia" else "SYCL-TLA"
         ceil_label = "cuBLAS" if platform == "nvidia" else "oneMKL"
 
+        # Mark where this GPU's tf32 table starts: a GPU with no tf32 top data (the int8-only A100)
+        # has the table removed below.  Removed AFTER rendering, not skipped, because this block
+        # also defines helpers (_fmt_ms) the 16-bit / int8 tables further down use.
+        _tf32_mark = len(lines)
         lines.append(f"### {gpu} · tf32 · `fast`\n")
         lines.append(f"| N | Crisp | Control<br>{ctrl_label} | **Peer**<br>{peer_label} | Ceiling<br>{ceil_label} | vs Peer | vs Ceiling |")
         lines.append("|---:|---:|---:|---:|---:|---:|---:|")
@@ -920,6 +931,9 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             _row(ceil_label, "Ceiling", ceil_pt0, is_ceil=True)
             lines.append("\n</details>\n")
 
+        if not any(matmul_data[gpu].get(tk, {}).get("fast") for tk in top_keys):
+            del lines[_tf32_mark:]
+
         # §2.1 / §2.2 — 16-BIT TOP MMA SECTIONS.
         #
         # Endeavour 155: bf16 and fp16 share one implementation rather than two near-identical
@@ -929,11 +943,26 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         # Crisp bf16 absent on this driver that went unnoticed; copying it for fp16, where Crisp
         # DOES have data, would have published the SYCL control's ratios as Crisp's.  Both
         # sections now use c_tf, matching §2.
+        # Endeavour 207 adds two OPT-IN knobs; with both at their defaults the bf16 / fp16 / f64
+        # tables render exactly as before.
+        #   slim:         the int8 lane is Crisp + variants against the vendor library only (no
+        #                 hand-written Control, no CUTLASS / SYCL-TLA peer), so those columns would
+        #                 be all dashes.  slim drops them and the vs-Peer ratio.
+        #   crisp_reject: Crisp builds kept OUT of the Crisp columns because they are a different
+        #                 INSTRUCTION, not a configuration -- on Hopper the int8 `mma.sync` kernels
+        #                 sit beside wgmma.  The envelope is a max over configurations of one kernel;
+        #                 mixing lowerings into it would hide which one is being reported.  Such
+        #                 builds belong in `extra` as reference rows.
         def _emit_16bit_top(chapter_key, tag, note, prec="fast", peer_reject=None,
-                            preamble=None, extra=None):
+                            preamble=None, extra=None, slim=False, crisp_reject=None,
+                            ceil_name=None):
             if chapter_key not in matmul_data[gpu] or prec not in matmul_data[gpu][chapter_key]:
                 return
             data = matmul_data[gpu][chapter_key][prec]
+            # ceil_name: the library actually run, where it is not the section default (int8 on
+            # NVIDIA is cuBLASLt, and a column headed cuBLAS would name a build nobody measured).
+            _ceil_hdr = f"{ceil_name or ceil_label}_{tag}"
+            _who = "a template library's" if slim else f"{peer_label}'s"
             sizes = sorted([s for s in data.keys() if isinstance(s, int)])
             if not sizes:
                 return
@@ -945,6 +974,8 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             for s in sizes:
                 for comp, pt in data[s].items():
                     grp, vtag = _variant_split(comp)
+                    if crisp_reject and crisp_reject(comp):
+                        continue
                     if grp == "Crisp" and vtag and _is_crisp(comp):
                         v = pt.get("metrics", {}).get("throughput", {}).get("tflops")
                         if v:
@@ -970,16 +1001,23 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 lines.append("")
             if best_single:
                 lines.append(
-                    f"Crisp is **outside-in**: the user picks the configuration, exactly as {peer_label}'s "
+                    f"Crisp is **outside-in**: the user picks the configuration, exactly as {_who} "
                     f"pipeline depth is a template argument. So two Crisp columns, and the gap between "
                     f"them is *what tuning is worth*. **Envelope** is the best variant at each size, "
                     f"naming which one. **Best single** is the one fixed choice that does best across "
                     f"all sizes (`{best_single}`) \u2014 what you get without per-size tuning. "
                     f"{len(variants)} variants measured.\n")
-                lines.append(f"| N | Crisp {tag}<br>**envelope** | Crisp {tag}<br>best single (`{best_single}`) | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{ceil_label}_{tag} | vs Peer | vs Ceiling |")
-                lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|")
+                if slim:
+                    lines.append(f"| N | Crisp {tag}<br>**envelope** | Crisp {tag}<br>best single (`{best_single}`) | **Ceiling**<br>{_ceil_hdr} | vs Ceiling |")
+                    lines.append("|---:|---:|---:|---:|---:|")
+                else:
+                    lines.append(f"| N | Crisp {tag}<br>**envelope** | Crisp {tag}<br>best single (`{best_single}`) | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{_ceil_hdr} | vs Peer | vs Ceiling |")
+                    lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|")
+            elif slim:
+                lines.append(f"| N | Crisp {tag} | **Ceiling**<br>{_ceil_hdr} | vs Ceiling |")
+                lines.append("|---:|---:|---:|---:|")
             else:
-                lines.append(f"| N | Crisp {tag} | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{ceil_label}_{tag} | vs Peer | vs Ceiling |")
+                lines.append(f"| N | Crisp {tag} | Control<br>{ctrl_label}_{tag} | **Peer**<br>{peer_label}_{tag} | Ceiling<br>{_ceil_hdr} | vs Peer | vs Ceiling |")
                 lines.append("|---:|---:|---:|---:|---:|---:|---:|")
 
             def _best(cand_pts, predicate):
@@ -1018,7 +1056,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             last = {}
             for s in sizes:
                 cand = list(data[s].items())
-                c_pt = _best(cand, _is_crisp)
+                c_pt = _best(cand, lambda k: _is_crisp(k) and not (crisp_reject and crisp_reject(k)))
                 ctrl_pt = _best(cand, _is_control)
                 peer_name, peer_pt = _best_named(cand, lambda k: _is_peer(k) and not (peer_reject and peer_reject(k)))
                 ceil_pt = _best(cand, lambda k: _is_ceiling(k) and "_Plus_" not in k)
@@ -1044,7 +1082,12 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                     env = f"{_cell(c_pt)} `{win}`" if win else _cell(c_pt)
                     bs_tf = variants.get(best_single, {}).get(s)
                     bs = f"{bs_tf:.1f}" if bs_tf else "—"
-                    lines.append(f"| {s} | {env} | {bs} | {_cell(ctrl_pt)} | {_cell_named(peer_name, peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                    if slim:
+                        lines.append(f"| {s} | {env} | {bs} | {_cell(ceil_pt)} | {vs_ceil} |")
+                    else:
+                        lines.append(f"| {s} | {env} | {bs} | {_cell(ctrl_pt)} | {_cell_named(peer_name, peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
+                elif slim:
+                    lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ceil_pt)} | {vs_ceil} |")
                 else:
                     lines.append(f"| {s} | {_cell(c_pt)} | {_cell(ctrl_pt)} | {_cell_named(peer_name, peer_pt)} | {_cell(ceil_pt)} | {vs_peer} | {vs_ceil} |")
 
@@ -1054,9 +1097,15 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             # the whole DMMA-vs-vector answer, so they are reported here rather than dropped.
             if extra:
                 lines.append("")
-                lines.append(f"**Reference builds ({tag}).** Not contenders: each isolates a lowering "
-                             "or a compute type, and is excluded from the columns above so those stay "
-                             "one build per class.\n")
+                if slim:
+                    lines.append(f"**Reference builds ({tag}).** Not in the columns above, which stay "
+                                 "one build per class: a second library of the Ceiling's class, or a "
+                                 "Crisp build that uses a different instruction rather than a "
+                                 "different configuration.\n")
+                else:
+                    lines.append(f"**Reference builds ({tag}).** Not contenders: each isolates a lowering "
+                                 "or a compute type, and is excluded from the columns above so those stay "
+                                 "one build per class.\n")
                 lines.append("| reference | " + " | ".join("N=%d" % s for s in sizes) + " |")
                 lines.append("|---|" + "---:|" * len(sizes))
                 for _lbl, _pred in extra:
@@ -1132,7 +1181,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             _row16("Crisp", "Crisp", last.get("c"))
             _row16(f"{ctrl_label}_{tag}", "Control", last.get("ctrl"))
             _row16(f"{peer_label}_{tag}", "Peer", last.get("peer"))
-            _row16(f"{ceil_label}_{tag}", "Ceiling", last.get("ceil"), is_ceil=True)
+            _row16(f"{_ceil_hdr}", "Ceiling", last.get("ceil"), is_ceil=True)
             lines.append("\n</details>\n")
 
         _emit_16bit_top("sec2_top_bf16", "BF16", "Native 270+ TFLOPS Matrix Engines")
@@ -1163,6 +1212,49 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                     lambda k: "Pedantic" in k),
                    ("CUTLASS SIMT (vector fp64, no tensor cores)",
                     lambda k: "simt" in k)])
+
+        # §2 INT8 (endeavour 207) -- the SLIM lane: Crisp's top int8 kernel and its configuration
+        # variants against the vendor library.  Same emitter, so the envelope / best-single /
+        # sign-flip machinery applies unchanged; `slim` drops the Control and Peer columns the lane
+        # does not have.  The "tflops" field is 2MNK/t, which for integers is TOPS.
+        #
+        # LOWERINGS ARE NOT VARIANTS.  On Hopper Crisp's int8 kernel is wgmma and the `mma.sync`
+        # builds are named Crisp_V_sync*; on A100 / Ada `mma.sync` IS the kernel (plain `Crisp`)
+        # and Crisp_V_sync_w8 is a real configuration variant of it.  So the sync family is
+        # rejected from the Crisp columns only where the Hopper naming says a wgmma kernel exists,
+        # and reported as a reference row there.
+        _i8 = matmul_data[gpu].get("sec2_top_int8", {}).get("fast", {})
+        _i8_hopper = any(c == "Crisp_V_sync" for pts in _i8.values() for c in pts)
+        _i8_lib = "cuBLASLt" if platform == "nvidia" else "oneMKL"
+        _i8_extra = [("oneDNN (`OneDNN_INT8`), the library an int8 inference stack calls",
+                      lambda k: k.startswith("OneDNN"))] if platform == "intel" else []
+        if _i8_hopper:
+            _i8_extra.append(("Crisp `mma.sync` m16n8k32 (the A100 / Ada instruction, run on Hopper)",
+                              lambda k: k.startswith("Crisp_V_sync")))
+        _emit_16bit_top(
+            "sec2_top_int8", "INT8", "s8 · s8 → s32 integer tensor cores · cells are TOPS",
+            slim=True, ceil_name=_i8_lib,
+            crisp_reject=(lambda k: k.startswith("Crisp_V_sync")) if _i8_hopper else None,
+            preamble=[
+                "*C (s32) = A (s8) · B (s8), exact: every point verified against the integer "
+                "formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane "
+                f"(endeavour 207) is Crisp against the vendor library ({_i8_lib}); there is no "
+                "hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is "
+                "`(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*",
+            ],
+            extra=_i8_extra or None)
+        # The requantizing epilogue: the same int8 GEMM with C narrowed to s8 as it is stored
+        # (fp32 multiplier, round-to-nearest-even, saturate).  Hopper only until SPIR-V has an
+        # integer epilogue (endeavour 207 Next 4); the emitter prints nothing where there is no data.
+        _emit_16bit_top(
+            "sec4_int8_requant", "INT8→S8", "requantized s8 output · cells are TOPS",
+            slim=True, ceil_name=_i8_lib,
+            preamble=[
+                "*The int8 GEMM above with its s32 accumulator narrowed to s8 on the way out: "
+                "`(store-tile-at (to-q-a D m) C ..)`, m = 0.003, fp32 multiply, nearest-even, "
+                "saturate. The Ceiling is cuBLASLt with an s8 C and alpha = m. Exact against that "
+                "oracle (max_abs_err 0). Cells read **TOPS (kernel ms)**.*",
+            ])
 
 
     # Section 3: Situational Techniques
@@ -1276,6 +1368,10 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
 
     for gpu in gpus:
         platform = _platform_of(gpu)
+        # Same rule as §1: a GPU with no fused-epilogue data gets no heading here.
+        if not any(matmul_data[gpu].get(k, {}).get("fast") for k in
+                   ("sec4_fused_relu", "chap5_fused_epilogue", "sec4_fused_custom", "chap6_fused_custom")):
+            continue
         lines.append(f"### {gpu} · tf32 · `fast`\n")
 
         # Ch 1: Fused ReLU

@@ -621,7 +621,9 @@
 
 (defun generate-implicit-signature (sig declared-params)
   "Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap
-   descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded."
+   descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.
+   Endeavour 207: a scratch entry's :type goes through %host-visible-type, as the declared
+   signature's does, so a def-qint ring is sized and declared at its primitive's width."
   (declare (ignore declared-params))
   (let ((implicit-args nil)
         (phys-index 0)
@@ -660,7 +662,7 @@
                      (t :local)))
                  (size-expr (gethash name *implicit-scratch-size-expr-map*)))
              (push (list :name (string-downcase (symbol-name name))
-                         :type (strip-package-qualifiers type)
+                         :type (strip-package-qualifiers (%host-visible-type type))   ; 207
                          :size-expr size-expr
                          :address-space address-space
                          :range (list start end))

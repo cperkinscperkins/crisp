@@ -190,6 +190,7 @@ MATMUL_ELEM_BYTES = (
     ("_f64",  24),   # A, B, C all IEEE double
     ("_bf16",  8),   # A, B at 2 bytes; C ACCUMULATES in fp32, so 2 + 2 + 4
     ("_fp16",  8),
+    ("_int8",  6),   # A, B at 1 byte; C ACCUMULATES in s32, so 1 + 1 + 4  (Endeavour 207)
 )
 
 def matmul_elem_bytes(chapter: str) -> int:
