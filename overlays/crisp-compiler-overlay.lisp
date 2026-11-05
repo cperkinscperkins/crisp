@@ -1041,3 +1041,66 @@
     (cond ((not (and elem (symbolp elem))) 'float)
           ((%elem-integer-p elem) (%elem-coop-type elem))
           (t elem))))
+
+
+;;; ---------------------------------------------------------------------------------------------
+;;; Endeavour 207 follow-up (2026-11-04) -- implicit scratch entries get the host-visible type.
+;;; A def-qint scratch ring `(make-scratch-matrix-ring q-a ..)` was sized at 4 bytes/element by
+;;; BOTH the compile-time shared-memory profile check and the CUDA hoist (786432 bytes requested
+;;; for a 196608-byte ring set).  One root cause: endeavour 202 lowered derived numeric types to
+;;; their primitive in the declared signature and the tensor-map entries, but not in the implicit
+;;; scratch entries, so the metacrisp said `(tensor q-a 3 :local ..)`; every element-size table
+;;; matches primitive NAMES and fell through to 4.  Both callers (serialize metadata,
+;;; %hp-kernel-shared-bytes) read this function, so the fix is here.  The kernel itself was
+;;; already right (entry PTX identical, typed vs plain).  Changed line marked 207.
+;; src/metadata.lisp
+(defun generate-implicit-signature (sig declared-params)
+  "Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap
+   descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.
+   Endeavour 207: a scratch entry's :type goes through %host-visible-type, as the declared
+   signature's does, so a def-qint ring is sized and declared at its primitive's width."
+  (declare (ignore declared-params))
+  (let ((implicit-args nil)
+        (phys-index 0)
+        (implicit-params (function-signature-implicit-parameters sig)))
+    (dolist (param-def implicit-params)
+      (let* ((name (parameter-def-name param-def))
+             (type (parameter-def-type param-def))
+             (width (get-physical-width type))
+             (start phys-index)
+             (end (+ phys-index width -1))
+             (type-head (when (consp type) (symbol-name (first type)))))
+        (cond
+          ((and type-head (string-equal type-head "TENSOR-MAP"))
+           (let ((info (gethash (cons (function-signature-name sig) name) *tma-resolved*)))
+             (push (list :name (string-downcase (symbol-name name))
+                         :kind :tensor-map
+                         :describes (and (getf info :describes)
+                                         (string-downcase (symbol-name (getf info :describes))))
+                         :element-type (strip-package-qualifiers (%host-visible-type (getf info :element-type)))
+                         :rank (getf info :rank)
+                         :box-dims (getf info :box-dims)
+                         :layout (or (getf info :layout) :row-major)
+                         :swizzle (or (getf info :swizzle) :none)
+                         :address-space :global
+                         :range (list start end))
+                   implicit-args)))
+          (t
+           (let ((address-space
+                   (cond
+                     ((and (consp type) (string-equal type-head "CELL") (>= (length type) 3))
+                      (nth 2 type))
+                     ((and (consp type) (member type-head '("TENSOR" "VECTOR" "MATRIX")
+                                                :test #'string-equal)
+                           (>= (length type) 4))
+                      (nth 3 type))
+                     (t :local)))
+                 (size-expr (gethash name *implicit-scratch-size-expr-map*)))
+             (push (list :name (string-downcase (symbol-name name))
+                         :type (strip-package-qualifiers (%host-visible-type type))   ; 207
+                         :size-expr size-expr
+                         :address-space address-space
+                         :range (list start end))
+                   implicit-args))))
+        (incf phys-index width)))
+    (nreverse implicit-args)))

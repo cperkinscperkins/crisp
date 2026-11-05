@@ -9,7 +9,7 @@ Every number below is exact against the integer oracle (max_abs_err 0).
 
 | Target | Crisp int8 | Peer | Crisp / peer @8192 |
 |---|---|---|---|
-| BMG (Arc B580), XMX | **193 TOPS** | oneDNN 225 | **86%** (89% @4096) |
+| BMG (Arc B580), XMX | **193 TOPS** | oneMKL 223 (oneDNN 226) | **87%** (89% @4096) |
 | H100 SXM, wgmma | **1136 TOPS** | cuBLASLt 1415 | **80%** (105% @2048) |
 | H100, requantize to s8 | 1139 TOPS | cuBLASLt 1664 | 68% |
 | A100 SXM, mma.sync | 56 TOPS | cuBLASLt 353 | 15% -- the kernel is untuned (Next 1) |
@@ -197,13 +197,42 @@ Epilogue variants (the quantization-specific part):
 4. **SPIR-V int epilogues** (narrow / dequantize in the register tile).  Today a narrowing on BMG is a
    second pass through global memory (D-205-1), so epilogue variants 2 and 3 are not measured there.
 5. **Epilogue variant 3, dequantize to fp16 with per-row x per-column scales** -- not built anywhere.
-6. **A def-qint SCRATCH RING is sized at 4 bytes per element** (`%hp-scratch-elem-bytes` maps type
-   NAMES; `q-a` is not one).  Found because `matmul_int8_requant.crisp` with q-a rings claimed 786 KB of
-   shared memory; worked around by plain `char` operand rings.  The CUDA hoist and the bench fixture
-   size scratch through their own helpers and may share the gap.  A real bug; unfixed.
+6. ~~A def-qint SCRATCH RING is sized at 4 bytes per element.~~  **FIXED 2026-11-04** (Chris's go) --
+   see "Follow-up, 2026-11-04" below.
 7. **Plain `char` operands with an `(accum q-a)` accumulator are accepted** (the requant kernel does
-   exactly this).  Possibly a hole in the qint role rules ("two def-qints never mix" -- but a plain
-   char is not a def-qint).  For Chris to judge.
+   exactly this).  Discussed 2026-11-04: scalar code ALREADY refuses the analogue --
+   `(*! a c)` with a : q-a, c : char is "(*! q-a char): no product is declared.  Use def-qint-product."
+   and `(*! a (to q-a c))` compiles -- so the tile path is an inconsistency, not a policy.  Claude
+   recommends refusing with a message naming the cast; Chris deciding.  Not started.
+
+## Follow-up, 2026-11-04 (with Chris)
+
+- **oneMKL is the Intel int8 Ceiling** (D-207-3 corrected): `sec2_top_int8/onemkl_int8.cpp`
+  (`gemm<s8,s8,s32,float>`; `bias` argv selects `gemm_bias`), wired into `matmul.py` as `OneMKL_INT8`.
+  oneDNN stays as a reference row.
+- **Scratch-ring width fixed** (overlay, `src/metadata.lisp` `generate-implicit-signature`).  ONE root
+  cause for the profile check AND the CUDA hoist: endeavour 202 put derived numeric types through
+  `%host-visible-type` in the declared signature and the tensor-map entries, but not in the implicit
+  scratch entries, so the metacrisp said `(tensor q-a 3 :local ..)` and every width table (they match
+  primitive NAMES) fell through to 4.  Both consumers read this one function.  Verified by hand:
+  the q-a-ring requant kernel's hoist now requests 196608 bytes (was 786432; char twin 196608), the
+  metacrisp says `(tensor char 3 :local ..)`, the profile check passes, and a double-depth negative
+  control is refused at exactly 393216.  The kernel itself was never wrong: its entry PTX is
+  identical to the char twin's once register / block numbering is normalised.  Pinned by
+  `errors/02-qint-ring-width.crisp` (the refusal message must say 262144, not 1048576).
+  The bench kernel keeps its char rings until item 7 is decided.
+- **Report** (`scripts/crisp_bench/report.py`):
+  - §2 gains `int8` (all three GPUs) and `int8→s8` (H100) tables via the shared top-section emitter,
+    with two opt-in knobs:
+    - `slim` drops the Control / Peer columns the lane does not have;
+    - `crisp_reject` keeps Hopper's `mma.sync` builds out of the Crisp envelope.  They are a
+      different instruction, so they get a reference row instead.
+  - `ceil_name` labels the column cuBLASLt, not cuBLAS.
+  - A GPU with no data for a section no longer gets an empty table (the int8-only A100 printed three
+    grids of dashes).
+  - Two superseded BMG configs (`Crisp_V_k64`, `Crisp_V_pf3`, from before K64 became the base) moved
+    to `benchmarks/results/scratch/`.
+  - A before/after render diff shows nothing else changed.
 
 ## Cost of the pod work
 

@@ -2024,15 +2024,19 @@ def main():
 
             # §2 Top — INT8 (Endeavour 207).  C (s32) = A (s8) . B (s8); the "gflops" field is
             # integer GOPS.  The Crisp kernel is the fp16 peer geometry with the XMX int8 shape.
-            # The peer is oneDNN.  (An earlier note here said oneMKL's integer GEMM is CPU-only.
-            # That was wrong: onemkl_int8.cpp runs gemm<s8,s8,s32> on the BMG at oneDNN's speed.
-            # Not wired in yet -- see D-207-3.)
+            # The Ceiling is oneMKL, as in every other Intel table: onemkl_int8.cpp calls
+            # gemm<s8,s8,s32,float> on the GPU queue.  (An earlier note here said oneMKL's integer
+            # GEMM is CPU-only.  That was wrong -- D-207-3.)  oneDNN stays as a REFERENCE row: it is
+            # what an int8 inference stack on Intel actually calls, and it measured within noise of
+            # oneMKL (225 vs 222 TOPS at 8192), but the column is one build per class.
             run_l0_crisp("sec2_top_int8", "matmul_bmg_int8.crisp")
             # VARIANTS: K one MMA deep (32) and four deep (128) around the shipped 64, and the
             # shipped kernel with its prefetch removed (what the 1-byte prefetch buys).
             run_l0_crisp("sec2_top_int8", "matmul_bmg_int8_k32.crisp", "Crisp_V_k32")
             run_l0_crisp("sec2_top_int8", "matmul_bmg_int8_k128.crisp", "Crisp_V_k128")
             run_l0_crisp("sec2_top_int8", "matmul_bmg_int8_pf0.crisp", "Crisp_V_pf0")
+            run_target("sec2_top_int8", "onemkl_int8.cpp", "onemkl_int8", "OneMKL_INT8",
+                       sycl_flags, is_sycl=True, is_cublas=True)
             run_target("sec2_top_int8", "onednn_int8.cpp", "onednn_int8", "OneDNN_INT8",
                        sycl_flags + ["-ldnnl"], is_sycl=True, is_cublas=True)
 
