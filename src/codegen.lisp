@@ -7053,11 +7053,20 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
    and operand tile it is exact, and a rounding form would need a bfloat type or a carry chain to
    express.
 
+   INTEGER TO INTEGER IS THE int8 FILL (Endeavour 207).  A `char` operand tile filled with the
+   literal `0` arrives as an i32 and must become an i8, or the CompositeConstruct call disagrees
+   with its own declaration and llvm-spirv refuses the module ('Can't translate function
+   pointer').  Narrowing truncates and widening sign-extends; the sign of a cooperative-matrix
+   element is the MulAdd operands mask's job, so sign-extension is only ever applied to a literal.
+
    LLVM has no direct cast between two DIFFERENT 16-bit float types, so half<->bfloat16 would route
    through f32; that path cannot arise from a literal today."
-  (let ((have (llvm-type-of val))
-        (i16  (crisp.llvm-bindings::llvm-int16-type))
-        (i32  (crisp.llvm-bindings::llvm-int32-type)))
+  (let* ((have (llvm-type-of val))
+         (i16  (crisp.llvm-bindings::llvm-int16-type))
+         (i32  (crisp.llvm-bindings::llvm-int32-type))
+         (int-kind 8)                                   ; LLVMIntegerTypeKind
+         (have-int (= (llvm-get-type-kind have) int-kind))
+         (want-int (= (llvm-get-type-kind want-ty) int-kind)))
     (cond
       ((cffi:pointer-eq have want-ty) val)
       ;; f32 -> bf16 bits, carried as i16
@@ -7069,6 +7078,14 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
               (hi   (crisp.llvm-bindings::llvm-build-l-shr
                      builder bits (crisp.llvm-bindings::llvm-const-int i32 16 nil) "bf_hi")))
          (crisp.llvm-bindings::llvm-build-trunc builder hi i16 name)))
+      ;; integer -> integer of another width (207: the int8 operand fill)
+      ((and have-int want-int)
+       (let ((hw (crisp.llvm-bindings::llvm-get-int-type-width have))
+             (ww (crisp.llvm-bindings::llvm-get-int-type-width want-ty)))
+         (log:debug "207 %coop-coerce-scalar: i~d -> i~d (~a)" hw ww name)
+         (if (> hw ww)
+             (crisp.llvm-bindings::llvm-build-trunc builder val want-ty name)
+             (crisp.llvm-bindings::llvm-build-sext builder val want-ty name))))
       (t
        (let ((hw (%llvm-float-width have))
              (ww (%llvm-float-width want-ty)))

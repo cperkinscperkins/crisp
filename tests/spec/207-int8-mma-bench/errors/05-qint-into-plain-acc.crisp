@@ -1,0 +1,20 @@
+;; CHECK-FAIL: "accumulate into (accum q-a), not int"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100
+;; Endeavour 207 follow-up -- a q-a product does not silently become a plain int.  Scalar code needs
+;; (to int ..) for the same thing; at the MMA the author declares the tile (accum q-a), which emits
+;; identical code.  Through the NVIDIA mma.sync (16 8 32) path, from scratch operands -- the shape the
+;; A100 benchmark kernel uses -- so the check is seen on both the register-tile and scratch routes.
+
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat) (global-size :set-to 32) (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix q-a (16 32)))
+        (B-tile (make-scratch-matrix q-a (32 8)))
+        (C-tile (make-register-tile int (16 8) 0)))
+    (load-tile A A-tile (0 0))
+    (load-tile B B-tile (0 0))
+    (mma-accumulate-via-tile (16 8 32) C-tile A-tile B-tile)
+    (store-tile C-tile C (0 0))))

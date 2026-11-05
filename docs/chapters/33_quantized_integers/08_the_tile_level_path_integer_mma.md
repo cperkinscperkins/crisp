@@ -14,6 +14,22 @@ all the hardware offers.
 
 On NVIDIA, `wgmma` reads B as `(N K)`, so declare B `:col-major` as for the 16-bit forms.
 
+**Which accumulator a quantized MMA takes.** The scalar rule holds at the tile: the scale belongs to the
+data, so two `def-qint`s never mix. Only operands that ARE qints constrain the accumulator. Plain `char` /
+`uchar` operands are untyped bytes.
+
+| Operands | Accumulator |
+|---|---|
+| both plain | any 32-bit integer accumulator: `int`, or any `(accum T)` |
+| one qint `T` (`T`·`T`, or `T` and a plain operand) | `(accum T)` |
+| two different qints `T`, `U` | `(accum T U)`, which needs a `def-qint-product` |
+
+Plain operands are accepted into an `(accum T)` on purpose. An MMA operand is usually a raw buffer from
+the host, where declaring it `T` buys nothing, so the accumulator's type asserts the scale and that claim
+is the author's. Scalar code is stricter (`(*! q-a char)` is refused), because a scalar product sits
+mid-computation, where mixing is far more likely a mistake. The typed and plain forms of a kernel emit
+the same instructions on all three targets.
+
 ```lisp
 (def-qint q-act :base uchar :accum int)
 (def-qint q-wt  :base char  :accum int)
@@ -82,6 +98,9 @@ give you a compile-time error than to let you ship a kernel that is 100x slower 
 | XMX int8 at a non-int8 K | operands need K=32 |
 | A hardware profile with no int8 shape | is not one of the active hardware |
 | `store-tile-at (to-q D m) .. :via :tma` | the TMA store path moves 16-bit elements |
+| qint operands into another qint's accumulator, e.g. `q-a` into `(accum q-b)` | accumulate into (accum q-a), not (accum q-b) |
+| qint operands into a plain `int` accumulator | accumulate into (accum q-a), not int |
+| Two different qints with no `def-qint-product` | no product is declared |
 
 > Implementation note: synchronous `mma.sync` int8 (m16n8k32) has been built since endeavour 207. Its
 > per-lane register layout is the 16-bit m16n8k16 layout with every K coordinate doubled (four bytes

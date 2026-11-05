@@ -5638,12 +5638,21 @@
 
 (defun %197-pair-elem-bytes (elem-type)
   "Endeavour 197.  Bytes per element for a packable element type (2, 4 or 8), else NIL.  NIL turns
-   %pair-ok-p into a constant 0 and %store-pair into two plain set!s."
-  (case elem-type
-    ((short ushort half bfloat16) 2)
-    ((int uint float) 4)
-    ((long ulong double) 8)
-    (t nil)))
+   %pair-ok-p into a constant 0 and %store-pair into two plain set!s.
+   Endeavour 207: a DERIVED numeric type (q-a-accum over int) packs at its primitive's width."
+  (or (case elem-type
+        ((short ushort half bfloat16) 2)
+        ((int uint float) 4)
+        ((long ulong double) 8)
+        (t nil))
+      (let* ((base (and elem-type (symbolp elem-type) (not (keywordp elem-type))
+                        (ignore-errors (get-type-base (resolve-type-alias elem-type)))))
+             (n (and base (symbolp base) (not (eq base elem-type)) (symbol-name base))))
+        (cond ((null n) nil)
+              ((member n '("SHORT" "USHORT" "HALF" "BFLOAT16") :test #'string=) 2)
+              ((member n '("INT" "UINT" "FLOAT") :test #'string=) 4)
+              ((member n '("LONG" "ULONG" "DOUBLE") :test #'string=) 8)
+              (t nil)))))
 
 (defun analyze-%pair-ok-p-expression (expr env context location)
   "Analyzer for (%pair-ok-p P0 P1), P0 / P1 aref forms naming adjacent elements of one storage.

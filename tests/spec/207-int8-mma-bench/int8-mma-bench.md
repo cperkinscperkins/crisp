@@ -199,11 +199,8 @@ Epilogue variants (the quantization-specific part):
 5. **Epilogue variant 3, dequantize to fp16 with per-row x per-column scales** -- not built anywhere.
 6. ~~A def-qint SCRATCH RING is sized at 4 bytes per element.~~  **FIXED 2026-11-04** (Chris's go) --
    see "Follow-up, 2026-11-04" below.
-7. **Plain `char` operands with an `(accum q-a)` accumulator are accepted** (the requant kernel does
-   exactly this).  Discussed 2026-11-04: scalar code ALREADY refuses the analogue --
-   `(*! a c)` with a : q-a, c : char is "(*! q-a char): no product is declared.  Use def-qint-product."
-   and `(*! a (to q-a c))` compiles -- so the tile path is an inconsistency, not a policy.  Claude
-   recommends refusing with a message naming the cast; Chris deciding.  Not started.
+7. ~~Plain `char` operands with an `(accum q-a)` accumulator are accepted.~~  **DECIDED 2026-11-04:
+   ACCEPT** (Chris), and the qint-role rule at the MMA built -- see "qint roles at the MMA" below.
 
 ## Follow-up, 2026-11-04 (with Chris)
 
@@ -233,6 +230,78 @@ Epilogue variants (the quantization-specific part):
   - Two superseded BMG configs (`Crisp_V_k64`, `Crisp_V_pf3`, from before K64 became the base) moved
     to `benchmarks/results/scratch/`.
   - A before/after render diff shows nothing else changed.
+
+### qint roles at the MMA (2026-11-04, with Chris)
+
+Chris chose ACCEPT for plain operands into an `(accum q-a)`.  Checking the rest of the space turned up
+that the tile MMA path enforced NO qint rule at all: `q-a` operands into `(accum q-b)`, `q-a x q-b` with
+no product, and `q-a` operands into a plain `int` all compiled.  Scalar code refuses all three.  The
+element types `%check-mma-element-family` sees are the LOWERED ones (q-a is already char there).
+
+**The rule** (Chris approved): only qint operands count, and plain bytes are untyped.
+- Both plain: any 32-bit integer accumulator.
+- One qint `T`: the accumulator must be `(accum T)`.
+- Two different qints: a `def-qint-product` is required, and the accumulator is `(accum T U)`.
+
+**Built** (overlay, `src/mma.lisp`):
+- `%check-mma-qint-roles` reuses the scalar code's own registry (`qint-role`, `accum-type-of`,
+  `%accum-key`).
+- `%qint-mma-walk` runs it from `analyze-let-with-tile-explosion`, BEFORE tile explosion.  That is the
+  one point where the tile, scratch and accumulator constructors, kernel parameters (via ENV) and the
+  C tile's name are all still visible.  It covers `mma-accumulate-via-tile`, `wgmma-accumulate` and
+  `wgmma-accumulate-via-tile`.  An operand it cannot resolve is skipped: a missed refusal is a gap, a
+  false one would break a valid kernel.
+- Messages name types as the author wrote them (`(accum q-a)`, not `q-a-accum`).
+
+**Specs:**
+- `06-plain-operands-qint-acc-bmg` pins the accept (MMA_CORRECT on BMG).
+- `errors/03`..`06` pin the refusals: register-tile, no-product, plain-int on the sync scratch route,
+  and wgmma.
+- Each new error spec was positive-controlled: with the accumulator corrected, it compiles.
+
+**The positive control found four more gaps on the NVIDIA `mma.sync` path with typed operands.**
+None is reachable on SPIR-V.  The new message tells authors to write exactly such a kernel, so all four
+are fixed in the overlay:
+1. `%register-tile-fit-check` called SYMBOL-NAME on the raw `(accum q-a)` form.
+2. `analyze-load-fragment-a`/`-b`: the s8 record holds char, and the q-a reads were not cast.  The new
+   helpers are `%frag-src-derived-p` and `%frag8-read`; a raw cast is applied only when the source is
+   derived.
+3. `analyze-store-fragment`: the int fragment elements were stored into q-a-accum uncast
+   (`%store-frag-elem-cast`).
+4. `%197-pair-elem-bytes` had no width for a derived type, so the typed kernel silently lost 197's
+   packed pair store.  It was correct but slower.
+
+After these, `07-sync-int8-qint-ptx`'s kernel has a PTX entry IDENTICAL to its plain char/int twin
+(registers and block numbers normalised).  Specs 03 and 04 and both A100 benchmark sync kernels are
+byte-identical PTX before and after all four fixes.
+
+### Fold (2026-11-04)
+
+Folded by script (`put_temp_files_here/207-fold/fold.py`: live copies by offset, no capture wrappers).
+- 23 defuns replaced in place, 13 new forms in `src/mma.lisp`, and the 3 validators in
+  `tests/run-specs.lisp`.
+- The `*nvvm-int8-signs*` defvar is placed before the `:around` method that binds it.
+- Both overlays are emptied, with their history kept.
+
+**Proof:**
+- Clean build: no undefined functions or variables.
+- A 2314-job corpus (every non-error spec with its TEST-WITH flags, plus `--differentiate`) is
+  byte-identical before and after.  The 74 differing `.metacrisp` files differ only in the corpus
+  directory embedded in `:source`.
+- `gen-specials` added exactly one global (`*nvvm-int8-signs*`); the specials tail was already empty.
+
+**Suites before the fold:** unit 392/392, negative 470/470, E2E 1766/1766.  One earlier E2E run
+segfaulted mid-suite while the 2314-job corpus compiled in parallel.  Its crashing directory
+(124-ad-issues) passed alone, and the unloaded full rerun was clean.  This is the same signature as
+the exit-time segfault of 2026-11-03.
+
+**Suites after the fold:** unit 392/392, negative 470/470, E2E 1766/1766.  The first post-fold
+E2E run segfaulted again, in 176-reduce-multi with nothing heavy alongside; that directory passed
+alone and the rerun was clean.  It is now BUG 155 in plan/bugs.md (intermittent, at a different spec
+each time).
+
+**Definition of done:** reports rebuilt (`report.py --all`), chapters split, reference.md,
+call_graph.md, the globals matrix and specials regenerated, `extract_status.py` run.
 
 ## Cost of the pod work
 

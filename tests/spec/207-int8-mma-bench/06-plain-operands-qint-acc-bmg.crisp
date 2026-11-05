@@ -1,0 +1,31 @@
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; SKIP-DEFAULT-PASS
+;; Endeavour 207 ON-METAL (BMG): PLAIN char operands accumulate into an (accum q-a) tile.  Accepted on
+;; purpose (decided with Chris 2026-11-04): only operands that ARE qints constrain the accumulator, and
+;; plain bytes are untyped -- an MMA operand is usually a raw buffer from the host, where declaring it
+;; q-a buys nothing.  The accumulator's type then asserts the scale; that is the author's claim.
+;; This spec pins the acceptance so a later tightening cannot change it silently.  The refusals that
+;; DO apply (q-a into (accum q-b), q-a x q-b with no product, q-a into a plain int) are errors/03-06.
+;; 64 x 64 x 128: four 32x32 output tiles over one subgroup, four K-steps.
+;; MMA-DIMS: 64 64 128
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix (accum q-a) :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel plain_into_qint_acc (A B &out C)
+  (declare #'(a-mat a-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 16))
+  (let ((A-tile (make-register-tile char (32 32) 0 :operand :a))
+        (B-tile (make-register-tile char (32 32) 0 :operand :b))
+        (C-tile (make-register-tile (accum q-a) (32 32) 0)))
+    (matrix-multiply-tile-stride C C-tile (inner-dimension A B) 32 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k))
+      (load-tile B B-tile (grid-k grid-x))
+      (mma-accumulate-via-tile (8 16 32) C-tile A-tile B-tile)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

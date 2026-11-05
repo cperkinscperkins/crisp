@@ -1096,6 +1096,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
                                                                        SEMANTIC-MMA-ACCUMULATE) BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)  mma.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - - - (%SHUFFLE-INDEX-I32 BUILDER IDX-VAL IDX-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - (%175-CAS-INT-WIDTH-FOR ELEM-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (%NVVM-INT8-SIGNS-OF NODE)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - (%WGMMA-ACC-TYPE-P TYPE-NAME)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - (%MMA-ELEM-BITS ELEM)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%ELEM-PRIM-NAME ELEM)  mma.lisp [See above]
@@ -1143,6 +1145,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%NVVM-FRAG-FORMAT LLVM-ELEM-TYPE)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (LLVM-BFLOAT-TYPE) :CRISP.LLVM-BINDINGS  llvm-bindings.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA-INT8 BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%EMIT-NVVM-MMA-F64 BUILDER MODULE A-VAL B-VAL C-VAL)  mma.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
@@ -1944,6 +1948,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%FIND-RECORD-DEF RECORDS-SECTION NAME)  metadata-val.lisp
 
+- (%FRAG8-READ SRC ELEM CAST-P RR CC)  mma.lisp
+
 - (%GENERATE-BACKWARD-KERNEL-AST NAME PARAMS SIGNATURE-TYPES RAW-BODY)  macros.lisp
 - - (%SPLIT-KERNEL-INPUTS-OUTPUTS PARAMS SIGNATURE-TYPES)  macros.lisp
 - - (%EXPAND-RECORD-KERNEL-INPUTS INPUTS INPUT-TYPES PKG)  autodiff.lisp
@@ -2478,6 +2484,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (ANALYZE-%PAIR-OK-P-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%197-PAIR-ELEM-BYTES ELEM-TYPE)  analysis/control.lisp
+- - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (ANALYZE-%SPIRV-ASYNC-COPY-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
@@ -2807,6 +2815,26 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%ARRAY-TYPE-P TYPE-SPEC)  types/validation.lisp [See above]
 
 - (ANALYZE-LET-WITH-TILE-EXPLOSION EXPR ENV CONTEXT LOCATION)  mma.lisp
+- - (%QINT-MMA-WALK FORM LEX ENV LOCATION)  mma.lisp
+- - - (%QINT-MMA-SRC-ELEM FORM LEX ENV)  mma.lisp
+- - - - (%QINT-MMA-SRC-ELEM FORM LEX ENV)  mma.lisp [RECURSION]
+- - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
+- - - - (%QINT-MMA-ELEM-OF-TYPE TYPE)  mma.lisp
+- - - - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
+- - - - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
+- - - (%CHECK-MMA-QINT-ROLES A B C LOCATION)  mma.lisp
+- - - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
+- - - - (QINT-ROLE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - (%ACCUM-KEY A B)  types/hierarchy.lisp [See above]
+- - - - (ACCUM-TYPE-OF A &OPTIONAL (B A))  types/hierarchy.lisp [See above]
+- - - - (%QINT-TYPE-DISPLAY TY)  mma.lisp
+- - - - - (QINT-ROLE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - (BASE-TYPE-OF TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (%QINT-MMA-WALK FORM LEX ENV LOCATION)  mma.lisp [RECURSION]
+- - - (%QINT-MMA-BINDING-ELEMS BINDINGS)  mma.lisp
+- - - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
 - - (%EXPLODE-REGISTER-TILES LET-EXPR &OPTIONAL LOCATION CONTEXT)  mma.lisp
 - - - (%196-TILE-WARP-SHARES BINDINGS LOCATION)  mma.lisp
 - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
@@ -2827,11 +2855,13 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 - - - - - (%REGISTER-TILE-RING-INIT-FORM-P FORM)  mma.lisp
 - - - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]
+- - - - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
 - - - - (%REGISTER-TILE-INIT-FORM-P FORM)  mma.lisp [See above]
 - - - - (%FRAG-MN-FOR-OPERAND OPERAND &OPTIONAL ELEM)  mma.lisp [See above]
 - - - - (%NORMALIZE-WARP-MASK MASK LOCATION)  mma.lisp [See above]
 - - - - (%WARP-MASK-UNQUOTE V)  mma.lisp [See above]
 - - - - (%REGISTER-TILE-FIT-CHECK M N LOCATION &OPTIONAL (ELEM 'FLOAT))  mma.lisp
+- - - - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
 - - - - - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
 - - - - - (%REGISTER-TILE-DIMS-MUST-DIVIDE M N LOCATION &OPTIONAL (FR 16) (FC 8))  mma.lisp
 - - - - - (%HP-REGISTERS-PER-THREAD-DEFAULT &OPTIONAL (PROFILE
@@ -2876,14 +2906,24 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp
 - - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
 - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - - (%ELEM-INTEGER-P ELEM)  mma.lisp [See above]
+- - - (%ELEM-COOP-TYPE ELEM)  mma.lisp
+- - - - (%ELEM-INTEGER-P ELEM)  mma.lisp [See above]
+- - - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
+- - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp
 - - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
 - - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - - (%GET-TENSOR-CT CANON)  analysis/structs.lisp [See above]
 - - - (%COOP-REFUSE-COL-MAJOR TENSOR-NODE)  mma.lisp
 - - - - (SEMANTIC-NODE-SOURCE-LOCATION NODE)  analysis/core.lisp [See above]
+- - (%FRAG-SRC-DERIVED-P PROBE ELEM)  mma.lisp
+- - - (%TS-CANONICALIZE-TENSOR-TYPE RAW-TYPE)  analysis/control.lisp [See above]
+- - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%NVVM-FRAG-RECORD OPERAND ELEM)  mma.lisp
 - - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
+- - - (%ELEM-PRIM-NAME ELEM)  mma.lisp [See above]
 - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 
 - (ANALYZE-LOAD-FRAGMENT-ACC EXPR ENV CONTEXT LOCATION)  mma.lisp
@@ -2903,6 +2943,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - (%COOP-ELEM-OF TENSOR-NODE)  mma.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%FRAG-SRC-DERIVED-P PROBE ELEM)  mma.lisp [See above]
 - - (%NVVM-FRAG-RECORD OPERAND ELEM)  mma.lisp [See above]
 - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 
@@ -3001,17 +3042,14 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - (%SPV-NOTE-REGISTER-FRAGMENT ROWS COLS CONTEXT LOCATION &OPTIONAL (ELEM
                                                                        'FLOAT))  mma.lisp [See above]
-- - (%ELEM-COOP-TYPE ELEM)  mma.lisp
-- - - (%ELEM-INTEGER-P ELEM)  mma.lisp [See above]
-- - - (GET-TYPE-BASE TYPE-NAME)  types/hierarchy.lisp [See above]
-- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
-- - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
+- - (%ELEM-COOP-TYPE ELEM)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%ACC-FRAG-MN ELEM)  mma.lisp [See above]
 - - (%PTX-NOTE-REGISTER-DEMAND REGS CONTEXT LOCATION)  mma.lisp [See above]
 - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 - - (%FRAG-RECORD-FOR-ACC ELEM)  mma.lisp
 - - - (%ELEM-INTEGER-P ELEM)  mma.lisp [See above]
+- - - (%ELEM-PRIM-NAME ELEM)  mma.lisp [See above]
 - - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
 
 - (ANALYZE-MAKE-REGISTER-TILE EXPR ENV CONTEXT LOCATION)  mma.lisp
@@ -3311,6 +3349,11 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (%SPV-MMA-SHAPE &OPTIONAL ELEM)  mma.lisp [See above]
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (%COOP-LAYOUT-OF TENSOR-NODE)  mma.lisp [See above]
+- - (%STORE-FRAG-ELEM-CAST ELEM FORM)  mma.lisp
+- - - (%CANONICAL-ELEM ELEM)  mma.lisp [See above]
+- - - (%ELEM-INTEGER-P ELEM)  mma.lisp [See above]
+- - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - (%ELEM-PRIM-NAME ELEM)  mma.lisp [See above]
 - - (%196-WRAP-CONVERSION CONVERT FORM)  mma.lisp
 - - (%MMA-ELEM-BITS ELEM)  mma.lisp [See above]
 
