@@ -13415,8 +13415,8 @@ Shape rules — grounded in the ISA, checked at compile time:
 (wgmma-accumulate-via-tile (64 256 32) D A-tile B-tile :swizzle :128b)
 ```
 
-wgmma is **forward-only** (no autodiff) and NVIDIA-Hopper-only; on other targets use
-`mma-accumulate-via-tile`.
+wgmma is NVIDIA-Hopper-only; on other targets use `mma-accumulate-via-tile`.  It differentiates:
+the backward rewrites it to the sync MMA (endeavour 146), so the tile VJP supplies the gradient.
 
 **Storing the accumulator.**  `(store-tile D C (gy gx))` places a 64×N accumulator by tile index;
 `(store-tile-at D C (row col))` places it at an absolute origin (needed when two consumer warpgroups
@@ -13462,8 +13462,87 @@ operand (tf32 wgmma has no transpose), `:swizzle :128b`, and N a multiple of 64:
 
 A `:128b` TMA box is at most 128 bytes wide, so a `(64 256)` half tile is loaded as four 64-column boxes;
 `load-tile` does that by itself.  Blackwell (sm_100) has no
-wgmma — its tensor-core instruction is `tcgen05`, not yet in Crisp — so B200 kernels use
-`mma-accumulate-via-tile`.
+wgmma — its tensor-core instruction is `tcgen05`, below.
+
+
+### Blackwell tensor cores — `make-tcgen05-accumulator` ✅ + `tcgen05-accumulate-via-tile` ✅
+
+On NVIDIA **Blackwell datacenter parts (B200 / GB200, `sm_100a`)** the tensor-core instruction is
+`tcgen05`.  Three things change from Hopper's wgmma:
+
+- **The accumulator lives in tensor memory**, a 256 KB per-SM memory of 128 lanes x 512 columns.  A
+  128 x 256 f32 accumulator takes 256 columns and no registers.  On Hopper it took 128 registers per
+  thread.
+- **One thread issues the multiply**, reading A and B from shared memory.
+- **Completion arrives on an mbarrier.**  The multiply can free its shared-memory slot by itself, and
+  can tell the epilogue its accumulator is ready.
+
+```
+(make-tcgen05-accumulator float (128 N) 0.0)                     ; D, in tensor memory
+(make-tcgen05-accumulator-ring float (128 N) :ring-count R)      ; R of them; (ring-get ACC i) is D_i
+(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b [:on-complete BARRIER])
+(tcgen05-commit BARRIER)        ; BARRIER arrives when every MMA this thread issued has finished
+(store-tile D C (gy gx))   (store-tile-at D C (row col))   (store-tile-at (to-bfloat16 D) C (row col) :via :tma)
+```
+
+**The accumulator.**  The compiler allocates the kernel's tensor memory at entry and frees it at
+exit.  A float accumulator takes N columns, and the kernel's total may not exceed 512.  The
+accumulator must initialise a `let` binding, and its initial value must be 0.  The first multiply
+after (re)initialisation overwrites the accumulator instead of adding to it, so zero costs nothing.
+`(set! D (make-tcgen05-accumulator ...))` re-initialises D in place, and `(ring-get ACC i)` is always
+a fresh accumulator.
+
+**The accumulate.**
+- A is `(128 K)` and B is `(N K)`, both K-major in shared memory, as a `:128b` TMA `load-tile` lays
+  them down.
+- half / bfloat16 operands take `K = 64`; float (tf32) operands take `K = 32`.  Either way K is one
+  128-byte swizzle atom.
+- N is a multiple of 16 up to 256.  M is 128.
+- **Without `:on-complete` the form is synchronous:** one thread issues it, and every thread
+  executing the form waits until it has finished.  A plain 128-thread kernel needs nothing else.
+- **With `:on-complete BARRIER` it returns at once**, and BARRIER arrives (count 1) when the
+  multiply has finished reading its operands.  That is how a pipelined kernel's MMA warp frees an
+  operand ring slot.
+- `(tcgen05-commit BARRIER)` signals that every multiply issued so far is done.  That is the end of a
+  tile.
+- The issuing thread is lane 0 of the enclosing `with-warp-specialization` role's first warp, or of
+  warp 0 outside a role.
+
+**Reading it back.**
+- `store-tile` / `store-tile-at` on a tcgen05 accumulator run on exactly one warpgroup.  Warp w may
+  read only tensor-memory lanes `32(w mod 4) .. +31`, so storing takes four consecutive warps.  So
+  the storing role is 4 warps, or the kernel is 128 threads.
+- Thread t holds row t.
+- `(to-half D)` / `(to-bfloat16 D)` convert as they store.
+- With `:via :tma` each warp stages its 32 rows in the 128-byte swizzle and sends them as TMA boxes.
+
+```
+(with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
+  (:epilogue
+    (await (ring-get acc-full s))
+    (store-tile-at (to-bfloat16 (ring-get acc s)) C (row col) :via :tma)
+    (signal (ring-get acc-empty s)))
+  (:producer ...)                                        ; TMA into the operand ring, as on Hopper
+  (:mma
+    (await (ring-get acc-empty s))
+    (let ((D (ring-get acc s)))
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+        (let ((slot (mod grid-k (to-ulong 4))))
+          (await (ring-get full slot))
+          (tcgen05-accumulate-via-tile (128 256 64) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                       :swizzle :128b :on-complete (ring-get empty slot)))))
+    (tcgen05-commit (ring-get acc-full s))))
+```
+
+**Target and status.**
+- tcgen05 needs `--ir-target-arch=sm_100a`.  Plain `sm_100` is refused: the instructions are
+  architecture-specific, and the driver would refuse them anyway.
+- Consumer Blackwell (`sm_120`) has no tcgen05.
+- Forward-only for now.
+- Verified on a B200: every spec in tests/spec/208-tcgen05 is MMA_CORRECT (endeavour 208).  The
+  synchronous, pipelined, accumulator-ring, `:via :tma` and tf32 forms all ran.
+- Not built yet: M = 64, `:b-major :mn`, `cta_group::2`, int8, and the block-scaled microfloat
+  kinds.
 
 
 ## Deferred: cluster-scale topology (`def-topology` / `def-orchestration`)

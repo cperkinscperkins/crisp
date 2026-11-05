@@ -21,13 +21,48 @@ that the host provides and the hoist matches.  Q2: metal testing on RunPod via `
   - The pre-pass now returns the same conses when it rewrites nothing.  193 is 25/25 again.
 - **IR corpus:** 2309 existing jobs are byte-identical to the 207 fold's `after/`.  The only
   differences are metacrisp paths, and one transient Windows temp-file error, re-run identical.
-- **Not yet run on metal.**  B200 and B300 were out of stock on RunPod (secure and community,
-  CUDA 12.8-13.0) at 09:32 on 2026-11-05.  No pod was created.
+- **ON METAL, 2026-11-05 10:53: every kernel MMA_CORRECT on an NVIDIA B200** (RunPod secure,
+  driver 595.91, CUDA 12.8, compute capability 10.0).
+  - The batch: the bf16 `mma.sync` control (c0), specs 01-07 (t1-t7), and the hardware-profile
+    query.
+  - The C buffers hold the real sums.  The harness decoded bf16 A/B (and the bf16 C of spec 06)
+    rather than raw bits.
+  - The first two rentals that morning were wasted by my on-pod script, about a minute each.  The
+    archive's Windows uid failed `tar`'s chown, and `nvcc` is not on PATH in a non-interactive ssh
+    shell.  Both are fixed in `put_temp_files_here/208/metal/`.
+  - The queried profile is `benchmarks/profiles/b200.crisp`: 148 SMs, 227 KB opt-in shared memory,
+    126 MB L2.  Pass it with `--hardware-profile=b200 benchmarks/profiles/b200.crisp`.
+  - Earlier that morning (09:32) B200 and B300 were out of stock everywhere; the 10:50 retry found
+    one at once.
   - The batch is built locally (`put_temp_files_here/208/metal/`): a bf16 `mma.sync` control, specs
     01-03 as `--mma-test` harnesses, and the hardware-profile query.  The pod only runs nvcc.
   - Run it with:
     `./scripts/pod-session.sh --gpu "NVIDIA B200" --image cu128 --max-minutes 25 -- bash -c 'put_temp_files_here/208/metal/on-pod.sh {host} {port}'`
     The ceiling is $3.33.
+
+## Phase 2 (2026-11-05): built, and MMA_CORRECT on a B200 (specs 05-07)
+
+- **tf32:** `kind::tf32` with float operands and K = 32 (one 128-byte atom, four K = 8 MMAs).  The
+  descriptor's a/b_format is TF32 = 2.  It gives the same precision warning as wgmma.  Spec 07.
+- **Accumulator ring:**
+  - `(make-tcgen05-accumulator-ring float (128 256) :ring-count 2)` takes R x N columns;
+    `(ring-get ACC s)` is a FRESH accumulator at column base + s*N.
+  - With two slots the epilogue drains tile t while the MMA warp fills tile t+1.
+    `acc-full` / `acc-empty` become 2-slot barrier rings.  Spec 05; the tile counter is a let-bound
+    ulong that the kernel advances once per tile.
+  - `ring-get` on any other ring is unchanged (it goes to `analyze-ring-get-expression`).
+- **`store-tile-at (to-bfloat16 D) C (ROW COL) :via :tma` from tensor memory (spec 06):**
+  - It reuses 199's pass-1 descriptor (16 x 64 boxes, SWIZZLE_128B) and the staging buffer as they
+    are.
+  - A tcgen05 thread owns a whole row, so there is no `stmatrix`.  Per 64-column chunk, each thread:
+    loads 64 f32, converts them to bf16x2, writes its 128-byte row into its warp's 4 KB slice
+    (chunk j at j ^ (row mod 8)), then lane 0 sends two boxes.
+  - The slice is (warp mod slices), so a warpgroup not at warp 0 still gets four distinct slices.
+  - errors/08 refuses an unconverted f32 source; its positive control compiles.
+- **The harness's reference decodes a 16-bit C too**, compared in float, so spec 06 has a real
+  MMA_CORRECT.
+- **Not yet built:** M = 64, `:b-major :mn`, a backward (D-208-8), `cta_group::2`.  Those, int8 and the
+  block-scaled kinds are phases 3 and 4.
 
 ## Found along the way (for review)
 

@@ -317,6 +317,25 @@ that element type, N is a multiple of 64, and the kernel declares `(local-size :
 adds a staging buffer of 16 KB per warpgroup (+1 KB) to the kernel's shared memory -- leave room for it
 under the 227 KB limit.
 
+**Blackwell (B200): tcgen05** -- endeavour 208, MMA_CORRECT on a B200.  Compile with
+`--ir-target-arch=sm_100a`; plain `sm_100` is refused.  The accumulator lives in tensor memory:
+`(make-tcgen05-accumulator float (128 N) 0.0)` in a `let`, or `(make-tcgen05-accumulator-ring float (128 N)
+:ring-count 2)` and `(ring-get ACC s)` for two of them.
+
+- **Rules:**
+  - M is 128, and N is a multiple of 16 up to 256.
+  - A kernel's accumulators fit in 512 columns (N each).
+  - The initial value is 0.
+- **The accumulate:** `(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b)`.
+  - A is `(128 K)` and B is `(N K)`, TMA-loaded with `:swizzle :128b`.
+  - K is 64 for half / bfloat16 and 32 for float (tf32).
+  - Without options it is synchronous.  With `:on-complete BAR` it returns at once, and BAR arrives
+    when the multiply is done.
+  - `(tcgen05-commit BAR)` signals that every multiply so far is done.
+- **Storing it back:** `store-tile` / `store-tile-at` (and `:via :tma` with `to-half` / `to-bfloat16`)
+  must run on exactly 4 warps, so the storing role is 4 warps, or the kernel is 128 threads.
+- **Not built yet:** int8, the block-scaled microfloats, M = 64, `cta_group::2`.  It is forward-only.
+
 ---
 
 ## 11. Quantized integers and microfloat blocks

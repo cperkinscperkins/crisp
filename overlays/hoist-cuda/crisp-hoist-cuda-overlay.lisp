@@ -267,3 +267,91 @@
           (format stream "      std::cout << std::endl;~%")
           (format stream "      delete[] ~a_h; delete[] ~a_h; delete[] ~a_h;~%" ab bb cb)
           (format stream "    }~%"))))))
+
+;; src/hoist-cuda/main.lisp
+(defun %208-emit-16bit-decoder-named (stream kind name)
+  "Endeavour 208.  A decoder lambda NAME for a 16-bit value of KIND (:bf16 / :f16)."
+  (format stream "      auto ~a = [](uint16_t h) -> float { ~a };   // endeavour 208: ~(~a~)~%"
+          name
+          (if (eq kind :bf16)
+              "uint32_t x = (uint32_t)h << 16; float f; std::memcpy(&f, &x, 4); return f;"
+              "uint32_t s = ((uint32_t)h & 0x8000u) << 16, e = ((uint32_t)h >> 10) & 0x1fu, m = (uint32_t)h & 0x3ffu, x; if (e == 0u) x = s; else if (e == 31u) x = s | 0x7f800000u | (m << 13); else x = s | ((e + 112u) << 23) | (m << 13); float f; std::memcpy(&f, &x, 4); return f;")
+          kind))
+
+;; src/hoist-cuda/main.lisp
+(defun %cuda-emit-mma-reference (stream allocations)
+  "Emit a stride-agnostic host reference C = A.B (copy A/B/C back to host, compare).
+
+   Endeavour 165: the reference follows the kernel's ELEMENT TYPE instead of being emitted in
+   float throughout.  Against an fp64 kernel the old form read 8-byte buffers as 4-byte floats,
+   so MMA_WRONG would have been a statement about the HARNESS, not the kernel -- and would have
+   burned a GPU rental to say nothing.
+
+   :elem-type is already on every allocation as a C++ type string; emit-readback beside this
+   function has always used it.  Only this reference hardcoded float.
+
+   THE TOLERANCE FOLLOWS THE TYPE, which is the whole point at 64 bits.  tf32 keeps 1e-2 relative
+   because tf32 carries ~10 mantissa bits.  fp64 gets 1e-10 -- tight enough that a path which
+   silently computed in single precision FAILS, the same discriminating property the endeavour's
+   benchmark oracle has.  Run at tf32's tolerance an fp64 check would pass on an fp32 result and
+   tell us nothing.
+
+   Float emission is byte-identical to before."
+  (destructuring-bind (m n k) *mma-test-dims*
+    (let ((a (find :a allocations :key (lambda (x) (getf x :mma-role))))
+          (b (find :b allocations :key (lambda (x) (getf x :mma-role))))
+          (c (find :c allocations :key (lambda (x) (getf x :mma-role)))))
+      (when (and a b c)
+        (let* ((ab (getf a :base)) (ac (getf a :count)) (at (or (getf a :elem-type) "float"))
+               (bb (getf b :base)) (bc (getf b :count)) (bt (or (getf b :elem-type) "float"))
+               (cb (getf c :base)) (cc (getf c :count)) (ct (or (getf c :elem-type) "float"))
+               (doublep (string= ct "double"))
+               (narrowp (and (member ct (quote ("char" "unsigned char")) :test (function string-equal)) t))
+               (intp (and (or narrowp (member ct (quote ("int" "unsigned int")) :test (function string-equal))) t))
+               ;; The accumulator is the OUTPUT's type: that is what the kernel actually
+               ;; produced and what we are checking.
+               ;; Endeavour 208: a 16-bit C is decoded and compared in float.
+               (acct    (cond (narrowp "int") ((getf c :mma-16bit) "float") (t ct)))
+               (zero    (cond (intp "0") (doublep "0.0") (t "0.0f")))
+               (rel     (cond (intp "0") (doublep "1e-10") (t "1e-2f")))
+               (abs     (cond (intp "0") (doublep "1e-12") (t "1e-3f")))
+               (scale-suffix (if doublep "" "f")))
+          (format stream "~%    // Endeavor 134: MMA host reference C = A.B (stride-agnostic)~%")
+          (format stream "    // Endeavour 165: element type ~a, tolerance ~a rel / ~a abs~%" ct rel abs)
+          (format stream "    {~%")
+          (format stream "      ~a* ~a_h = new ~a[~d]; CUDA_CHECK(cuMemcpyDtoH(~a_h, ~a_ptr, ~d * sizeof(~a)));~%" at ab at ac ab ab ac at)
+          (format stream "      ~a* ~a_h = new ~a[~d]; CUDA_CHECK(cuMemcpyDtoH(~a_h, ~a_ptr, ~d * sizeof(~a)));~%" bt bb bt bc bb bb bc bt)
+          (format stream "      ~a* ~a_h = new ~a[~d]; CUDA_CHECK(cuMemcpyDtoH(~a_h, ~a_ptr, ~d * sizeof(~a)));~%" ct cb ct cc cb cb cc ct)
+          ;; OpenMP-parallel: this O(N^3) host C=A.B check dominated the large-size sweep (68
+          ;; GFLOP at 4096 = minutes single-threaded).  reduction(+:mma_bad) avoids data races;
+          ;; the pragma is a harmless no-op if the harness is built without -fopenmp.
+          ;; Endeavour 208: a 16-bit A / B is decoded before it is multiplied.
+          (when (getf a :mma-16bit)
+            (%208-emit-16bit-decoder stream (getf a :mma-16bit)))
+          (when (getf c :mma-16bit)
+            (%208-emit-16bit-decoder-named stream (getf c :mma-16bit) "crisp_dec_c"))
+          (format stream "      uint64_t mma_bad = 0;~%")
+          (format stream "      #pragma omp parallel for schedule(static) reduction(+:mma_bad)~%")
+          (format stream "      for (uint64_t i = 0; i < ~dULL; i++) for (uint64_t j = 0; j < ~dULL; j++) {~%" m n)
+          (format stream "        ~a acc = ~a;~%" acct zero)
+          (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
+          (if (getf a :mma-16bit)
+              (format stream "            acc += crisp_dec(~a_h[i*~a_str0 + kk*~a_str1]) * crisp_dec(~a_h[kk*~a_str0 + j*~a_str1]);~%" ab ab ab bb bb bb)
+              (format stream "            acc += ~a_h[i*~a_str0 + kk*~a_str1] * ~a_h[kk*~a_str0 + j*~a_str1];~%" ab ab ab bb bb bb))
+          (when (/= *mma-scale* 1)
+            (format stream "        acc = acc * ~d.0~a;   // --mma-scale (MMA fired ~d times per fragment)~%"
+                    *mma-scale* scale-suffix *mma-scale*))
+          (when narrowp
+            (multiple-value-bind (lo hi) (if (string-equal ct "char") (values -128 127) (values 0 255))
+              (format stream "        if (acc < ~d) acc = ~d; if (acc > ~d) acc = ~d;~%" lo lo hi hi)))
+          (if (getf c :mma-16bit)
+              (format stream "        float got = crisp_dec_c(~a_h[i*~a_str0 + j*~a_str1]);~%" cb cb cb)
+              (format stream "        ~a got = ~a_h[i*~a_str0 + j*~a_str1];~%" acct cb cb cb))
+          (format stream "        ~a d = got - acc; if (d < 0) d = -d;~%" acct)
+          (format stream "        if (d > ~a * (acc < 0 ? -acc : acc) + ~a) mma_bad++;~%" rel abs)
+          (format stream "      }~%")
+          (format stream "      std::cout << (mma_bad == 0 ? \"MMA_CORRECT\" : \"MMA_WRONG\");~%")
+          (format stream "      if (mma_bad) std::cout << \" (\" << mma_bad << \" mismatches)\";~%")
+          (format stream "      std::cout << std::endl;~%")
+          (format stream "      delete[] ~a_h; delete[] ~a_h; delete[] ~a_h;~%" ab bb cb)
+          (format stream "    }~%"))))))

@@ -99,3 +99,54 @@
          (list "__crisp_tc_mbar_" 0 "no synchronous site, so no compiler-owned mbarrier")
          (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads")
          (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-acc-ring (file ptx-string)
+  "Endeavour 208 spec 05: the pipeline over a 2-slot accumulator ring -- all 512 columns allocated, the
+   asynchronous commits only, and the direct store of a 128 x 256 accumulator."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-acc-ring" ptx-string
+   (list (list "], 512;" 2 "512 columns allocated and freed: two 128 x 256 accumulators")
+         (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs per K-step")
+         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 ":on-complete + tcgen05-commit")
+         (list "__crisp_tc_mbar_" 0 "nothing synchronous")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-tma-store (file ptx-string)
+  "Endeavour 208 spec 06: the bf16 epilogue through the TMA.  N = 256 is four 64-column chunks; per chunk
+   two tcgen05.ld (64 f32), 32 bf16x2 conversions, 8 swizzled 16-byte row writes, two box stores and a
+   commit.  No st.global: every element leaves through the TMA."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-tma-store" ptx-string
+   (list (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "4 chunks x 2 loads")
+         (list "cvt.rn.bf16x2.f32" 128 "4 chunks x 32 packed pairs, round to nearest even")
+         (list "st.shared.v4.b32" 32 "4 chunks x 8 row writes")
+         (list "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group" 8 "4 chunks x 2 boxes")
+         (list "cp.async.bulk.commit_group" 4 "one per chunk")
+         (list "st.global" 0 "the TMA writes C"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-tf32 (file ptx-string)
+  "Endeavour 208 spec 07: kind::tf32 -- four K = 8 MMAs, and the descriptor with a/b_format TF32 = 2."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-tf32" ptx-string
+   (list (list "tcgen05.mma.cta_group::1.kind::tf32 [" 4 "K = 32 is four K = 8 MMAs")
+         (list "kind::f16" 0 "no 16-bit kind")
+         (list "136317200" :some "the descriptor: f32 D, tf32 A/B, N>>3 = 16, M>>4 = 8"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-acc-ring (file ptx-string)
+  "Endeavour 208 spec 05: the pipeline over a 2-slot accumulator ring -- all 512 columns allocated and
+   freed, the asynchronous commits only, and the direct store of a 128 x 256 accumulator."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-acc-ring" ptx-string
+   (list (list ", 512;" 2 "512 columns: the alloc ([addr], 512) and the dealloc (taddr, 512)")
+         (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs per K-step")
+         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 ":on-complete + tcgen05-commit")
+         (list "__crisp_tc_mbar_" 0 "nothing synchronous")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads"))))
