@@ -40,6 +40,58 @@ that the host provides and the hoist matches.  Q2: metal testing on RunPod via `
     `./scripts/pod-session.sh --gpu "NVIDIA B200" --image cu128 --max-minutes 25 -- bash -c 'put_temp_files_here/208/metal/on-pod.sh {host} {port}'`
     The ceiling is $3.33.
 
+## Phase 3 (2026-11-05): int8 / qint, built, and MMA_CORRECT on a B200 (specs 08-11)
+
+- **The surface is the other MMA paths' integer surface, unchanged:**
+  - `(make-tcgen05-accumulator int (128 N) 0)`, or `(accum Q)`, is an s32 accumulator of N columns.
+    The ring takes the same elements.
+  - char / uchar operands, or a `def-qint` over them, are `kind::i8` at K = 128: one 128-byte atom,
+    four K = 32 instructions.
+  - The rules are reused, not copied:
+    - 204's `%check-mma-element-family` gives the family, 8-bit operand, 32-bit accumulator and sign
+      rules;
+    - 207's `%qint-mma-walk` now also sees `make-tcgen05-accumulator(-ring)` bindings and
+      `tcgen05-accumulate-via-tile`.
+- **The signs live in the instruction descriptor.**  They are not in the mnemonic as on
+  `mma.sync` / wgmma.  The descriptor has c_format S32 = 2 and a/b_format INT8 = 1 / UINT8 = 0
+  (CUTLASS `UMMA::S8Format`).  Pinned values: s8.s8 at 128 x 128 = 136316064; u8.s8 = 136315936;
+  s8.s8 at 128 x 256 = 138413216.
+- **The readback:** an s32 accumulator loads into a `TCGEN05-ROW32-S32` record.  It is the same
+  `tcgen05.ld`, with the cells kept as int (no bitcast).
+  - With no conversion, an element of a derived accumulator (`(accum q-a)`) is raw-cast as it is
+    stored.  That is 207's `%store-frag-elem-cast`, the same fix 207 needed on `mma.sync`.
+  - `(to-q-out D 1.0)` requantizes through 205's `%to-q-narrow`: scale in f32, clamp to
+    [-128, 127], one byte stored.
+- **Specs:**
+  - 08: char x char.
+  - 09: uchar x char.
+  - 10: q-act x q-wt into their product, then `to-q-out` as it stores.
+  - 11: the three-role pipeline with a 2 x 256-column s32 accumulator ring on `def-qint` operands.
+    A ring slot is 16 KB + 32 KB, so 4 slots take 192 KB.
+  - errors/09-14: half into int, K = 64, another qint's accumulator, signed into uint, a char
+    accumulator, `to-q` with `:via :tma`.
+  - errors/11 and errors/14 are positive-controlled.  14 is caught by 199's pass-1 scan, so its
+    message says "stmatrix", which tcgen05 does not use.  The fix it names (drop `:via :tma`) is the
+    right one.
+- **ptxas accepts 08-11.**  Spec 11 uses 108 registers, with no spills.
+- **Suites:** E2E 1791/1791, negative 484/484, unit 392/392.  The 208 specs pass `--differentiate`
+  25/25 (by SKIP-WITH).
+  - The first E2E run failed 08 and 11 on my validators.  The dealloc operand is a register, and
+    `", 128;"` also matches an address add.  Corrected copies are appended, and the code was unchanged.
+- **IR corpus:** 2310 existing jobs are byte-identical to the 207 fold's `after/`.  The 4 differences
+  are metacrisp source paths, and the 11 new jobs are the 208 specs.  The shared change (207's qint
+  walk now also names the tcgen05 forms) is inert elsewhere.
+- **ON METAL, 2026-11-05 13:59: every kernel MMA_CORRECT on an NVIDIA B200** on the first attempt
+  (driver 595.91, CUDA 12.8).
+  - The batch was 207's int8 `mma.sync` control (c3) plus specs 08-11.  The harnesses were
+    nvcc-checked locally (`build3.sh`) before renting.
+  - The pod ran for about 50 seconds, and was confirmed gone.
+  - The integer compare is exact.  A is offset from zero (char straddles zero; uchar sits at
+    200..204), so an output left untouched or a swapped sign format cannot pass.
+- **For the fold:** `%208-mma-kind` is appended twice in phase 3, with a `declaim ftype` between.
+  SBCL had kept the phase-2 copy's derived return type (a 3- or 4-character string) and rejected
+  "i8" at run time.  In src there is one definition, so the declaim is dropped.
+
 ## Phase 2 (2026-11-05): built, and MMA_CORRECT on a B200 (specs 05-07)
 
 - **tf32:** `kind::tf32` with float operands and K = 32 (one 128-byte atom, four K = 8 MMAs).  The
@@ -61,8 +113,8 @@ that the host provides and the hoist matches.  Q2: metal testing on RunPod via `
   - errors/08 refuses an unconverted f32 source; its positive control compiles.
 - **The harness's reference decodes a 16-bit C too**, compared in float, so spec 06 has a real
   MMA_CORRECT.
-- **Not yet built:** M = 64, `:b-major :mn`, a backward (D-208-8), `cta_group::2`.  Those, int8 and the
-  block-scaled kinds are phases 3 and 4.
+- **Not yet built:** M = 64, `:b-major :mn`, a backward (D-208-8), `cta_group::2`.  Int8 was
+  phase 3; the block-scaled kinds are phase 4.
 
 ## Found along the way (for review)
 
@@ -278,4 +330,6 @@ sparsity, and B300 / `sm_103a`.
 
 - K per kind, and the N rules for M=64 vs M=128.
 - Whether `kind::i8` exists on `sm_103a` (B300).  It matters only for the Later list.
+  **Answered (phase 3):** CUTLASS's `config.hpp` enables `CUTE_ARCH_TCGEN05_S8_MMA_ENABLED` for
+  SM100A, SM101A and SM110A, and not for SM103A.  So B300 has no tcgen05 int8.
 - The `tcgen05.ld` shape to use for the epilogue (`32x32b.xN` is the natural one for M=128).

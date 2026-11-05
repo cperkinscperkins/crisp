@@ -328,13 +328,17 @@ under the 227 KB limit.
   - The initial value is 0.
 - **The accumulate:** `(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b)`.
   - A is `(128 K)` and B is `(N K)`, TMA-loaded with `:swizzle :128b`.
-  - K is 64 for half / bfloat16 and 32 for float (tf32).
+  - K is 64 for half / bfloat16, 32 for float (tf32), and 128 for char / uchar.
+  - 8-bit operands (char, uchar, a `def-qint`) need an int or `(accum Q)` accumulator:
+    `(make-tcgen05-accumulator int (128 N) 0)`.  The qint and sign rules are the other MMA paths'.
   - Without options it is synchronous.  With `:on-complete BAR` it returns at once, and BAR arrives
     when the multiply is done.
   - `(tcgen05-commit BAR)` signals that every multiply so far is done.
 - **Storing it back:** `store-tile` / `store-tile-at` (and `:via :tma` with `to-half` / `to-bfloat16`)
   must run on exactly 4 warps, so the storing role is 4 warps, or the kernel is 128 threads.
-- **Not built yet:** int8, the block-scaled microfloats, M = 64, `cta_group::2`.  It is forward-only.
+  `(store-tile-at (to-q-out D 1.0) C (row col))` requantizes an int accumulator as it stores it (direct
+  stores only, not `:via :tma`).
+- **Not built yet:** the block-scaled microfloats, M = 64, `cta_group::2`.  It is forward-only.
 
 ---
 

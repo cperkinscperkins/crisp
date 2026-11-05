@@ -13479,6 +13479,7 @@ On NVIDIA **Blackwell datacenter parts (B200 / GB200, `sm_100a`)** the tensor-co
 
 ```
 (make-tcgen05-accumulator float (128 N) 0.0)                     ; D, in tensor memory
+(make-tcgen05-accumulator int (128 N) 0)                         ; s32, for 8-bit operands; or (accum Q)
 (make-tcgen05-accumulator-ring float (128 N) :ring-count R)      ; R of them; (ring-get ACC i) is D_i
 (tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b [:on-complete BARRIER])
 (tcgen05-commit BARRIER)        ; BARRIER arrives when every MMA this thread issued has finished
@@ -13486,7 +13487,8 @@ On NVIDIA **Blackwell datacenter parts (B200 / GB200, `sm_100a`)** the tensor-co
 ```
 
 **The accumulator.**  The compiler allocates the kernel's tensor memory at entry and frees it at
-exit.  A float accumulator takes N columns, and the kernel's total may not exceed 512.  The
+exit.  A float or int accumulator takes N columns (one 32-bit cell per element), and the kernel's
+total may not exceed 512.  The
 accumulator must initialise a `let` binding, and its initial value must be 0.  The first multiply
 after (re)initialisation overwrites the accumulator instead of adding to it, so zero costs nothing.
 `(set! D (make-tcgen05-accumulator ...))` re-initialises D in place, and `(ring-get ACC i)` is always
@@ -13495,8 +13497,15 @@ a fresh accumulator.
 **The accumulate.**
 - A is `(128 K)` and B is `(N K)`, both K-major in shared memory, as a `:128b` TMA `load-tile` lays
   them down.
-- half / bfloat16 operands take `K = 64`; float (tf32) operands take `K = 32`.  Either way K is one
-  128-byte swizzle atom.
+- half / bfloat16 operands take `K = 64`; float (tf32) operands take `K = 32`; char / uchar operands
+  take `K = 128`.  Either way K is one 128-byte swizzle atom.
+- **8-bit integer operands** (char, uchar, or a `def-qint` over them) accumulate into an int or
+  `(accum Q)` accumulator, as on every other MMA path.
+  - The signs of A and B are independent.
+  - The element-family and sign rules are integer MMA's.  A `def-qint` operand must accumulate into
+    its own `(accum Q)` (or its declared product's).
+  - `(store-tile-at (to-q-out D 1.0) C (row col))` requantizes each element as it stores it,
+    saturating.  That is a direct store: `:via :tma` moves 16-bit boxes.
 - N is a multiple of 16 up to 256.  M is 128.
 - **Without `:on-complete` the form is synchronous:** one thread issues it, and every thread
   executing the form waits until it has finished.  A plain 128-thread kernel needs nothing else.
@@ -13540,9 +13549,9 @@ a fresh accumulator.
 - Consumer Blackwell (`sm_120`) has no tcgen05.
 - Forward-only for now.
 - Verified on a B200: every spec in tests/spec/208-tcgen05 is MMA_CORRECT (endeavour 208).  The
-  synchronous, pipelined, accumulator-ring, `:via :tma` and tf32 forms all ran.
-- Not built yet: M = 64, `:b-major :mn`, `cta_group::2`, int8, and the block-scaled microfloat
-  kinds.
+  synchronous, pipelined, accumulator-ring, `:via :tma`, tf32, int8 (all sign pairs) and qint
+  requantizing forms all ran.
+- Not built yet: M = 64, `:b-major :mn`, `cta_group::2`, and the block-scaled microfloat kinds.
 
 
 ## Deferred: cluster-scale topology (`def-topology` / `def-orchestration`)

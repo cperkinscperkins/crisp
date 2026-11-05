@@ -1,0 +1,58 @@
+;; Endeavour 208 phase 3 -- the pipelined int8 kernel: spec 05's three roles and two tensor-memory
+;; accumulators, on def-qint operands.  q-a x q-a accumulate into (accum q-a), an s32 accumulator ring of
+;; 2 x 256 columns, and the epilogue stores it into a matrix of (accum q-a).
+;;
+;; One K-step is 128 int8 values (one 128-byte swizzle atom, four kind::i8 instructions).  A ring slot is
+;; 16 KB of A plus 32 KB of B, so four slots take 192 KB of the B200's 227 KB.
+;;
+;; 256 x 512 x 1024: 4 output tiles of 128 x 256 over 2 CTAs, 8 K-steps per tile (two laps of the ring).
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_100a] : validate-ptx-tcgen05-qint-ring
+;; SKIP-WITH[--differentiate]: "integer MMA has no backward"
+;;
+;; MMA-DIMS: 256 512 1024
+;; HOIST-ARCH: sm_100a
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix q-a :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix (accum q-a) :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tcgen05_qint_ring (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 384) (local-size :set-to 192))      ; epilogue wg + producer + mma
+  (let ((A-ring    (make-scratch-matrix-ring q-a (128 128) :ring-count 4))
+        (B-ring    (make-scratch-matrix-ring q-a (256 128) :ring-count 4))
+        (acc       (make-tcgen05-accumulator-ring (accum q-a) (128 256) :ring-count 2))
+        (K         (inner-dimension A B))
+        (tiles     (to-ulong 0))
+        (empty     (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 1 :initial-state :signaled))
+        (full      (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 2 :initial-state :waiting))
+        (acc-full  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :waiting))
+        (acc-empty (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 4 :initial-state :signaled)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (let ((s (mod tiles (to-ulong 2))))
+        (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
+          (:epilogue
+            (await (ring-get acc-full s))
+            (store-tile (ring-get acc s) C (grid-y grid-x))
+            (signal (ring-get acc-empty s)))
+          (:producer
+            (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+              (let ((slot (mod grid-k (to-ulong 4))))
+                (await (ring-get empty slot))
+                (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+                (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))
+          (:mma
+            (await (ring-get acc-empty s))
+            (let ((D (ring-get acc s)))
+              (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+                (let ((slot (mod grid-k (to-ulong 4))))
+                  (await (ring-get full slot))
+                  (tcgen05-accumulate-via-tile (128 256 128) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                               :swizzle :128b :on-complete (ring-get empty slot)))))
+            (tcgen05-commit (ring-get acc-full s)))))
+      (set! tiles (+ tiles (to-ulong 1))))))

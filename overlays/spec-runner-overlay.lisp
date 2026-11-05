@@ -150,3 +150,114 @@
          (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 ":on-complete + tcgen05-commit")
          (list "__crisp_tc_mbar_" 0 "nothing synchronous")
          (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads"))))
+
+;;;; ======================================================================
+;;;; Endeavour 208 phase 3 -- int8 / qint validators.
+;;;; ======================================================================
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-int8 (file ptx-string)
+  "Endeavour 208 spec 08: char x char -> s32, one synchronous 128x128x128 kind::i8 accumulate.  Pins
+   the instruction descriptor (S32 D, INT8 A and B, N = M = 128) and that nothing passes through
+   float on the way out."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-int8" ptx-string
+   (list (list "], 128;" 2 "128 columns, allocated and freed: one s32 128x128 accumulator")
+         (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "K = 128 is four K = 32 MMAs")
+         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 1 "one synchronous site")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 4 "N = 128: four 32-column loads")
+         (list "136316064" :some "the instruction descriptor: c_format S32 = 2, a/b_format INT8 = 1, N>>3 = 16, M>>4 = 8")
+         (list "cvt.rn.f32" 0 "an s32 accumulator is stored as int, never through float"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-int8-mixed (file ptx-string)
+  "Endeavour 208 spec 09: uchar x char.  The signs live in the instruction descriptor: a_format
+   UINT8 = 0, b_format INT8 = 1."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-int8-mixed" ptx-string
+   (list (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "four K = 32 MMAs")
+         (list "136315936" :some "the instruction descriptor: S32, A UINT8 = 0, B INT8 = 1, N = M = 128")
+         (list "136316064" 0 "not the signed x signed descriptor")
+         (list "cvt.rn.f32" 0 "stored as int"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-qint-narrow (file ptx-string)
+  "Endeavour 208 spec 10: q-act (uchar) x q-wt (char) into (accum q-act q-wt), then (to-q-out D 1.0) as
+   the epilogue stores: each of a thread's 128 elements is scaled in float, clamped to [-128, 127]
+   and stored as one byte."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-qint-narrow" ptx-string
+   (list (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "four K = 32 MMAs")
+         (list "136315936" :some "the instruction descriptor: S32, A UINT8, B INT8")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 4 "four 32-column loads")
+         (list "cvt.rn.f32.s32" 128 "one s32 -> f32 per element, for the scale")
+         (list "max.f32" 128 "clamped below at -128")
+         (list "min.f32" 128 "clamped above at 127")
+         (list "st.global.b8" 128 "one byte per element"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-qint-ring (file ptx-string)
+  "Endeavour 208 spec 11: the three-role pipeline on def-qint operands, two s32 128 x 256 accumulators
+   (512 columns).  Two commits (the :on-complete slot release and acc-full), eight loads per tile,
+   the N = 256 int8 descriptor."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-qint-ring" ptx-string
+   (list (list "], 512;" 2 "512 columns, allocated and freed: two s32 128 x 256 accumulators")
+         (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "four K = 32 MMAs per K-step")
+         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 "slot release + acc-full")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads")
+         (list "138413216" :some "the instruction descriptor: S32, INT8 x INT8, N>>3 = 32, M>>4 = 8")
+         (list "cvt.rn.f32" 0 "stored as (accum q-a), never through float"))))
+
+;; tests/run-specs.lisp -- corrected copy: the dealloc's address operand is a register (%rN, 128;),
+;; so only the alloc ends "], 128;".  Count ", 128;" for the pair, as validate-ptx-tcgen05-acc-ring does.
+(defun validate-ptx-tcgen05-int8 (file ptx-string)
+  "Endeavour 208 spec 08: char x char -> s32, one synchronous 128x128x128 kind::i8 accumulate.  Pins
+   the instruction descriptor (S32 D, INT8 A and B, N = M = 128) and that nothing passes through
+   float on the way out."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-int8" ptx-string
+   (list (list "], 128;" 1 "one allocation of 128 columns: one s32 128x128 accumulator")
+         (list ", 128;" 2 "128 columns allocated and freed")
+         (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "K = 128 is four K = 32 MMAs")
+         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 1 "one synchronous site")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 4 "N = 128: four 32-column loads")
+         (list "136316064" :some "the instruction descriptor: c_format S32 = 2, a/b_format INT8 = 1, N>>3 = 16, M>>4 = 8")
+         (list "cvt.rn.f32" 0 "an s32 accumulator is stored as int, never through float"))))
+
+;; tests/run-specs.lisp -- corrected copy, as above: ", 512;" twice (alloc + dealloc).
+(defun validate-ptx-tcgen05-qint-ring (file ptx-string)
+  "Endeavour 208 spec 11: the three-role pipeline on def-qint operands, two s32 128 x 256 accumulators
+   (512 columns).  Two commits (the :on-complete slot release and acc-full), eight loads per tile,
+   the N = 256 int8 descriptor."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-qint-ring" ptx-string
+   (list (list ", 512;" 2 "512 columns, allocated and freed: two s32 128 x 256 accumulators")
+         (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "four K = 32 MMAs per K-step")
+         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 "slot release + acc-full")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads")
+         (list "138413216" :some "the instruction descriptor: S32, INT8 x INT8, N>>3 = 32, M>>4 = 8")
+         (list "cvt.rn.f32" 0 "stored as (accum q-a), never through float"))))
+
+;; tests/run-specs.lisp -- corrected copy (2nd): ", 128;" also matches an address add (add.s64 .., 128;).
+;; Pin the allocation by "], 128;" and require exactly one dealloc instruction.
+(defun validate-ptx-tcgen05-int8 (file ptx-string)
+  "Endeavour 208 spec 08: char x char -> s32, one synchronous 128x128x128 kind::i8 accumulate.  Pins
+   the instruction descriptor (S32 D, INT8 A and B, N = M = 128) and that nothing passes through
+   float on the way out."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-int8" ptx-string
+   (list (list "], 128;" 1 "one allocation of 128 columns: one s32 128x128 accumulator")
+         (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret")
+         (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "K = 128 is four K = 32 MMAs")
+         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 1 "one synchronous site")
+         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 4 "N = 128: four 32-column loads")
+         (list "136316064" :some "the instruction descriptor: c_format S32 = 2, a/b_format INT8 = 1, N>>3 = 16, M>>4 = 8")
+         (list "cvt.rn.f32" 0 "an s32 accumulator is stored as int, never through float"))))
