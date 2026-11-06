@@ -1280,6 +1280,13 @@ from a fixed !100."
   (let ((text (alexandria:read-file-into-string ll-file)))
     (and (or (search ".s32.s8.u8" text) (search ".s32.u8.s8" text)) t)))
 
+(defun %ll-needs-ptx87-p (ll-file)
+  "Endeavour 208 phase 4.  T when LL-FILE holds a block-scaled tcgen05.mma (kind::mxf8f6f4 / mxf4 /
+   mxf4nvf4 .block_scale), which ptxas accepts only at PTX ISA 8.7.  Read from the emitted IR, as
+   %ll-needs-ptx84-p, so every other module keeps llc's default version."
+  (let ((text (alexandria:read-file-into-string ll-file)))
+    (and (search ".block_scale" text) t)))
+
 (defun compile-to-ptx (module output-path &key (compute-capability "sm_80") debug-p)
   "Compiles an LLVM Module to PTX using llc.
    Pipeline: IR -> opt -O3 (if available) -> llc -> PTX.
@@ -1328,6 +1335,8 @@ from a fixed !100."
           (when (plusp hint-count) (list "-mattr=+ptx74"))
           ;; Endeavour 204: +ptx84 only ever raises the version too.
           (when (%ll-needs-ptx84-p llc-input) (list "-mattr=+ptx84"))
+          ;; Endeavour 208 phase 4: the block-scaled tcgen05 kinds need PTX ISA 8.7.  Raise-only.
+          (when (%ll-needs-ptx87-p llc-input) (list "-mattr=+ptx87"))
           (list (namestring llc-input)
                 "-o" (namestring ptx-file)))
          :log-prefix "[PTX] ")))

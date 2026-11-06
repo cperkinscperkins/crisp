@@ -3,6 +3,46 @@
 **Status: APPROVED 2026-11-05.**  D-208-1 to D-208-8 confirmed by Chris.  Q1 decided as (b): a declared scale layout
 that the host provides and the hoist matches.  Q2: metal testing on RunPod via `pod-session.sh`.
 
+**FOLDED into src/ 2026-11-06** (phases 1-4, D-208-17/18, BUG 156), by script:
+`put_temp_files_here/208-fold/fold.py`, using live copies by offset, never retyped.
+- **Where it went:**
+  - new forms are per-file blocks in `src/semantic.lisp`, `src/mma.lisp`, `src/codegen.lisp`,
+    `src/hoist-cuda/main.lisp` and `tests/run-specs.lisp`;
+  - eleven src functions were replaced in place;
+  - `semantic-node-type` / `-source-location` gained an etypecase clause;
+  - `def-microfloat-block` passes its size to `register-microfloat-block`, so `:shape` is recorded
+    without the macro wrapper;
+  - captured wrappers became base + wrapper: `visit-toplevel-form`, `%tlc-check-elem-match`,
+    `generate-declared-signature`, `analyze-tcgen05-accumulate-via-tile`, and the hoist's
+    `emit-kernel-args`, `%cuda-emit-tensor-arg`, `%cuda-emit-tensor-map-encode`, `emit-structs`,
+    `%cuda-emit-mma-reference`;
+  - dropped: every `*208-orig-*` capture, the `%208-mma-kind` declaim (phase 3's SBCL trap needs two
+    copies, and src has one), and the dead copies.
+- **One trap, caught by the build:** the hoist's `emit-kernel-args` LET-binds `*208-mf-roles*` /
+  `*208-mf-params*`.  Appended after it, their defvars would have made both bindings LEXICAL, and every
+  block operand would silently have become role `:a`.  gen-specials does not cover the hoist package,
+  so the defvars now sit before their first user.
+- **Proof:**
+  - IR corpus: 2331 jobs, byte-identical to the pre-fold build except the known metacrisp paths and
+    spec 16, which went back to 3 slots after the baseline.  One transient `llvm-spirv` failure re-ran
+    identical five times.
+  - The CUDA harnesses of metal batches 3, 4 and 9 regenerate byte-identical (batch 9 was built with
+    the exact pre-fold overlays).  The only differences are the `Source:` path and D-208-18's uchar
+    size in batch 3, which predates that fix.
+  - E2E 1805/1805, negative 492/492, unit all passed; 208 is 39/39 under `--differentiate`.
+- **Docs regenerated:** chapters, reference, call graph, globals, specials.  extract_status: 64.0% ->
+  64.2% implemented.
+- **Possible cleanups, not done:**
+  - one `%208-gen-mma` emitter instead of the dispatcher + plain + bs;
+  - folding the `%208-analyze-*` dispatchers into the analyzers they front;
+  - `%208-emit-sync-wait` duplicated inline in the MMA emitters.
+
+  Each is noted "Possible cleanup:" in its docstring.
+- **Still open:**
+  - benchmarks (deferred by Chris);
+  - an H100 metal run of the wgmma ring kernels under BUG 156's per-slot await;
+  - the D-208-n decisions for review.
+
 **Progress.**
 - **Phase 0 done:** `isa-notes.md`, plus the CUDA 12.8 image for `ptxas -arch=sm_100a`.
 - **Phase 1 built in the overlays, and compile-verified:**
@@ -98,6 +138,22 @@ that the host provides and the hoist matches.  Q2: metal testing on RunPod via `
 
     Every earlier pipelined spec used 8 steps on 4 slots.  compute-sanitizer timed out and gave
     nothing.
+- **BUG 156 fixed (2026-11-06), theory (a).  Spec 16 is back on 3 slots, as its regression.**
+  - The await keeps one phase bit per slot in an entry-block i32: phase = init XOR
+    ((bits >> slot) & 1), then the slot's bit flips.  That is the mbarrier's own state, whatever
+    order the slots are visited in.
+  - The slot is (barrier address - ring base) / 8, since ring-get on a barrier ring is base + i*8.
+    LLVM folds it back to the kernel's `(mod grid-k R)`.  The analyzer passes the ring's base in the
+    node's :phase, and a ring of more than 32 slots is refused.
+  - For slots visited in order the bit equals the old lap mod 2, so no working kernel changes
+    behaviour.  The IR corpus moved only in the 13 warp-specialized ring kernels (139, 154/03,
+    193/40, 199/02 and the 208 pipelines).
+  - **On a B200, all MMA_CORRECT:**
+    - spec 16 and spec 04 on 3 slots;
+    - the three probes that faulted (p2, p3, r1);
+    - specs 04, 05, 11 and 16 as they were.
+  - **Not run on metal:** the H100 wgmma kernels use the same await and cannot run on a B200.  They
+    get checked in the benchmarking pass.
 
 - **Error specs:** errors/15-22 cover:
   - a load without `:scales`;

@@ -44,6 +44,8 @@
           *198-TMA-COPY-SPLIT*
           *199-STAGE-BYTES-PER-WARP*
           *199-STORE-BOX*
+          *208-RW-KERNEL*
+          *208-SCALE-LAYOUTS*
           *ACCUM-BASE-REGISTRY*
           *ACCUM-REGISTRY*
           *AD-ANY-OUTPUT-DOUBLE*
@@ -159,6 +161,7 @@
           *MMA-LOWERING*
           *MMA-SCRATCH-TILE-DIMS*
           *MMTS-SECTIONS*
+          *MMTS-TCGEN05-TILE*
           *MULTICAST-CLUSTER-DIMS*
           *NATIVE-BUILTIN-MANGLED-NAMES*
           *NVPTX-TARGET-INITIALIZED*
@@ -197,6 +200,12 @@
           *STRUCT-MUTATING-FUNCTIONS*
           *STRUCT-NAME-PREFIX*
           *TARGET-BACKEND*
+          *TCGEN05-ACC-DIMS*
+          *TCGEN05-COLUMNS*
+          *TCGEN05-KERNELS*
+          *TCGEN05-RING-DIMS*
+          *TCGEN05-ROLE-WARPS*
+          *TCGEN05-SYNC-SITES*
           *TEMPLATE-ARITY-LOOKUP-FN*
           *TEMPLATE-INSTANTIATOR-FN*
           *TEMPLATE-REGISTRY*

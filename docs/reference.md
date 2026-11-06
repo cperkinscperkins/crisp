@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-11-05T05:36:11.630882Z
+Generated on 2026-11-06T23:31:05.455938Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -474,7 +474,7 @@ Generated on 2026-11-05T05:36:11.630882Z
 ### DEFUN `ANALYZE-AWAIT-EXPRESSION-BASE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.  >    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is  >    (initial-phase ring-count) so codegen can inject the multi-lap flipping parity.  >   >    Endeavour 196: analyze-await-expression (below) adds the workgroup barrier after a cp.async wait.
+  > Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.  >    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is  >    (initial-phase ring-count) so codegen can inject the flipping parity.  >    BUG 156: the :phase is (initial-phase ring-count ring-base-node) for a (ring-get RING i) barrier,  >    so codegen can recover the slot and keep one phase bit per slot.  A ring of more than 32 slots  >    is refused (the bits live in one i32).  >   >    Endeavour 196: analyze-await-expression (below) adds the workgroup barrier after a cp.async wait.
 
 
 ---
@@ -1277,10 +1277,16 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFVAR `*MMTS-TCGEN05-TILE*`
+
+  > Endeavour 208 (D-208-17).  While a matrix-multiply-tile-stride whose C-tile is a tcgen05 accumulator  >    is lowered: that C-tile's symbol.  %mmts-reset-forms then resets it by re-initialisation instead of  >    fill-tile + a workgroup sync.  NIL otherwise.
+
+
+---
 ### DEFUN `%MMTS-RESET-FORMS`
 - **Args**: `(C-TILE LET-BINDINGS TILE-SPEC RESET-VALUE FILL-SYM SYNC-SYM)`
 
-  > The per-OUTPUT-TILE accumulator reset (BUG 036), decided by WHERE the C-tile is bound.  >   >    Measured 2026-09-17 by compiling both shapes and reading the LLVM IR: a register tile  >    bound INSIDE tile-stride emits its zero CompositeConstruct + store in the grid-x loop  >    body, after grid-x is stored and before the K loop is entered -- precisely the slot this  >    function's fill would occupy.  Bound in the ENCLOSING let it lands in the kernel entry  >    block instead, once per WORKGROUP, which is the BUG 036 exposure.  >   >    So:  >      * register tile in :let      -> NOTHING.  The binding already is the per-tile reset;  >                                     a fill here would be a redundant full-tile zero-write on  >                                     the hot path, correct and invisible to MMA_CORRECT.  >      * register tile outside      -> fill to its DECLARED INIT (pre-167 behaviour, kept).  >      * scratch tile, either place -> fill to 0.0 PLUS a barrier.  make-scratch-matrix takes  >                                     no init, so a scratch tile never self-resets wherever it  >                                     is bound; and fill-tile on scratch is a workgroup-  >                                     collective write that inserts no barrier of its own, so  >                                     the macro (its caller) supplies one.  Endeavour 167  >                                     behaviour change: before this, %mmts-lower gated the  >                                     reset on REGISTER-P and scratch got nothing, leaving  >                                     every scratch call site to hand-write it.
+  > The per-OUTPUT-TILE accumulator reset (BUG 036), decided by WHERE the C-tile is bound.  >   >    Measured 2026-09-17 by compiling both shapes and reading the LLVM IR: a register tile  >    bound INSIDE tile-stride emits its zero CompositeConstruct + store in the grid-x loop  >    body, after grid-x is stored and before the K loop is entered -- precisely the slot this  >    function's fill would occupy.  Bound in the ENCLOSING let it lands in the kernel entry  >    block instead, once per WORKGROUP, which is the BUG 036 exposure.  >   >    So:  >      * register tile in :let      -> NOTHING.  The binding already is the per-tile reset;  >                                     a fill here would be a redundant full-tile zero-write on  >                                     the hot path, correct and invisible to MMA_CORRECT.  >      * register tile outside      -> fill to its DECLARED INIT (pre-167 behaviour, kept).  >      * scratch tile, either place -> fill to 0.0 PLUS a barrier.  make-scratch-matrix takes  >                                     no init, so a scratch tile never self-resets wherever it  >                                     is bound; and fill-tile on scratch is a workgroup-  >                                     collective write that inserts no barrier of its own, so  >                                     the macro (its caller) supplies one.  Endeavour 167  >                                     behaviour change: before this, %mmts-lower gated the  >                                     reset on REGISTER-P and scratch got nothing, leaving  >                                     every scratch call site to hand-write it.  >      * tcgen05 accumulator        -> Endeavour 208 (D-208-17), C-TILE eq *mmts-tcgen05-tile*.  >                                     Bound in :let: NOTHING, the binding is fresh every tile.  >                                     Bound outside: (set! D (%tcgen05-reset D)), which marks it  >                                     FRESH so the first MMA overwrites -- no write to tensor  >                                     memory, no barrier.
 
 
 ---
@@ -1302,7 +1308,7 @@ Generated on 2026-11-05T05:36:11.630882Z
 ### DEFUN `ANALYZE-MATRIX-MULTIPLY-TILE-STRIDE-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) SECTIONS...).  >   >    A register C-tile needs a COMPILE-TIME (M N) size-list tile-spec (a register tile has no  >    extents), a scratch C-tile is a real tensor and passes itself as the spec.  Pre-167 the  >    register case could only be recognised by the pre-lowering in src/mma.lisp, which reads  >    the ENCLOSING let; when the tile is bound in :let the constructor is right here, so this  >    path handles it and the emitted inner let trips the SROA explosion on its own.
+  > Analyzer for (matrix-multiply-tile-stride C C-tile K <k-step> (gy gx gk) SECTIONS...).  >   >    A register C-tile needs a COMPILE-TIME (M N) size-list tile-spec (a register tile has no  >    extents), a scratch C-tile is a real tensor and passes itself as the spec.  Pre-167 the  >    register case could only be recognised by the pre-lowering in src/mma.lisp, which reads  >    the ENCLOSING let; when the tile is bound in :let the constructor is right here, so this  >    path handles it and the emitted inner let trips the SROA explosion on its own.  >   >    Endeavour 208 (D-208-17): a tcgen05 accumulator C-tile -- bound in :let or outside -- takes its  >    tile-spec from its (M N) (it has no extents~), and *mmts-tcgen05-tile* tells %mmts-reset-forms  >    to reset it by re-initialisation.
 
 
 ---
@@ -1353,10 +1359,17 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `%TLC-CHECK-ELEM-MATCH-BASE`
+- **Args**: `(SRC TILE ENV OP-NAME LOCATION)`
+
+  > BUG 057: refuse a tile-staging op whose SOURCE and DESTINATION element types differ.  >   >    A tile stage is a COPY.  Staging a `float` global into a `half` tile emitted no fptrunc and  >    no `store half`, only `store float ... ptr addrspace(3)` -- 4-byte values into a  >    2-byte-element SLM tile, overrunning it 2x with every element past the first at the wrong  >    offset.  It compiled clean and corrupted memory.  >   >    Refused rather than converted: an implicit fptrunc would put per-element casts inside a bulk  >    staging loop whose entire purpose is speed, and would silently change the numerics of a load  >    the user reads as a copy.  >   >    Both types come from a pure environment lookup, so no sub-expression is re-analysed and no  >    side effect is duplicated.  Skipped whenever either side's element type cannot be determined,  >    which keeps a false refusal off kernels this was never about.  >   >    Endeavour 208: %tlc-check-elem-match (below) wraps this; block codes staged into a uchar tile  >    are accepted before this check.
+
+
+---
 ### DEFUN `%TLC-CHECK-ELEM-MATCH`
 - **Args**: `(SRC TILE ENV OP-NAME LOCATION)`
 
-  > BUG 057: refuse a tile-staging op whose SOURCE and DESTINATION element types differ.  >   >    A tile stage is a COPY.  Staging a `float` global into a `half` tile emitted no fptrunc and  >    no `store half`, only `store float ... ptr addrspace(3)` -- 4-byte values into a  >    2-byte-element SLM tile, overrunning it 2x with every element past the first at the wrong  >    offset.  It compiled clean and corrupted memory.  >   >    Refused rather than converted: an implicit fptrunc would put per-element casts inside a bulk  >    staging loop whose entire purpose is speed, and would silently change the numerics of a load  >    the user reads as a copy.  >   >    Both types come from a pure environment lookup, so no sub-expression is re-analysed and no  >    side effect is duplicated.  Skipped whenever either side's element type cannot be determined,  >    which keeps a false refusal off kernels this was never about.
+  > Endeavour 208 phase 4 wrapper.  A matrix of a microfloat block holds its packed codes, and the  >    source rewrite stages them into a uchar tile: that pair is the byte copy it looks like, so it is  >    accepted.  Every other pair goes to BUG 057's check.
 
 
 ---
@@ -1824,10 +1837,17 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `VISIT-TOPLEVEL-FORM-BASE`
+- **Args**: `(FORM LOCATION VISITOR-FN)`
+
+  > Recursively visits a top-level form, handling macros and progn.  >    Visitor-fn is called as (visitor-fn form location) for def-function forms.  >    Other forms are evaluated if they are not special forms handled by the walker.  >   >    Endeavour 208: visit-toplevel-form (below) wraps this; a def-function form passes through  >    %208-rewrite-block-kernel first.
+
+
+---
 ### DEFUN `VISIT-TOPLEVEL-FORM`
 - **Args**: `(FORM LOCATION VISITOR-FN)`
 
-  > Recursively visits a top-level form, handling macros and progn.  >    Visitor-fn is called as (visitor-fn form location) for def-function forms.  >    Other forms are evaluated if they are not special forms handled by the walker.
+  > Endeavour 208 wrapper: a def-function form passes through %208-rewrite-block-kernel (scale-layout  >    declarations; block scratch tiles) before both passes see it; then the original walker.
 
 
 ---
@@ -2140,14 +2160,14 @@ Generated on 2026-11-05T05:36:11.630882Z
 ### DEFUN `SEMANTIC-NODE-TYPE`
 - **Args**: `(NODE)`
 
-  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.  >    Endeavour 200 (BUG 145): semantic-while (void).
+  > Returns the Crisp type of a semantic node.  >    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.  >    Endeavour 200 (BUG 145): semantic-while (void).  >    Endeavour 208: semantic-tcgen05-op.
 
 
 ---
 ### DEFUN `SEMANTIC-NODE-SOURCE-LOCATION`
 - **Args**: `(NODE)`
 
-  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.  >    Endeavour 200 (BUG 145): semantic-while.
+  > Returns the source location of a semantic node.  >    Extended for 092-dotimes and 114 Phase B.  >    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.  >    Endeavour 200 (BUG 145): semantic-while.  >    Endeavour 208: semantic-tcgen05-op.
 
 
 ---
@@ -7520,6 +7540,14 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `%156-AWAIT-SLOT`
+- **Args**: `(BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP BARRIER-I
+              BASE-NODE)`
+
+  > BUG 156: the i32 slot index of a ring await.  BARRIER-I is the slot's mbarrier address (i64, which  >    ring-get built as base + slot*8); BASE-NODE is the ring's analyzed base, or NIL for a plain  >    (non-ring) barrier, whose slot is 0.
+
+
+---
 ### DEFUN `%COOP-TYPE`
 - **Args**: `(ELEM-LLVM ROWS COLS USE)`
 
@@ -7940,6 +7968,189 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `%208-ASM`
+- **Args**: `(BUILDER ASM &OPTIONAL (CONSTRAINTS ~{memory}) RET-TYPE PTYPES
+              ARGS)`
+
+  > Endeavour 208.  One side-effecting inline-asm statement (void unless RET-TYPE).
+
+
+---
+### DEFUN `%208-IF`
+- **Args**: `(BUILDER TEST THUNK &OPTIONAL (LABEL tc))`
+
+  > Endeavour 208.  if (TEST) { THUNK } -- a then block and a merge block; the builder ends in the merge.
+
+
+---
+### DEFUN `%208-LINEAR-TID`
+- **Args**: `(BUILDER MODULE)`
+
+  > Endeavour 208.  The thread's linear index in the workgroup, i32.
+
+
+---
+### DEFUN `%208-SHARED-GLOBAL`
+- **Args**: `(MODULE NAME LLVM-TYPE)`
+
+  > Endeavour 208.  The addrspace(3) global NAME, created (undef, internal, 16-byte aligned) on first use.
+
+
+---
+### DEFUN `%208-TMEM-SLOT`
+- **Args**: `(MODULE)`
+
+  > Endeavour 208.  The shared word tcgen05.alloc writes the kernel's tensor-memory address into.
+
+
+---
+### DEFUN `%208-SYNC-MBAR-GLOBAL`
+- **Args**: `(MODULE KERNEL N)`
+
+  > Endeavour 208.  KERNEL's [N x i64] mbarriers, one per synchronous accumulate site.
+
+
+---
+### DEFUN `%208-POW2-COLUMNS`
+- **Args**: `(COLUMNS)`
+
+  > Endeavour 208.  The tcgen05.alloc column count for COLUMNS: a power of two, at least 32.
+
+
+---
+### DEFUN `%208-KERNEL-TC-INFO`
+- **Args**: `(KERNEL-NAME)`
+
+  > Endeavour 208.  KERNEL-NAME's *tcgen05-kernels* entry when it uses tensor memory on PTX, else NIL.
+
+
+---
+### DEFUN `%208-EMIT-TMEM-PROLOGUE`
+- **Args**: `(BUILDER MODULE KERNEL-NAME)`
+
+  > Endeavour 208 (D-208-4).  At kernel entry, for a kernel with tcgen05 accumulators:  >      warp 0:   tcgen05.alloc of the kernel's columns (a power of two >= 32) into __crisp_tmem_slot,  >                then relinquish_alloc_permit, so a second CTA on the SM is not kept waiting;  >      thread 0: mbarrier.init (count 1) of each synchronous site's mbarrier;  >      all:      fence::before_thread_sync, bar.sync, fence::after_thread_sync -- the alloc's store  >                to shared memory is weak, and this is the ordering the PTX ISA prescribes.
+
+
+---
+### DEFUN `%208-EMIT-TMEM-EPILOGUE`
+- **Args**: `(BUILDER MODULE KERNEL-NAME)`
+
+  > Endeavour 208 (D-208-4).  Before ret: every thread's tensor-memory work is ordered before a  >    bar.sync (fence::before_thread_sync / bar.sync / fence::after_thread_sync), then warp 0 frees the  >    allocation -- all of it must be freed before the kernel exits.
+
+
+---
+### DEFUN `%208-SMEM-DESC`
+- **Args**: `(BUILDER BASE-PTR KSLICE-BYTE-OFF)`
+
+  > Endeavour 208.  The 64-bit Blackwell shared-memory descriptor (CUTLASS UMMA::SmemDescriptor) of a  >    K-major operand under the 128-byte swizzle: start address >> 4 at [0,14), LBO 16 B (enc 1, unused  >    when swizzled), SBO 1024 B (enc 64: eight 128-byte rows per swizzle atom) at [32,46), VERSION 1 at  >    [46,48) -- the Blackwell marker -- base offset 0, layout SWIZZLE_128B = 2 at [61,64).  The K-slice  >    advances the start address by KSLICE-BYTE-OFF (32 bytes per K = 16 slice), as on wgmma.  >    NOTE that 2 at [61,64) is the same bit as wgmma's 1 at [62,64): only the version bit differs.
+
+
+---
+### DEFUN `%208-ENTRY-COUNTER`
+- **Args**: `(BUILDER NAME)`
+
+  > Endeavour 208.  An i32 counter alloca'd and zeroed in the entry block (it persists across loop  >    iterations).  Returns the alloca; the builder is left where it was.
+
+
+---
+### DEFUN `%208-COMMIT-ASM`
+- **Args**: `(BUILDER MBAR-ADDR-I32)`
+
+  > Endeavour 208.  tcgen05.commit: MBAR arrives (count 1) when every prior tcgen05 op of this thread  >    has completed.  Implies fence::before_thread_sync.
+
+
+---
+### DEFUN `%208-BARRIER-ADDR`
+- **Args**: `(BUILDER BAR-VAL)`
+
+  > Endeavour 208.  A barrier value (i64 of an addrspace(3) mbarrier) as the i32 shared address asm takes.
+
+
+---
+### DEFUN `%208-TMEM-LD32`
+- **Args**: `(BUILDER MODULE TADDR)`
+
+  > Endeavour 208.  tcgen05.ld.32x32b.x32 + wait::ld at TADDR: a list of 32 i32 values.
+
+
+---
+### DEFUN `%208-STAGE-BASE-I32`
+- **Args**: `(BUILDER VAR-ENV STAGE SPEC)`
+
+  > Endeavour 208.  The staging buffer's shared address (i32), as %199-stage-base-i32 finds it, from the  >    implicit scratch record named STAGE with canonical type SPEC.
+
+
+---
+### DEFUN `%208-GEN-TMA-STORE`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Endeavour 208.  (store-tile-at (to-bfloat16 D) C (ROW COL) :via :tma) from tensor memory.  Each warp  >    owns 32 accumulator rows (lane quarter warp mod 4), each thread one row.  Per 64-column chunk:  >      tcgen05.ld two x32 -> 64 f32 -> 32 packed 16-bit pairs;  >      the thread writes its 128-byte row into its warp's 4 KB staging slice -- two 16 x 64 boxes of  >        2 KB, SWIZZLE_128B: 16-byte chunk j of box row r lives at chunk j ^ (r mod 8) -- as 8 x st.shared.v4;  >      fence.proxy.async + bar.warp.sync; lane 0 issues the two box stores (rows +0 and +16), commit.  >    Before a slice is rewritten, lane 0 waits for its previous reads; once more at the end.  The slice is  >    warp mod (staging slices), so a warpgroup that is not at warp 0 still gets four distinct slices.
+
+
+---
+### DEFUN `%208-IDESC`
+- **Args**: `(M N ELEM B-ELEM)`
+
+  > Endeavour 208.  The 32-bit instruction descriptor (CUTLASS UMMA::InstrDescriptor):  >    c_format at [4,6) (F32 = 1, S32 = 2); a_format / b_format at [7,10) / [10,13) (F16 0, BF16 1,  >    TF32 2; UINT8 0, INT8 1); A and B K-major (bits 15, 16 = 0); N >> 3 at [17,23); M >> 4 at  >    [24,29).  Saturate (bit 3) stays 0: an s32 accumulator wraps, as mma.sync's does.
+
+
+---
+### DEFUN `%208-GEN-LD`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Endeavour 208.  tcgen05.ld.sync.aligned.32x32b.x32 + wait::ld: the thread's own lane (32(warp mod 4)  >    + lane) and the 32 columns of chunk C.  Phase 3: an s32 row (plist :int) keeps the cells as i32;  >    an f32 row bitcasts them.  Address = base + COLUMN + 32C + (lane << 16); the lane's  >    32(warp mod 4) part is (warp mod 4) << 21.  Returns the TCGEN05-ROW32-F32 record.
+
+
+---
+### DEFUN `%208-GEN-LOAD-SCALES`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Endeavour 208 phase 4.  One elected thread (lane 0 inside a warp-spec role, else thread 0 -- the  >    TMA load's own rule, so it is the same thread and in program order before the codes load's  >    arrive.expect_tx): mbarrier.expect_tx for every scale byte, then one cp.async.bulk per row block,  >    completing on the barrier.  No arrival: the barrier's count is the codes loads', as before.
+
+
+---
+### DEFUN `%208-CP-DESC`
+- **Args**: `(BUILDER BASE-PTR BYTE-OFF)`
+
+  > Endeavour 208 phase 4.  The tcgen05.cp source descriptor of one 512-byte scale atom: K-major,  >    no swizzle (layout 0), start >> 4 at [0,14), LBO 0 (one core matrix along K), SBO 128 B (enc 8:  >    8-row x 16-byte core matrices) at [32,46), version 1 at bit 46.  See isa-notes.md, Phase 4.
+
+
+---
+### DEFUN `%208-IDESC-BS`
+- **Args**: `(M N INFO A-SF-ID B-SF-ID)`
+
+  > Endeavour 208 phase 4.  The block-scaled instruction descriptor (CUTLASS InstrDescriptorBlockScaled):  >    b_sf_id [4,6), a_format [7,10), b_format [10,13), K-major (15, 16 = 0), N >> 3 [17,23),  >    scale_format bit 23 (UE4M3 0, UE8M0 1), M >> 4 [24,29), a_sf_id [29,31).  No c_format: D is f32.
+
+
+---
+### DEFUN `%208-EMIT-SYNC-WAIT`
+- **Args**: `(BUILDER SITE MBAR-ADDR)`
+
+  > Endeavour 208.  A synchronous site's wait: every executing thread waits for the site mbarrier's next  >    phase (parity from an entry-block visit counter), then fence::after_thread_sync.  Possible cleanup: %208-gen-mma  >    has the same code inline; it should call this.
+
+
+---
+### DEFUN `%208-GEN-MMA-BS`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Endeavour 208 phase 4.  The block-scaled D += (A*sA).(B*sB).  Lane 0 of the issuing warp:  >      1. tcgen05.cp.32x128b.warpx4 each scale atom into the site's scale columns -- A's atom a at  >         SF + 4a; B's row block j, atom a at SF + 4*aps + 4*(a*nb + j) (column n div 32 within a K atom);  >      2. four tcgen05.mma.kind::<block kind>, instruction kk reading scale atom (kk*spi) div 4 at  >         byte / half-word SF_ID (kk*spi) mod 4 -- a per-instruction instruction descriptor;  >      3. commit, to :on-complete's barrier or to the site's own mbarrier (then every thread waits).  >    The copies and MMAs come from one thread, so the tensor pipe keeps them in order (as CUTLASS).
+
+
+---
+### DEFUN `%208-GEN-MMA-PLAIN`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Endeavour 208.  The 16-bit / tf32 / int8 emitter (was %208-gen-mma).  D += A.B: lane 0 of the issuing warp builds the descriptors and issues K/16  >    tcgen05.mma.kind::f16 (the first with enable-input-d = !FRESH, the rest accumulating), then commits  >    -- to :on-complete's barrier, or to this site's own mbarrier, on which every executing thread then  >    waits (parity from an entry-block visit counter) before fence::after_thread_sync.  Returns D with  >    FRESH cleared.
+
+
+---
+### DEFUN `%208-GEN-MMA`
+- **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
+
+  > Endeavour 208.  Phase 4: a block-scaled MMA node (plist :block) goes to %208-gen-mma-bs; every other  >    one to %208-gen-mma-plain (by name).  Possible cleanup: one emitter with the two issue sequences.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
@@ -8324,6 +8535,13 @@ Generated on 2026-11-05T05:36:11.630882Z
 - **Args**: `(LL-FILE)`
 
   > T when LL-FILE holds a mixed-sign wgmma, which ptxas accepts only at PTX ISA 8.4.  Read from the  >    emitted IR so that every other module keeps llc's default version.
+
+
+---
+### DEFUN `%LL-NEEDS-PTX87-P`
+- **Args**: `(LL-FILE)`
+
+  > Endeavour 208 phase 4.  T when LL-FILE holds a block-scaled tcgen05.mma (kind::mxf8f6f4 / mxf4 /  >    mxf4nvf4 .block_scale), which ptxas accepts only at PTX ISA 8.7.  Read from the emitted IR, as  >    %ll-needs-ptx84-p, so every other module keeps llc's default version.
 
 
 ---
@@ -9163,10 +9381,17 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `EMIT-STRUCTS-BASE`
+- **Args**: `(STREAM STRUCTS)`
+
+  > Generate C++ struct definitions from metadata (mirrors L0 hoist).  >   >    Endeavour 208: emit-structs (below) wraps this; it skips records with tensor members.
+
+
+---
 ### DEFUN `EMIT-STRUCTS`
 - **Args**: `(STREAM STRUCTS)`
 
-  > Generate C++ struct definitions from metadata (mirrors L0 hoist).
+  > Endeavour 208 phase 4 wrapper: a record with a TENSOR member (a def-microfloat-block's codes and  >    scales, or any record of handles) has no C spelling, and D-206-1 keeps it out of kernel  >    signatures, so the host never needs it: it is skipped.  The rest go to the original.
 
 
 ---
@@ -9278,7 +9503,7 @@ Generated on 2026-11-05T05:36:11.630882Z
 ### DEFUN `%HOIST-ELEM-TYPE-BYTES`
 - **Args**: `(ELEM-STR)`
 
-  > Bytes occupied by one element of the C++ type named ELEM-STR.  >   >    The canonical width table for the CUDA hoist's sizer AND emitters, which must agree:  >    %cuda-shared-layout computes the launch request and the per-tile offsets from the same  >    numbers, and BUG 046 was exactly the divergence that results when they do not.  >    Unknown types keep the historical 4, so a type this table has not met is sized as before.
+  > Bytes occupied by one element of the C++ type named ELEM-STR.  >   >    The canonical width table for the CUDA hoist's sizer AND emitters, which must agree:  >    %cuda-shared-layout computes the launch request and the per-tile offsets from the same  >    numbers, and BUG 046 was exactly the divergence that results when they do not.  >    Unknown types keep the historical 4, so a type this table has not met is sized as before.  >    Endeavour 208: unsigned char -- what crisp-type-to-cpp-type gives for uchar -- was missing, so every  >    uchar scratch tile was sized 4 bytes per element (found when a block-scaled ring asked for 648 KB).
 
 
 ---
@@ -9368,9 +9593,32 @@ Generated on 2026-11-05T05:36:11.630882Z
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE ARG-INDEX)`
 
 ---
+### DEFVAR `*208-MF-ROLES*`
+
+  > Endeavour 208 phase 4.  While a kernel's args are emitted under --mma-test: alist of parameter name  >    (string) -> :a / :b, the rank-2 inputs in signature order (the harness's role rule), so a scales  >    vector knows its matrix's role wherever it sits in the signature.
+
+
+---
+### DEFVAR `*208-MF-PARAMS*`
+
+  > Endeavour 208 phase 4.  Alist of block-matrix parameter name (C spelling) -> plist (:epb ..), filled  >    as their args are emitted; the tensor-map encoder uses the byte-space variables of these.
+
+
+---
+### DEFUN `%CUDA-EMIT-TENSOR-ARG-BASE`
+- **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX
+              DISPATCH-INFO)`
+
+  > Endeavour 208: %cuda-emit-tensor-arg (below) wraps this; block codes and scales get their own allocations.
+
+
+---
 ### DEFUN `%CUDA-EMIT-TENSOR-ARG`
 - **Args**: `(STREAM PARAM PARAM-NAME PARAM-TYPE PARAM-DIR ARG-INDEX
               DISPATCH-INFO)`
+
+  > Endeavour 208 phase 4 wrapper: under --mma-test, a block matrix or its scales vector (:microfloat in  >    the metadata) is emitted by %208-emit-mf-codes-arg / %208-emit-mf-scales-arg; anything else by the  >    original.
+
 
 ---
 ### DEFUN `%CUDA-EMIT-STRUCT-ARG`
@@ -9392,10 +9640,17 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `%CUDA-EMIT-TENSOR-MAP-ENCODE-BASE`
+- **Args**: `(STREAM PARAM)`
+
+  > Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map  >    descriptor and copy the 128-byte descriptor to device global (option A), leaving the device pointer  >    in <name> (forward-declared earlier at the descriptor's ABI slot).  References the DESCRIBED tensor's  >    already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  >      - Swizzle from (getf param :swizzle): :128b -> CU_TENSOR_MAP_SWIZZLE_128B (wgmma), else NONE.  >      - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents  >        in-order and gstride = the outer (N) stride.  Otherwise the row-major reversal (extents reversed,  >        gstride = dim-0 stride), matching the nvcc-verified H100 reference.  Gated on :128b so the  >        battle-tested 137/138 :none col-major path (symmetric tiles) is untouched.  >   >    Endeavour 208: %cuda-emit-tensor-map-encode (below) wraps this; a block operand's map uses its byte extents.
+
+
+---
 ### DEFUN `%CUDA-EMIT-TENSOR-MAP-ENCODE`
 - **Args**: `(STREAM PARAM)`
 
-  > Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map  >    descriptor and copy the 128-byte descriptor to device global (option A), leaving the device pointer  >    in <name> (forward-declared earlier at the descriptor's ABI slot).  References the DESCRIBED tensor's  >    already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  >      - Swizzle from (getf param :swizzle): :128b -> CU_TENSOR_MAP_SWIZZLE_128B (wgmma), else NONE.  >      - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents  >        in-order and gstride = the outer (N) stride.  Otherwise the row-major reversal (extents reversed,  >        gstride = dim-0 stride), matching the nvcc-verified H100 reference.  Gated on :128b so the  >        battle-tested 137/138 :none col-major path (symmetric tiles) is untouched.
+  > Endeavour 208 phase 4 wrapper: a descriptor of a block matrix is encoded over BYTES -- UINT8, the  >    K-contiguous extent divided by codes-per-byte (<d>_bext / <d>_bstr) -- so the codes tile's 128-byte  >    box is 256 fp4 or 128 fp8 codes.  The original emits it, with the byte variables in place of the  >    element ones.
 
 
 ---
@@ -9406,10 +9661,17 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `EMIT-KERNEL-ARGS-BASE`
+- **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)`
+
+  > BUG 046: seeds *cuda-shared-cell-offset* from %cuda-shared-layout so LOCAL  >    cells are laid out ABOVE the scratch tensors rather than on top of the first one.  >   >    Endeavour 208: emit-kernel-args (below) wraps this; it records the block operands first.
+
+
+---
 ### DEFUN `EMIT-KERNEL-ARGS`
 - **Args**: `(STREAM DECLARED-SIG ALIASES RECORDS DISPATCH-INFO)`
 
-  > BUG 046: seeds *cuda-shared-cell-offset* from %cuda-shared-layout so LOCAL  >    cells are laid out ABOVE the scratch tensors rather than on top of the first one.
+  > Endeavour 208 phase 4 wrapper: binds *208-mf-roles* (rank-2 inputs in order -> :a, :b) and  >    *208-mf-params*, then the original.
 
 
 ---
@@ -9521,10 +9783,17 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `%CUDA-EMIT-MMA-REFERENCE-BASE`
+- **Args**: `(STREAM ALLOCATIONS)`
+
+  > Emit a stride-agnostic host reference C = A.B (copy A/B/C back to host, compare).  >   >    Endeavour 165: the reference follows the kernel's ELEMENT TYPE instead of being emitted in  >    float throughout.  Against an fp64 kernel the old form read 8-byte buffers as 4-byte floats,  >    so MMA_WRONG would have been a statement about the HARNESS, not the kernel -- and would have  >    burned a GPU rental to say nothing.  >   >    :elem-type is already on every allocation as a C++ type string; emit-readback beside this  >    function has always used it.  Only this reference hardcoded float.  >   >    THE TOLERANCE FOLLOWS THE TYPE, which is the whole point at 64 bits.  tf32 keeps 1e-2 relative  >    because tf32 carries ~10 mantissa bits.  fp64 gets 1e-10 -- tight enough that a path which  >    silently computed in single precision FAILS, the same discriminating property the endeavour's  >    benchmark oracle has.  Run at tf32's tolerance an fp64 check would pass on an fp32 result and  >    tell us nothing.  >   >    Float emission is byte-identical to before.  >   >    Endeavour 208: %cuda-emit-mma-reference (below) wraps this; a block-scaled kernel gets its own reference.
+
+
+---
 ### DEFUN `%CUDA-EMIT-MMA-REFERENCE`
 - **Args**: `(STREAM ALLOCATIONS)`
 
-  > Emit a stride-agnostic host reference C = A.B (copy A/B/C back to host, compare).  >   >    Endeavour 165: the reference follows the kernel's ELEMENT TYPE instead of being emitted in  >    float throughout.  Against an fp64 kernel the old form read 8-byte buffers as 4-byte floats,  >    so MMA_WRONG would have been a statement about the HARNESS, not the kernel -- and would have  >    burned a GPU rental to say nothing.  >   >    :elem-type is already on every allocation as a C++ type string; emit-readback beside this  >    function has always used it.  Only this reference hardcoded float.  >   >    THE TOLERANCE FOLLOWS THE TYPE, which is the whole point at 64 bits.  tf32 keeps 1e-2 relative  >    because tf32 carries ~10 mantissa bits.  fp64 gets 1e-10 -- tight enough that a path which  >    silently computed in single precision FAILS, the same discriminating property the endeavour's  >    benchmark oracle has.  Run at tf32's tolerance an fp64 check would pass on an fp32 result and  >    tell us nothing.  >   >    Float emission is byte-identical to before.
+  > Endeavour 208 phase 4 wrapper: with block-matrix operands, the reference is  >      C[i][j] = sum_k (dec(A[i][k]) * sA(i, k/vec)) * (dec(B[k][j]) * sB(j, k/vec))  >    with the scales read through the :blocked-128x4 layout, compared in float with a tolerance of 1e-3  >    of the sum of |terms| (the products are exact; only the summation order may differ).  Anything  >    else goes to the original.
 
 
 ---
@@ -9553,6 +9822,83 @@ Generated on 2026-11-05T05:36:11.630882Z
 - **Args**: `(STREAM)`
 
   > Endeavour 193.  C++ that reads __crisp_log by name (cuModuleGetGlobal) and prints it.
+
+
+---
+### DEFUN `%208-MMA-16BIT-KIND`
+- **Args**: `(ELEM-TYPE)`
+
+  > Endeavour 208.  :bf16 / :f16 for a bfloat16 / half Crisp element type, else NIL.
+
+
+---
+### DEFUN `%208-EMIT-16BIT-FILL`
+- **Args**: `(STREAM TOTAL-ELEMS KIND MODULUS)`
+
+  > Endeavour 208.  Fill a 16-bit MMA operand with (_i % MODULUS) ENCODED as KIND.  Small integers are  >    exact in both formats, so the reference is exact too.
+
+
+---
+### DEFUN `%208-EMIT-16BIT-DECODER`
+- **Args**: `(STREAM KIND)`
+
+  > Endeavour 208.  The reference's decoder for a 16-bit operand of KIND.
+
+
+---
+### DEFUN `%208-EMIT-16BIT-DECODER-NAMED`
+- **Args**: `(STREAM KIND NAME)`
+
+  > Endeavour 208.  A decoder lambda NAME for a 16-bit value of KIND (:bf16 / :f16).
+
+
+---
+### DEFUN `%208-MF-EPB`
+- **Args**: `(MF)`
+
+  > Endeavour 208.  Codes per byte of the block described by the :microfloat plist MF.
+
+
+---
+### DEFUN `%208-EMIT-ARGS-TAIL`
+- **Args**: `(STREAM NM PTR BYTES RANK STRIDES EXTENTS LENGTH)`
+
+  > Endeavour 208.  The tensor ABI after the allocation, as %cuda-emit-tensor-arg emits it: ptr,  >    byte_size, offsets, strides, extents, length.  Returns the arg names in order.
+
+
+---
+### DEFUN `%208-EMIT-MF-CODES-ARG`
+- **Args**: `(STREAM PARAM-NAME MF ARG-INDEX)`
+
+  > Endeavour 208 phase 4.  A block matrix (role :a = (M K), :b = (K N) K-contiguous): allocated and  >    filled as bytes -- fp4 two distinct codes per byte, every code reachable; fp8 finite codes with both  >    signs -- with element extents and strides for the kernel and byte-space <nm>_bext<k> / <nm>_bstr<k>  >    for its TMA descriptor.
+
+
+---
+### DEFUN `%208-EMIT-MF-SCALES-ARG`
+- **Args**: `(STREAM PARAM-NAME MF ARG-INDEX)`
+
+  > Endeavour 208 phase 4.  The scales of block matrix (:scales-of) in :blocked-128x4: rows R (M for A,  >    N for B) padded to 128, K/vec scales per row padded to 4; R/128 x K/(4 vec) atoms of 512 bytes.  >    Filled with finite positive scales near 1 (ue8m0 2^-2..2^2, ue4m3 0.5..1.9).
+
+
+---
+### DEFUN `%208-REPLACE-ALL`
+- **Args**: `(STRING OLD NEW)`
+
+  > Endeavour 208.  STRING with every occurrence of OLD replaced by NEW.
+
+
+---
+### DEFUN `%208-EMIT-MF-DECODERS`
+- **Args**: `(STREAM)`
+
+  > Endeavour 208 phase 4.  C decoders of the OCP microfloat formats, exact (powers of two).
+
+
+---
+### DEFUN `%208-MF-ELEM-EXPR`
+- **Args**: `(ALLOC ROW COL)`
+
+  > Endeavour 208 phase 4.  C expression decoding element (ROW COL) of the block matrix ALLOC (role :a  >    is (M K), :b is (K N)); fp4's even element is the low nibble (D-206-3).
 
 
 ---
@@ -11394,9 +11740,9 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 ---
 ### DEFUN `REGISTER-MICROFLOAT-BLOCK`
-- **Args**: `(NAME BASE SCALE ACCUM)`
+- **Args**: `(NAME BASE SCALE ACCUM &OPTIONAL SHAPE)`
 
-  > Endeavour 206.  Records NAME as a microfloat block, which is what (to-float w i), (~ w i), (accum T),  >    (base T) and (scale T) dispatch on.
+  > Endeavour 206.  Records NAME as a microfloat block, which is what (to-float w i), (~ w i), (accum T),  >    (base T) and (scale T) dispatch on.  >    Endeavour 208: SHAPE, the block size in elements, is recorded as :shape (the block-scaled  >    tcgen05 kinds dispatch on it).
 
 
 ---
@@ -12467,10 +12813,24 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFUN `%208-PARAM-BLOCK-INFO`
+- **Args**: `(TYPE)`
+
+  > Endeavour 208 phase 4.  The block plist when the parameter TYPE is a matrix of a microfloat block.
+
+
+---
+### DEFUN `GENERATE-DECLARED-SIGNATURE-BASE`
+- **Args**: `(SIG &OPTIONAL DECLARED-PARAMS)`
+
+  > Generates the declared-signature plist for a kernel's metadata.  >    Omits :access — storage handles are always treated as read-write by hoist code.  >   >    Endeavour 208: generate-declared-signature (below) wraps this; it adds :microfloat to a block  >    operand and its scales vector.
+
+
+---
 ### DEFUN `GENERATE-DECLARED-SIGNATURE`
 - **Args**: `(SIG &OPTIONAL DECLARED-PARAMS)`
 
-  > Generates the declared-signature plist for a kernel's metadata.  >    Omits :access — storage handles are always treated as read-write by hoist code.
+  > Endeavour 208 phase 4 wrapper.  The original entries, plus :microfloat on a parameter that holds a  >    block's codes -- (:block :base :scale :vec :scales S :layout L) -- and on its scales vector --  >    (:scales-of A :block .. :layout L) -- so the hoist sizes, fills and checks them (Q1 (b)).
 
 
 ---
@@ -13203,7 +13563,7 @@ Generated on 2026-11-05T05:36:11.630882Z
 ### DEFUN `%QINT-MMA-BINDING-ELEMS`
 - **Args**: `(BINDINGS)`
 
-  > Alist (SYM . SOURCE-ELEM) for BINDINGS.  A tile / scratch / wgmma-accumulator constructor gives  >    its element type; any other binding maps to NIL, so it SHADOWS an outer name as unknown.
+  > Alist (SYM . SOURCE-ELEM) for BINDINGS.  A tile / scratch / wgmma-accumulator constructor gives  >    its element type; any other binding maps to NIL, so it SHADOWS an outer name as unknown.  >    Endeavour 208: tcgen05 accumulators and accumulator rings too.
 
 
 ---
@@ -13224,7 +13584,7 @@ Generated on 2026-11-05T05:36:11.630882Z
 ### DEFUN `%QINT-MMA-WALK`
 - **Args**: `(FORM LEX ENV LOCATION)`
 
-  > Walks FORM applying %check-mma-qint-roles to every mma-accumulate-via-tile, wgmma-accumulate and  >    wgmma-accumulate-via-tile, extending LEX through nested LETs.  A check runs only when A, B and C  >    are all known.
+  > Walks FORM applying %check-mma-qint-roles to every mma-accumulate-via-tile, wgmma-accumulate and  >    wgmma-accumulate-via-tile, extending LEX through nested LETs.  A check runs only when A, B and C  >    are all known.  >    Endeavour 208: tcgen05-accumulate-via-tile too (D A B at the same positions).
 
 
 ---
@@ -13938,6 +14298,421 @@ Generated on 2026-11-05T05:36:11.630882Z
 
 
 ---
+### DEFVAR `*TCGEN05-ACC-DIMS*`
+
+  > Endeavour 208.  tcgen05 accumulator record type -> (M N ELEM).
+
+
+---
+### DEFVAR `*TCGEN05-COLUMNS*`
+
+  > Endeavour 208.  (KERNEL . LOCATION) of a make-tcgen05-accumulator let binding -> its first  >    tensor-memory column.  Keyed by SITE, so re-analysing the same binding reuses its columns and two  >    bindings that happen to share a name do not.
+
+
+---
+### DEFVAR `*TCGEN05-SYNC-SITES*`
+
+  > Endeavour 208.  (KERNEL . LOCATION) of a synchronous tcgen05 accumulate -> its mbarrier index.
+
+
+---
+### DEFVAR `*TCGEN05-KERNELS*`
+
+  > Endeavour 208.  KERNEL (upper-case string) -> plist (:columns C :sync-sites S): the tensor-memory  >    columns its accumulators occupy and how many synchronous accumulate sites it has.  The kernel  >    prologue and epilogue (generate-function-body) read it to allocate, initialise and free.
+
+
+---
+### DEFVAR `*TCGEN05-ROLE-WARPS*`
+
+  > Endeavour 208.  (FIRST-WARP . COUNT) of the with-warp-specialization role being analysed, NIL  >    outside any role.  The issuing thread of an MMA is lane 0 of FIRST-WARP (warp 0 outside a role),  >    and the epilogue rule reads COUNT.
+
+
+---
+### DEFUN `%208-KERNEL-KEY`
+- **Args**: `(CONTEXT)`
+
+  > Endeavour 208.  The function being compiled, as an upper-case string, or NIL.
+
+
+---
+### DEFUN `%208-KERNEL-INFO`
+- **Args**: `(KEY)`
+
+  > Endeavour 208.  KEY's entry in *tcgen05-kernels*, created empty on first use.
+
+
+---
+### DEFUN `%TCGEN05-ARCH-OK-P`
+
+  > Endeavour 208.  T when the target is PTX for an architecture with tcgen05: the sm_100a family.  >    Plain sm_100 is NOT enough -- the tcgen05 instructions are architecture-specific, and PTX built  >    for .target sm_100 refuses them.
+
+
+---
+### DEFUN `%TCGEN05-REQUIRE-ARCH`
+- **Args**: `(FORM-NAME LOCATION)`
+
+  > Endeavour 208.  Refuse FORM-NAME unless the target has tcgen05 (D-208-1).
+
+
+---
+### DEFUN `%TCGEN05-ACC-TYPE-NAME`
+- **Args**: `(M N ELEM)`
+
+  > Endeavour 208.  The minted tcgen05 accumulator record name.
+
+
+---
+### DEFUN `%TCGEN05-ACC-TYPE-P`
+- **Args**: `(TYPE-NAME)`
+
+  > Endeavour 208.  T if TYPE-NAME is a minted tcgen05 accumulator record type.
+
+
+---
+### DEFUN `%ENSURE-TCGEN05-ACC-TYPE`
+- **Args**: `(M N ELEM)`
+
+  > Endeavour 208.  Mint (once) the record naming a tensor-memory accumulator.  It holds none of the  >    M x N values -- those live in tensor memory -- only two uint fields:  >      COLUMN  the accumulator's first column, relative to the kernel's tensor-memory allocation;  >      FRESH   1 until the first MMA after (re)initialisation.  That MMA OVERWRITES D (the ISA's  >              enable-input-d predicate is false), so tensor memory never needs zeroing (D-208-5).
+
+
+---
+### DEFUN `%ENSURE-TCGEN05-ROW-TYPE`
+
+  > Endeavour 208.  Mint (once) the record one tcgen05.ld.32x32b.x32 fills: 32 float fields, the  >    32 consecutive columns of the calling thread's own tensor-memory lane (its accumulator row).
+
+
+---
+### DEFUN `%TCGEN05-CHECK-ACC-SHAPE`
+- **Args**: `(M N LOCATION)`
+
+  > Endeavour 208, phase 1.  M = 128 (the full 128-lane datapath, 'Layout D'); N a multiple of 16 in  >    [16, 256] -- the PTX table allows steps of 8 at M = 128 for kind::f16, but CUTLASS's tf32 atom asks  >    16, and 16 is valid under both until metal says otherwise.
+
+
+---
+### DEFUN `ANALYZE-%TCGEN05-RESET`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (%tcgen05-reset D) -> D with its columns kept and FRESH set: the re-initialisation  >    `(set! D (make-tcgen05-accumulator ..))` is rewritten to (set! D (%tcgen05-reset D)) by the let  >    pre-pass, because a set!'s value is analysed without knowing its target.
+
+
+---
+### DEFUN `ANALYZE-%IN-WARP-ROLE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (%in-warp-role FIRST COUNT BODY..) -- with-warp-specialization's role body,  >    analysed as (progn BODY..) with *tcgen05-role-warps* bound to (FIRST . COUNT).  The node is the  >    progn's, so the IR is unchanged; only the tcgen05 forms read the binding.
+
+
+---
+### DEFUN `%TCGEN05-16BIT-ELEM-P`
+- **Args**: `(ELEM)`
+
+  > Endeavour 208.  T for half / bfloat16.
+
+
+---
+### DEFUN `%208-ISSUE-WARP`
+
+  > Endeavour 208.  The warp whose lane 0 issues tcgen05.mma / tcgen05.commit: the first warp of the  >    enclosing with-warp-specialization role, else warp 0 (D-208-7).  MMA and commit must come from  >    the SAME thread -- a commit tracks only the MMAs its own thread issued -- and this rule gives both  >    the same one.
+
+
+---
+### DEFUN `ANALYZE-%TCGEN05-MMA`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (%tcgen05-mma D A B K [BAR]) -> the semantic-tcgen05-op :mma node, typed as D.  >    A / B become (~ tile 0 0) so codegen's third value is the shared-memory base (as for wgmma).  A  >    site without BAR is synchronous and gets its own mbarrier index in this kernel.
+
+
+---
+### DEFUN `ANALYZE-TCGEN05-COMMIT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (tcgen05-commit BAR): BAR arrives once every tcgen05 MMA the issuing thread has  >    issued so far has finished (D-208-3).  Issued by the same thread as the MMAs (%208-issue-warp).
+
+
+---
+### DEFUN `ANALYZE-%TCGEN05-FENCE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (%tcgen05-fence-after) / (%tcgen05-fence-before): tcgen05.fence::after_thread_sync  >    / ::before_thread_sync, ordering tensor-memory access against the thread synchronisation around it.
+
+
+---
+### DEFUN `%208-DECLARED-LOCAL-SIZE`
+- **Args**: `(CONTEXT)`
+
+  > Endeavour 208.  The kernel's (local-size :set-to ..) thread count, or NIL when not a compile-time  >    constant.
+
+
+---
+### DEFUN `%TCGEN05-CHECK-EPILOGUE-THREADS`
+- **Args**: `(CONTEXT LOCATION)`
+
+  > Endeavour 208 (D-208-6).  Reading a tcgen05 accumulator back is a warpgroup's job: warp w of a  >    warpgroup may read only tensor-memory lanes 32(w mod 4) .. +31, so it takes four consecutive warps  >    to cover 128 rows.  Inside a role the role must be 4 warps; outside one the kernel must be 128  >    threads.
+
+
+---
+### DEFUN `%208-REWRITE-ACC-REINIT`
+- **Args**: `(FORM)`
+
+  > Endeavour 208.  FORM with every (set! X (make-tcgen05-accumulator ...)) rewritten to  >    (set! X (%tcgen05-reset X)).  STRUCTURE-PRESERVING: a subtree containing no such pattern is returned  >    as the SAME conses (EQ), because source positions are looked up by cons identity -- copying every let  >    body lost the file:line of every die / log site (193-logging-output printed `DIE ?:0`).
+
+
+---
+### DEFUN `%208-ANALYZE-LET`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  LET: the accumulator re-initialisation rewrite, then the existing let analyzer.  >    EXPR itself is passed through untouched (EQ) when nothing is rewritten.  >    Possible cleanup: a first line in analyze-let-with-tile-explosion.
+
+
+---
+### DEFVAR `*TCGEN05-RING-DIMS*`
+
+  > Endeavour 208.  tcgen05 accumulator RING record type -> (M N ELEM RING-COUNT).
+
+
+---
+### DEFUN `%ENSURE-TCGEN05-RING-TYPE`
+- **Args**: `(M N ELEM COUNT)`
+
+  > Endeavour 208.  Mint (once) the record naming a RING of COUNT tensor-memory accumulators: one uint  >    field, COLUMN, the first column of slot 0.  Slot i starts at COLUMN + i*N.
+
+
+---
+### DEFUN `%TCGEN05-RING-TYPE-P`
+- **Args**: `(TYPE-NAME)`
+
+  > Endeavour 208.  T if TYPE-NAME is a minted tcgen05 accumulator ring type.
+
+
+---
+### DEFUN `%208-ASSIGN-COLUMNS`
+- **Args**: `(CONTEXT LOCATION NCOLS FORM-NAME)`
+
+  > Endeavour 208.  The first tensor-memory column of the binding at LOCATION, assigned on first sight  >    (NCOLS columns); refused when the kernel's total passes 512 (D-208-4).
+
+
+---
+### DEFUN `%208-ANALYZE-RING-GET`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (ring-get RING i) on a tcgen05 accumulator ring -> accumulator i, FRESH, at column  >    COLUMN + i*N.  Every other ring goes to analyze-ring-get-expression unchanged.  >    Possible cleanup: a first clause in analyze-ring-get-expression.
+
+
+---
+### DEFUN `%208-SOURCE-TYPE`
+- **Args**: `(SRC ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  The type of a store source SRC when it is a symbol or a (ring-get ..) form, else  >    NIL.  Only used to spot a tcgen05 accumulator; anything that fails to analyse here is left to the  >    original analyzer.
+
+
+---
+### DEFUN `%208-ANALYZE-TMA-STORE`
+- **Args**: `(EXPR SRC CONVERT ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (store-tile-at (to-bfloat16 D) C (ROW COL) :via :tma) for a tcgen05 accumulator D:  >    the semantic-tcgen05-op :tma-store node.  Pass 1 (%199-scan-register-tma-store) already registered  >    C's store descriptor (16 x 64 boxes, SWIZZLE_128B) and the function's staging buffer; the rules are  >    199's -- a 16-bit conversion, N a multiple of 64, C a kernel tensor of that element, a compile-time  >    local size -- plus the warpgroup rule (D-208-6).
+
+
+---
+### DEFUN `%208-ACC-ELEM`
+- **Args**: `(ELEM FORM-NAME LOCATION)`
+
+  > Endeavour 208 phase 3.  The canonical element type of a tcgen05 accumulator.  Accepted: float (an  >    f32 accumulator, for 16-bit and tf32 operands), or a 32-bit integer -- int, uint, a type derived  >    from one, or (accum Q) -- for kind::i8's s32 accumulator.  Anything else is refused, naming  >    FORM-NAME.
+
+
+---
+### DEFUN `%ENSURE-TCGEN05-ROW-TYPE-S32`
+
+  > Endeavour 208 phase 3.  The s32 twin of TCGEN05-ROW32-F32: 32 int fields, the 32 consecutive  >    columns of the calling thread's own tensor-memory lane, for an integer accumulator.
+
+
+---
+### DEFUN `%208-ACC-INT-P`
+- **Args**: `(ACC-TYPE)`
+
+  > Endeavour 208 phase 3.  T when ACC-TYPE (a minted tcgen05 accumulator record) holds s32.
+
+
+---
+### DEFUN `ANALYZE-%TCGEN05-LD`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (%tcgen05-ld D CHUNK) -> the 32 columns [32*CHUNK, 32*CHUNK+32) of the calling  >    thread's accumulator row, as a TCGEN05-ROW32-F32 record (tcgen05.ld.32x32b.x32 + wait::ld).  >    Phase 3: an s32 accumulator reads into TCGEN05-ROW32-S32 instead -- the same instruction, the  >    32-bit cells taken as int.
+
+
+---
+### DEFUN `ANALYZE-MAKE-TCGEN05-ACCUMULATOR`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (make-tcgen05-accumulator float (M N) 0.0) -> a tensor-memory accumulator.  >    Phase 3: (make-tcgen05-accumulator int (M N) 0), or (accum Q) for a def-qint Q, is an s32  >    accumulator for kind::i8; it also takes N columns (one 32-bit cell per element).  >    It must initialise a let binding: its columns are assigned per binding SITE, N columns for a float  >    accumulator, and the kernel's total may not exceed the 512 a CTA has (D-208-4).  The init must  >    be zero (D-208-5).  `(set! D (make-tcgen05-accumulator ..))` re-initialises D in place: the let  >    pre-pass rewrites it to (%tcgen05-reset D), which keeps D's columns and marks it FRESH.
+
+
+---
+### DEFUN `ANALYZE-MAKE-TCGEN05-ACCUMULATOR-RING`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (make-tcgen05-accumulator-ring float (M N) :ring-count R) -> R accumulators in  >    R*N consecutive tensor-memory columns.  (ring-get RING i) is accumulator i, FRESH: the first MMA  >    into it overwrites.  Two slots let the epilogue drain tile t while the MMAs of tile t+1 run.  >    Phase 3: an integer element (int, (accum Q)) makes s32 slots, as for make-tcgen05-accumulator.
+
+
+---
+### DEFUN `%208-MMA-KIND`
+- **Args**: `(ELEM)`
+
+  > Endeavour 208.  For an operand element ELEM: (values KIND K-PER-INSTRUCTION FORMAT-CODE), the  >    tcgen05.mma .kind, the K one instruction covers (always 32 bytes), and the a/b_format code of the  >    instruction descriptor.  NIL for an element with no kind yet.  >   >    Phase 3: an 8-bit integer (char, uchar, or a type derived from one, e.g. a def-qint) is kind::i8,  >    K = 32, format INT8 = 1 / UINT8 = 0 (CUTLASS UMMA::S8Format).  A and B carry their own format,  >    so the four sign pairs are one instruction.
+
+
+---
+### DEFUN `%TCGEN05-STORE-REWRITE-ORIGIN`
+- **Args**: `(TILE DEST ROW-ORIGIN COL-ORIGIN N &OPTIONAL CONVERT ELEM)`
+
+  > Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row  >    m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the  >    row's 32 elements -- as 16 packed pairs (endeavour 197) when the first pair is adjacent and  >    aligned, else as scalars.  A fence::after_thread_sync opens the store (the accumulator was  >    completed by another thread's MMA) and a fence::before_thread_sync closes it (the next MMA into  >    these columns must not overtake the reads).  CONVERT as in %wgmma-store-rewrite-origin.  >    Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED  >    integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32  >    row record holds plain int, and the destination element holds exactly its own type.
+
+
+---
+### DEFUN `%208-ANALYZE-STORE-TILE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  store-tile: a tcgen05 accumulator source is stored by %tcgen05-store-rewrite-origin  >    at the tile-grid origin (BTY*M, BTX*N); anything else goes to analyze-store-tile-mma unchanged.  >    Possible cleanup: a clause in analyze-store-tile-mma.  >    Phase 3: passes the accumulator's element, for the derived-integer cast.
+
+
+---
+### DEFUN `%208-ANALYZE-STORE-TILE-AT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  store-tile-at: a tcgen05 accumulator source is stored at the absolute (ROW COL)  >    origin, directly or with :via :tma (%208-analyze-tma-store).  Anything else goes to  >    analyze-store-tile-at-mma.  Possible cleanup: a clause in analyze-store-tile-at-mma.  >    Phase 3: passes the accumulator's element, for the derived-integer cast.
+
+
+---
+### DEFUN `%208-BLOCK-INFO`
+- **Args**: `(ELEM)`
+
+  > Endeavour 208 phase 4.  When ELEM names a def-microfloat-block, its tcgen05 plist:  >      :name :base :scale :vec   the block (names as strings; :vec the block size in elements)  >      :kind        the tcgen05.mma kind, with its scale_vec, or NIL when no kind fits the block  >      :epb         codes per byte (2 for fp4, 1 for fp8)  >      :fmt :sfmt   the a/b_format and scale_format codes of the block-scaled instruction descriptor  >      :spi         scales per row one instruction consumes (4X 4, 2X 2, 1X 1)  >    NIL when ELEM is not a block.
+
+
+---
+### DEFUN `%208-BLOCK-STEP`
+- **Args**: `(INFO)`
+
+  > Endeavour 208 phase 4.  (values K-ELEMS SCALES-PER-ROW ATOMS-PER-STEP) of one tcgen05 call on block  >    INFO: K is one 128-byte swizzle atom of codes (256 fp4, 128 fp8); a row then has K/vec scales, which  >    is K/vec/4 512-byte scale atoms per 128 rows.
+
+
+---
+### DEFVAR `*208-SCALE-LAYOUTS*`
+
+  > Endeavour 208 phase 4.  Kernel name (string) -> list of (:scales S :of A :layout L), the kernel's  >    (scale-layout S :of A L) declarations, names as downcased strings.  Set when the kernel's source is  >    visited (before pass 1).
+
+
+---
+### DEFUN `%208-SYM=`
+- **Args**: `(X NAME)`
+
+  > Endeavour 208.  T when X is a symbol named NAME (any package).
+
+
+---
+### DEFUN `%208-RW-LIST`
+- **Args**: `(LIST TILES)`
+
+  > Endeavour 208 phase 4.  %208-rw over the elements of LIST; the SAME conses back when nothing changed  >    (source positions are keyed by cons identity).
+
+
+---
+### DEFUN `%208-TREE-HAS-BLOCK-SCRATCH-P`
+- **Args**: `(FORM)`
+
+  > Endeavour 208 phase 4.  T when FORM contains a make-scratch-matrix(-ring) of a microfloat block.  >    The cheap test that keeps every other kernel's source untouched (EQ).
+
+
+---
+### DEFUN `ANALYZE-%208-LOAD-SCALES`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208 phase 4.  (%208-load-scales S SRC SF (ROW-TILE K-TILE) BAR BLOCK ROWS): copy the scale  >    atoms of SRC's tile (ROW-TILE K-TILE) from the :blocked-128x4 vector S into the scales tile SF, on  >    BAR.  Emitted by the source rewrite in front of the codes load.  The atoms of one row block for one  >    K-step are contiguous: (rb * K/(vec*4) + kt * aps) * 512, aps*512 bytes; ROWS/128 row blocks.
+
+
+---
+### DEFUN `ANALYZE-TCGEN05-ACCUMULATE-VIA-TILE-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR])  >    -> (set! D (%tcgen05-mma D A B K [BAR])).  D += A.B over K, issued by one thread into tensor memory.  >   >    Without :on-complete it is SYNCHRONOUS (D-208-2): the issuing thread commits to a compiler-owned  >    mbarrier and every thread executing the form waits on it.  With :on-complete BAR it commits to BAR  >    and returns at once.  >   >    Operands: half / bfloat16 (kind::f16, K = 64) or float (kind::tf32, K = 32) -- either way one  >    128-byte swizzle atom of K, four instructions.  >    Phase 3: char / uchar (or types derived from them, e.g. def-qint) are kind::i8, K = 128, into an  >    s32 accumulator.  The signs of A and B are independent.  The element-family rule is 204's  >    (%check-mma-element-family); the qint-role rule is 207's, applied by %qint-mma-walk over the LET.  M = 128; A (M K) and B (N K) K-major in shared  >    memory as a :128b TMA load lays them down.  >   >    Endeavour 208 phase 4: analyze-tcgen05-accumulate-via-tile (below) wraps this; block  >    tiles go to the block-scaled path first.
+
+
+---
+### DEFUN `ANALYZE-TCGEN05-ACCUMULATE-VIA-TILE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR]).  >    Phase 4: A and B are block tiles (the source rewrite added :%block-a / :%sf-a / :%block-b / :%sf-b)  >    -> (set! D (%tcgen05-mma-bs D A B SF-A SF-B K BLOCK [BAR])).  Rules: the same block on both sides  >    (D-208-10); an f32 accumulator; M = 128, N 128 or 256 (B's scales come in 128-row atoms); K one  >    128-byte atom of codes (D-208-14).  Anything else goes to the earlier analyzer.
+
+
+---
+### DEFUN `ANALYZE-%TCGEN05-MMA-BS`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208 phase 4.  (%tcgen05-mma-bs D A B SF-A SF-B K BLOCK [BAR]) -> the :mma node with :block.  >    The site gets its own tensor-memory scale columns: A's atoms-per-step x 4, then B's x 4 per 128-row  >    block (they count toward the 512, D-208-13).  Without BAR it is synchronous, as %tcgen05-mma.
+
+
+---
+### DEFUN `%208-PARAM-NAMES`
+- **Args**: `(PARAMS)`
+
+  > Endeavour 208 phase 4.  The names the def-function parameter form PARAMS answers to, downcased:  >    every symbol in it, each '_'-prefix of one (A_BYTE_SIZE -> a, a_byte, a_byte_size), and the  >    same with '-' for '_'.
+
+
+---
+### DEFUN `%208-BLOCK-BINDING`
+- **Args**: `(B)`
+
+  > Endeavour 208 phase 4.  When the let binding B is (X (make-scratch-matrix BLOCK (R K))) or the -ring  >    form, with BLOCK a def-microfloat-block: (values CODES-BINDING SCALES-BINDING ENTRY).  >      CODES-BINDING   (X (make-scratch-matrix uchar (R K/epb) ..)) -- the packed codes, K-major  >      SCALES-BINDING  (X--SCALES (make-scratch-matrix uchar (Q 512) ..)) -- R/128 x atoms-per-step  >                      512-byte scale atoms, row block j's atoms at j*atoms-per-step, and Q that count  >                      rounded up to EVEN: the hoist packs scratch tiles back to back, and a 512-byte  >                      tile would leave the next 128-byte-swizzled codes tile off its 1024-byte alignment  >      ENTRY           (X :info INFO :rows R :cols K :sf X--SCALES)  >    NIL for any other binding.  R must be a multiple of 128 (a scale atom covers 128 rows) and K one  >    128-byte atom of codes (D-208-14).
+
+
+---
+### DEFVAR `*208-RW-KERNEL*`
+
+  > Endeavour 208 phase 4.  The kernel name (downcased string) whose source %208-rw is rewriting, for  >    its scale-layout declarations.
+
+
+---
+### DEFUN `%208-ACC-BINDING-ELEM`
+- **Args**: `(B)`
+
+  > Endeavour 208 phase 4.  When the let binding B makes a tcgen05 accumulator (or ring): (values SYM  >    ELEM), the accumulator's element as written.  NIL otherwise.
+
+
+---
+### DEFUN `%208-CHECK-BLOCK-ACCUMULATE`
+- **Args**: `(FORM EA EB TILES)`
+
+  > Endeavour 208 phase 4.  Rewrite-time rules of a block-scaled (tcgen05-accumulate-via-tile SHAPE D A B  >    ..) whose A and B are block tiles EA / EB: the same block, M = 128, N 128 or 256, K one atom of  >    codes, and an f32 accumulator when D's binding is in TILES (as (D :acc ELEM)).
+
+
+---
+### DEFUN `%208-PARSE-SCALE-LAYOUTS`
+- **Args**: `(NAME PARAMS BODY)`
+
+  > Endeavour 208 phase 4.  Records kernel NAME's (scale-layout S :of A :blocked-128x4) declarations from  >    the declare forms at the head of BODY in *208-scale-layouts*, refusing a malformed one, an unknown  >    layout, or a name that is not one of PARAMS.  Q1 (b): the kernel declares the layout; the host  >    provides it, and the generated hoist matches it.
+
+
+---
+### DEFUN `%208-RW`
+- **Args**: `(FORM TILES)`
+
+  > Endeavour 208 phase 4.  The block-tile source rewrite of FORM, TILES the block tiles in scope (see  >    the section header).  EQ-preserving.  TILES also carries the tcgen05 accumulator bindings, as  >    (D :acc ELEM), and the block rules whose inputs are literal are checked here, before pass 1.
+
+
+---
+### DEFUN `%208-REWRITE-BLOCK-KERNEL`
+- **Args**: `(FORM)`
+
+  > Endeavour 208 phase 4.  A def-function FORM with its scale-layout declarations recorded and, when it  >    holds block scratch tiles, its body rewritten (section header).  Any other FORM comes back EQ.
+
+
+---
+### DEFUN `%208-BLOCK-TILE-REF`
+- **Args**: `(FORM TILES)`
+
+  > Endeavour 208 phase 4.  When FORM is a block tile X or (ring-get X I) of TILES: (values ENTRY SF-FORM),  >    SF-FORM naming the matching scales tile (X--SCALES, or (ring-get X--SCALES I)).  Entries without  >    :info (accumulator bindings) are not block tiles.
+
+
+---
 ## File: `C:\Users\cperk\Documents\crisp-man\src\package.lisp`
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\parameters.lisp`
@@ -14361,6 +15136,12 @@ Generated on 2026-11-05T05:36:11.630882Z
 ### DEFSTRUCT `SEMANTIC-WGMMA-TMA-STORE`
 
   > Endeavour 199.  (store-tile-at (to-half D) C (ROW COL) :via :tma): the m64xN wgmma accumulator D,  >    converted to 16 bits, written to C at (ROW COL) through staging shared memory and TMA stores.
+
+
+---
+### DEFSTRUCT `SEMANTIC-TCGEN05-OP`
+
+  > Endeavour 208.  One tcgen05 operation.  OP is :mma, :commit, :ld, :fence-after or :fence-before.  >    ARGS are the child nodes; PLIST holds the compile-time facts the lowering needs (shape, element,  >    issuing warp, the synchronous site's mbarrier index, the tensor-memory column chunk).
 
 
 ---

@@ -9951,17 +9951,20 @@ Blocks cannot be added or subtracted. `+` and `-` belong to the accumulator, whi
 `max` and `min` are not defined on codes either, because codes from different blocks have different
 scales and comparing them means nothing. Decode first.
 
-#### Multiplying blocks 📝
+#### Multiplying blocks ✅ (Blackwell)
+
+A block multiply is a matrix multiply.  On Blackwell (`sm_100a`), `tcgen05-accumulate-via-tile` on two
+tiles of the block type is the native block-scaled MMA: NVFP4, MXFP4 and MXFP8, with the scales in a
+declared layout (see "Blackwell tensor cores", block-scaled microfloats).
 
 ```lisp
 (*! MFB MFB) => A
 ```
 
-is reserved for the native block-scaled multiply (Blackwell `tcgen05.mma`), which needs tensor memory
-and is a later endeavour. On every other target it is refused, with a message pointing at
-`dequantize-from`. The `mfb-mult-add` macro of the earlier design is gone for now too.
+on scalars stays refused (D-208-16), with a message pointing at `dequantize-from`.  The `mfb-mult-add`
+macro of the earlier design is gone.
 
-Until then the path on H100 and BMG is to `dequantize-from` into `half` or `float` and use the existing
+On H100 and BMG the path is to `dequantize-from` into `half` or `float` and use the existing
 MMA forms. That is a conversion, not an emulation. As with quantized integers, the compiler will not
 silently emulate a block multiply.
 
@@ -13577,8 +13580,6 @@ scales are a separate vector, in the layout the kernel declares:
   multiply copies them into tensor memory (`tcgen05.cp`) into columns it assigns, which count toward
   the 512.  Then it issues the block-scaled MMAs.
 - fp4's even element is the low nibble (D-206-3), and the hardware agrees.
-- **A ring's index must walk the slots in order across tiles:** steps-per-tile a multiple of the ring
-  count (BUG 156).
 
 **`matrix-multiply-tile-stride`** takes a tcgen05 accumulator as its C-tile, bound in `:let` or outside.
 Its tile shape is the accumulator's (M N), and the per-tile reset is a re-initialisation, which costs

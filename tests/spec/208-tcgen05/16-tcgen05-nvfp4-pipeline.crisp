@@ -4,13 +4,13 @@
 ;; producer's (load-tile .. :scales ..) fills both on the slot's barrier (the scale copy's expect_tx comes
 ;; first, from the same elected lane).  The MMA warp copies each step's scales into tensor memory and
 ;; frees the slot with :on-complete, as for 16-bit.  One K-step is 256 fp4 codes (128 bytes).  A slot is
-;; 16 + 2 KB of A and 32 + 4 KB of B, so 4 slots take 216 KB.  The accumulator takes 256 columns and the
+;; 16 + 2 KB of A and 32 + 4 KB of B, so 3 slots take 162 KB.  The accumulator takes 256 columns and the
 ;; scales 48 more, so the kernel allocates 512.
 ;;
-;; FOUR slots, not three: 4 K-steps per tile must be a multiple of the ring count.  The ring await's
-;; parity comes from its own visit count (lap = visit div ring-count), which assumes slot = visit mod
-;; ring-count; (mod grid-k R) restarts every tile, so with 3 slots the second tile waited on the wrong
-;; phase and the kernel faulted on a B200 ("unspecified launch failure").  See bugs.md, BUG 156.
+;; THREE slots for four K-steps, so the slot sequence restarts mid-ring every tile (0 1 2 0 | 0 1 2 0).
+;; This is BUG 156's regression: the ring await took its parity from a per-site visit count, which
+;; assumed slot = visit mod ring-count, and this kernel faulted on a B200 ("unspecified launch failure").
+;; The await now keeps one phase bit per slot; MMA_CORRECT on a B200, 2026-11-06.
 ;;
 ;; 256 x 512 x 1024: 4 output tiles of 128 x 256 over 2 CTAs, 4 K-steps per tile.
 ;;
@@ -34,12 +34,12 @@
            (global-size :set-to 384) (local-size :set-to 192)       ; epilogue wg + producer + mma
            (scale-layout SA :of A :blocked-128x4)
            (scale-layout SB :of B :blocked-128x4))
-  (let ((A-ring    (make-scratch-matrix-ring nvfp4 (128 256) :ring-count 4))
-        (B-ring    (make-scratch-matrix-ring nvfp4 (256 256) :ring-count 4))
+  (let ((A-ring    (make-scratch-matrix-ring nvfp4 (128 256) :ring-count 3))
+        (B-ring    (make-scratch-matrix-ring nvfp4 (256 256) :ring-count 3))
         (D         (make-tcgen05-accumulator float (128 256) 0.0))
         (K         (inner-dimension A B))
-        (empty     (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 1 :initial-state :signaled))
-        (full      (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 2 :initial-state :waiting))
+        (empty     (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 1 :initial-state :signaled))
+        (full      (make-async-barrier-ring :ring-count 3 :mode :block :arrivals 2 :initial-state :waiting))
         (acc-full  (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 1 :initial-state :waiting))
         (acc-empty (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 4 :initial-state :signaled)))
     (tile-stride C (128 256) (grid-y grid-x)
@@ -50,7 +50,7 @@
           (signal (ring-get acc-empty 0)))
         (:producer
           (dotimes (grid-k (/ (to-ulong K) (to-ulong 256)))
-            (let ((slot (mod grid-k (to-ulong 4))))
+            (let ((slot (mod grid-k (to-ulong 3))))
               (await (ring-get empty slot))
               (load-tile A (ring-get A-ring slot) (grid-y grid-k) :scales SA :barrier (ring-get full slot) :swizzle :128b)
               (load-tile B (ring-get B-ring slot) (grid-x grid-k) :scales SB :barrier (ring-get full slot) :swizzle :128b))))
@@ -58,7 +58,7 @@
           (await (ring-get acc-empty 0))
           (set! D (make-tcgen05-accumulator float (128 256) 0.0))
           (dotimes (grid-k (/ (to-ulong K) (to-ulong 256)))
-            (let ((slot (mod grid-k (to-ulong 4))))
+            (let ((slot (mod grid-k (to-ulong 3))))
               (await (ring-get full slot))
               (tcgen05-accumulate-via-tile (128 256 256) D (ring-get A-ring slot) (ring-get B-ring slot)
                                            :swizzle :128b :on-complete (ring-get empty slot))))

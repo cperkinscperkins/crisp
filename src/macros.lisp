@@ -2510,10 +2510,12 @@ processes float inputs — integer tensor inputs contribute zero gradient."
 ;;;; See tests/spec/206-microfloat-blocks/microfloat-blocks.md.
 ;;;; ----------------------------------------------------------------------
 
-(defun register-microfloat-block (name base scale accum)
+(defun register-microfloat-block (name base scale accum &optional shape)
   "Endeavour 206.  Records NAME as a microfloat block, which is what (to-float w i), (~ w i), (accum T),
-   (base T) and (scale T) dispatch on."
-  (setf (gethash (symbol-name name) *microfloat-blocks*) (list :base base :scale scale :accum accum)))
+   (base T) and (scale T) dispatch on.
+   Endeavour 208: SHAPE, the block size in elements, is recorded as :shape (the block-scaled
+   tcgen05 kinds dispatch on it)."
+  (setf (gethash (symbol-name name) *microfloat-blocks*) (append (list :base base :scale scale :accum accum) (and shape (list :shape shape)))))
 
 (defun microfloat-block-p (type)
   "Endeavour 206.  The block's plist when TYPE names a microfloat block, else NIL."
@@ -2687,7 +2689,7 @@ processes float inputs — integer tensor inputs contribute zero gradient."
       (funcall fail ":shape must be one positive block size in elements, as in (16), got ~s." shape))
     (when (and (= (getf (cdr bfmt) :bits) 4) (oddp n))
       (funcall fail "an fp4 block must have an even size, because two codes share a byte; got ~a." n))
-    (register-microfloat-block name base scale accum)
+    (register-microfloat-block name base scale accum n)
     (setf (macro-function (intern (format nil "FAKE-QUANT-~a" nm) :crisp-language))
           (lambda (form env)
             (declare (ignore env))

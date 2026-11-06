@@ -4608,7 +4608,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         TO TRY: run the suite in halves (--filter) to see if it needs the long process; watch the
         process's memory; check CI (Linux), which has not been seen to crash.
 
-[ ] 156 A RING AWAIT WAITS ON THE WRONG PHASE WHEN A TILE'S STEPS ARE NOT A MULTIPLE OF THE RING COUNT.
+[x] 156 FIXED (endeavour 208, 2026-11-06) -- A RING AWAIT WAITS ON THE WRONG PHASE WHEN A TILE'S STEPS ARE NOT A MULTIPLE OF THE RING COUNT.
         (await (ring-get BAR slot)) takes its parity from its own per-site visit counter:
         lap = visit div ring-count (codegen.lisp, generate-node-ir semantic-nvvm-tma-wait).  That assumes
         the site walks the slots in order, slot = visit mod ring-count.  Kernels index the ring with
@@ -4628,3 +4628,11 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         per-slot lap counter (needs the slot value at the await, which ring-get has); (b) refuse at
         compile time when steps-per-tile is a compile-time constant that R does not divide; (c) document
         that a ring's index must be a running count, not a per-tile one.
+        FIX 2026-11-06 (theory (a)): the await keeps ONE PHASE BIT PER SLOT in an entry-block i32 --
+        phase = init XOR ((bits >> slot) & 1), then the slot's bit flips -- which is the mbarrier's own
+        state whatever order the slots are visited in.  The slot is (address - ring base) / 8; the
+        analyzer passes the ring base in the node's :phase; a ring over 32 slots is refused.  For slots
+        visited in order the bit equals the old lap mod 2, so working kernels are unchanged (IR corpus:
+        only the 13 warp-specialized ring kernels moved).  On a B200: spec 16 back on 3 slots (now its
+        regression), spec 04 on 3 slots, and the three faulting probes are all MMA_CORRECT.  The H100
+        wgmma kernels share the await and are checked in the benchmarking pass.

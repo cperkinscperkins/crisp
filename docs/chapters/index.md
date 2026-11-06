@@ -360,6 +360,7 @@
 - [The Optimal Intel Pipelined MMA](59_optimizing_intel_mma/03_the_optimal_intel_pipelined_mma.md)
 - [Why this is the optimal shape for Intel](59_optimizing_intel_mma/04_why_this_is_the_optimal_shape_for_intel.md)
 - [Hopper warpgroup MMA — `make-wgmma-accumulator` ✅ + `wgmma-accumulate-via-tile` ✅](59_optimizing_intel_mma/05_hopper_warpgroup_mma_make_wgmma_accumulator_wgmma_accumulate_via_tile.md)
+- [Blackwell tensor cores — `make-tcgen05-accumulator` ✅ + `tcgen05-accumulate-via-tile` ✅](59_optimizing_intel_mma/06_blackwell_tensor_cores_make_tcgen05_accumulator_tcgen05_accumulate_via_tile.md)
 
 ## Deferred: cluster-scale topology (`def-topology` / `def-orchestration`)
 

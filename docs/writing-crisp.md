@@ -349,8 +349,6 @@ under the 227 KB limit.
     document has the layout.
 - **`matrix-multiply-tile-stride`** takes a tcgen05 accumulator as its C-tile, and resets it per tile
   for you.
-- **A ring's steps per tile must be a multiple of its ring count** (BUG 156).  The await's phase counts
-  visits, not slots.
 - **Not built yet:** M = 64, `cta_group::2`.  It is forward-only.
 
 ---

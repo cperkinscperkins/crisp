@@ -3100,7 +3100,8 @@
 
 (defun %qint-mma-binding-elems (bindings)
   "Alist (SYM . SOURCE-ELEM) for BINDINGS.  A tile / scratch / wgmma-accumulator constructor gives
-   its element type; any other binding maps to NIL, so it SHADOWS an outer name as unknown."
+   its element type; any other binding maps to NIL, so it SHADOWS an outer name as unknown.
+   Endeavour 208: tcgen05 accumulators and accumulator rings too."
   (let ((out '()))
     (dolist (b bindings (nreverse out))
       (cond ((and (consp b) (symbolp (first b)))
@@ -3110,7 +3111,8 @@
                                 (member (symbol-name (first init))
                                         '("MAKE-REGISTER-TILE" "MAKE-REGISTER-TILE-RING"
                                           "MAKE-SCRATCH-MATRIX" "MAKE-SCRATCH-MATRIX-RING"
-                                          "MAKE-WGMMA-ACCUMULATOR")
+                                          "MAKE-WGMMA-ACCUMULATOR"
+                                          "MAKE-TCGEN05-ACCUMULATOR" "MAKE-TCGEN05-ACCUMULATOR-RING")
                                         :test #'string=)
                                 (%canonical-elem (second init))))
                      out)))
@@ -3144,7 +3146,8 @@
 (defun %qint-mma-walk (form lex env location)
   "Walks FORM applying %check-mma-qint-roles to every mma-accumulate-via-tile, wgmma-accumulate and
    wgmma-accumulate-via-tile, extending LEX through nested LETs.  A check runs only when A, B and C
-   are all known."
+   are all known.
+   Endeavour 208: tcgen05-accumulate-via-tile too (D A B at the same positions)."
   (when (consp form)
     (let* ((head (first form))
            (hn (and (symbolp head) (symbol-name head))))
@@ -3160,7 +3163,8 @@
            (dolist (b (second form))
              (when (consp b) (walk-all (cdr b) lex)))
            (walk-all (cddr form) (append (%qint-mma-binding-elems (second form)) lex)))
-          ((and hn (member hn '("MMA-ACCUMULATE-VIA-TILE" "WGMMA-ACCUMULATE-VIA-TILE") :test #'string=)
+          ((and hn (member hn '("MMA-ACCUMULATE-VIA-TILE" "WGMMA-ACCUMULATE-VIA-TILE"
+                                  "TCGEN05-ACCUMULATE-VIA-TILE") :test #'string=)
                 (>= (length form) 5))
            (check (nth 2 form) (nth 3 form) (nth 4 form))
            (walk-all (cdr form) lex))
@@ -3376,6 +3380,10 @@
    Endeavor 150: adds MAP-ELEMENTS! and its backward twin %MAP-ELEMENTS-VJP!.
    Endeavour 154: adds STORE-TILE-AT, so a wgmma accumulator can be stored at an absolute origin
    (two cooperating consumer warpgroups); non-wgmma sources delegate unchanged."
+  ;; Endeavour 208: tensor-memory bookkeeping is per compile.
+  (clrhash *tcgen05-columns*)
+  (clrhash *tcgen05-sync-sites*)
+  (clrhash *tcgen05-kernels*)
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
     (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
@@ -3394,10 +3402,25 @@
                          (cons "MAKE-WGMMA-ACCUMULATOR"    #'analyze-make-wgmma-accumulator)
                          (cons "WGMMA-ACCUMULATE"          #'analyze-wgmma-accumulate)
                          (cons "WGMMA-ACCUMULATE-VIA-TILE" #'analyze-wgmma-accumulate-via-tile)
-                         (cons "STORE-TILE"              #'analyze-store-tile-mma)
-                         (cons "STORE-TILE-AT"           #'analyze-store-tile-at-mma)
-                         (cons "LET"                     #'analyze-let-with-tile-explosion)
-                         (cons "LET*"                    #'analyze-let-with-tile-explosion)))
+                         ;; Endeavour 208: tcgen05.  The store / let entries wrap the originals.
+                         (cons "MAKE-TCGEN05-ACCUMULATOR"    #'analyze-make-tcgen05-accumulator)
+                         (cons "TCGEN05-ACCUMULATE-VIA-TILE" #'analyze-tcgen05-accumulate-via-tile)
+                         (cons "TCGEN05-COMMIT"              #'analyze-tcgen05-commit)
+                         (cons "%208-LOAD-SCALES"            #'analyze-%208-load-scales)
+                         (cons "%TCGEN05-MMA-BS"             #'analyze-%tcgen05-mma-bs)
+                         (cons "%TCGEN05-MMA"                #'analyze-%tcgen05-mma)
+                         (cons "%TCGEN05-RESET"              #'analyze-%tcgen05-reset)
+                         (cons "%TCGEN05-LD"                 #'analyze-%tcgen05-ld)
+                         (cons "%TCGEN05-FENCE-AFTER"        #'analyze-%tcgen05-fence)
+                         (cons "%TCGEN05-FENCE-BEFORE"       #'analyze-%tcgen05-fence)
+                         (cons "%IN-WARP-ROLE"               #'analyze-%in-warp-role)
+                         ;; Endeavour 208 phase 2: the accumulator ring.  RING-GET wraps the struct analyzer's.
+                         (cons "MAKE-TCGEN05-ACCUMULATOR-RING" #'analyze-make-tcgen05-accumulator-ring)
+                         (cons "RING-GET"                    #'%208-analyze-ring-get)
+                         (cons "STORE-TILE"              #'%208-analyze-store-tile)
+                         (cons "STORE-TILE-AT"           #'%208-analyze-store-tile-at)
+                         (cons "LET"                     #'%208-analyze-let)
+                         (cons "LET*"                    #'%208-analyze-let)))
       (let ((sym-cl (intern (car entry) cl-pkg))
             (sym-cc (intern (car entry) cc-pkg)))
         (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
@@ -5141,3 +5164,1081 @@
     (cl:if (cl:null txt)
         (cl:progn (format t "  (llvm-spirv unavailable -- prefetch-unpartitioned check skipped)~%") cl:t)
         (%validate-prefetch-shape-list (%spv-prefetch-shapes txt) 1 "158/02 unpartitioned"))))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 208 -- tcgen05 (Blackwell tensor cores): accumulators in tensor memory, the synchronous / pipelined / ring forms, :via :tma, tf32, int8 + qint, block-scaled microfloats
+;;;; See tests/spec/208-tcgen05/tcgen05.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *tcgen05-acc-dims* (make-hash-table :test 'eq)
+  "Endeavour 208.  tcgen05 accumulator record type -> (M N ELEM).")
+
+(defvar *tcgen05-columns* (make-hash-table :test 'equal)
+  "Endeavour 208.  (KERNEL . LOCATION) of a make-tcgen05-accumulator let binding -> its first
+   tensor-memory column.  Keyed by SITE, so re-analysing the same binding reuses its columns and two
+   bindings that happen to share a name do not.")
+
+(defvar *tcgen05-sync-sites* (make-hash-table :test 'equal)
+  "Endeavour 208.  (KERNEL . LOCATION) of a synchronous tcgen05 accumulate -> its mbarrier index.")
+
+(defvar *tcgen05-kernels* (make-hash-table :test 'equal)
+  "Endeavour 208.  KERNEL (upper-case string) -> plist (:columns C :sync-sites S): the tensor-memory
+   columns its accumulators occupy and how many synchronous accumulate sites it has.  The kernel
+   prologue and epilogue (generate-function-body) read it to allocate, initialise and free.")
+
+(defvar *tcgen05-role-warps* nil
+  "Endeavour 208.  (FIRST-WARP . COUNT) of the with-warp-specialization role being analysed, NIL
+   outside any role.  The issuing thread of an MMA is lane 0 of FIRST-WARP (warp 0 outside a role),
+   and the epilogue rule reads COUNT.")
+
+(defun %208-kernel-key (context)
+  "Endeavour 208.  The function being compiled, as an upper-case string, or NIL."
+  (let ((f (and context (compiler-context-current-compiling-function context))))
+    (and f (string-upcase (princ-to-string f)))))
+
+(defun %208-kernel-info (key)
+  "Endeavour 208.  KEY's entry in *tcgen05-kernels*, created empty on first use."
+  (or (gethash key *tcgen05-kernels*)
+      (setf (gethash key *tcgen05-kernels*) (list :columns 0 :sync-sites 0))))
+
+(defun %tcgen05-arch-ok-p ()
+  "Endeavour 208.  T when the target is PTX for an architecture with tcgen05: the sm_100a family.
+   Plain sm_100 is NOT enough -- the tcgen05 instructions are architecture-specific, and PTX built
+   for .target sm_100 refuses them."
+  (and (eq *target-backend* :ptx)
+       (member (string-downcase (ptx-compute-capability-string))
+               '("sm_100a" "sm_100f" "sm_101a" "sm_101f" "sm_103a" "sm_103f" "sm_110a" "sm_110f")
+               :test #'string=)
+       t))
+
+(defun %tcgen05-require-arch (form-name location)
+  "Endeavour 208.  Refuse FORM-NAME unless the target has tcgen05 (D-208-1)."
+  (unless (%tcgen05-arch-ok-p)
+    (error 'crisp-compiler-error
+           :message (format nil "~a: tcgen05 is the Blackwell datacenter tensor core and needs an architecture-specific target: --ir-target=ptx --ir-target-arch=sm_100a (B200 / GB200).  The target here is ~a.  On sm_90a use make-wgmma-accumulator / wgmma-accumulate-via-tile; elsewhere make-register-tile / mma-accumulate-via-tile."
+                            form-name
+                            (if (eq *target-backend* :ptx) (ptx-compute-capability-string) (string-downcase (princ-to-string *target-backend*))))
+           :source-location location)))
+
+(defun %tcgen05-acc-type-name (m n elem)
+  "Endeavour 208.  The minted tcgen05 accumulator record name."
+  (intern (format nil "TCGEN05-ACC-~a-~dX~d" (if (%elem-integer-p elem) "S32" "F32") m n)
+          (find-package :crisp.compiler)))
+
+(defun %tcgen05-acc-type-p (type-name)
+  "Endeavour 208.  T if TYPE-NAME is a minted tcgen05 accumulator record type."
+  (and type-name (symbolp type-name) (nth-value 1 (gethash type-name *tcgen05-acc-dims*)) t))
+
+(defun %ensure-tcgen05-acc-type (m n elem)
+  "Endeavour 208.  Mint (once) the record naming a tensor-memory accumulator.  It holds none of the
+   M x N values -- those live in tensor memory -- only two uint fields:
+     COLUMN  the accumulator's first column, relative to the kernel's tensor-memory allocation;
+     FRESH   1 until the first MMA after (re)initialisation.  That MMA OVERWRITES D (the ISA's
+             enable-input-d predicate is false), so tensor memory never needs zeroing (D-208-5)."
+  (let ((name (%tcgen05-acc-type-name m n elem)))
+    (unless (gethash name *crisp-structs*)
+      (register-struct-definition
+       name
+       (list (list (intern "COLUMN" (find-package :crisp.compiler)) 'uint)
+             (list (intern "FRESH" (find-package :crisp.compiler)) 'uint))
+       :record))
+    (setf (gethash name *tcgen05-acc-dims*) (list m n elem))
+    name))
+
+(defun %ensure-tcgen05-row-type ()
+  "Endeavour 208.  Mint (once) the record one tcgen05.ld.32x32b.x32 fills: 32 float fields, the
+   32 consecutive columns of the calling thread's own tensor-memory lane (its accumulator row)."
+  (let ((name (intern "TCGEN05-ROW32-F32" (find-package :crisp.compiler))))
+    (unless (gethash name *crisp-structs*)
+      (register-struct-definition
+       name
+       (loop for i below 32 collect (list (intern (format nil "R~d" i) (find-package :crisp.compiler)) 'float))
+       :record))
+    name))
+
+(defun %tcgen05-check-acc-shape (m n location)
+  "Endeavour 208, phase 1.  M = 128 (the full 128-lane datapath, 'Layout D'); N a multiple of 16 in
+   [16, 256] -- the PTX table allows steps of 8 at M = 128 for kind::f16, but CUTLASS's tf32 atom asks
+   16, and 16 is valid under both until metal says otherwise."
+  (unless (eql m 128)
+    (error 'crisp-compiler-error
+           :message (format nil "tcgen05: M must be 128, got ~a.  A 128-row accumulator uses all 128 tensor-memory lanes, one per row; M = 64 uses half the datapath and is not supported yet." m)
+           :source-location location))
+  (unless (and (integerp n) (<= 16 n 256) (zerop (mod n 16)))
+    (error 'crisp-compiler-error
+           :message (format nil "tcgen05: N must be a multiple of 16 in [16, 256], got ~a." n)
+           :source-location location)))
+
+(defun analyze-%tcgen05-reset (expr env context location)
+  "Endeavour 208.  (%tcgen05-reset D) -> D with its columns kept and FRESH set: the re-initialisation
+   `(set! D (make-tcgen05-accumulator ..))` is rewritten to (set! D (%tcgen05-reset D)) by the let
+   pre-pass, because a set!'s value is analysed without knowing its target."
+  (let* ((d (second expr))
+         (d-node (analyze-expression d env context (append location '(1))))
+         (d-type (semantic-node-type d-node))
+         (to-uint (intern "TO-UINT" (find-package :crisp-language))))
+    (unless (%tcgen05-acc-type-p d-type)
+      (error 'crisp-compiler-error
+             :message (format nil "(set! ~a (make-tcgen05-accumulator ..)): ~a is not a tcgen05 accumulator (its type is ~a).  Bind it with make-tcgen05-accumulator in a let first." d d d-type)
+             :source-location location))
+    (analyze-expression `(%construct-struct ,d-type (%extract-struct-member ,d 0) (,to-uint 1))
+                        env context location)))
+
+(defun analyze-%in-warp-role (expr env context location)
+  "Endeavour 208.  (%in-warp-role FIRST COUNT BODY..) -- with-warp-specialization's role body,
+   analysed as (progn BODY..) with *tcgen05-role-warps* bound to (FIRST . COUNT).  The node is the
+   progn's, so the IR is unchanged; only the tcgen05 forms read the binding."
+  (destructuring-bind (first count &rest body) (cdr expr)
+    (let ((*tcgen05-role-warps* (cons first count)))
+      (analyze-expression (cons (intern "PROGN" (find-package :crisp-language)) body)
+                          env context location))))
+
+(defun %tcgen05-16bit-elem-p (elem)
+  "Endeavour 208.  T for half / bfloat16."
+  (and elem (symbolp elem) (member (symbol-name elem) '("HALF" "BFLOAT16") :test #'string=) t))
+
+(defun %208-issue-warp ()
+  "Endeavour 208.  The warp whose lane 0 issues tcgen05.mma / tcgen05.commit: the first warp of the
+   enclosing with-warp-specialization role, else warp 0 (D-208-7).  MMA and commit must come from
+   the SAME thread -- a commit tracks only the MMAs its own thread issued -- and this rule gives both
+   the same one."
+  (if *tcgen05-role-warps* (car *tcgen05-role-warps*) 0))
+
+(defun analyze-%tcgen05-mma (expr env context location)
+  "Endeavour 208.  (%tcgen05-mma D A B K [BAR]) -> the semantic-tcgen05-op :mma node, typed as D.
+   A / B become (~ tile 0 0) so codegen's third value is the shared-memory base (as for wgmma).  A
+   site without BAR is synchronous and gets its own mbarrier index in this kernel."
+  (destructuring-bind (d a b k &optional bar) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (d-type (semantic-node-type d-node))
+           (a-rank (or (%get-tensor-arity (semantic-node-type (analyze-expression a env context (append location '(2))))) 1))
+           (b-rank (or (%get-tensor-arity (semantic-node-type (analyze-expression b env context (append location '(3))))) 1))
+           (a-ref  (analyze-expression (if (>= a-rank 2) `(~ ,a 0 0) `(~ ,a 0)) env context (append location '(2))))
+           (b-ref  (analyze-expression (if (>= b-rank 2) `(~ ,b 0 0) `(~ ,b 0)) env context (append location '(3))))
+           (elem   (%coop-elem-of (analyze-expression a env context (append location '(2)))))
+           (b-elem (%coop-elem-of (analyze-expression b env context (append location '(3)))))
+           (bar-node (and bar (analyze-expression bar env context (append location '(5)))))
+           (key    (%208-kernel-key context))
+           (site   (unless bar
+                     (let ((s (cons key location)))
+                       (or (gethash s *tcgen05-sync-sites*)
+                           (let ((i (getf (%208-kernel-info key) :sync-sites 0)))
+                             (setf (getf (gethash key *tcgen05-kernels*) :sync-sites) (1+ i))
+                             (setf (gethash s *tcgen05-sync-sites*) i))))))
+           (dims   (gethash d-type *tcgen05-acc-dims*)))
+      (log:debug "208 %tcgen05-mma: ~a x ~a K=~a ~a issue-warp=~a sync-site=~a"
+                 elem b-elem k dims (%208-issue-warp) site)
+      (make-semantic-tcgen05-op
+       :op :mma
+       :args (if bar-node (list d-node a-ref b-ref bar-node) (list d-node a-ref b-ref))
+       :plist (list :m (first dims) :n (second dims) :k k :elem elem :b-elem b-elem
+                    :issue-warp (%208-issue-warp) :sync-site site :kernel key)
+       :type d-type
+       :source-location location))))
+
+(defun analyze-tcgen05-commit (expr env context location)
+  "Endeavour 208.  (tcgen05-commit BAR): BAR arrives once every tcgen05 MMA the issuing thread has
+   issued so far has finished (D-208-3).  Issued by the same thread as the MMAs (%208-issue-warp)."
+  (%tcgen05-require-arch "tcgen05-commit" location)
+  (unless (= (length expr) 2)
+    (error 'crisp-compiler-error
+           :message "tcgen05-commit: expected (tcgen05-commit BARRIER)."
+           :source-location location))
+  (make-semantic-tcgen05-op
+   :op :commit
+   :args (list (analyze-expression (second expr) env context (append location '(1))))
+   :plist (list :issue-warp (%208-issue-warp))
+   :type 'void
+   :source-location location))
+
+(defun analyze-%tcgen05-fence (expr env context location)
+  "Endeavour 208.  (%tcgen05-fence-after) / (%tcgen05-fence-before): tcgen05.fence::after_thread_sync
+   / ::before_thread_sync, ordering tensor-memory access against the thread synchronisation around it."
+  (declare (ignore env context))
+  (make-semantic-tcgen05-op
+   :op (if (search "AFTER" (symbol-name (first expr))) :fence-after :fence-before)
+   :args nil :plist nil :type 'void :source-location location))
+
+(defun %208-declared-local-size (context)
+  "Endeavour 208.  The kernel's (local-size :set-to ..) thread count, or NIL when not a compile-time
+   constant."
+  (let* ((f    (and context (compiler-context-current-compiling-function context)))
+         (decl (and f (getf (gethash f *kernel-dispatch-declarations*) :local-size)))
+         (pos  (and (consp decl) (position-if (lambda (x) (and (symbolp x) (string-equal (symbol-name x) "SET-TO"))) decl)))
+         (dims (and pos (nth (1+ pos) decl))))
+    (log:debug "208 local-size decl of ~a: ~s" f decl)
+    (cond ((integerp dims) dims)
+          ((and (consp dims) (every #'integerp dims)) (reduce #'* dims))
+          (t nil))))
+
+(defun %tcgen05-check-epilogue-threads (context location)
+  "Endeavour 208 (D-208-6).  Reading a tcgen05 accumulator back is a warpgroup's job: warp w of a
+   warpgroup may read only tensor-memory lanes 32(w mod 4) .. +31, so it takes four consecutive warps
+   to cover 128 rows.  Inside a role the role must be 4 warps; outside one the kernel must be 128
+   threads."
+  (let ((role *tcgen05-role-warps*))
+    (if role
+        (unless (= (cdr role) 4)
+          (error 'crisp-compiler-error
+                 :message (format nil "store-tile of a tcgen05 accumulator: the role storing it has ~a warp~:p, but it takes exactly 4 (one warpgroup).  Warp w may read only tensor-memory lanes 32(w mod 4) .. +31, so four consecutive warps cover the 128 rows." (cdr role))
+                 :source-location location))
+        (let ((ls (%208-declared-local-size context)))
+          (unless (eql ls 128)
+            (error 'crisp-compiler-error
+                   :message (format nil "store-tile of a tcgen05 accumulator outside a with-warp-specialization role needs (local-size :set-to 128) -- exactly one warpgroup -- but the local size is ~a.  With more warps, store it from a 4-warp role." (or ls "not a compile-time constant"))
+                   :source-location location))))))
+
+(defun %208-rewrite-acc-reinit (form)
+  "Endeavour 208.  FORM with every (set! X (make-tcgen05-accumulator ...)) rewritten to
+   (set! X (%tcgen05-reset X)).  STRUCTURE-PRESERVING: a subtree containing no such pattern is returned
+   as the SAME conses (EQ), because source positions are looked up by cons identity -- copying every let
+   body lost the file:line of every die / log site (193-logging-output printed `DIE ?:0`)."
+  (cond ((atom form) form)
+        ((and (symbolp (first form)) (string-equal (symbol-name (first form)) "SET!")
+              (= (length form) 3) (symbolp (second form))
+              (consp (third form)) (symbolp (first (third form)))
+              (string-equal (symbol-name (first (third form))) "MAKE-TCGEN05-ACCUMULATOR"))
+         (log:debug "208: (set! ~a (make-tcgen05-accumulator ..)) -> (%tcgen05-reset ~a)" (second form) (second form))
+         (list (first form) (second form)
+               (list (intern "%TCGEN05-RESET" (find-package :crisp.compiler)) (second form))))
+        (t (let ((new-car (%208-rewrite-acc-reinit (car form)))
+                 (new-cdr (%208-rewrite-acc-reinit (cdr form))))
+             (if (and (eq new-car (car form)) (eq new-cdr (cdr form)))
+                 form
+                 (cons new-car new-cdr))))))
+
+(defun %208-analyze-let (expr env context location)
+  "Endeavour 208.  LET: the accumulator re-initialisation rewrite, then the existing let analyzer.
+   EXPR itself is passed through untouched (EQ) when nothing is rewritten.
+   Possible cleanup: a first line in analyze-let-with-tile-explosion."
+  (let* ((body (and (consp expr) (cddr expr)))
+         (new-body (and body (%208-rewrite-acc-reinit body))))
+    (analyze-let-with-tile-explosion (if (and body (not (eq new-body body)))
+                                         (list* (first expr) (second expr) new-body)
+                                         expr)
+                                     env context location)))
+
+(defvar *tcgen05-ring-dims* (make-hash-table :test 'eq)
+  "Endeavour 208.  tcgen05 accumulator RING record type -> (M N ELEM RING-COUNT).")
+
+(defun %ensure-tcgen05-ring-type (m n elem count)
+  "Endeavour 208.  Mint (once) the record naming a RING of COUNT tensor-memory accumulators: one uint
+   field, COLUMN, the first column of slot 0.  Slot i starts at COLUMN + i*N."
+  (let ((name (intern (format nil "TCGEN05-ACC-RING-~a-~dX~d-X~d" (if (%elem-integer-p elem) "S32" "F32") m n count)
+                      (find-package :crisp.compiler))))
+    (unless (gethash name *crisp-structs*)
+      (register-struct-definition
+       name (list (list (intern "COLUMN" (find-package :crisp.compiler)) 'uint)) :record))
+    (setf (gethash name *tcgen05-ring-dims*) (list m n elem count))
+    name))
+
+(defun %tcgen05-ring-type-p (type-name)
+  "Endeavour 208.  T if TYPE-NAME is a minted tcgen05 accumulator ring type."
+  (and type-name (symbolp type-name) (nth-value 1 (gethash type-name *tcgen05-ring-dims*)) t))
+
+(defun %208-assign-columns (context location ncols form-name)
+  "Endeavour 208.  The first tensor-memory column of the binding at LOCATION, assigned on first sight
+   (NCOLS columns); refused when the kernel's total passes 512 (D-208-4)."
+  (let* ((key  (%208-kernel-key context))
+         (site (cons key location))
+         (info (%208-kernel-info key)))
+    (or (gethash site *tcgen05-columns*)
+        (let* ((off   (getf info :columns 0))
+               (total (+ off ncols)))
+          (when (> total 512)
+            (error 'crisp-compiler-error
+                   :message (format nil "~a: this kernel's tcgen05 accumulators need ~a tensor-memory columns, over the 512 a CTA has.  A float (M N) accumulator takes N columns, so two 128 x 256 accumulators fill it." form-name total)
+                   :source-location location))
+          (setf (getf (gethash key *tcgen05-kernels*) :columns) total)
+          (setf (gethash site *tcgen05-columns*) off)))))
+
+(defun %208-analyze-ring-get (expr env context location)
+  "Endeavour 208.  (ring-get RING i) on a tcgen05 accumulator ring -> accumulator i, FRESH, at column
+   COLUMN + i*N.  Every other ring goes to analyze-ring-get-expression unchanged.
+   Possible cleanup: a first clause in analyze-ring-get-expression."
+  (let* ((ring (second expr))
+         (rtype (and (symbolp ring) (= (length expr) 3)
+                     (ignore-errors (semantic-node-type (analyze-expression ring env context (append location '(1))))))))
+    (if (%tcgen05-ring-type-p rtype)
+        (destructuring-bind (m n elem count) (gethash rtype *tcgen05-ring-dims*)
+          (declare (ignore count))
+          (let ((acc-type (%ensure-tcgen05-acc-type m n elem))
+                (to-uint (intern "TO-UINT" (find-package :crisp-language))))
+            (log:debug "208 ring-get on tcgen05 ring ~a (~a)" ring rtype)
+            (analyze-expression
+             `(%construct-struct ,acc-type
+                                 (+ (%extract-struct-member ,ring 0) (* (,to-uint ,(third expr)) (,to-uint ,n)))
+                                 (,to-uint 1))
+             env context location)))
+        (analyze-ring-get-expression expr env context location))))
+
+(defun %208-source-type (src env context location)
+  "Endeavour 208.  The type of a store source SRC when it is a symbol or a (ring-get ..) form, else
+   NIL.  Only used to spot a tcgen05 accumulator; anything that fails to analyse here is left to the
+   original analyzer."
+  (and (or (symbolp src)
+           (and (consp src) (symbolp (first src)) (string-equal (symbol-name (first src)) "RING-GET")))
+       (ignore-errors (semantic-node-type (analyze-expression src env context (append location '(1)))))))
+
+(defun %208-analyze-tma-store (expr src convert env context location)
+  "Endeavour 208.  (store-tile-at (to-bfloat16 D) C (ROW COL) :via :tma) for a tcgen05 accumulator D:
+   the semantic-tcgen05-op :tma-store node.  Pass 1 (%199-scan-register-tma-store) already registered
+   C's store descriptor (16 x 64 boxes, SWIZZLE_128B) and the function's staging buffer; the rules are
+   199's -- a 16-bit conversion, N a multiple of 64, C a kernel tensor of that element, a compile-time
+   local size -- plus the warpgroup rule (D-208-6)."
+  (flet ((fail (fmt &rest args)
+           (error 'crisp-compiler-error
+                  :message (format nil "store-tile-at :via :tma: ~?" fmt args)
+                  :source-location location)))
+    (let* ((src-node (analyze-expression src env context (append location '(1))))
+           (src-type (semantic-node-type src-node))
+           (dest     (third expr))
+           (origin   (fourth expr))
+           (fn       (compiler-context-current-compiling-function context))
+           (n        (second (gethash src-type *tcgen05-acc-dims*)))
+           (elem     (and convert (%199-convert-element convert)))
+           (dims     (%declared-local-size-dims (compiler-context-declarations context)))
+           (threads  (and dims (reduce #'* dims)))
+           (wgs      (and threads (floor threads 128)))
+           (desc     (%199-descriptor-name dest fn))
+           (stage    (%199-stage-name fn))
+           (implicit (gethash fn *implicit-arg-map*))
+           (info     (gethash desc *tma-descriptor-info*))
+           (to-int   (intern "TO-INT" (find-package :crisp-language))))
+      (log:debug "208 :via :tma: n=~a elem=~a dims=~a desc=~a stage=~a" n elem dims desc stage)
+      (unless elem
+        (fail "the TMA store moves 16-bit elements, so the f32 accumulator needs a conversion: write (to-half ~a) or (to-bfloat16 ~a)." src src))
+      (unless (and dest (symbolp dest))
+        (fail "the destination must be the kernel's tensor parameter (its TMA descriptor is built for it), got ~s." dest))
+      (unless (and (listp origin) (= (length origin) 2))
+        (fail "needs a 2-D (ROW COL) element origin, got ~s." origin))
+      (unless (and n (zerop (mod n 64)))
+        (fail "N must be a multiple of 64 (a TMA box is 64 16-bit columns = 128 bytes); this accumulator is 128x~a." n))
+      (unless (and wgs (plusp wgs))
+        (fail "needs the kernel's compile-time block size, (local-size :set-to N) with N at least 128: the staging buffer is 4 KB per warp."))
+      (%tcgen05-check-epilogue-threads context location)
+      (unless (and (find desc implicit :key #'car) (find stage implicit :key #'car))
+        (fail "its TMA descriptor and staging buffer are registered in pass 1, which did not see this store (single-pass compile, or a store outside the kernel body)."))
+      (unless (getf info :store-box)
+        (fail "~a is also loaded with a :block load-tile in this kernel; a tensor has one TMA descriptor, and a load's box is not the store's." dest))
+      (unless (valid-parameterized-type-p (cdr (find stage implicit :key #'car)))
+        (fail "could not instantiate the staging buffer type ~a." (cdr (find stage implicit :key #'car))))
+      (setf (gethash stage *implicit-scratch-size-expr-map*)
+            (/ (+ (* wgs 4 *199-stage-bytes-per-warp*) 1024) 2))
+      (log:info "208 store-tile-at :via :tma: 128x~a ~a into ~a; staging ~a = ~a warp slices x 4 KB + 1 KB"
+                n elem dest stage (* 4 wgs))
+      (make-semantic-tcgen05-op
+       :op :tma-store
+       :args (list src-node
+                   (analyze-expression `(,to-int ,(first origin)) env context (append location '(3 0)))
+                   (analyze-expression `(,to-int ,(second origin)) env context (append location '(3 1))))
+       :plist (list :n n :element elem :dest-sym dest :stage stage
+                    :stage-spec (cdr (find stage implicit :key #'car)) :slices (* 4 wgs))
+       :type 'nil
+       :source-location location))))
+
+(defun %208-acc-elem (elem form-name location)
+  "Endeavour 208 phase 3.  The canonical element type of a tcgen05 accumulator.  Accepted: float (an
+   f32 accumulator, for 16-bit and tf32 operands), or a 32-bit integer -- int, uint, a type derived
+   from one, or (accum Q) -- for kind::i8's s32 accumulator.  Anything else is refused, naming
+   FORM-NAME."
+  (let ((ce (%canonical-elem elem)))
+    (log:debug "208 %208-acc-elem ~s -> ~s" elem ce)
+    (cond ((and (symbolp ce) (string-equal (symbol-name ce) "FLOAT")) ce)
+          ((and ce (%elem-integer-p ce) (eql (%mma-elem-bits ce) 32)) ce)
+          (t (error 'crisp-compiler-error
+                    :message (format nil "~a: the element must be float (an f32 accumulator, for half / bfloat16 / float operands) or a 32-bit integer such as int or (accum Q) (an s32 accumulator, for char / uchar operands); got ~(~a~)."
+                                     form-name elem)
+                    :source-location location)))))
+
+(defun %ensure-tcgen05-row-type-s32 ()
+  "Endeavour 208 phase 3.  The s32 twin of TCGEN05-ROW32-F32: 32 int fields, the 32 consecutive
+   columns of the calling thread's own tensor-memory lane, for an integer accumulator."
+  (let ((name (intern "TCGEN05-ROW32-S32" (find-package :crisp.compiler))))
+    (unless (gethash name *crisp-structs*)
+      (register-struct-definition
+       name
+       (loop for i below 32 collect (list (intern (format nil "R~d" i) (find-package :crisp.compiler)) 'int))
+       :record))
+    name))
+
+(defun %208-acc-int-p (acc-type)
+  "Endeavour 208 phase 3.  T when ACC-TYPE (a minted tcgen05 accumulator record) holds s32."
+  (let ((dims (gethash acc-type *tcgen05-acc-dims*)))
+    (and dims (%elem-integer-p (third dims)) t)))
+
+(defun analyze-%tcgen05-ld (expr env context location)
+  "Endeavour 208.  (%tcgen05-ld D CHUNK) -> the 32 columns [32*CHUNK, 32*CHUNK+32) of the calling
+   thread's accumulator row, as a TCGEN05-ROW32-F32 record (tcgen05.ld.32x32b.x32 + wait::ld).
+   Phase 3: an s32 accumulator reads into TCGEN05-ROW32-S32 instead -- the same instruction, the
+   32-bit cells taken as int."
+  (destructuring-bind (d chunk) (cdr expr)
+    (let* ((d-node (analyze-expression d env context (append location '(1))))
+           (int-p  (%208-acc-int-p (semantic-node-type d-node))))
+      (log:debug "208 %tcgen05-ld chunk ~a of ~a (~a)" chunk (semantic-node-type d-node) (if int-p "s32" "f32"))
+      (make-semantic-tcgen05-op
+       :op :ld
+       :args (list d-node)
+       :plist (list :chunk chunk :int int-p)
+       :type (if int-p (%ensure-tcgen05-row-type-s32) (%ensure-tcgen05-row-type))
+       :source-location location))))
+
+(defun analyze-make-tcgen05-accumulator (expr env context location)
+  "Endeavour 208.  (make-tcgen05-accumulator float (M N) 0.0) -> a tensor-memory accumulator.
+   Phase 3: (make-tcgen05-accumulator int (M N) 0), or (accum Q) for a def-qint Q, is an s32
+   accumulator for kind::i8; it also takes N columns (one 32-bit cell per element).
+   It must initialise a let binding: its columns are assigned per binding SITE, N columns for a float
+   accumulator, and the kernel's total may not exceed the 512 a CTA has (D-208-4).  The init must
+   be zero (D-208-5).  `(set! D (make-tcgen05-accumulator ..))` re-initialises D in place: the let
+   pre-pass rewrites it to (%tcgen05-reset D), which keeps D's columns and marks it FRESH."
+  (%tcgen05-require-arch "make-tcgen05-accumulator" location)
+  (unless (= (length expr) 4)
+    (error 'crisp-compiler-error
+           :message "make-tcgen05-accumulator: expected (make-tcgen05-accumulator float (M N) 0.0) or (make-tcgen05-accumulator int (M N) 0)."
+           :source-location location))
+  (destructuring-bind (elem dims init) (cdr expr)
+    (setf elem (%208-acc-elem elem "make-tcgen05-accumulator" location))
+    (unless (and (listp dims) (= (length dims) 2))
+      (error 'crisp-compiler-error
+             :message (format nil "make-tcgen05-accumulator: the shape must be (M N), got ~s." dims)
+             :source-location location))
+    (destructuring-bind (m n) dims
+      (%tcgen05-check-acc-shape m n location)
+      (unless (and (numberp init) (zerop init))
+        (error 'crisp-compiler-error
+               :message (format nil "make-tcgen05-accumulator: the initial value must be 0, got ~s.  The first MMA after initialisation overwrites the accumulator instead of adding to it, so zero costs nothing; any other start would need a pass that stores it into tensor memory." init)
+               :source-location location))
+      (unless (and context (compiler-context-current-binding-name context))
+        (error 'crisp-compiler-error
+               :message "make-tcgen05-accumulator must initialise a let binding, e.g. (let ((D (make-tcgen05-accumulator float (128 256) 0.0))) ...).  Re-initialise it with (set! D (make-tcgen05-accumulator float (128 256) 0.0))."
+               :source-location location))
+      (let* ((key    (%208-kernel-key context))
+             (site   (cons key location))
+             (info   (%208-kernel-info key))
+             (offset (or (gethash site *tcgen05-columns*)
+                         (let* ((off   (getf info :columns 0))
+                                (total (+ off n)))
+                           (when (> total 512)
+                             (error 'crisp-compiler-error
+                                    :message (format nil "make-tcgen05-accumulator: this kernel's tcgen05 accumulators need ~a tensor-memory columns, over the 512 a CTA has.  A float (M N) accumulator takes N columns, so two 128 x 256 accumulators fill it." total)
+                                    :source-location location))
+                           (setf (getf (gethash key *tcgen05-kernels*) :columns) total)
+                           (setf (gethash site *tcgen05-columns*) off))))
+             (type-name (%ensure-tcgen05-acc-type m n elem))
+             (to-uint (intern "TO-UINT" (find-package :crisp-language))))
+        (log:debug "208 make-tcgen05-accumulator ~a (~a ~a) in ~a: columns ~a..~a"
+                   (compiler-context-current-binding-name context) m n key offset (+ offset n -1))
+        (analyze-expression `(%construct-struct ,type-name (,to-uint ,offset) (,to-uint 1))
+                            env context location)))))
+
+(defun analyze-make-tcgen05-accumulator-ring (expr env context location)
+  "Endeavour 208.  (make-tcgen05-accumulator-ring float (M N) :ring-count R) -> R accumulators in
+   R*N consecutive tensor-memory columns.  (ring-get RING i) is accumulator i, FRESH: the first MMA
+   into it overwrites.  Two slots let the epilogue drain tile t while the MMAs of tile t+1 run.
+   Phase 3: an integer element (int, (accum Q)) makes s32 slots, as for make-tcgen05-accumulator."
+  (%tcgen05-require-arch "make-tcgen05-accumulator-ring" location)
+  (destructuring-bind (elem dims &rest keys) (cdr expr)
+    (let ((count (getf keys :ring-count)))
+      (setf elem (%208-acc-elem elem "make-tcgen05-accumulator-ring" location))
+      (unless (and (integerp count) (<= 1 count 4))
+        (error 'crisp-compiler-error
+               :message (format nil "make-tcgen05-accumulator-ring: :ring-count must be an integer from 1 to 4, got ~s." count)
+               :source-location location))
+      (unless (and (listp dims) (= (length dims) 2))
+        (error 'crisp-compiler-error
+               :message (format nil "make-tcgen05-accumulator-ring: the shape must be (M N), got ~s." dims)
+               :source-location location))
+      (destructuring-bind (m n) dims
+        (%tcgen05-check-acc-shape m n location)
+        (unless (and context (compiler-context-current-binding-name context))
+          (error 'crisp-compiler-error
+                 :message "make-tcgen05-accumulator-ring must initialise a let binding."
+                 :source-location location))
+        (%ensure-tcgen05-acc-type m n elem)
+        (let ((offset (%208-assign-columns context location (* n count) "make-tcgen05-accumulator-ring"))
+              (type-name (%ensure-tcgen05-ring-type m n elem count))
+              (to-uint (intern "TO-UINT" (find-package :crisp-language))))
+          (log:debug "208 make-tcgen05-accumulator-ring ~a x (~a ~a): columns ~a..~a"
+                     count m n offset (+ offset (* n count) -1))
+          (analyze-expression `(%construct-struct ,type-name (,to-uint ,offset)) env context location))))))
+
+(defun %208-mma-kind (elem)
+  "Endeavour 208.  For an operand element ELEM: (values KIND K-PER-INSTRUCTION FORMAT-CODE), the
+   tcgen05.mma .kind, the K one instruction covers (always 32 bytes), and the a/b_format code of the
+   instruction descriptor.  NIL for an element with no kind yet.
+
+   Phase 3: an 8-bit integer (char, uchar, or a type derived from one, e.g. a def-qint) is kind::i8,
+   K = 32, format INT8 = 1 / UINT8 = 0 (CUTLASS UMMA::S8Format).  A and B carry their own format,
+   so the four sign pairs are one instruction."
+  (let ((n (and elem (symbolp elem) (symbol-name elem))))
+    (cond ((null n) nil)
+          ((%int-operand-p elem) (values "i8" 32 (if (%elem-signed-p elem) 1 0)))
+          ((string= n "HALF")     (values "f16"  16 0))
+          ((string= n "BFLOAT16") (values "f16"  16 1))
+          ((string= n "FLOAT")    (values "tf32"  8 2))
+          (t nil))))
+
+(defun %tcgen05-store-rewrite-origin (tile dest row-origin col-origin n &optional convert elem)
+  "Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at
+   (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row
+   m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the
+   row's 32 elements -- as 16 packed pairs (endeavour 197) when the first pair is adjacent and
+   aligned, else as scalars.  A fence::after_thread_sync opens the store (the accumulator was
+   completed by another thread's MMA) and a fence::before_thread_sync closes it (the next MMA into
+   these columns must not overtake the reads).  CONVERT as in %wgmma-store-rewrite-origin.
+   Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED
+   integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32
+   row record holds plain int, and the destination element holds exactly its own type."
+  (let* ((to-int (intern "TO-INT" (find-package :crisp-language)))
+         (if-sym (intern "IF" (find-package :crisp-language)))
+         (chunks (floor n 32)))
+    (flet ((elt-of (ch j)
+             (let ((x `(%extract-struct-member ,ch ,j)))
+               (if convert (%196-wrap-conversion convert x) (%store-frag-elem-cast elem x)))))
+      `(let ((tcv ,tile))
+         (let ((r0 (+ (,to-int ,row-origin) (+ (* (rem (,to-int (warp-id)) 4) 32) (,to-int (warp-lane)))))
+               (c0 (,to-int ,col-origin)))
+           (%tcgen05-fence-after)
+           ,@(loop for c below chunks
+                   for ch = (intern (format nil "TCROW~d" c) (find-package :crisp.compiler))
+                   for base = (* 32 c)
+                   collect `(let ((,ch (%tcgen05-ld tcv ,c)))
+                              (,if-sym (%pair-ok-p (~ ,dest r0 (+ c0 ,base)) (~ ,dest r0 (+ c0 ,(1+ base))))
+                                (progn ,@(loop for j below 32 by 2
+                                               collect `(%store-pair (~ ,dest r0 (+ c0 ,(+ base j)))
+                                                                     (~ ,dest r0 (+ c0 ,(+ base j 1)))
+                                                                     ,(elt-of ch j) ,(elt-of ch (1+ j)))))
+                                (progn ,@(loop for j below 32
+                                               collect `(set! (~ ,dest r0 (+ c0 ,(+ base j))) ,(elt-of ch j)))))))
+           (%tcgen05-fence-before))))))
+
+(defun %208-analyze-store-tile (expr env context location)
+  "Endeavour 208.  store-tile: a tcgen05 accumulator source is stored by %tcgen05-store-rewrite-origin
+   at the tile-grid origin (BTY*M, BTX*N); anything else goes to analyze-store-tile-mma unchanged.
+   Possible cleanup: a clause in analyze-store-tile-mma.
+   Phase 3: passes the accumulator's element, for the derived-integer cast."
+  (multiple-value-bind (src convert) (%196-peel-store-conversion (second expr))
+    (let ((src-type (%208-source-type src env context location)))
+      (if (%tcgen05-acc-type-p src-type)
+          (destructuring-bind (m n elem) (gethash src-type *tcgen05-acc-dims*)
+            (%tcgen05-check-epilogue-threads context location)
+            (let ((tile-id (fourth expr))
+                  (to-int (intern "TO-INT" (find-package :crisp-language))))
+              (analyze-expression
+               (%tcgen05-store-rewrite-origin src (third expr)
+                                              `(* (,to-int ,(first tile-id)) ,m)
+                                              `(* (,to-int ,(second tile-id)) ,n)
+                                              n convert elem)
+               env context location)))
+          (analyze-store-tile-mma expr env context location)))))
+
+(defun %208-analyze-store-tile-at (expr env context location)
+  "Endeavour 208.  store-tile-at: a tcgen05 accumulator source is stored at the absolute (ROW COL)
+   origin, directly or with :via :tma (%208-analyze-tma-store).  Anything else goes to
+   analyze-store-tile-at-mma.  Possible cleanup: a clause in analyze-store-tile-at-mma.
+   Phase 3: passes the accumulator's element, for the derived-integer cast."
+  (multiple-value-bind (src convert) (%196-peel-store-conversion (second expr))
+    (let ((src-type (%208-source-type src env context location)))
+      (if (%tcgen05-acc-type-p src-type)
+          (let* ((origin (fourth expr))
+                 (keys   (nthcdr 4 expr))
+                 (n      (second (gethash src-type *tcgen05-acc-dims*))))
+            (cond ((null keys))
+                  ((%199-via-tma-p keys)
+                   (return-from %208-analyze-store-tile-at
+                     (%208-analyze-tma-store expr src convert env context location)))
+                  (t (error 'crisp-compiler-error
+                            :message (format nil "store-tile-at: options ~s are not supported for a tcgen05 accumulator (only :via :tma)." keys)
+                            :source-location location)))
+            (unless (and (listp origin) (= (length origin) 2))
+              (error 'crisp-compiler-error
+                     :message (format nil "store-tile-at: a tcgen05 accumulator needs a 2-D (ROW COL) element origin, got ~s." origin)
+                     :source-location location))
+            (%tcgen05-check-epilogue-threads context location)
+            (analyze-expression (%tcgen05-store-rewrite-origin src (third expr) (first origin) (second origin) n convert
+                                                               (third (gethash src-type *tcgen05-acc-dims*)))
+                                env context location))
+          (analyze-store-tile-at-mma expr env context location)))))
+
+(defun %208-block-info (elem)
+  "Endeavour 208 phase 4.  When ELEM names a def-microfloat-block, its tcgen05 plist:
+     :name :base :scale :vec   the block (names as strings; :vec the block size in elements)
+     :kind        the tcgen05.mma kind, with its scale_vec, or NIL when no kind fits the block
+     :epb         codes per byte (2 for fp4, 1 for fp8)
+     :fmt :sfmt   the a/b_format and scale_format codes of the block-scaled instruction descriptor
+     :spi         scales per row one instruction consumes (4X 4, 2X 2, 1X 1)
+   NIL when ELEM is not a block."
+  (let* ((e (and elem (%canonical-elem elem)))
+         (b (and e (symbolp e) (microfloat-block-p e))))
+    (when b
+      (let ((base (symbol-name (getf b :base)))
+            (scale (symbol-name (getf b :scale)))
+            (vec (getf b :shape)))
+        (flet ((info (&rest kv) (list* :name (symbol-name e) :base base :scale scale :vec vec kv)))
+          (cond ((and (string= base "FP4") (string= scale "FP8-E4M3") (eql vec 16))
+                 (info :kind "mxf4nvf4.block_scale.scale_vec::4X" :epb 2 :fmt 1 :sfmt 0 :spi 4))
+                ((and (string= base "FP4") (string= scale "FP8-E8M0") (eql vec 32))
+                 (info :kind "mxf4.block_scale.scale_vec::2X" :epb 2 :fmt 1 :sfmt 1 :spi 2))
+                ((and (member base '("FP8-E4M3" "FP8-E5M2") :test #'string=)
+                      (string= scale "FP8-E8M0") (eql vec 32))
+                 (info :kind "mxf8f6f4.block_scale" :epb 1 :fmt (if (string= base "FP8-E4M3") 0 1)
+                       :sfmt 1 :spi 1))
+                (t (info :kind nil))))))))
+
+(defun %208-block-step (info)
+  "Endeavour 208 phase 4.  (values K-ELEMS SCALES-PER-ROW ATOMS-PER-STEP) of one tcgen05 call on block
+   INFO: K is one 128-byte swizzle atom of codes (256 fp4, 128 fp8); a row then has K/vec scales, which
+   is K/vec/4 512-byte scale atoms per 128 rows."
+  (let* ((k   (* 128 (getf info :epb)))
+         (spr (floor k (getf info :vec))))
+    (values k spr (floor spr 4))))
+
+(defvar *208-scale-layouts* (make-hash-table :test 'equal)
+  "Endeavour 208 phase 4.  Kernel name (string) -> list of (:scales S :of A :layout L), the kernel's
+   (scale-layout S :of A L) declarations, names as downcased strings.  Set when the kernel's source is
+   visited (before pass 1).")
+
+(defun %208-sym= (x name)
+  "Endeavour 208.  T when X is a symbol named NAME (any package)."
+  (and x (symbolp x) (string-equal (symbol-name x) name)))
+
+(defun %208-rw-list (list tiles)
+  "Endeavour 208 phase 4.  %208-rw over the elements of LIST; the SAME conses back when nothing changed
+   (source positions are keyed by cons identity)."
+  (if (atom list)
+      list
+      (let ((a (%208-rw (car list) tiles))
+            (d (%208-rw-list (cdr list) tiles)))
+        (if (and (eq a (car list)) (eq d (cdr list))) list (cons a d)))))
+
+(defun %208-tree-has-block-scratch-p (form)
+  "Endeavour 208 phase 4.  T when FORM contains a make-scratch-matrix(-ring) of a microfloat block.
+   The cheap test that keeps every other kernel's source untouched (EQ)."
+  (cond ((atom form) nil)
+        ((and (or (%208-sym= (first form) "MAKE-SCRATCH-MATRIX") (%208-sym= (first form) "MAKE-SCRATCH-MATRIX-RING"))
+              (consp (cdr form)) (%208-block-info (second form)))
+         t)
+        (t (loop for x on form
+                 thereis (if (consp x) (%208-tree-has-block-scratch-p (car x)) nil)))))
+
+(defun analyze-%208-load-scales (expr env context location)
+  "Endeavour 208 phase 4.  (%208-load-scales S SRC SF (ROW-TILE K-TILE) BAR BLOCK ROWS): copy the scale
+   atoms of SRC's tile (ROW-TILE K-TILE) from the :blocked-128x4 vector S into the scales tile SF, on
+   BAR.  Emitted by the source rewrite in front of the codes load.  The atoms of one row block for one
+   K-step are contiguous: (rb * K/(vec*4) + kt * aps) * 512, aps*512 bytes; ROWS/128 row blocks."
+  (destructuring-bind (s src sf coords bar bname rows) (cdr expr)
+    (let* ((info   (%208-block-info (make-symbol bname)))
+           (kernel (compiler-context-current-compiling-function context))
+           (decl   (find-if (lambda (d) (string-equal (getf d :scales) (symbol-name s)))
+                            (gethash (string-downcase (symbol-name kernel)) *208-scale-layouts*)))
+           (ct     (%kernel-param-contiguous-term kernel src))
+           (ki     (if (eq ct :col-major) 0 1))
+           (tu     (intern "TO-ULONG" (find-package :crisp-language)))
+           (ex     (intern "EXTENTS~" (find-package :crisp-language))))
+      (unless (and decl (string-equal (getf decl :of) (symbol-name src)))
+        (error 'crisp-compiler-error
+               :message (format nil "load-tile ~(~a~) .. :scales ~(~a~): declare the layout of the scales, (scale-layout ~(~a~) :of ~(~a~) :blocked-128x4)."
+                                src s s src)
+               :source-location location))
+      (multiple-value-bind (kel spr aps) (%208-block-step info)
+        (declare (ignore kel spr))
+        (log:debug "208 %208-load-scales ~a of ~a (~a, ~a) rows ~a aps ~a K index ~a" s src bname ct rows aps ki)
+        (make-semantic-tcgen05-op
+         :op :load-scales
+         :args (list (analyze-expression `(~ ,s 0) env context (append location '(1)))
+                     (analyze-expression `(~ ,sf 0 0) env context (append location '(3)))
+                     (analyze-expression `(,tu (~ (,ex ,src) ,ki)) env context (append location '(2)))
+                     (analyze-expression `(,tu ,(first coords)) env context (append location '(4 0)))
+                     (analyze-expression `(,tu ,(second coords)) env context (append location '(4 1)))
+                     (analyze-expression bar env context (append location '(5))))
+         :plist (list :vec (getf info :vec) :aps aps :row-blocks (floor rows 128)
+                      :ws-leader (and *in-warp-spec-block* t))
+         :type 'void
+         :source-location location)))))
+
+(defun analyze-tcgen05-accumulate-via-tile-base (expr env context location)
+  "Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR])
+   -> (set! D (%tcgen05-mma D A B K [BAR])).  D += A.B over K, issued by one thread into tensor memory.
+
+   Without :on-complete it is SYNCHRONOUS (D-208-2): the issuing thread commits to a compiler-owned
+   mbarrier and every thread executing the form waits on it.  With :on-complete BAR it commits to BAR
+   and returns at once.
+
+   Operands: half / bfloat16 (kind::f16, K = 64) or float (kind::tf32, K = 32) -- either way one
+   128-byte swizzle atom of K, four instructions.
+   Phase 3: char / uchar (or types derived from them, e.g. def-qint) are kind::i8, K = 128, into an
+   s32 accumulator.  The signs of A and B are independent.  The element-family rule is 204's
+   (%check-mma-element-family); the qint-role rule is 207's, applied by %qint-mma-walk over the LET.  M = 128; A (M K) and B (N K) K-major in shared
+   memory as a :128b TMA load lays them down.
+
+   Endeavour 208 phase 4: analyze-tcgen05-accumulate-via-tile (below) wraps this; block
+   tiles go to the block-scaled path first."
+  (%tcgen05-require-arch "tcgen05-accumulate-via-tile" location)
+  (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+    (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+      (error 'crisp-compiler-error
+             :message (format nil "tcgen05-accumulate-via-tile: the first argument is the (M N K) shape, as integers; got ~s." shape)
+             :source-location location))
+    (loop for (key nil) on kwargs by #'cddr
+          unless (member (symbol-name key) '("SWIZZLE" "ON-COMPLETE" "B-MAJOR") :test #'string=)
+            do (error 'crisp-compiler-error
+                      :message (format nil "tcgen05-accumulate-via-tile: unknown option ~s.  The options are :swizzle, :b-major and :on-complete." key)
+                      :source-location location))
+    (destructuring-bind (m n k) shape
+      (let* ((d-node (analyze-expression d env context (append location '(2))))
+             (d-type (semantic-node-type d-node))
+             (elem   (%coop-elem-of (analyze-expression a env context (append location '(3)))))
+             (b-elem (%coop-elem-of (analyze-expression b env context (append location '(4)))))
+             (swz    (getf kwargs :swizzle))
+             (bm     (getf kwargs :b-major :k))
+             (bar    (getf kwargs :on-complete)))
+        (log:debug "208 tcgen05-accumulate-via-tile: shape=~a elem=~a/~a swizzle=~a on-complete=~a role=~a"
+                   shape elem b-elem swz bar *tcgen05-role-warps*)
+        (unless (%tcgen05-acc-type-p d-type)
+          (error 'crisp-compiler-error
+                 :message (format nil "tcgen05-accumulate-via-tile: D (2nd argument) must be a make-tcgen05-accumulator, got type ~a." d-type)
+                 :source-location location))
+        (%tcgen05-check-acc-shape m n location)
+        (destructuring-bind (dm dn delem) (gethash d-type *tcgen05-acc-dims*)
+          (declare (ignore delem))
+          (unless (and (= m dm) (= n dn))
+            (error 'crisp-compiler-error
+                   :message (format nil "tcgen05-accumulate-via-tile: shape ~a does not match the accumulator, which is (~a ~a)." shape dm dn)
+                   :source-location location)))
+        (let ((acc-elem (third (gethash d-type *tcgen05-acc-dims*))))
+          (if (or (%elem-integer-p elem) (%elem-integer-p b-elem) (%elem-integer-p acc-elem))
+              (%check-mma-element-family elem b-elem acc-elem location)
+              (unless (and (%208-mma-kind elem) (%208-mma-kind b-elem)
+                           (string= (symbol-name elem) (symbol-name b-elem)))
+                (error 'crisp-compiler-error
+                       :message (format nil "tcgen05-accumulate-via-tile: A and B must both be half, both bfloat16 (kind::f16), both float (kind::tf32), or 8-bit integers (kind::i8), got ~a and ~a." elem b-elem)
+                       :source-location location))))
+        (unless (and swz (symbolp swz) (string-equal (symbol-name swz) "128B"))
+          (error 'crisp-compiler-error
+                 :message "tcgen05-accumulate-via-tile needs :swizzle :128b: A and B are read through shared-memory descriptors built for the 128-byte swizzle that a (load-tile .. :swizzle :128b) TMA load lays down."
+                 :source-location location))
+        (unless (and (symbolp bm) (string-equal (symbol-name bm) "K"))
+          (error 'crisp-compiler-error
+                 :message (format nil "tcgen05-accumulate-via-tile: :b-major ~s is not supported yet; B must be (N K), K-major." bm)
+                 :source-location location))
+        (let ((want (* 4 (nth-value 1 (%208-mma-kind elem)))))
+          (unless (= k want)
+            (error 'crisp-compiler-error
+                   :message (case want
+                              (64  (format nil "tcgen05-accumulate-via-tile: K must be 64 for half / bfloat16 (one 128-byte swizzle atom: four K = 16 instructions), got ~a." k))
+                              (128 (format nil "tcgen05-accumulate-via-tile: K must be 128 for char / uchar (one 128-byte swizzle atom: four K = 32 instructions), got ~a." k))
+                              (t   (format nil "tcgen05-accumulate-via-tile: K must be 32 for float / tf32 (one 128-byte swizzle atom: four K = 8 instructions), got ~a." k)))
+                   :source-location location)))
+        ;; Operand extents, when known: A (M K), B (N K).
+        (let ((a-r (%mma-operand-extent a nil :rows)) (a-c (%mma-operand-extent a nil :cols))
+              (b-r (%mma-operand-extent b nil :rows)) (b-c (%mma-operand-extent b nil :cols)))
+          (when (or (and a-r (/= a-r m)) (and a-c (/= a-c k)))
+            (error 'crisp-compiler-error
+                   :message (format nil "tcgen05-accumulate-via-tile: A tile must be (M K) = (~a ~a), but it is (~a ~a)." m k (or a-r '?) (or a-c '?))
+                   :source-location location))
+          (when (or (and b-r (/= b-r n)) (and b-c (/= b-c k)))
+            (error 'crisp-compiler-error
+                   :message (format nil "tcgen05-accumulate-via-tile: B tile must be (N K) = (~a ~a), K-major as for wgmma, but it is (~a ~a)." n k (or b-r '?) (or b-c '?))
+                   :source-location location)))
+        (analyze-expression `(set! ,d (%tcgen05-mma ,d ,a ,b ,k ,@(when bar (list bar))))
+                            env context location)))))
+
+(defun analyze-tcgen05-accumulate-via-tile (expr env context location)
+  "Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR]).
+   Phase 4: A and B are block tiles (the source rewrite added :%block-a / :%sf-a / :%block-b / :%sf-b)
+   -> (set! D (%tcgen05-mma-bs D A B SF-A SF-B K BLOCK [BAR])).  Rules: the same block on both sides
+   (D-208-10); an f32 accumulator; M = 128, N 128 or 256 (B's scales come in 128-row atoms); K one
+   128-byte atom of codes (D-208-14).  Anything else goes to the earlier analyzer."
+  (let ((kw (nthcdr 5 expr)))
+    (if (not (getf kw :%block-a))
+        (analyze-tcgen05-accumulate-via-tile-base expr env context location)
+        (progn
+          (%tcgen05-require-arch "tcgen05-accumulate-via-tile" location)
+          (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+            (let* ((ba (getf kwargs :%block-a)) (bb (getf kwargs :%block-b))
+                   (info (%208-block-info (make-symbol ba)))
+                   (bar (getf kwargs :on-complete))
+                   (swz (getf kwargs :swizzle))
+                   (d-type (semantic-node-type (analyze-expression d env context (append location '(2))))))
+              (flet ((fail (fmt &rest args)
+                       (error 'crisp-compiler-error
+                              :message (format nil "tcgen05-accumulate-via-tile: ~?" fmt args)
+                              :source-location location)))
+                (loop for (key nil) on kwargs by #'cddr
+                      unless (member (symbol-name key) '("SWIZZLE" "ON-COMPLETE" "B-MAJOR" "%BLOCK-A" "%SF-A" "%BLOCK-B" "%SF-B")
+                                     :test #'string=)
+                        do (fail "unknown option ~s.  The options are :swizzle, :b-major and :on-complete." key))
+                (unless (string-equal ba bb)
+                  (fail "A holds ~(~a~) blocks and B holds ~(~a~) blocks.  Mixed formats are not supported yet; both must be the same block." ba bb))
+                (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+                  (fail "the first argument is the (M N K) shape, as integers; got ~s." shape))
+                (unless (%tcgen05-acc-type-p d-type)
+                  (fail "D (2nd argument) must be a make-tcgen05-accumulator, got type ~a." d-type))
+                (when (%208-acc-int-p d-type)
+                  (fail "a block-scaled multiply accumulates in f32: D must be (make-tcgen05-accumulator float ..)."))
+                (unless (and swz (symbolp swz) (string-equal (symbol-name swz) "128B"))
+                  (fail "a block-scaled multiply needs :swizzle :128b, as the codes are loaded."))
+                (destructuring-bind (m n k) shape
+                  (destructuring-bind (dm dn delem) (gethash d-type *tcgen05-acc-dims*)
+                    (declare (ignore delem))
+                    (unless (and (= m dm) (= n dn))
+                      (fail "shape ~a does not match the accumulator, which is (~a ~a)." shape dm dn)))
+                  (unless (and (= m 128) (member n '(128 256)))
+                    (fail "a block-scaled multiply is M = 128 and N = 128 or 256 (B's scales come in 128-row atoms); got (~a ~a)." m n))
+                  (let ((want (%208-block-step info)))
+                    (unless (= k want)
+                      (fail "K must be ~a for ~(~a~) (one 128-byte swizzle atom of codes, four instructions), got ~a."
+                            want ba k)))
+                  (log:debug "208 block-scaled accumulate ~a (~a ~a ~a) on-complete ~a" ba m n k bar)
+                  (analyze-expression
+                   `(set! ,d (,(intern "%TCGEN05-MMA-BS" (find-package :crisp.compiler))
+                              ,d ,a ,b ,(getf kwargs :%sf-a) ,(getf kwargs :%sf-b) ,k ,ba ,@(when bar (list bar))))
+                   env context location)))))))))
+
+(defun analyze-%tcgen05-mma-bs (expr env context location)
+  "Endeavour 208 phase 4.  (%tcgen05-mma-bs D A B SF-A SF-B K BLOCK [BAR]) -> the :mma node with :block.
+   The site gets its own tensor-memory scale columns: A's atoms-per-step x 4, then B's x 4 per 128-row
+   block (they count toward the 512, D-208-13).  Without BAR it is synchronous, as %tcgen05-mma."
+  (destructuring-bind (d a b sfa sfb k bname &optional bar) (cdr expr)
+    (flet ((ref (x i) (analyze-expression `(~ ,x 0 0) env context (append location (list i)))))
+      (let* ((info   (%208-block-info (make-symbol bname)))
+             (d-node (analyze-expression d env context (append location '(1))))
+             (d-type (semantic-node-type d-node))
+             (dims   (gethash d-type *tcgen05-acc-dims*))
+             (nb     (floor (second dims) 128))
+             (aps    (nth-value 2 (%208-block-step info)))
+             (sf-col (%208-assign-columns context location (* 4 aps (1+ nb)) "tcgen05-accumulate-via-tile (its block scales)"))
+             (bar-node (and bar (analyze-expression bar env context (append location '(8)))))
+             (key    (%208-kernel-key context))
+             (site   (unless bar
+                       (let ((s (cons key location)))
+                         (or (gethash s *tcgen05-sync-sites*)
+                             (let ((i (getf (%208-kernel-info key) :sync-sites 0)))
+                               (setf (getf (gethash key *tcgen05-kernels*) :sync-sites) (1+ i))
+                               (setf (gethash s *tcgen05-sync-sites*) i)))))))
+        (log:debug "208 %tcgen05-mma-bs ~a ~a K=~a scale columns ~a..~a issue-warp ~a sync-site ~a"
+                   bname dims k sf-col (+ sf-col (* 4 aps (1+ nb)) -1) (%208-issue-warp) site)
+        (make-semantic-tcgen05-op
+         :op :mma
+         :args (append (list d-node (ref a 2) (ref b 3) (ref sfa 4) (ref sfb 5)) (when bar-node (list bar-node)))
+         :plist (list :m (first dims) :n (second dims) :k k :block info :aps aps :row-blocks-b nb
+                      :sf-col sf-col :issue-warp (%208-issue-warp) :sync-site site :kernel key)
+         :type d-type
+         :source-location location)))))
+
+(defun %208-param-names (params)
+  "Endeavour 208 phase 4.  The names the def-function parameter form PARAMS answers to, downcased:
+   every symbol in it, each '_'-prefix of one (A_BYTE_SIZE -> a, a_byte, a_byte_size), and the
+   same with '-' for '_'."
+  (let ((out '()))
+    (labels ((add (s)
+               (push s out)
+               (push (substitute #\- #\_ s) out))
+             (walk (x)
+               (cond ((and x (symbolp x))
+                      (let ((s (string-downcase (symbol-name x))))
+                        (loop for p = (position #\_ s) then (position #\_ s :start (1+ p))
+                              while p do (add (subseq s 0 p)))
+                        (add s)))
+                     ((consp x) (walk (car x)) (walk (cdr x))))))
+      (walk params))
+    out))
+
+(defun %208-block-binding (b)
+  "Endeavour 208 phase 4.  When the let binding B is (X (make-scratch-matrix BLOCK (R K))) or the -ring
+   form, with BLOCK a def-microfloat-block: (values CODES-BINDING SCALES-BINDING ENTRY).
+     CODES-BINDING   (X (make-scratch-matrix uchar (R K/epb) ..)) -- the packed codes, K-major
+     SCALES-BINDING  (X--SCALES (make-scratch-matrix uchar (Q 512) ..)) -- R/128 x atoms-per-step
+                     512-byte scale atoms, row block j's atoms at j*atoms-per-step, and Q that count
+                     rounded up to EVEN: the hoist packs scratch tiles back to back, and a 512-byte
+                     tile would leave the next 128-byte-swizzled codes tile off its 1024-byte alignment
+     ENTRY           (X :info INFO :rows R :cols K :sf X--SCALES)
+   NIL for any other binding.  R must be a multiple of 128 (a scale atom covers 128 rows) and K one
+   128-byte atom of codes (D-208-14)."
+  (let* ((init (and (consp b) (second b)))
+         (head (and (consp init) (first init))))
+    (when (and (or (%208-sym= head "MAKE-SCRATCH-MATRIX") (%208-sym= head "MAKE-SCRATCH-MATRIX-RING"))
+               (consp (cdr init)))
+      (let ((info (%208-block-info (second init))))
+        (when info
+          (let ((x (first b)) (dims (third init)))
+            (unless (getf info :kind)
+              (error 'crisp-compiler-error
+                     :message (format nil "~(~a~): tcgen05 multiplies NVFP4 (:base fp4 :scale fp8-e4m3 :shape (16)), MXFP4 (:base fp4 :scale fp8-e8m0 :shape (32)) and MXFP8 (:base fp8-e4m3 or fp8-e5m2 :scale fp8-e8m0 :shape (32)) blocks; ~(~a~) is :base ~(~a~) :scale ~(~a~) :shape (~a)."
+                                      x (getf info :name) (getf info :base) (getf info :scale) (getf info :vec))))
+            (multiple-value-bind (kel spr aps) (%208-block-step info)
+              (declare (ignore spr))
+              (unless (and (listp dims) (= (length dims) 2) (every #'integerp dims)
+                           (zerop (mod (first dims) 128)) (= (second dims) kel))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): a scratch tile of ~(~a~) for tcgen05 is (R ~a): R a multiple of 128 (a scale atom covers 128 rows) and K one 128-byte swizzle atom of codes; got ~s."
+                                        x (getf info :name) kel dims)))
+              (let* ((r (first dims))
+                     (sf (intern (format nil "~a--SCALES" (symbol-name x)) (symbol-package x)))
+                     (uchar (intern "UCHAR" (find-package :crisp-language)))
+                     (rest (cdddr init)))
+                (log:debug "208 block tile ~a: ~a (~a ~a) -> codes uchar (~a ~a), scales ~a (~a 512)"
+                           x (getf info :name) r kel r (floor kel (getf info :epb)) sf (* (floor r 128) aps))
+                (values (list x (list* head uchar (list r (floor kel (getf info :epb))) rest))
+                        (list sf (list* head uchar (list (* 2 (ceiling (* (floor r 128) aps) 2)) 512) rest))
+                        (list x :info info :rows r :cols kel :sf sf))))))))))
+
+(defvar *208-rw-kernel* nil
+  "Endeavour 208 phase 4.  The kernel name (downcased string) whose source %208-rw is rewriting, for
+   its scale-layout declarations.")
+
+(defun %208-acc-binding-elem (b)
+  "Endeavour 208 phase 4.  When the let binding B makes a tcgen05 accumulator (or ring): (values SYM
+   ELEM), the accumulator's element as written.  NIL otherwise."
+  (let ((init (and (consp b) (second b))))
+    (when (and (consp init) (consp (cdr init))
+               (or (%208-sym= (first init) "MAKE-TCGEN05-ACCUMULATOR")
+                   (%208-sym= (first init) "MAKE-TCGEN05-ACCUMULATOR-RING")))
+      (values (first b) (second init)))))
+
+(defun %208-check-block-accumulate (form ea eb tiles)
+  "Endeavour 208 phase 4.  Rewrite-time rules of a block-scaled (tcgen05-accumulate-via-tile SHAPE D A B
+   ..) whose A and B are block tiles EA / EB: the same block, M = 128, N 128 or 256, K one atom of
+   codes, and an f32 accumulator when D's binding is in TILES (as (D :acc ELEM))."
+  (flet ((fail (fmt &rest args)
+           (error 'crisp-compiler-error
+                  :message (format nil "tcgen05-accumulate-via-tile: ~?" fmt args))))
+    (let* ((ia (getf (cdr ea) :info)) (ib (getf (cdr eb) :info))
+           (shape (second form))
+           (d (third form))
+           (dsym (if (consp d) (second d) d))
+           (acc (and (symbolp dsym) (assoc dsym tiles))))
+      (unless (string-equal (getf ia :name) (getf ib :name))
+        (fail "A holds ~(~a~) blocks and B holds ~(~a~) blocks.  Mixed formats are not supported yet; both must be the same block."
+              (getf ia :name) (getf ib :name)))
+      (when (and acc (getf (cdr acc) :acc) (not (%208-sym= (getf (cdr acc) :acc) "FLOAT")))
+        (fail "a block-scaled multiply accumulates in f32: D must be (make-tcgen05-accumulator float ..), not ~(~a~)."
+              (getf (cdr acc) :acc)))
+      (when (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+        (destructuring-bind (m n k) shape
+          (unless (and (= m 128) (member n '(128 256)))
+            (fail "a block-scaled multiply is M = 128 and N = 128 or 256 (B's scales come in 128-row atoms); got (~a ~a)." m n))
+          (let ((want (%208-block-step ia)))
+            (unless (= k want)
+              (fail "K must be ~a for ~(~a~) (one 128-byte swizzle atom of codes, four instructions), got ~a."
+                    want (getf ia :name) k))))))))
+
+(defun %208-parse-scale-layouts (name params body)
+  "Endeavour 208 phase 4.  Records kernel NAME's (scale-layout S :of A :blocked-128x4) declarations from
+   the declare forms at the head of BODY in *208-scale-layouts*, refusing a malformed one, an unknown
+   layout, or a name that is not one of PARAMS.  Q1 (b): the kernel declares the layout; the host
+   provides it, and the generated hoist matches it."
+  (let ((pnames (%208-param-names params))
+        (out '()))
+    (log:debug "208 scale-layout parse of ~a: params ~s" name params)
+    (dolist (f body)
+      (when (and (consp f) (%208-sym= (first f) "DECLARE"))
+        (dolist (d (rest f))
+          (when (and (consp d) (%208-sym= (first d) "SCALE-LAYOUT"))
+            (destructuring-bind (&optional s of a layout &rest more) (rest d)
+              (unless (and (symbolp s) (%208-sym= of "OF") (symbolp a) (symbolp layout) (null more))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): expected (scale-layout SCALES :of MATRIX :blocked-128x4), got ~s." name d)))
+              (unless (%208-sym= layout "BLOCKED-128X4")
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): (scale-layout ~(~a~) ..): the layout ~s is not supported.  The one layout is :blocked-128x4, cuBLASLt's and torchao's to_blocked: 512-byte atoms of 128 rows x 4 scales." name s layout)))
+              (dolist (nm (list s a))
+                (unless (member (string-downcase (symbol-name nm)) pnames :test #'string=)
+                  (error 'crisp-compiler-error
+                         :message (format nil "~(~a~): (scale-layout ~(~a~) :of ~(~a~) ..): ~(~a~) is not a parameter of the kernel." name s a nm))))
+              (push (list :scales (string-downcase (symbol-name s)) :of (string-downcase (symbol-name a))
+                          :layout :blocked-128x4)
+                    out))))))
+    (let ((decls (setf (gethash (string-downcase (symbol-name name)) *208-scale-layouts*) (nreverse out))))
+      ;; (the earlier copy logged OUT after NREVERSE, which shows only the last declaration)
+      (when decls (log:debug "208 scale layouts of ~a: ~s" name decls)))))
+
+(defun %208-rw (form tiles)
+  "Endeavour 208 phase 4.  The block-tile source rewrite of FORM, TILES the block tiles in scope (see
+   the section header).  EQ-preserving.  TILES also carries the tcgen05 accumulator bindings, as
+   (D :acc ELEM), and the block rules whose inputs are literal are checked here, before pass 1."
+  (cond
+    ((atom form) form)
+    ;; LET: block bindings split into codes + scales; the body sees them.
+    ((and (%208-sym= (first form) "LET") (consp (cdr form)) (listp (second form)))
+     (let ((out '()) (changed nil) (inner tiles))
+       (dolist (b (second form))
+         (multiple-value-bind (codes scales entry) (%208-block-binding b)
+           (if codes
+               (progn (setf changed t) (push codes out) (push scales out) (push entry inner))
+               (let ((nb (if (consp b) (%208-rw-list b tiles) b)))
+                 (multiple-value-bind (asym aelem) (%208-acc-binding-elem b)
+                   (when asym (push (list asym :acc aelem) inner)))
+                 (unless (eq nb b) (setf changed t))
+                 (push nb out)))))
+       (let ((body (%208-rw-list (cddr form) inner)))
+         (if (or changed (not (eq body (cddr form))))
+             (list* (first form) (nreverse out) body)
+             form))))
+    ;; load-tile into a block tile: the scale copy FIRST (its expect_tx must precede the codes load's
+    ;; arrive, from the same thread), then the codes load without :scales.
+    ((%208-sym= (first form) "LOAD-TILE")
+     (multiple-value-bind (entry sf) (%208-block-tile-ref (third form) tiles)
+       (if (null entry)
+           (%208-rw-list form tiles)
+           (let* ((kw (nthcdr 4 form))
+                  (scales (getf kw :scales))
+                  (bar (getf kw :barrier))
+                  (plain (loop for (k v) on kw by #'cddr unless (eq k :scales) append (list k v))))
+             (unless scales
+               (error 'crisp-compiler-error
+                      :message (format nil "(load-tile ~(~a~) ~(~a~) ..): ~(~a~) holds ~(~a~) blocks, so the load needs their scales: add :scales S, with (scale-layout S :of ~(~a~) :blocked-128x4) declared."
+                                       (second form) (third form) (third form)
+                                       (getf (getf (cdr entry) :info) :name) (second form))))
+             (let ((decl (find-if (lambda (d) (string-equal (getf d :scales) (symbol-name scales)))
+                                  (and *208-rw-kernel* (gethash *208-rw-kernel* *208-scale-layouts*)))))
+               (unless (and (symbolp scales) decl (string-equal (getf decl :of) (symbol-name (second form))))
+                 (error 'crisp-compiler-error
+                        :message (format nil "load-tile ~(~a~) .. :scales ~(~a~): declare the layout of the scales, (scale-layout ~(~a~) :of ~(~a~) :blocked-128x4)."
+                                         (second form) scales scales (second form)))))
+             (unless bar
+               (error 'crisp-compiler-error
+                      :message (format nil "(load-tile ~(~a~) ~(~a~) .. :scales ..): a block tile is loaded by TMA and needs :barrier." (second form) (third form))))
+             (list 'progn
+                   (list (intern "%208-LOAD-SCALES" (find-package :crisp.compiler))
+                         scales (second form) sf (fourth form) bar
+                         (getf (getf (cdr entry) :info) :name) (getf (cdr entry) :rows))
+                   (list* (first form) (second form) (third form) (fourth form) plain))))))
+    ;; The accumulate on block tiles: the hidden options carry the block and the scales tiles.
+    ((and (%208-sym= (first form) "TCGEN05-ACCUMULATE-VIA-TILE") (>= (length form) 5))
+     (multiple-value-bind (ea sfa) (%208-block-tile-ref (nth 3 form) tiles)
+       (multiple-value-bind (eb sfb) (%208-block-tile-ref (nth 4 form) tiles)
+         (cond ((and (null ea) (null eb)) (%208-rw-list form tiles))
+               ((not (and ea eb))
+                (error 'crisp-compiler-error
+                       :message (format nil "tcgen05-accumulate-via-tile: ~(~a~) is a block tile and ~(~a~) is not.  A block-scaled multiply takes two block tiles of the same block."
+                                        (if ea (nth 3 form) (nth 4 form)) (if ea (nth 4 form) (nth 3 form)))))
+               (t (%208-check-block-accumulate form ea eb tiles)
+                  (append form
+                          (list :%block-a (getf (getf (cdr ea) :info) :name) :%sf-a sfa
+                                :%block-b (getf (getf (cdr eb) :info) :name) :%sf-b sfb)))))))
+    (t (%208-rw-list form tiles))))
+
+(defun %208-rewrite-block-kernel (form)
+  "Endeavour 208 phase 4.  A def-function FORM with its scale-layout declarations recorded and, when it
+   holds block scratch tiles, its body rewritten (section header).  Any other FORM comes back EQ."
+  (let ((name (second form)) (params (third form)) (body (cdddr form)))
+    (when (and (symbolp name) (listp params))
+      (%208-parse-scale-layouts name params body))
+    (if (%208-tree-has-block-scratch-p body)
+        (let ((new (let ((*208-rw-kernel* (string-downcase (symbol-name name)))) (%208-rw-list body nil))))
+          (log:debug "208 block-scaled source rewrite of ~a" name)
+          (if (eq new body) form (list* (first form) name params new)))
+        form)))
+
+(defun %208-block-tile-ref (form tiles)
+  "Endeavour 208 phase 4.  When FORM is a block tile X or (ring-get X I) of TILES: (values ENTRY SF-FORM),
+   SF-FORM naming the matching scales tile (X--SCALES, or (ring-get X--SCALES I)).  Entries without
+   :info (accumulator bindings) are not block tiles."
+  (let* ((sym (cond ((and form (symbolp form)) form)
+                    ((and (consp form) (%208-sym= (first form) "RING-GET") (symbolp (second form))) (second form))))
+         (e (and sym (find-if (lambda (x) (and (eq (car x) sym) (getf (cdr x) :info))) tiles))))
+    (when e
+      (values e (if (symbolp form)
+                    (getf (cdr e) :sf)
+                    (list (first form) (getf (cdr e) :sf) (third form)))))))
