@@ -2472,3 +2472,1203 @@
         (analyze-expression
          (%mmts-lower c-form c-tile tile-spec k-form k-step gy gx gk body location reset-val)
          env context location)))))
+
+;;;; ======================================================================
+;;;; Endeavour 208 phase 4 -- block-scaled microfloats (NVFP4 / MXFP4 / MXFP8) through tcgen05.
+;;;; See tests/spec/208-tcgen05/tcgen05.md (D-208-10..17) and isa-notes.md ("Phase 4").
+;;;;
+;;;; A matrix whose element is a def-microfloat-block holds that block's packed codes, (M K) in
+;;;; ELEMENTS (Chris, option (a)).  A scratch tile of a block type is rewritten -- before pass 1, so the
+;;;; scratch sizes and TMA descriptors are right -- into a uchar codes tile (R K/epb) and a hidden scales
+;;;; tile X%SF of 512-byte atoms; `load-tile .. :scales S` becomes a scale copy then the codes load; and
+;;;; `tcgen05-accumulate-via-tile` on block tiles gains the hidden :%block / :%sf-a / :%sf-b options.
+;;;; ======================================================================
+
+;; src/macros.lisp -- fold: def-microfloat-block passes N to register-microfloat-block, which records
+;; it as :shape.  A macro is not late-bound for compiled callers, but def-microfloat-block is only
+;; expanded from Crisp source at compile time, so wrapping its macro function here works.
+(defvar *208-orig-def-microfloat-block* (macro-function 'crisp-language::def-microfloat-block)
+  "Endeavour 208.  def-microfloat-block's macro function before the :shape-recording wrapper.")
+
+(setf (macro-function 'crisp-language::def-microfloat-block)
+      (lambda (form env)
+        (prog1 (funcall *208-orig-def-microfloat-block* form env)
+          (let* ((key   (and (symbolp (second form)) (symbol-name (second form))))
+                 (entry (and key (gethash key *microfloat-blocks*)))
+                 (shape (getf (cddr form) :shape)))
+            (when (and entry (consp shape) (integerp (first shape)))
+              (setf (getf (gethash key *microfloat-blocks*) :shape) (first shape)))))))
+
+;; src/mma.lisp
+(defun %208-block-info (elem)
+  "Endeavour 208 phase 4.  When ELEM names a def-microfloat-block, its tcgen05 plist:
+     :name :base :scale :vec   the block (names as strings; :vec the block size in elements)
+     :kind        the tcgen05.mma kind, with its scale_vec, or NIL when no kind fits the block
+     :epb         codes per byte (2 for fp4, 1 for fp8)
+     :fmt :sfmt   the a/b_format and scale_format codes of the block-scaled instruction descriptor
+     :spi         scales per row one instruction consumes (4X 4, 2X 2, 1X 1)
+   NIL when ELEM is not a block."
+  (let* ((e (and elem (%canonical-elem elem)))
+         (b (and e (symbolp e) (microfloat-block-p e))))
+    (when b
+      (let ((base (symbol-name (getf b :base)))
+            (scale (symbol-name (getf b :scale)))
+            (vec (getf b :shape)))
+        (flet ((info (&rest kv) (list* :name (symbol-name e) :base base :scale scale :vec vec kv)))
+          (cond ((and (string= base "FP4") (string= scale "FP8-E4M3") (eql vec 16))
+                 (info :kind "mxf4nvf4.block_scale.scale_vec::4X" :epb 2 :fmt 1 :sfmt 0 :spi 4))
+                ((and (string= base "FP4") (string= scale "FP8-E8M0") (eql vec 32))
+                 (info :kind "mxf4.block_scale.scale_vec::2X" :epb 2 :fmt 1 :sfmt 1 :spi 2))
+                ((and (member base '("FP8-E4M3" "FP8-E5M2") :test #'string=)
+                      (string= scale "FP8-E8M0") (eql vec 32))
+                 (info :kind "mxf8f6f4.block_scale" :epb 1 :fmt (if (string= base "FP8-E4M3") 0 1)
+                       :sfmt 1 :spi 1))
+                (t (info :kind nil))))))))
+
+;; src/mma.lisp
+(defun %208-block-step (info)
+  "Endeavour 208 phase 4.  (values K-ELEMS SCALES-PER-ROW ATOMS-PER-STEP) of one tcgen05 call on block
+   INFO: K is one 128-byte swizzle atom of codes (256 fp4, 128 fp8); a row then has K/vec scales, which
+   is K/vec/4 512-byte scale atoms per 128 rows."
+  (let* ((k   (* 128 (getf info :epb)))
+         (spr (floor k (getf info :vec))))
+    (values k spr (floor spr 4))))
+
+;; src/mma.lisp
+(defvar *208-scale-layouts* (make-hash-table :test 'equal)
+  "Endeavour 208 phase 4.  Kernel name (string) -> list of (:scales S :of A :layout L), the kernel's
+   (scale-layout S :of A L) declarations, names as downcased strings.  Set when the kernel's source is
+   visited (before pass 1).")
+
+;; src/mma.lisp
+(defun %208-sym= (x name)
+  "Endeavour 208.  T when X is a symbol named NAME (any package)."
+  (and x (symbolp x) (string-equal (symbol-name x) name)))
+
+;; src/mma.lisp
+(defun %208-parse-scale-layouts (name params body)
+  "Endeavour 208 phase 4.  Records kernel NAME's (scale-layout S :of A :blocked-128x4) declarations from
+   the declare forms at the head of BODY in *208-scale-layouts*, refusing a malformed one, an unknown
+   layout, or a name that is not one of PARAMS.  Q1 (b): the kernel declares the layout; the host
+   provides it, and the generated hoist matches it."
+  (let ((pnames (loop for p in params
+                      when (and (symbolp p) (not (string= (symbol-name p) "&OUT")))
+                        collect (string-downcase (symbol-name p))))
+        (out '()))
+    (dolist (f body)
+      (when (and (consp f) (%208-sym= (first f) "DECLARE"))
+        (dolist (d (rest f))
+          (when (and (consp d) (%208-sym= (first d) "SCALE-LAYOUT"))
+            (destructuring-bind (&optional s of a layout &rest more) (rest d)
+              (unless (and (symbolp s) (%208-sym= of "OF") (symbolp a) (symbolp layout) (null more))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): expected (scale-layout SCALES :of MATRIX :blocked-128x4), got ~s." name d)))
+              (unless (%208-sym= layout "BLOCKED-128X4")
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): (scale-layout ~(~a~) ..): the layout ~s is not supported.  The one layout is :blocked-128x4, cuBLASLt's and torchao's to_blocked: 512-byte atoms of 128 rows x 4 scales." name s layout)))
+              (dolist (nm (list s a))
+                (unless (member (string-downcase (symbol-name nm)) pnames :test #'string=)
+                  (error 'crisp-compiler-error
+                         :message (format nil "~(~a~): (scale-layout ~(~a~) :of ~(~a~) ..): ~(~a~) is not a parameter of the kernel." name s a nm))))
+              (push (list :scales (string-downcase (symbol-name s)) :of (string-downcase (symbol-name a))
+                          :layout :blocked-128x4)
+                    out))))))
+    (setf (gethash (string-downcase (symbol-name name)) *208-scale-layouts*) (nreverse out))
+    (when out (log:debug "208 scale layouts of ~a: ~s" name out))))
+
+;; src/mma.lisp
+(defun %208-block-binding (b)
+  "Endeavour 208 phase 4.  When the let binding B is (X (make-scratch-matrix BLOCK (R K))) or the -ring
+   form, with BLOCK a def-microfloat-block: (values CODES-BINDING SCALES-BINDING ENTRY).
+     CODES-BINDING   (X (make-scratch-matrix uchar (R K/epb) ..)) -- the packed codes, K-major
+     SCALES-BINDING  (X%SF (make-scratch-matrix uchar (Q 512) ..)) -- Q = R/128 x atoms-per-step
+                     512-byte scale atoms, row block j's atoms at j*atoms-per-step
+     ENTRY           (X :info INFO :rows R :cols K :sf X%SF)
+   NIL for any other binding.  R must be a multiple of 128 (a scale atom covers 128 rows) and K one
+   128-byte atom of codes (D-208-14)."
+  (let* ((init (and (consp b) (second b)))
+         (head (and (consp init) (first init))))
+    (when (and (or (%208-sym= head "MAKE-SCRATCH-MATRIX") (%208-sym= head "MAKE-SCRATCH-MATRIX-RING"))
+               (consp (cdr init)))
+      (let ((info (%208-block-info (second init))))
+        (when info
+          (let ((x (first b)) (dims (third init)))
+            (unless (getf info :kind)
+              (error 'crisp-compiler-error
+                     :message (format nil "~(~a~): tcgen05 multiplies NVFP4 (:base fp4 :scale fp8-e4m3 :shape (16)), MXFP4 (:base fp4 :scale fp8-e8m0 :shape (32)) and MXFP8 (:base fp8-e4m3 or fp8-e5m2 :scale fp8-e8m0 :shape (32)) blocks; ~(~a~) is :base ~(~a~) :scale ~(~a~) :shape (~a)."
+                                      x (getf info :name) (getf info :base) (getf info :scale) (getf info :vec))))
+            (multiple-value-bind (kel spr aps) (%208-block-step info)
+              (declare (ignore spr))
+              (unless (and (listp dims) (= (length dims) 2) (every #'integerp dims)
+                           (zerop (mod (first dims) 128)) (= (second dims) kel))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): a scratch tile of ~(~a~) for tcgen05 is (R ~a): R a multiple of 128 (a scale atom covers 128 rows) and K one 128-byte swizzle atom of codes; got ~s."
+                                        x (getf info :name) kel dims)))
+              (let* ((r (first dims))
+                     (sf (intern (format nil "~a%SF" (symbol-name x)) (symbol-package x)))
+                     (uchar (intern "UCHAR" (find-package :crisp-language)))
+                     (rest (cdddr init)))
+                (log:debug "208 block tile ~a: ~a (~a ~a) -> codes uchar (~a ~a), scales ~a (~a 512)"
+                           x (getf info :name) r kel r (floor kel (getf info :epb)) sf (* (floor r 128) aps))
+                (values (list x (list* head uchar (list r (floor kel (getf info :epb))) rest))
+                        (list sf (list* head uchar (list (* (floor r 128) aps) 512) rest))
+                        (list x :info info :rows r :cols kel :sf sf))))))))))
+
+;; src/mma.lisp
+(defun %208-block-tile-ref (form tiles)
+  "Endeavour 208 phase 4.  When FORM is a block tile X or (ring-get X I) of TILES: (values ENTRY SF-FORM),
+   SF-FORM naming the matching scales tile (X%SF, or (ring-get X%SF I))."
+  (let ((e (cond ((and form (symbolp form)) (assoc form tiles))
+                 ((and (consp form) (%208-sym= (first form) "RING-GET") (symbolp (second form)))
+                  (assoc (second form) tiles)))))
+    (when e
+      (values e (if (symbolp form)
+                    (getf (cdr e) :sf)
+                    (list (first form) (getf (cdr e) :sf) (third form)))))))
+
+;; src/mma.lisp
+(defun %208-rw-list (list tiles)
+  "Endeavour 208 phase 4.  %208-rw over the elements of LIST; the SAME conses back when nothing changed
+   (source positions are keyed by cons identity)."
+  (if (atom list)
+      list
+      (let ((a (%208-rw (car list) tiles))
+            (d (%208-rw-list (cdr list) tiles)))
+        (if (and (eq a (car list)) (eq d (cdr list))) list (cons a d)))))
+
+;; src/mma.lisp
+(defun %208-rw (form tiles)
+  "Endeavour 208 phase 4.  The block-tile source rewrite of FORM, TILES the block tiles in scope (see
+   the section header).  EQ-preserving."
+  (cond
+    ((atom form) form)
+    ;; LET: block bindings split into codes + scales; the body sees them.
+    ((and (%208-sym= (first form) "LET") (consp (cdr form)) (listp (second form)))
+     (let ((out '()) (changed nil) (inner tiles))
+       (dolist (b (second form))
+         (multiple-value-bind (codes scales entry) (%208-block-binding b)
+           (if codes
+               (progn (setf changed t) (push codes out) (push scales out) (push entry inner))
+               (let ((nb (if (consp b) (%208-rw-list b tiles) b)))
+                 (unless (eq nb b) (setf changed t))
+                 (push nb out)))))
+       (let ((body (%208-rw-list (cddr form) inner)))
+         (if (or changed (not (eq body (cddr form))))
+             (list* (first form) (nreverse out) body)
+             form))))
+    ;; load-tile into a block tile: the scale copy FIRST (its expect_tx must precede the codes load's
+    ;; arrive, from the same thread), then the codes load without :scales.
+    ((%208-sym= (first form) "LOAD-TILE")
+     (multiple-value-bind (entry sf) (%208-block-tile-ref (third form) tiles)
+       (if (null entry)
+           (%208-rw-list form tiles)
+           (let* ((kw (nthcdr 4 form))
+                  (scales (getf kw :scales))
+                  (bar (getf kw :barrier))
+                  (plain (loop for (k v) on kw by #'cddr unless (eq k :scales) append (list k v))))
+             (unless scales
+               (error 'crisp-compiler-error
+                      :message (format nil "(load-tile ~(~a~) ~(~a~) ..): ~(~a~) holds ~(~a~) blocks, so the load needs their scales: add :scales S, with (scale-layout S :of ~(~a~) :blocked-128x4) declared."
+                                       (second form) (third form) (third form)
+                                       (getf (getf (cdr entry) :info) :name) (second form))))
+             (unless bar
+               (error 'crisp-compiler-error
+                      :message (format nil "(load-tile ~(~a~) ~(~a~) .. :scales ..): a block tile is loaded by TMA and needs :barrier." (second form) (third form))))
+             (list 'progn
+                   (list (intern "%208-LOAD-SCALES" (find-package :crisp.compiler))
+                         scales (second form) sf (fourth form) bar
+                         (getf (getf (cdr entry) :info) :name) (getf (cdr entry) :rows))
+                   (list* (first form) (second form) (third form) (fourth form) plain))))))
+    ;; The accumulate on block tiles: the hidden options carry the block and the scales tiles.
+    ((and (%208-sym= (first form) "TCGEN05-ACCUMULATE-VIA-TILE") (>= (length form) 5))
+     (multiple-value-bind (ea sfa) (%208-block-tile-ref (nth 3 form) tiles)
+       (multiple-value-bind (eb sfb) (%208-block-tile-ref (nth 4 form) tiles)
+         (cond ((and (null ea) (null eb)) (%208-rw-list form tiles))
+               ((not (and ea eb))
+                (error 'crisp-compiler-error
+                       :message (format nil "tcgen05-accumulate-via-tile: ~(~a~) is a block tile and ~(~a~) is not.  A block-scaled multiply takes two block tiles of the same block."
+                                        (if ea (nth 3 form) (nth 4 form)) (if ea (nth 4 form) (nth 3 form)))))
+               (t (append form
+                          (list :%block-a (getf (getf (cdr ea) :info) :name) :%sf-a sfa
+                                :%block-b (getf (getf (cdr eb) :info) :name) :%sf-b sfb)))))))
+    (t (%208-rw-list form tiles))))
+
+;; src/mma.lisp
+(defun %208-tree-has-block-scratch-p (form)
+  "Endeavour 208 phase 4.  T when FORM contains a make-scratch-matrix(-ring) of a microfloat block.
+   The cheap test that keeps every other kernel's source untouched (EQ)."
+  (cond ((atom form) nil)
+        ((and (or (%208-sym= (first form) "MAKE-SCRATCH-MATRIX") (%208-sym= (first form) "MAKE-SCRATCH-MATRIX-RING"))
+              (consp (cdr form)) (%208-block-info (second form)))
+         t)
+        (t (loop for x on form
+                 thereis (if (consp x) (%208-tree-has-block-scratch-p (car x)) nil)))))
+
+;; src/mma.lisp
+(defun %208-rewrite-block-kernel (form)
+  "Endeavour 208 phase 4.  A def-function FORM with its scale-layout declarations recorded and, when it
+   holds block scratch tiles, its body rewritten (section header).  Any other FORM comes back EQ."
+  (let ((name (second form)) (params (third form)) (body (cdddr form)))
+    (when (and (symbolp name) (listp params))
+      (%208-parse-scale-layouts name params body))
+    (if (%208-tree-has-block-scratch-p body)
+        (let ((new (%208-rw-list body nil)))
+          (log:debug "208 block-scaled source rewrite of ~a" name)
+          (if (eq new body) form (list* (first form) name params new)))
+        form)))
+
+;; src/analysis/core.lisp -- fold: the def-function case of visit-toplevel-form rewrites first.
+(defvar *208-orig-visit-toplevel-form* (fdefinition 'visit-toplevel-form)
+  "Endeavour 208.  visit-toplevel-form before the block-tile source rewrite.")
+
+;; src/analysis/core.lisp
+(defun visit-toplevel-form (form location visitor-fn)
+  "Endeavour 208 wrapper: a def-function form passes through %208-rewrite-block-kernel (scale-layout
+   declarations; block scratch tiles) before both passes see it; then the original walker."
+  (funcall *208-orig-visit-toplevel-form*
+           (if (and (consp form) (eq (car form) 'def-function)) (%208-rewrite-block-kernel form) form)
+           location visitor-fn))
+
+;;; ---------------------------------------------------------------- the scale copy
+
+;; src/mma.lisp
+(defun analyze-%208-load-scales (expr env context location)
+  "Endeavour 208 phase 4.  (%208-load-scales S SRC SF (ROW-TILE K-TILE) BAR BLOCK ROWS): copy the scale
+   atoms of SRC's tile (ROW-TILE K-TILE) from the :blocked-128x4 vector S into the scales tile SF, on
+   BAR.  Emitted by the source rewrite in front of the codes load.  The atoms of one row block for one
+   K-step are contiguous: (rb * K/(vec*4) + kt * aps) * 512, aps*512 bytes; ROWS/128 row blocks."
+  (destructuring-bind (s src sf coords bar bname rows) (cdr expr)
+    (let* ((info   (%208-block-info (make-symbol bname)))
+           (kernel (compiler-context-current-compiling-function context))
+           (decl   (find-if (lambda (d) (string-equal (getf d :scales) (symbol-name s)))
+                            (gethash (string-downcase (symbol-name kernel)) *208-scale-layouts*)))
+           (ct     (%kernel-param-contiguous-term kernel src))
+           (ki     (if (eq ct :col-major) 0 1))
+           (tu     (intern "TO-ULONG" (find-package :crisp-language)))
+           (ex     (intern "EXTENTS~" (find-package :crisp-language))))
+      (unless (and decl (string-equal (getf decl :of) (symbol-name src)))
+        (error 'crisp-compiler-error
+               :message (format nil "load-tile ~(~a~) .. :scales ~(~a~): declare the layout of the scales, (scale-layout ~(~a~) :of ~(~a~) :blocked-128x4)."
+                                src s s src)
+               :source-location location))
+      (multiple-value-bind (kel spr aps) (%208-block-step info)
+        (declare (ignore kel spr))
+        (log:debug "208 %208-load-scales ~a of ~a (~a, ~a) rows ~a aps ~a K index ~a" s src bname ct rows aps ki)
+        (make-semantic-tcgen05-op
+         :op :load-scales
+         :args (list (analyze-expression `(~ ,s 0) env context (append location '(1)))
+                     (analyze-expression `(~ ,sf 0 0) env context (append location '(3)))
+                     (analyze-expression `(,tu (~ (,ex ,src) ,ki)) env context (append location '(2)))
+                     (analyze-expression `(,tu ,(first coords)) env context (append location '(4 0)))
+                     (analyze-expression `(,tu ,(second coords)) env context (append location '(4 1)))
+                     (analyze-expression bar env context (append location '(5))))
+         :plist (list :vec (getf info :vec) :aps aps :row-blocks (floor rows 128)
+                      :ws-leader (and *in-warp-spec-block* t))
+         :type 'void
+         :source-location location)))))
+
+;; src/codegen.lisp
+(defun %208-gen-load-scales (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208 phase 4.  One elected thread (lane 0 inside a warp-spec role, else thread 0 -- the
+   TMA load's own rule, so it is the same thread and in program order before the codes load's
+   arrive.expect_tx): mbarrier.expect_tx for every scale byte, then one cp.async.bulk per row block,
+   completing on the barrier.  No arrival: the barrier's count is the codes loads', as before."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (destructuring-bind (s-ref sf-ref kext-node c0-node c1-node bar-node) (semantic-tcgen05-op-args node)
+      (let* ((pl     (semantic-tcgen05-op-plist node))
+             (i32    (llvm-int32-type))
+             (i64    (llvm-int64-type))
+             (aps    (getf pl :aps))
+             (nb     (getf pl :row-blocks))
+             (s-ptr  (nth-value 2 (gen s-ref)))
+             (sf-ptr (nth-value 2 (gen sf-ref)))
+             (kext   (gen kext-node))
+             (c0     (gen c0-node))
+             (c1     (gen c1-node))
+             (mbar   (%208-barrier-addr builder (gen bar-node)))
+             (katoms (crisp.llvm-bindings::llvm-build-udiv builder kext (llvm-const-int i64 (* 4 (getf pl :vec)) nil) "sf_katoms"))
+             (leader (if (getf pl :ws-leader)
+                         (llvm-build-icmp builder +llvm-int-eq+ (%ptx-read-warp-sreg builder module "laneid")
+                                          (llvm-const-int i32 0 nil) "sf_lane0")
+                         (llvm-build-icmp builder +llvm-int-eq+ (%208-linear-tid builder module)
+                                          (llvm-const-int i32 0 nil) "sf_tid0"))))
+        (unless (and s-ptr sf-ptr)
+          (error "208 %208-load-scales: no pointer for the scales (~a) or the scales tile (~a)" s-ptr sf-ptr))
+        (log:debug "208 gen load-scales: ~a row block~:p x ~a atom~:p" nb aps)
+        (%208-if builder leader
+                 (lambda ()
+                   (let ((s-addr  (llvm-build-ptr-to-int builder s-ptr i64 "sf_src0"))
+                         (sf-addr (llvm-build-ptr-to-int builder sf-ptr i32 "sf_dst0")))
+                     (%208-asm builder "mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [$0], $1;"
+                               "r,r,~{memory}" nil (list i32 i32)
+                               (list mbar (llvm-const-int i32 (* nb aps 512) nil)))
+                     (dotimes (j nb)
+                       (let* ((rb   (llvm-build-add builder (llvm-build-mul builder c0 (llvm-const-int i64 nb nil) "sf_rb0")
+                                                    (llvm-const-int i64 j nil) "sf_rb"))
+                              (atom (llvm-build-add builder (llvm-build-mul builder rb katoms "sf_rowatoms")
+                                                    (llvm-build-mul builder c1 (llvm-const-int i64 aps nil) "sf_katom")
+                                                    "sf_atom"))
+                              (src  (llvm-build-add builder s-addr
+                                                    (llvm-build-mul builder atom (llvm-const-int i64 512 nil) "sf_off")
+                                                    "sf_src"))
+                              (dst  (llvm-build-add builder sf-addr (llvm-const-int i32 (* j aps 512) nil) "sf_dst")))
+                         (%208-asm builder
+                                   "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [$0], [$1], $2, [$3];"
+                                   "r,l,r,r,~{memory}" nil (list i32 i64 i32 i32)
+                                   (list dst src (llvm-const-int i32 (* aps 512) nil) mbar))))))
+                 "sf_issue")
+        (values (llvm-const-int i64 0 nil) nil)))))
+
+;;; ---------------------------------------------------------------- the block-scaled accumulate
+
+;; src/mma.lisp
+(defvar *208-orig-analyze-accumulate* (fdefinition 'analyze-tcgen05-accumulate-via-tile)
+  "Endeavour 208 phase 4.  The 16-bit / tf32 / int8 accumulate analyzer.")
+
+;; src/mma.lisp
+(defun analyze-tcgen05-accumulate-via-tile (expr env context location)
+  "Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR]).
+   Phase 4: A and B are block tiles (the source rewrite added :%block-a / :%sf-a / :%block-b / :%sf-b)
+   -> (set! D (%tcgen05-mma-bs D A B SF-A SF-B K BLOCK [BAR])).  Rules: the same block on both sides
+   (D-208-10); an f32 accumulator; M = 128, N 128 or 256 (B's scales come in 128-row atoms); K one
+   128-byte atom of codes (D-208-14).  Anything else goes to the earlier analyzer."
+  (let ((kw (nthcdr 5 expr)))
+    (if (not (getf kw :%block-a))
+        (funcall *208-orig-analyze-accumulate* expr env context location)
+        (progn
+          (%tcgen05-require-arch "tcgen05-accumulate-via-tile" location)
+          (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
+            (let* ((ba (getf kwargs :%block-a)) (bb (getf kwargs :%block-b))
+                   (info (%208-block-info (make-symbol ba)))
+                   (bar (getf kwargs :on-complete))
+                   (swz (getf kwargs :swizzle))
+                   (d-type (semantic-node-type (analyze-expression d env context (append location '(2))))))
+              (flet ((fail (fmt &rest args)
+                       (error 'crisp-compiler-error
+                              :message (format nil "tcgen05-accumulate-via-tile: ~?" fmt args)
+                              :source-location location)))
+                (loop for (key nil) on kwargs by #'cddr
+                      unless (member (symbol-name key) '("SWIZZLE" "ON-COMPLETE" "B-MAJOR" "%BLOCK-A" "%SF-A" "%BLOCK-B" "%SF-B")
+                                     :test #'string=)
+                        do (fail "unknown option ~s.  The options are :swizzle, :b-major and :on-complete." key))
+                (unless (string-equal ba bb)
+                  (fail "A holds ~(~a~) blocks and B holds ~(~a~) blocks.  Mixed formats are not supported yet; both must be the same block." ba bb))
+                (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+                  (fail "the first argument is the (M N K) shape, as integers; got ~s." shape))
+                (unless (%tcgen05-acc-type-p d-type)
+                  (fail "D (2nd argument) must be a make-tcgen05-accumulator, got type ~a." d-type))
+                (when (%208-acc-int-p d-type)
+                  (fail "a block-scaled multiply accumulates in f32: D must be (make-tcgen05-accumulator float ..)."))
+                (unless (and swz (symbolp swz) (string-equal (symbol-name swz) "128B"))
+                  (fail "a block-scaled multiply needs :swizzle :128b, as the codes are loaded."))
+                (destructuring-bind (m n k) shape
+                  (destructuring-bind (dm dn delem) (gethash d-type *tcgen05-acc-dims*)
+                    (declare (ignore delem))
+                    (unless (and (= m dm) (= n dn))
+                      (fail "shape ~a does not match the accumulator, which is (~a ~a)." shape dm dn)))
+                  (unless (and (= m 128) (member n '(128 256)))
+                    (fail "a block-scaled multiply is M = 128 and N = 128 or 256 (B's scales come in 128-row atoms); got (~a ~a)." m n))
+                  (let ((want (%208-block-step info)))
+                    (unless (= k want)
+                      (fail "K must be ~a for ~(~a~) (one 128-byte swizzle atom of codes, four instructions), got ~a."
+                            want ba k)))
+                  (log:debug "208 block-scaled accumulate ~a (~a ~a ~a) on-complete ~a" ba m n k bar)
+                  (analyze-expression
+                   `(set! ,d (,(intern "%TCGEN05-MMA-BS" (find-package :crisp.compiler))
+                              ,d ,a ,b ,(getf kwargs :%sf-a) ,(getf kwargs :%sf-b) ,k ,ba ,@(when bar (list bar))))
+                   env context location)))))))))
+
+;; src/mma.lisp
+(defun analyze-%tcgen05-mma-bs (expr env context location)
+  "Endeavour 208 phase 4.  (%tcgen05-mma-bs D A B SF-A SF-B K BLOCK [BAR]) -> the :mma node with :block.
+   The site gets its own tensor-memory scale columns: A's atoms-per-step x 4, then B's x 4 per 128-row
+   block (they count toward the 512, D-208-13).  Without BAR it is synchronous, as %tcgen05-mma."
+  (destructuring-bind (d a b sfa sfb k bname &optional bar) (cdr expr)
+    (flet ((ref (x i) (analyze-expression `(~ ,x 0 0) env context (append location (list i)))))
+      (let* ((info   (%208-block-info (make-symbol bname)))
+             (d-node (analyze-expression d env context (append location '(1))))
+             (d-type (semantic-node-type d-node))
+             (dims   (gethash d-type *tcgen05-acc-dims*))
+             (nb     (floor (second dims) 128))
+             (aps    (nth-value 2 (%208-block-step info)))
+             (sf-col (%208-assign-columns context location (* 4 aps (1+ nb)) "tcgen05-accumulate-via-tile (its block scales)"))
+             (bar-node (and bar (analyze-expression bar env context (append location '(8)))))
+             (key    (%208-kernel-key context))
+             (site   (unless bar
+                       (let ((s (cons key location)))
+                         (or (gethash s *tcgen05-sync-sites*)
+                             (let ((i (getf (%208-kernel-info key) :sync-sites 0)))
+                               (setf (getf (gethash key *tcgen05-kernels*) :sync-sites) (1+ i))
+                               (setf (gethash s *tcgen05-sync-sites*) i)))))))
+        (log:debug "208 %tcgen05-mma-bs ~a ~a K=~a scale columns ~a..~a issue-warp ~a sync-site ~a"
+                   bname dims k sf-col (+ sf-col (* 4 aps (1+ nb)) -1) (%208-issue-warp) site)
+        (make-semantic-tcgen05-op
+         :op :mma
+         :args (append (list d-node (ref a 2) (ref b 3) (ref sfa 4) (ref sfb 5)) (when bar-node (list bar-node)))
+         :plist (list :m (first dims) :n (second dims) :k k :block info :aps aps :row-blocks-b nb
+                      :sf-col sf-col :issue-warp (%208-issue-warp) :sync-site site :kernel key)
+         :type d-type
+         :source-location location)))))
+
+;; src/codegen.lisp
+(defun %208-cp-desc (builder base-ptr byte-off)
+  "Endeavour 208 phase 4.  The tcgen05.cp source descriptor of one 512-byte scale atom: K-major,
+   no swizzle (layout 0), start >> 4 at [0,14), LBO 0 (one core matrix along K), SBO 128 B (enc 8:
+   8-row x 16-byte core matrices) at [32,46), version 1 at bit 46.  See isa-notes.md, Phase 4."
+  (let* ((i32 (llvm-int32-type)) (i64 (llvm-int64-type))
+         (addr0 (llvm-build-ptr-to-int builder base-ptr i32 "sf_addr"))
+         (addr  (if (zerop byte-off) addr0 (llvm-build-add builder addr0 (llvm-const-int i32 byte-off nil) "sf_addr_a")))
+         (msk   (crisp.llvm-bindings::llvm-build-and
+                 builder (crisp.llvm-bindings::llvm-build-l-shr builder addr (llvm-const-int i32 4 nil) "sf_sh")
+                 (llvm-const-int i32 #x3FFF nil) "sf_start")))
+    (crisp.llvm-bindings::llvm-build-or builder (llvm-build-zext builder msk i64 "sf_start64")
+                                        (llvm-const-int i64 (logior (ash 8 32) (ash 1 46)) nil) "sf_desc")))
+
+;; src/codegen.lisp
+(defun %208-idesc-bs (m n info a-sf-id b-sf-id)
+  "Endeavour 208 phase 4.  The block-scaled instruction descriptor (CUTLASS InstrDescriptorBlockScaled):
+   b_sf_id [4,6), a_format [7,10), b_format [10,13), K-major (15, 16 = 0), N >> 3 [17,23),
+   scale_format bit 23 (UE4M3 0, UE8M0 1), M >> 4 [24,29), a_sf_id [29,31).  No c_format: D is f32."
+  (let ((f (getf info :fmt)))
+    (logior (ash b-sf-id 4) (ash f 7) (ash f 10) (ash (ash n -3) 17) (ash (getf info :sfmt) 23)
+            (ash (ash m -4) 24) (ash a-sf-id 29))))
+
+;; src/codegen.lisp
+(defun %208-emit-sync-wait (builder site mbar-addr)
+  "Endeavour 208.  A synchronous site's wait: every executing thread waits for the site mbarrier's next
+   phase (parity from an entry-block visit counter), then fence::after_thread_sync.  Fold: %208-gen-mma
+   has the same code inline; it should call this."
+  (let* ((i32    (llvm-int32-type))
+         (ctr    (%208-entry-counter builder (format nil "tc_sync_ctr_~d" site)))
+         (visit  (llvm-build-load2 builder i32 ctr "tc_visit"))
+         (parity (crisp.llvm-bindings::llvm-build-and builder visit (llvm-const-int i32 1 nil) "tc_parity"))
+         (fn     (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (wait-bb (llvm-append-basic-block fn "tc_wait"))
+         (done-bb (llvm-append-basic-block fn "tc_wait_done")))
+    (llvm-build-br builder wait-bb)
+    (llvm-position-builder-at-end builder wait-bb)
+    (let ((ok (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr parity)))
+      (llvm-build-cond-br builder (llvm-build-icmp builder +llvm-int-ne+ ok (llvm-const-int i32 0 nil) "tc_done")
+                          done-bb wait-bb))
+    (llvm-position-builder-at-end builder done-bb)
+    (llvm-build-store builder (llvm-build-add builder visit (llvm-const-int i32 1 nil) "tc_visit_next") ctr)
+    (%208-asm builder "tcgen05.fence::after_thread_sync;")))
+
+;; src/codegen.lisp
+(defun %208-gen-mma-bs (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208 phase 4.  The block-scaled D += (A*sA).(B*sB).  Lane 0 of the issuing warp:
+     1. tcgen05.cp.32x128b.warpx4 each scale atom into the site's scale columns -- A's atom a at
+        SF + 4a; B's row block j, atom a at SF + 4*aps + 4*(a*nb + j) (column n div 32 within a K atom);
+     2. four tcgen05.mma.kind::<block kind>, instruction kk reading scale atom (kk*spi) div 4 at
+        byte / half-word SF_ID (kk*spi) mod 4 -- a per-instruction instruction descriptor;
+     3. commit, to :on-complete's barrier or to the site's own mbarrier (then every thread waits).
+   The copies and MMAs come from one thread, so the tensor pipe keeps them in order (as CUTLASS)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (destructuring-bind (d-node a-node b-node sfa-node sfb-node &optional bar-node) (semantic-tcgen05-op-args node)
+      (let* ((pl     (semantic-tcgen05-op-plist node))
+             (info   (getf pl :block))
+             (i32    (llvm-int32-type))
+             (i64    (llvm-int64-type))
+             (m (getf pl :m)) (n (getf pl :n))
+             (aps    (getf pl :aps))
+             (nb     (getf pl :row-blocks-b))
+             (spi    (getf info :spi))
+             (d-val  (extract-primary-value builder (gen d-node) (semantic-node-type d-node)))
+             (col    (llvm-build-extract-value builder d-val 0 "tc_col"))
+             (fresh  (llvm-build-extract-value builder d-val 1 "tc_fresh"))
+             (a-ptr  (nth-value 2 (gen a-node)))
+             (b-ptr  (nth-value 2 (gen b-node)))
+             (sfa-ptr (nth-value 2 (gen sfa-node)))
+             (sfb-ptr (nth-value 2 (gen sfb-node)))
+             (bar-addr (and bar-node (%208-barrier-addr builder (gen bar-node))))
+             (site   (getf pl :sync-site))
+             (mbar-addr (and site
+                             (let* ((kinfo (%208-kernel-tc-info (getf pl :kernel)))
+                                    (g (%208-sync-mbar-global module (getf pl :kernel) (getf kinfo :sync-sites 1))))
+                               (llvm-build-ptr-to-int builder (%gen-nvvm-mbar-slot-ptr builder g site) i32 "tc_sync_mbar"))))
+             (tid    (%208-linear-tid builder module))
+             (issuer (llvm-build-icmp builder +llvm-int-eq+ tid
+                                      (llvm-const-int i32 (* 32 (getf pl :issue-warp)) nil) "tc_issuer")))
+        (unless (and a-ptr b-ptr sfa-ptr sfb-ptr)
+          (error "208 block-scaled MMA: an operand did not yield a shared-memory pointer (a ~a b ~a sfa ~a sfb ~a)"
+                 a-ptr b-ptr sfa-ptr sfb-ptr))
+        (log:debug "208 gen mma-bs ~a ~ax~a aps ~a nb ~a sf-col ~a" (getf info :kind) m n aps nb (getf pl :sf-col))
+        (%208-if builder issuer
+                 (lambda ()
+                   (let* ((base (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base"))
+                          (dt   (llvm-build-add builder base col "tc_d"))
+                          (sfa  (llvm-build-add builder base (llvm-const-int i32 (getf pl :sf-col) nil) "tc_sfa"))
+                          (sfb  (llvm-build-add builder sfa (llvm-const-int i32 (* 4 aps) nil) "tc_sfb"))
+                          (en0  (llvm-build-zext builder
+                                                 (llvm-build-icmp builder +llvm-int-eq+ fresh (llvm-const-int i32 0 nil) "tc_acc")
+                                                 i32 "tc_en0")))
+                     (%208-asm builder "tcgen05.fence::after_thread_sync;")
+                     (flet ((cp (taddr src-ptr off)
+                              (%208-asm builder "tcgen05.cp.cta_group::1.32x128b.warpx4 [$0], $1;"
+                                        "r,l,~{memory}" nil (list i32 i64)
+                                        (list taddr (%208-cp-desc builder src-ptr off)))))
+                       (dotimes (a aps)
+                         (cp (llvm-build-add builder sfa (llvm-const-int i32 (* 4 a) nil) "tc_sfa_a") sfa-ptr (* a 512)))
+                       (dotimes (j nb)
+                         (dotimes (a aps)
+                           (cp (llvm-build-add builder sfb (llvm-const-int i32 (* 4 (+ (* a nb) j)) nil) "tc_sfb_a")
+                               sfb-ptr (* (+ (* j aps) a) 512)))))
+                     (dotimes (kk 4)
+                       (let* ((s   (* kk spi))
+                              (atm (floor s 4))
+                              (id  (mod s 4)))
+                         (%208-asm builder
+                                   (format nil "{ .reg .pred p; setp.ne.b32 p, $4, 0; tcgen05.mma.cta_group::1.kind::~a [$0], $1, $2, $3, [$5], [$6], p; }"
+                                           (getf info :kind))
+                                   "r,l,l,r,r,r,r,~{memory}" nil (list i32 i64 i64 i32 i32 i32 i32)
+                                   (list dt
+                                         (%208-smem-desc builder a-ptr (* kk 32))
+                                         (%208-smem-desc builder b-ptr (* kk 32))
+                                         (llvm-const-int i32 (%208-idesc-bs m n info id id) nil)
+                                         (if (zerop kk) en0 (llvm-const-int i32 1 nil))
+                                         (llvm-build-add builder sfa (llvm-const-int i32 (* 4 atm) nil) "tc_sfa_k")
+                                         (llvm-build-add builder sfb (llvm-const-int i32 (* 4 atm nb) nil) "tc_sfb_k")))))
+                     (%208-commit-asm builder (or bar-addr mbar-addr))))
+                 "tc_issue")
+        (when site
+          (%208-emit-sync-wait builder site mbar-addr))
+        (values (llvm-build-insert-value builder d-val (llvm-const-int i32 0 nil) 1 "tc_d_used") nil)))))
+
+;; src/codegen.lisp
+(defvar *208-orig-gen-mma* (fdefinition '%208-gen-mma)
+  "Endeavour 208 phase 4.  The 16-bit / tf32 / int8 MMA emitter.")
+
+;; src/codegen.lisp
+(defun %208-gen-mma (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  Phase 4: a block-scaled MMA node (plist :block) goes to %208-gen-mma-bs; every other
+   one to the earlier emitter.  Fold: one emitter with the two issue sequences."
+  (if (getf (semantic-tcgen05-op-plist node) :block)
+      (%208-gen-mma-bs node builder module var-env di-builder di-scope location-map)
+      (funcall *208-orig-gen-mma* node builder module var-env di-builder di-scope location-map)))
+
+;;; ---------------------------------------------------------------- metadata
+
+;; src/metadata.lisp -- fold: a clause in generate-declared-signature.
+(defvar *208-orig-generate-declared-signature* (fdefinition 'generate-declared-signature)
+  "Endeavour 208 phase 4.  generate-declared-signature before the :microfloat entries.")
+
+;; src/metadata.lisp
+(defun %208-param-block-info (type)
+  "Endeavour 208 phase 4.  The block plist when the parameter TYPE is a matrix of a microfloat block."
+  (let ((c (ignore-errors (canonicalize-type-specifier type))))
+    (and (consp c) (symbolp (first c)) (string-equal (symbol-name (first c)) "TENSOR")
+         (%208-block-info (second c)))))
+
+;; src/metadata.lisp
+(defun generate-declared-signature (sig &optional declared-params)
+  "Endeavour 208 phase 4 wrapper.  The original entries, plus :microfloat on a parameter that holds a
+   block's codes -- (:block :base :scale :vec :scales S :layout L) -- and on its scales vector --
+   (:scales-of A :block .. :layout L) -- so the hoist sizes, fills and checks them (Q1 (b))."
+  (let* ((entries (funcall *208-orig-generate-declared-signature* sig declared-params))
+         (kname   (string-downcase (symbol-name (function-signature-name sig))))
+         (decls   (gethash kname *208-scale-layouts*))
+         (types   (loop for p in (or declared-params (function-signature-parameters sig))
+                        for nm = (if (consp p) (car p) (parameter-def-name p))
+                        unless (and (symbolp nm) (string-equal (symbol-name nm) "&OUT"))
+                          collect (cons (string-downcase (symbol-name nm))
+                                        (if (consp p) (cdr p) (parameter-def-type p))))))
+    (if (null decls)
+        entries
+        (mapcar (lambda (e)
+                  (let* ((nm   (getf e :name))
+                         (info (%208-param-block-info (cdr (assoc nm types :test #'string=))))
+                         (as-a (find nm decls :key (lambda (d) (getf d :of)) :test #'string=))
+                         (as-s (find nm decls :key (lambda (d) (getf d :scales)) :test #'string=))
+                         (s-of (and as-s (%208-param-block-info (cdr (assoc (getf as-s :of) types :test #'string=))))))
+                    (flet ((blk (i) (list :block (string-downcase (getf i :name)) :base (string-downcase (getf i :base))
+                                          :scale (string-downcase (getf i :scale)) :vec (getf i :vec))))
+                      (cond ((and info as-a)
+                             (append e (list :microfloat (append (blk info) (list :scales (getf as-a :scales) :layout (getf as-a :layout))))))
+                            ((and as-s s-of)
+                             (append e (list :microfloat (append (blk s-of) (list :scales-of (getf as-s :of) :layout (getf as-s :layout))))))
+                            (t e)))))
+                entries))))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-tcgen05-op) builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  Dispatch on the tcgen05 operation.  Phase 4 adds :load-scales."
+  (let ((void (lambda () (values (llvm-const-int (llvm-int64-type) 0 nil) nil))))
+    (ecase (semantic-tcgen05-op-op node)
+      (:mma (%208-gen-mma node builder module var-env di-builder di-scope location-map))
+      (:ld  (%208-gen-ld node builder module var-env di-builder di-scope location-map))
+      (:tma-store (%208-gen-tma-store node builder module var-env di-builder di-scope location-map))
+      (:load-scales (%208-gen-load-scales node builder module var-env di-builder di-scope location-map))
+      (:commit
+       (let* ((bar-addr (%208-barrier-addr builder (generate-node-ir (first (semantic-tcgen05-op-args node))
+                                                                    builder module var-env di-builder di-scope location-map)))
+              (i32 (llvm-int32-type))
+              (tid (%208-linear-tid builder module)))
+         (%208-if builder (llvm-build-icmp builder +llvm-int-eq+ tid
+                                           (llvm-const-int i32 (* 32 (getf (semantic-tcgen05-op-plist node) :issue-warp)) nil)
+                                           "tc_committer")
+                  (lambda () (%208-commit-asm builder bar-addr))
+                  "tc_commit")
+         (funcall void)))
+      (:fence-after  (%208-asm builder "tcgen05.fence::after_thread_sync;")  (funcall void))
+      (:fence-before (%208-asm builder "tcgen05.fence::before_thread_sync;") (funcall void)))))
+
+;; src/mma.lisp
+(defun register-mma-analyzers ()
+  "Registers the MMA + wgmma expression analyzers.
+   Endeavor 150: adds MAP-ELEMENTS! and its backward twin %MAP-ELEMENTS-VJP!.
+   Endeavour 154: adds STORE-TILE-AT, so a wgmma accumulator can be stored at an absolute origin
+   (two cooperating consumer warpgroups); non-wgmma sources delegate unchanged."
+  ;; Endeavour 208: tensor-memory bookkeeping is per compile.
+  (clrhash *tcgen05-columns*)
+  (clrhash *tcgen05-sync-sites*)
+  (clrhash *tcgen05-kernels*)
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (entry (list (cons "MAKE-REGISTER-FRAGMENT" #'analyze-make-register-fragment)
+                         (cons "STORE-FRAGMENT"          #'analyze-store-fragment)
+                         (cons "LOAD-FRAGMENT-A"         #'analyze-load-fragment-a)
+                         (cons "LOAD-FRAGMENT-B"         #'analyze-load-fragment-b)
+                         (cons "LOAD-FRAGMENT-ACC"       #'analyze-load-fragment-acc)
+                         (cons "MMA-ACCUMULATE"          #'analyze-mma-accumulate)
+                         (cons "MAKE-REGISTER-TILE"      #'analyze-make-register-tile)
+                         (cons "MMA-ACCUMULATE-VIA-TILE" #'analyze-mma-accumulate-via-tile)
+                         (cons "MAP-ELEMENTS!"           #'analyze-map-elements)
+                         (cons "%MAP-ELEMENTS-VJP!"      #'analyze-map-elements-vjp)
+                         (cons "PREFETCH-TILE"           #'analyze-prefetch-tile)
+                         (cons "INNER-DIMENSION"         #'analyze-inner-dimension)
+                         (cons "OUTER-DIMENSIONS"        #'analyze-outer-dimensions-expression)
+                         (cons "MAKE-WGMMA-ACCUMULATOR"    #'analyze-make-wgmma-accumulator)
+                         (cons "WGMMA-ACCUMULATE"          #'analyze-wgmma-accumulate)
+                         (cons "WGMMA-ACCUMULATE-VIA-TILE" #'analyze-wgmma-accumulate-via-tile)
+                         ;; Endeavour 208: tcgen05.  The store / let entries wrap the originals.
+                         (cons "MAKE-TCGEN05-ACCUMULATOR"    #'analyze-make-tcgen05-accumulator)
+                         (cons "TCGEN05-ACCUMULATE-VIA-TILE" #'analyze-tcgen05-accumulate-via-tile)
+                         (cons "TCGEN05-COMMIT"              #'analyze-tcgen05-commit)
+                         (cons "%208-LOAD-SCALES"            #'analyze-%208-load-scales)
+                         (cons "%TCGEN05-MMA-BS"             #'analyze-%tcgen05-mma-bs)
+                         (cons "%TCGEN05-MMA"                #'analyze-%tcgen05-mma)
+                         (cons "%TCGEN05-RESET"              #'analyze-%tcgen05-reset)
+                         (cons "%TCGEN05-LD"                 #'analyze-%tcgen05-ld)
+                         (cons "%TCGEN05-FENCE-AFTER"        #'analyze-%tcgen05-fence)
+                         (cons "%TCGEN05-FENCE-BEFORE"       #'analyze-%tcgen05-fence)
+                         (cons "%IN-WARP-ROLE"               #'analyze-%in-warp-role)
+                         ;; Endeavour 208 phase 2: the accumulator ring.  RING-GET wraps the struct analyzer's.
+                         (cons "MAKE-TCGEN05-ACCUMULATOR-RING" #'analyze-make-tcgen05-accumulator-ring)
+                         (cons "RING-GET"                    #'%208-analyze-ring-get)
+                         (cons "STORE-TILE"              #'%208-analyze-store-tile)
+                         (cons "STORE-TILE-AT"           #'%208-analyze-store-tile-at)
+                         (cons "LET"                     #'%208-analyze-let)
+                         (cons "LET*"                    #'%208-analyze-let)))
+      (let ((sym-cl (intern (car entry) cl-pkg))
+            (sym-cc (intern (car entry) cc-pkg)))
+        (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
+        (unless (eq sym-cl sym-cc)
+          (setf (gethash sym-cc *expression-analyzers*) (cdr entry)))))
+    ;; Endeavour 173 / BUG 069: Crisp has no LET* -- its LET is already sequential.  This is the
+    ;; site that decides what `let*` means, because (intern "LET*" :crisp-language) HERE mints the
+    ;; very symbol the Crisp reader later reuses for user source; the table above aliased it onto
+    ;; LET, which compiled forward and then died under --differentiate blaming SET!.
+    ;;
+    ;; ONLY the :crisp-language spelling is rejected, which is why this sits outside the loop:
+    ;; crisp.compiler uses :cl and does not shadow LET*, so (intern "LET*" cc-pkg) up there
+    ;; returns COMMON-LISP:LET* -- a DIFFERENT symbol, which must stay pointed at the real LET
+    ;; analyzer.  That is load-bearing, not merely tidy: instantiate-generic-function
+    ;; (src/environment.lisp) injects `(let* ,bindings ,@body) to bind a &key parameter's
+    ;; defaults, and that backquote is read in :crisp.compiler -- so a COMPILER LOWERING emits
+    ;; the CL spelling.  Rejecting it too breaks every &key default (016-advanced-signatures/04).
+    ;; User source, read in :crisp-language, reaches the rejected symbol instead.
+    (setf (gethash (intern "LET*" cl-pkg) *expression-analyzers*) '%analyze-let-star-rejected)))
+
+;; src/mma.lisp -- corrected copy: after def-kernel's expansion the def-function parameter list is not
+;; always a flat list of symbols, so the names are every symbol in it (a type name cannot collide with
+;; the check's purpose: the scales and matrix named in the declare must be parameters).
+(defun %208-param-names (params)
+  "Endeavour 208 phase 4.  Every symbol in the def-function parameter form PARAMS, downcased."
+  (let ((out '()))
+    (labels ((walk (x) (cond ((and x (symbolp x)) (push (string-downcase (symbol-name x)) out))
+                             ((consp x) (walk (car x)) (walk (cdr x))))))
+      (walk params))
+    out))
+
+;; src/mma.lisp
+(defun %208-parse-scale-layouts (name params body)
+  "Endeavour 208 phase 4.  Records kernel NAME's (scale-layout S :of A :blocked-128x4) declarations from
+   the declare forms at the head of BODY in *208-scale-layouts*, refusing a malformed one, an unknown
+   layout, or a name that is not one of PARAMS.  Q1 (b): the kernel declares the layout; the host
+   provides it, and the generated hoist matches it."
+  (let ((pnames (%208-param-names params))
+        (out '()))
+    (log:debug "208 scale-layout parse of ~a: params ~s" name params)
+    (dolist (f body)
+      (when (and (consp f) (%208-sym= (first f) "DECLARE"))
+        (dolist (d (rest f))
+          (when (and (consp d) (%208-sym= (first d) "SCALE-LAYOUT"))
+            (destructuring-bind (&optional s of a layout &rest more) (rest d)
+              (unless (and (symbolp s) (%208-sym= of "OF") (symbolp a) (symbolp layout) (null more))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): expected (scale-layout SCALES :of MATRIX :blocked-128x4), got ~s." name d)))
+              (unless (%208-sym= layout "BLOCKED-128X4")
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): (scale-layout ~(~a~) ..): the layout ~s is not supported.  The one layout is :blocked-128x4, cuBLASLt's and torchao's to_blocked: 512-byte atoms of 128 rows x 4 scales." name s layout)))
+              (dolist (nm (list s a))
+                (unless (member (string-downcase (symbol-name nm)) pnames :test #'string=)
+                  (error 'crisp-compiler-error
+                         :message (format nil "~(~a~): (scale-layout ~(~a~) :of ~(~a~) ..): ~(~a~) is not a parameter of the kernel." name s a nm))))
+              (push (list :scales (string-downcase (symbol-name s)) :of (string-downcase (symbol-name a))
+                          :layout :blocked-128x4)
+                    out))))))
+    (setf (gethash (string-downcase (symbol-name name)) *208-scale-layouts*) (nreverse out))
+    (when out (log:debug "208 scale layouts of ~a: ~s" name out))))
+
+;; src/mma.lisp -- corrected copy (2nd): a kernel's def-function carries the PHYSICAL parameters
+;; (A_PTR A_BYTE_SIZE A_OFFSET_0 ..), so a declared name matches any "_"-prefix of one, in either
+;; spelling (my-scales <-> MY_SCALES_PTR).
+(defun %208-param-names (params)
+  "Endeavour 208 phase 4.  The names the def-function parameter form PARAMS answers to, downcased:
+   every symbol in it, each '_'-prefix of one (A_BYTE_SIZE -> a, a_byte, a_byte_size), and the
+   same with '-' for '_'."
+  (let ((out '()))
+    (labels ((add (s)
+               (push s out)
+               (push (substitute #\- #\_ s) out))
+             (walk (x)
+               (cond ((and x (symbolp x))
+                      (let ((s (string-downcase (symbol-name x))))
+                        (loop for p = (position #\_ s) then (position #\_ s :start (1+ p))
+                              while p do (add (subseq s 0 p)))
+                        (add s)))
+                     ((consp x) (walk (car x)) (walk (cdr x))))))
+      (walk params))
+    out))
+
+;; src/analysis/control.lisp -- fold: a first clause in %tlc-check-elem-match.
+(defvar *208-orig-tlc-check-elem-match* (fdefinition '%tlc-check-elem-match)
+  "Endeavour 208 phase 4.  BUG 057's tile-copy element check, before block codes were allowed.")
+
+;; src/analysis/control.lisp
+(defun %tlc-check-elem-match (src tile env op-name location)
+  "Endeavour 208 phase 4 wrapper.  A matrix of a microfloat block holds its packed codes, and the
+   source rewrite stages them into a uchar tile: that pair is the byte copy it looks like, so it is
+   accepted.  Every other pair goes to BUG 057's check."
+  (let* ((src-pd  (and (symbolp src) (find-variable-in-env src env)))
+         (tile-pd (and (symbolp tile) (find-variable-in-env tile env)))
+         (se (and src-pd (get-array-element-type (parameter-def-type src-pd))))
+         (te (and tile-pd (get-array-element-type (parameter-def-type tile-pd)))))
+    (if (and se te (%208-block-info se) (%208-sym= te "UCHAR"))
+        (log:debug "208 ~a: block codes ~a (~a) staged as bytes into ~a" op-name src se tile)
+        (funcall *208-orig-tlc-check-elem-match* src tile env op-name location))))
+
+;; src/mma.lisp -- corrected copy: the hidden scales tile was X%SF, and the hoist makes a C identifier
+;; of every scratch name (a_tile%sf_from_.. does not compile).  It is X--SCALES (a_tile__scales_..).
+(defun %208-block-binding (b)
+  "Endeavour 208 phase 4.  When the let binding B is (X (make-scratch-matrix BLOCK (R K))) or the -ring
+   form, with BLOCK a def-microfloat-block: (values CODES-BINDING SCALES-BINDING ENTRY).
+     CODES-BINDING   (X (make-scratch-matrix uchar (R K/epb) ..)) -- the packed codes, K-major
+     SCALES-BINDING  (X--SCALES (make-scratch-matrix uchar (Q 512) ..)) -- Q = R/128 x atoms-per-step
+                     512-byte scale atoms, row block j's atoms at j*atoms-per-step
+     ENTRY           (X :info INFO :rows R :cols K :sf X--SCALES)
+   NIL for any other binding.  R must be a multiple of 128 (a scale atom covers 128 rows) and K one
+   128-byte atom of codes (D-208-14)."
+  (let* ((init (and (consp b) (second b)))
+         (head (and (consp init) (first init))))
+    (when (and (or (%208-sym= head "MAKE-SCRATCH-MATRIX") (%208-sym= head "MAKE-SCRATCH-MATRIX-RING"))
+               (consp (cdr init)))
+      (let ((info (%208-block-info (second init))))
+        (when info
+          (let ((x (first b)) (dims (third init)))
+            (unless (getf info :kind)
+              (error 'crisp-compiler-error
+                     :message (format nil "~(~a~): tcgen05 multiplies NVFP4 (:base fp4 :scale fp8-e4m3 :shape (16)), MXFP4 (:base fp4 :scale fp8-e8m0 :shape (32)) and MXFP8 (:base fp8-e4m3 or fp8-e5m2 :scale fp8-e8m0 :shape (32)) blocks; ~(~a~) is :base ~(~a~) :scale ~(~a~) :shape (~a)."
+                                      x (getf info :name) (getf info :base) (getf info :scale) (getf info :vec))))
+            (multiple-value-bind (kel spr aps) (%208-block-step info)
+              (declare (ignore spr))
+              (unless (and (listp dims) (= (length dims) 2) (every #'integerp dims)
+                           (zerop (mod (first dims) 128)) (= (second dims) kel))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): a scratch tile of ~(~a~) for tcgen05 is (R ~a): R a multiple of 128 (a scale atom covers 128 rows) and K one 128-byte swizzle atom of codes; got ~s."
+                                        x (getf info :name) kel dims)))
+              (let* ((r (first dims))
+                     (sf (intern (format nil "~a--SCALES" (symbol-name x)) (symbol-package x)))
+                     (uchar (intern "UCHAR" (find-package :crisp-language)))
+                     (rest (cdddr init)))
+                (log:debug "208 block tile ~a: ~a (~a ~a) -> codes uchar (~a ~a), scales ~a (~a 512)"
+                           x (getf info :name) r kel r (floor kel (getf info :epb)) sf (* (floor r 128) aps))
+                (values (list x (list* head uchar (list r (floor kel (getf info :epb))) rest))
+                        (list sf (list* head uchar (list (* (floor r 128) aps) 512) rest))
+                        (list x :info info :rows r :cols kel :sf sf))))))))))
+
+
+;; src/compiler.lisp
+(defun %ll-needs-ptx87-p (ll-file)
+  "Endeavour 208 phase 4.  T when LL-FILE holds a block-scaled tcgen05.mma (kind::mxf8f6f4 / mxf4 /
+   mxf4nvf4 .block_scale), which ptxas accepts only at PTX ISA 8.7.  Read from the emitted IR, as
+   %ll-needs-ptx84-p, so every other module keeps llc's default version."
+  (let ((text (alexandria:read-file-into-string ll-file)))
+    (and (search ".block_scale" text) t)))
+
+;; src/compiler.lisp
+(defun compile-to-ptx (module output-path &key (compute-capability "sm_80") debug-p)
+  "Compiles an LLVM Module to PTX using llc.
+   Pipeline: IR -> opt -O3 (if available) -> llc -> PTX.
+   COMPUTE-CAPABILITY: Target GPU architecture (sm_50, sm_75, sm_86, etc.)
+                       sm_80 = Ampere (required for endeavor 114's cp.async path).
+                       Pre-Ampere targets can pass an explicit value if needed,
+                       but kernels using request-load-tile / await-request will
+                       fail to compile on anything earlier."
+  (declare (ignore debug-p))
+  (let* ((base-path (uiop:pathname-directory-pathname output-path))
+         (name (pathname-name output-path))
+         (ll-file     (merge-pathnames (format nil "~a.temp.ll" name) base-path))
+         (ll-opt-file (merge-pathnames (format nil "~a.opt.ll"  name) base-path))
+         (ptx-file output-path))
+
+    ;; Set target triple for NVPTX before writing IR
+    (llvm-set-target module "nvptx64-nvidia-cuda")
+
+    ;; Endeavor 128 (Phase 4): if any transcendental was lowered to a libdevice
+    ;; __nv_* symbol, verify libdevice.10.bc was linked (else a clear error) and set
+    ;; the nvvm-reflect-ftz module flag so llc's NVVMReflect resolves __CUDA_FTZ.
+    (%ptx-finalize-libdevice module)
+
+    ;; 1. Write raw LLVM IR to .ll file
+    (let ((ir (cffi:foreign-string-to-lisp (llvm-print-module-to-string module))))
+      (with-open-file (stream ll-file :direction :output :if-exists :supersede)
+        (write-string ir stream)))
+
+    ;; 2. Try opt -O3 on the IR.  If it succeeds, feed the optimized IR
+    ;;    to llc; otherwise fall back to the raw IR.
+    (let* ((opt-ok  (%run-opt-O3 ll-file ll-opt-file))
+           (llc-input (if opt-ok ll-opt-file ll-file))
+           ;; Endeavour 192: lower :cache hints on the FINAL (post-opt) IR -- -O3 drops metadata, so
+           ;; nothing placed in codegen survives -- and re-apply !invariant.load (BUG 134).
+           (hint-count (%apply-cache-hints-to-ll llc-input :ptx)))
+
+      ;; 3. llc: IR -> PTX
+      (let ((tool (resolve-tool-executable "llc")))
+        (run-tool-command
+         (append
+          (list tool
+                "-march=nvptx64"
+                (format nil "-mcpu=~a" compute-capability))
+          ;; Endeavour 192: eviction priorities and L2::NNNB need PTX ISA 7.4.  +ptx74 only ever
+          ;; RAISES the version (sm_80 7.0 -> 7.4; sm_90 stays 7.8, sm_100 8.6).
+          (when (plusp hint-count) (list "-mattr=+ptx74"))
+          ;; Endeavour 204: +ptx84 only ever raises the version too.
+          (when (%ll-needs-ptx84-p llc-input) (list "-mattr=+ptx84"))
+          ;; Endeavour 208 phase 4: the block-scaled tcgen05 kinds need PTX ISA 8.7.  Raise-only.
+          (when (%ll-needs-ptx87-p llc-input) (list "-mattr=+ptx87"))
+          (list (namestring llc-input)
+                "-o" (namestring ptx-file)))
+         :log-prefix "[PTX] ")))
+
+    ;; Cleanup temp files
+    (when (probe-file ll-file)     (delete-file ll-file))
+    (when (probe-file ll-opt-file) (delete-file ll-opt-file))
+
+    (log:info "Generated PTX: ~a" ptx-file)))
+
+
+;; src/mma.lisp -- corrected copy (2nd): the scales tile is a whole number of KB, keeping the next
+;; swizzled codes tile 1024-byte aligned (an MXFP8 tile of one 512-byte atom put it at offset 512).
+(defun %208-block-binding (b)
+  "Endeavour 208 phase 4.  When the let binding B is (X (make-scratch-matrix BLOCK (R K))) or the -ring
+   form, with BLOCK a def-microfloat-block: (values CODES-BINDING SCALES-BINDING ENTRY).
+     CODES-BINDING   (X (make-scratch-matrix uchar (R K/epb) ..)) -- the packed codes, K-major
+     SCALES-BINDING  (X--SCALES (make-scratch-matrix uchar (Q 512) ..)) -- R/128 x atoms-per-step
+                     512-byte scale atoms, row block j's atoms at j*atoms-per-step, and Q that count
+                     rounded up to EVEN: the hoist packs scratch tiles back to back, and a 512-byte
+                     tile would leave the next 128-byte-swizzled codes tile off its 1024-byte alignment
+     ENTRY           (X :info INFO :rows R :cols K :sf X--SCALES)
+   NIL for any other binding.  R must be a multiple of 128 (a scale atom covers 128 rows) and K one
+   128-byte atom of codes (D-208-14)."
+  (let* ((init (and (consp b) (second b)))
+         (head (and (consp init) (first init))))
+    (when (and (or (%208-sym= head "MAKE-SCRATCH-MATRIX") (%208-sym= head "MAKE-SCRATCH-MATRIX-RING"))
+               (consp (cdr init)))
+      (let ((info (%208-block-info (second init))))
+        (when info
+          (let ((x (first b)) (dims (third init)))
+            (unless (getf info :kind)
+              (error 'crisp-compiler-error
+                     :message (format nil "~(~a~): tcgen05 multiplies NVFP4 (:base fp4 :scale fp8-e4m3 :shape (16)), MXFP4 (:base fp4 :scale fp8-e8m0 :shape (32)) and MXFP8 (:base fp8-e4m3 or fp8-e5m2 :scale fp8-e8m0 :shape (32)) blocks; ~(~a~) is :base ~(~a~) :scale ~(~a~) :shape (~a)."
+                                      x (getf info :name) (getf info :base) (getf info :scale) (getf info :vec))))
+            (multiple-value-bind (kel spr aps) (%208-block-step info)
+              (declare (ignore spr))
+              (unless (and (listp dims) (= (length dims) 2) (every #'integerp dims)
+                           (zerop (mod (first dims) 128)) (= (second dims) kel))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): a scratch tile of ~(~a~) for tcgen05 is (R ~a): R a multiple of 128 (a scale atom covers 128 rows) and K one 128-byte swizzle atom of codes; got ~s."
+                                        x (getf info :name) kel dims)))
+              (let* ((r (first dims))
+                     (sf (intern (format nil "~a--SCALES" (symbol-name x)) (symbol-package x)))
+                     (uchar (intern "UCHAR" (find-package :crisp-language)))
+                     (rest (cdddr init)))
+                (log:debug "208 block tile ~a: ~a (~a ~a) -> codes uchar (~a ~a), scales ~a (~a 512)"
+                           x (getf info :name) r kel r (floor kel (getf info :epb)) sf (* (floor r 128) aps))
+                (values (list x (list* head uchar (list r (floor kel (getf info :epb))) rest))
+                        (list sf (list* head uchar (list (* 2 (ceiling (* (floor r 128) aps) 2)) 512) rest))
+                        (list x :info info :rows r :cols kel :sf sf))))))))))
+
+
+;; src/codegen.lisp -- the non-block MMA emitter, a fresh copy under its own name.  Phase 4's wrapper
+;; called the phase-2 copy through a captured function object; that copy was compiled before phase
+;; 3's (declaim (ftype .. %208-mma-kind)) and checks the old 3/4-character return type, so int8's
+;; "i8" failed in the built executable (spec 10 / 11's hoist step).  Fold: one %208-gen-mma.
+(defun %208-gen-mma-plain (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  The 16-bit / tf32 / int8 emitter (was %208-gen-mma).  D += A.B: lane 0 of the issuing warp builds the descriptors and issues K/16
+   tcgen05.mma.kind::f16 (the first with enable-input-d = !FRESH, the rest accumulating), then commits
+   -- to :on-complete's barrier, or to this site's own mbarrier, on which every executing thread then
+   waits (parity from an entry-block visit counter) before fence::after_thread_sync.  Returns D with
+   FRESH cleared."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (destructuring-bind (d-node a-node b-node &optional bar-node) (semantic-tcgen05-op-args node)
+      (let* ((pl     (semantic-tcgen05-op-plist node))
+             (i32    (llvm-int32-type))
+             (i64    (llvm-int64-type))
+             (d-val  (extract-primary-value builder (gen d-node) (semantic-node-type d-node)))
+             (col    (llvm-build-extract-value builder d-val 0 "tc_col"))
+             (fresh  (llvm-build-extract-value builder d-val 1 "tc_fresh"))
+             (a-ptr  (nth-value 2 (gen a-node)))
+             (b-ptr  (nth-value 2 (gen b-node)))
+             (bar-addr (and bar-node (%208-barrier-addr builder (gen bar-node))))
+             (site   (getf pl :sync-site))
+             (mbar-addr (and site
+                             (let* ((info (%208-kernel-tc-info (getf pl :kernel)))
+                                    (g (%208-sync-mbar-global module (getf pl :kernel) (getf info :sync-sites 1))))
+                               (llvm-build-ptr-to-int builder (%gen-nvvm-mbar-slot-ptr builder g site) i32 "tc_sync_mbar"))))
+             (tid    (%208-linear-tid builder module))
+             (issuer (llvm-build-icmp builder +llvm-int-eq+ tid
+                                      (llvm-const-int i32 (* 32 (getf pl :issue-warp)) nil) "tc_issuer"))
+             (idesc  (%208-idesc (getf pl :m) (getf pl :n) (getf pl :elem) (getf pl :b-elem)))
+             (kind   (%208-mma-kind (getf pl :elem)))
+             (slices (floor (getf pl :k) (nth-value 1 (%208-mma-kind (getf pl :elem))))))
+        ;; As for wgmma: a tf32 MMA under a non-fast precision silently does not honour IEEE.
+        (when (and (string= kind "tf32") (not (eq *math-precision* :fast)))
+          (format *error-output*
+                  "WARNING: tcgen05-accumulate-via-tile uses tf32 tensor cores, but math-precision is '~(~a~)' — the IEEE accuracy request is not honored (results are tf32). Use (with-precision (fast) ...), (declaim (precision fast)), or --math-precision=fast.~%"
+                  *math-precision*))
+        (unless (and a-ptr b-ptr)
+          (error "tcgen05: A/B (~ tile 0 0) did not yield a shared-memory pointer (a ~a b ~a)" a-ptr b-ptr))
+        (log:debug "208 gen mma: idesc #x~8,'0x slices ~a issue-warp ~a site ~a on-complete ~a"
+                   idesc slices (getf pl :issue-warp) site (and bar-node t))
+        (%208-if builder issuer
+                 (lambda ()
+                   (let* ((base (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base"))
+                          (dt   (llvm-build-add builder base col "tc_d"))
+                          (en0  (llvm-build-zext builder
+                                                 (llvm-build-icmp builder +llvm-int-eq+ fresh (llvm-const-int i32 0 nil) "tc_acc")
+                                                 i32 "tc_en0")))
+                     (%208-asm builder "tcgen05.fence::after_thread_sync;")
+                     (dotimes (kk slices)
+                       (%208-asm builder
+                                 (format nil "{ .reg .pred p; setp.ne.b32 p, $4, 0; tcgen05.mma.cta_group::1.kind::~a [$0], $1, $2, $3, p; }" kind)
+                                 "r,l,l,r,r,~{memory}" nil (list i32 i64 i64 i32 i32)
+                                 (list dt
+                                       (%208-smem-desc builder a-ptr (* kk 32))
+                                       (%208-smem-desc builder b-ptr (* kk 32))
+                                       (llvm-const-int i32 idesc nil)
+                                       (if (zerop kk) en0 (llvm-const-int i32 1 nil)))))
+                     (%208-commit-asm builder (or bar-addr mbar-addr))))
+                 "tc_issue")
+        (when site
+          ;; Synchronous: every executing thread waits for this site's next phase.
+          (let* ((ctr    (%208-entry-counter builder (format nil "tc_sync_ctr_~d" site)))
+                 (visit  (llvm-build-load2 builder i32 ctr "tc_visit"))
+                 (parity (crisp.llvm-bindings::llvm-build-and builder visit (llvm-const-int i32 1 nil) "tc_parity"))
+                 (fn     (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                 (wait-bb (llvm-append-basic-block fn "tc_wait"))
+                 (done-bb (llvm-append-basic-block fn "tc_wait_done")))
+            (llvm-build-br builder wait-bb)
+            (llvm-position-builder-at-end builder wait-bb)
+            (let ((ok (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr parity)))
+              (llvm-build-cond-br builder (llvm-build-icmp builder +llvm-int-ne+ ok (llvm-const-int i32 0 nil) "tc_done")
+                                  done-bb wait-bb))
+            (llvm-position-builder-at-end builder done-bb)
+            (llvm-build-store builder (llvm-build-add builder visit (llvm-const-int i32 1 nil) "tc_visit_next") ctr)
+            (%208-asm builder "tcgen05.fence::after_thread_sync;")))
+        (values (llvm-build-insert-value builder d-val (llvm-const-int i32 0 nil) 1 "tc_d_used") nil)))))
+
+
+;; src/codegen.lisp
+(defun %208-gen-mma (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  Phase 4: a block-scaled MMA node (plist :block) goes to %208-gen-mma-bs; every other
+   one to %208-gen-mma-plain (by name).  Fold: one emitter with the two issue sequences."
+  (if (getf (semantic-tcgen05-op-plist node) :block)
+      (%208-gen-mma-bs node builder module var-env di-builder di-scope location-map)
+      (%208-gen-mma-plain node builder module var-env di-builder di-scope location-map)))
+
+;;;; Endeavour 208 phase 4 -- the block-tile refusals move to rewrite time.  An error raised while pass 1
+;;;; analyses a block kernel's body can stop it before the uchar LOCAL tensor struct of the rewritten
+;;;; tiles is instantiated; pass 2 then builds the kernel's LLVM function type first and fails with
+;;;; "Type Resolution: FAILED to instantiate struct TENSOR_UCHAR_2_LOCAL_COMPACT_LAST", masking the real
+;;;; message (errors/16, 19, 21).  Every block-specific rule whose inputs are literal in the source is
+;;;; now checked by the rewrite, before pass 1; the analysis-time checks stay as backstops.  The
+;;;; masking itself is a general pass-1 hazard, recorded in tcgen05.md for review.
+
+;; src/mma.lisp
+(defvar *208-rw-kernel* nil
+  "Endeavour 208 phase 4.  The kernel name (downcased string) whose source %208-rw is rewriting, for
+   its scale-layout declarations.")
+
+;; src/mma.lisp
+(defun %208-acc-binding-elem (b)
+  "Endeavour 208 phase 4.  When the let binding B makes a tcgen05 accumulator (or ring): (values SYM
+   ELEM), the accumulator's element as written.  NIL otherwise."
+  (let ((init (and (consp b) (second b))))
+    (when (and (consp init) (consp (cdr init))
+               (or (%208-sym= (first init) "MAKE-TCGEN05-ACCUMULATOR")
+                   (%208-sym= (first init) "MAKE-TCGEN05-ACCUMULATOR-RING")))
+      (values (first b) (second init)))))
+
+;; src/mma.lisp
+(defun %208-check-block-accumulate (form ea eb tiles)
+  "Endeavour 208 phase 4.  Rewrite-time rules of a block-scaled (tcgen05-accumulate-via-tile SHAPE D A B
+   ..) whose A and B are block tiles EA / EB: the same block, M = 128, N 128 or 256, K one atom of
+   codes, and an f32 accumulator when D's binding is in TILES (as (D :acc ELEM))."
+  (flet ((fail (fmt &rest args)
+           (error 'crisp-compiler-error
+                  :message (format nil "tcgen05-accumulate-via-tile: ~?" fmt args))))
+    (let* ((ia (getf (cdr ea) :info)) (ib (getf (cdr eb) :info))
+           (shape (second form))
+           (d (third form))
+           (dsym (if (consp d) (second d) d))
+           (acc (and (symbolp dsym) (assoc dsym tiles))))
+      (unless (string-equal (getf ia :name) (getf ib :name))
+        (fail "A holds ~(~a~) blocks and B holds ~(~a~) blocks.  Mixed formats are not supported yet; both must be the same block."
+              (getf ia :name) (getf ib :name)))
+      (when (and acc (getf (cdr acc) :acc) (not (%208-sym= (getf (cdr acc) :acc) "FLOAT")))
+        (fail "a block-scaled multiply accumulates in f32: D must be (make-tcgen05-accumulator float ..), not ~(~a~)."
+              (getf (cdr acc) :acc)))
+      (when (and (listp shape) (= (length shape) 3) (every #'integerp shape))
+        (destructuring-bind (m n k) shape
+          (unless (and (= m 128) (member n '(128 256)))
+            (fail "a block-scaled multiply is M = 128 and N = 128 or 256 (B's scales come in 128-row atoms); got (~a ~a)." m n))
+          (let ((want (%208-block-step ia)))
+            (unless (= k want)
+              (fail "K must be ~a for ~(~a~) (one 128-byte swizzle atom of codes, four instructions), got ~a."
+                    want (getf ia :name) k))))))))
+
+;; src/mma.lisp
+(defun %208-parse-scale-layouts (name params body)
+  "Endeavour 208 phase 4.  Records kernel NAME's (scale-layout S :of A :blocked-128x4) declarations from
+   the declare forms at the head of BODY in *208-scale-layouts*, refusing a malformed one, an unknown
+   layout, or a name that is not one of PARAMS.  Q1 (b): the kernel declares the layout; the host
+   provides it, and the generated hoist matches it."
+  (let ((pnames (%208-param-names params))
+        (out '()))
+    (log:debug "208 scale-layout parse of ~a: params ~s" name params)
+    (dolist (f body)
+      (when (and (consp f) (%208-sym= (first f) "DECLARE"))
+        (dolist (d (rest f))
+          (when (and (consp d) (%208-sym= (first d) "SCALE-LAYOUT"))
+            (destructuring-bind (&optional s of a layout &rest more) (rest d)
+              (unless (and (symbolp s) (%208-sym= of "OF") (symbolp a) (symbolp layout) (null more))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): expected (scale-layout SCALES :of MATRIX :blocked-128x4), got ~s." name d)))
+              (unless (%208-sym= layout "BLOCKED-128X4")
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): (scale-layout ~(~a~) ..): the layout ~s is not supported.  The one layout is :blocked-128x4, cuBLASLt's and torchao's to_blocked: 512-byte atoms of 128 rows x 4 scales." name s layout)))
+              (dolist (nm (list s a))
+                (unless (member (string-downcase (symbol-name nm)) pnames :test #'string=)
+                  (error 'crisp-compiler-error
+                         :message (format nil "~(~a~): (scale-layout ~(~a~) :of ~(~a~) ..): ~(~a~) is not a parameter of the kernel." name s a nm))))
+              (push (list :scales (string-downcase (symbol-name s)) :of (string-downcase (symbol-name a))
+                          :layout :blocked-128x4)
+                    out))))))
+    (let ((decls (setf (gethash (string-downcase (symbol-name name)) *208-scale-layouts*) (nreverse out))))
+      ;; (the earlier copy logged OUT after NREVERSE, which shows only the last declaration)
+      (when decls (log:debug "208 scale layouts of ~a: ~s" name decls)))))
+
+;; src/mma.lisp
+(defun %208-rw (form tiles)
+  "Endeavour 208 phase 4.  The block-tile source rewrite of FORM, TILES the block tiles in scope (see
+   the section header).  EQ-preserving.  TILES also carries the tcgen05 accumulator bindings, as
+   (D :acc ELEM), and the block rules whose inputs are literal are checked here, before pass 1."
+  (cond
+    ((atom form) form)
+    ;; LET: block bindings split into codes + scales; the body sees them.
+    ((and (%208-sym= (first form) "LET") (consp (cdr form)) (listp (second form)))
+     (let ((out '()) (changed nil) (inner tiles))
+       (dolist (b (second form))
+         (multiple-value-bind (codes scales entry) (%208-block-binding b)
+           (if codes
+               (progn (setf changed t) (push codes out) (push scales out) (push entry inner))
+               (let ((nb (if (consp b) (%208-rw-list b tiles) b)))
+                 (multiple-value-bind (asym aelem) (%208-acc-binding-elem b)
+                   (when asym (push (list asym :acc aelem) inner)))
+                 (unless (eq nb b) (setf changed t))
+                 (push nb out)))))
+       (let ((body (%208-rw-list (cddr form) inner)))
+         (if (or changed (not (eq body (cddr form))))
+             (list* (first form) (nreverse out) body)
+             form))))
+    ;; load-tile into a block tile: the scale copy FIRST (its expect_tx must precede the codes load's
+    ;; arrive, from the same thread), then the codes load without :scales.
+    ((%208-sym= (first form) "LOAD-TILE")
+     (multiple-value-bind (entry sf) (%208-block-tile-ref (third form) tiles)
+       (if (null entry)
+           (%208-rw-list form tiles)
+           (let* ((kw (nthcdr 4 form))
+                  (scales (getf kw :scales))
+                  (bar (getf kw :barrier))
+                  (plain (loop for (k v) on kw by #'cddr unless (eq k :scales) append (list k v))))
+             (unless scales
+               (error 'crisp-compiler-error
+                      :message (format nil "(load-tile ~(~a~) ~(~a~) ..): ~(~a~) holds ~(~a~) blocks, so the load needs their scales: add :scales S, with (scale-layout S :of ~(~a~) :blocked-128x4) declared."
+                                       (second form) (third form) (third form)
+                                       (getf (getf (cdr entry) :info) :name) (second form))))
+             (let ((decl (find-if (lambda (d) (string-equal (getf d :scales) (symbol-name scales)))
+                                  (and *208-rw-kernel* (gethash *208-rw-kernel* *208-scale-layouts*)))))
+               (unless (and (symbolp scales) decl (string-equal (getf decl :of) (symbol-name (second form))))
+                 (error 'crisp-compiler-error
+                        :message (format nil "load-tile ~(~a~) .. :scales ~(~a~): declare the layout of the scales, (scale-layout ~(~a~) :of ~(~a~) :blocked-128x4)."
+                                         (second form) scales scales (second form)))))
+             (unless bar
+               (error 'crisp-compiler-error
+                      :message (format nil "(load-tile ~(~a~) ~(~a~) .. :scales ..): a block tile is loaded by TMA and needs :barrier." (second form) (third form))))
+             (list 'progn
+                   (list (intern "%208-LOAD-SCALES" (find-package :crisp.compiler))
+                         scales (second form) sf (fourth form) bar
+                         (getf (getf (cdr entry) :info) :name) (getf (cdr entry) :rows))
+                   (list* (first form) (second form) (third form) (fourth form) plain))))))
+    ;; The accumulate on block tiles: the hidden options carry the block and the scales tiles.
+    ((and (%208-sym= (first form) "TCGEN05-ACCUMULATE-VIA-TILE") (>= (length form) 5))
+     (multiple-value-bind (ea sfa) (%208-block-tile-ref (nth 3 form) tiles)
+       (multiple-value-bind (eb sfb) (%208-block-tile-ref (nth 4 form) tiles)
+         (cond ((and (null ea) (null eb)) (%208-rw-list form tiles))
+               ((not (and ea eb))
+                (error 'crisp-compiler-error
+                       :message (format nil "tcgen05-accumulate-via-tile: ~(~a~) is a block tile and ~(~a~) is not.  A block-scaled multiply takes two block tiles of the same block."
+                                        (if ea (nth 3 form) (nth 4 form)) (if ea (nth 4 form) (nth 3 form)))))
+               (t (%208-check-block-accumulate form ea eb tiles)
+                  (append form
+                          (list :%block-a (getf (getf (cdr ea) :info) :name) :%sf-a sfa
+                                :%block-b (getf (getf (cdr eb) :info) :name) :%sf-b sfb)))))))
+    (t (%208-rw-list form tiles))))
+
+;; src/mma.lisp
+(defun %208-rewrite-block-kernel (form)
+  "Endeavour 208 phase 4.  A def-function FORM with its scale-layout declarations recorded and, when it
+   holds block scratch tiles, its body rewritten (section header).  Any other FORM comes back EQ."
+  (let ((name (second form)) (params (third form)) (body (cdddr form)))
+    (when (and (symbolp name) (listp params))
+      (%208-parse-scale-layouts name params body))
+    (if (%208-tree-has-block-scratch-p body)
+        (let ((new (let ((*208-rw-kernel* (string-downcase (symbol-name name)))) (%208-rw-list body nil))))
+          (log:debug "208 block-scaled source rewrite of ~a" name)
+          (if (eq new body) form (list* (first form) name params new)))
+        form)))
+
+;; src/mma.lisp -- corrected copy: TILES now also holds accumulator bindings (D :acc ELEM), which are
+;; not block tiles.
+(defun %208-block-tile-ref (form tiles)
+  "Endeavour 208 phase 4.  When FORM is a block tile X or (ring-get X I) of TILES: (values ENTRY SF-FORM),
+   SF-FORM naming the matching scales tile (X--SCALES, or (ring-get X--SCALES I)).  Entries without
+   :info (accumulator bindings) are not block tiles."
+  (let* ((sym (cond ((and form (symbolp form)) form)
+                    ((and (consp form) (%208-sym= (first form) "RING-GET") (symbolp (second form))) (second form))))
+         (e (and sym (find-if (lambda (x) (and (eq (car x) sym) (getf (cdr x) :info))) tiles))))
+    (when e
+      (values e (if (symbolp form)
+                    (getf (cdr e) :sf)
+                    (list (first form) (getf (cdr e) :sf) (third form)))))))

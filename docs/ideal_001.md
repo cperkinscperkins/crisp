@@ -13481,6 +13481,7 @@ On NVIDIA **Blackwell datacenter parts (B200 / GB200, `sm_100a`)** the tensor-co
 (make-tcgen05-accumulator float (128 N) 0.0)                     ; D, in tensor memory
 (make-tcgen05-accumulator int (128 N) 0)                         ; s32, for 8-bit operands; or (accum Q)
 (make-tcgen05-accumulator-ring float (128 N) :ring-count R)      ; R of them; (ring-get ACC i) is D_i
+(make-scratch-matrix nvfp4 (128 256))                            ; a block tile: codes + scales (below)
 (tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b [:on-complete BARRIER])
 (tcgen05-commit BARRIER)        ; BARRIER arrives when every MMA this thread issued has finished
 (store-tile D C (gy gx))   (store-tile-at D C (row col))   (store-tile-at (to-bfloat16 D) C (row col) :via :tma)
@@ -13543,15 +13544,56 @@ a fresh accumulator.
     (tcgen05-commit (ring-get acc-full s))))
 ```
 
+**Block-scaled microfloats (NVFP4, MXFP4, MXFP8).**  A matrix whose element is a `def-microfloat-block`
+holds that block's packed codes.  It is `(M K)` in elements, and fp4 packs two codes per byte.  Its
+scales are a separate vector, in the layout the kernel declares:
+
+```
+(def-microfloat-block nvfp4 :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+(def-type a-mat (matrix nvfp4 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type s-vec (vector (scale nvfp4) :address-space :global :align :compact))
+
+(declare (scale-layout SA :of A :blocked-128x4) (scale-layout SB :of B :blocked-128x4))
+(let ((A-tile (make-scratch-matrix nvfp4 (128 256)))         ; codes and scales, in shared memory
+      (D      (make-tcgen05-accumulator float (128 N) 0.0)) ...)
+  (load-tile A A-tile (gy gk) :scales SA :barrier bar :swizzle :128b)
+  ...
+  (tcgen05-accumulate-via-tile (128 N 256) D A-tile B-tile :swizzle :128b))
+```
+
+- **The three blocks** are:
+  - NVFP4 (`:base fp4 :scale fp8-e4m3 :shape (16)`), `kind::mxf4nvf4`;
+  - MXFP4 (`fp4`, `fp8-e8m0`, 32), `kind::mxf4`;
+  - MXFP8 (`fp8-e4m3` or `fp8-e5m2`, `fp8-e8m0`, 32), `kind::mxf8f6f4`.
+
+  Any other block is refused.
+- **K per call** is one 128-byte atom of codes: 256 for fp4, 128 for fp8.  A block tile is
+  `(R K)`, with R a multiple of 128.  N is 128 or 256.  The accumulator is f32.  A and B are the same
+  block.
+- **`:blocked-128x4`** is the one layout.  It is cuBLASLt's, CUTLASS's and torchao's `to_blocked`:
+  512-byte atoms of 128 rows x 4 scales, row r and scale c at `(r mod 32)*16 + (r div 32)*4 + c`, with
+  atoms along K first.  The host provides the scales that way, and the generated hoist does.
+- **The compiler does the rest.**  The load copies the tile's scale atoms beside the codes.  The
+  multiply copies them into tensor memory (`tcgen05.cp`) into columns it assigns, which count toward
+  the 512.  Then it issues the block-scaled MMAs.
+- fp4's even element is the low nibble (D-206-3), and the hardware agrees.
+- **A ring's index must walk the slots in order across tiles:** steps-per-tile a multiple of the ring
+  count (BUG 156).
+
+**`matrix-multiply-tile-stride`** takes a tcgen05 accumulator as its C-tile, bound in `:let` or outside.
+Its tile shape is the accumulator's (M N), and the per-tile reset is a re-initialisation, which costs
+nothing.  It is the synchronous form; a warp-specialized pipeline stays `tile-stride` + roles.
+
 **Target and status.**
 - tcgen05 needs `--ir-target-arch=sm_100a`.  Plain `sm_100` is refused: the instructions are
   architecture-specific, and the driver would refuse them anyway.
 - Consumer Blackwell (`sm_120`) has no tcgen05.
 - Forward-only for now.
 - Verified on a B200: every spec in tests/spec/208-tcgen05 is MMA_CORRECT (endeavour 208).  The
-  synchronous, pipelined, accumulator-ring, `:via :tma`, tf32, int8 (all sign pairs) and qint
-  requantizing forms all ran.
-- Not built yet: M = 64, `:b-major :mn`, `cta_group::2`, and the block-scaled microfloat kinds.
+  synchronous, pipelined, accumulator-ring, `:via :tma`, tf32, int8 (all sign pairs), qint
+  requantizing, NVFP4 / MXFP4 / MXFP8 (e4m3 and e5m2) and `matrix-multiply-tile-stride` forms all ran.
+- Not built yet: M = 64, `:b-major :mn`, `cta_group::2`, mixed microfloat formats, fp6, and NVFP4's
+  per-tensor global scale.
 
 
 ## Deferred: cluster-scale topology (`def-topology` / `def-orchestration`)

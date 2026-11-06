@@ -338,7 +338,20 @@ under the 227 KB limit.
   must run on exactly 4 warps, so the storing role is 4 warps, or the kernel is 128 threads.
   `(store-tile-at (to-q-out D 1.0) C (row col))` requantizes an int accumulator as it stores it (direct
   stores only, not `:via :tma`).
-- **Not built yet:** the block-scaled microfloats, M = 64, `cta_group::2`.  It is forward-only.
+- **Block-scaled microfloats:** a matrix of a `def-microfloat-block` holds its packed codes, `(M K)`
+  in elements.  Its scales are a vector of `(scale BLOCK)`.
+  - Declare their layout: `(scale-layout SA :of A :blocked-128x4)`.
+  - Load a block tile with `(load-tile A A-tile (gy gk) :scales SA :barrier bar :swizzle :128b)`, and
+    multiply two of them.
+  - The blocks are NVFP4 (fp4, fp8-e4m3, 16), MXFP4 (fp4, fp8-e8m0, 32) and MXFP8 (fp8-e4m3/e5m2,
+    fp8-e8m0, 32).
+  - K is 256 for fp4 and 128 for fp8.  N is 128 or 256.  The accumulator is float.  The design
+    document has the layout.
+- **`matrix-multiply-tile-stride`** takes a tcgen05 accumulator as its C-tile, and resets it per tile
+  for you.
+- **A ring's steps per tile must be a multiple of its ring count** (BUG 156).  The await's phase counts
+  visits, not slots.
+- **Not built yet:** M = 64, `cta_group::2`.  It is forward-only.
 
 ---
 
@@ -426,7 +439,8 @@ two handles, packed codes and one scale per block:
 - The scale rounds up, so a block's largest element is never clipped.  `fp4` packs the even element in
   the low nibble.
 - No arithmetic on blocks or codes, and `(*! w w)` is refused: dequantize to `half` or `float` and use
-  the MMA paths.  (Native block-scaled MMA needs Blackwell's `tcgen05`, not yet supported.)
+  the MMA paths.  Native block-scaled MMA is Blackwell's `tcgen05` (section 10): a matrix of the block
+  type, multiplied in hardware, with no dequantize step.
 - For training, `(fake-quant-NAME x y)` writes each element of `x` through the format into `y`, with
   `dy/dx = 1` backward.  `quantize-to`, `dequantize-from` and the element reads have no gradient.
 

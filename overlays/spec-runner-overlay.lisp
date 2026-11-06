@@ -261,3 +261,66 @@
          (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 4 "N = 128: four 32-column loads")
          (list "136316064" :some "the instruction descriptor: c_format S32 = 2, a/b_format INT8 = 1, N>>3 = 16, M>>4 = 8")
          (list "cvt.rn.f32" 0 "an s32 accumulator is stored as int, never through float"))))
+
+;;;; ======================================================================
+;;;; Endeavour 208 phase 4 -- block-scaled validators.  Descriptor values computed by hand from
+;;;; CUTLASS InstrDescriptorBlockScaled (isa-notes.md, Phase 4) and checked against the PTX.
+;;;; ======================================================================
+
+;; tests/run-specs.lisp
+(defun %208-bs-common (label ptx-string kind n-mma cp bulk cols idescs)
+  "Endeavour 208 phase 4.  The checks every block-scaled spec shares: PTX ISA 8.7, the kind, the
+   tensor-memory scale copies, the scale bulk copies with their expect_tx placed before the codes'
+   arrive, the allocation, and each instruction-descriptor constant in IDESCS."
+  (and (%208-check-counts
+        label ptx-string
+        (append (list (list ".version 8.7" 1 "block-scaled kinds need PTX ISA 8.7 (raised only for them)")
+                      (list (format nil "tcgen05.mma.cta_group::1.kind::~a [" kind) n-mma "four block-scaled MMAs per K-step")
+                      (list "tcgen05.cp.cta_group::1.32x128b.warpx4" cp "one copy per scale atom into tensor memory")
+                      (list "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes" bulk "one scale bulk copy per 128-row block")
+                      (list "mbarrier.expect_tx.relaxed.cta.shared::cta.b64" 2 "the scale bytes announced, one per operand load")
+                      (list (format nil "], ~d;" cols) 1 "the tensor-memory allocation"))
+                (loop for d in idescs collect (list (format nil ", ~d;" d) :some "a block-scaled instruction descriptor"))))
+       ;; Each operand's scale expect_tx must come BEFORE its codes' arrive.expect_tx (same thread).
+       (let ((e (search "mbarrier.expect_tx.relaxed" ptx-string))
+             (a (search "mbarrier.arrive.expect_tx" ptx-string)))
+         (or (and e a (< e a))
+             (progn (format *error-output* "FAIL (~a): the first scale expect_tx is not before the first codes arrive.expect_tx~%" label)
+                    nil)))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-nvfp4 (file ptx-string)
+  "Endeavour 208 spec 13: NVFP4, 128 x 128 x 256.  4X: every instruction its own atom, SF_ID 0."
+  (declare (ignore file))
+  (%208-bs-common "tcgen05-nvfp4" ptx-string "mxf4nvf4.block_scale.scale_vec::4X" 4 8 2 256 '(136316032)))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-mxfp4 (file ptx-string)
+  "Endeavour 208 spec 14: MXFP4, 128 x 128 x 256.  2X: two atoms per operand, SF_ID 0 and 2."
+  (declare (ignore file))
+  (%208-bs-common "tcgen05-mxfp4" ptx-string "mxf4.block_scale.scale_vec::2X" 4 4 2 256 '(144704640 1218446496)))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-mxfp8 (file ptx-string)
+  "Endeavour 208 spec 15: MXFP8 e4m3, 128 x 128 x 128.  1X: one atom per operand, SF_ID 0..3."
+  (declare (ignore file))
+  (%208-bs-common "tcgen05-mxfp8" ptx-string "mxf8f6f4.block_scale" 4 2 2 256
+                  '(144703488 681574416 1218445344 1755316272)))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-mxfp8-e5m2 (file ptx-string)
+  "Endeavour 208 spec 17: MXFP8 e5m2 -- spec 15's descriptors plus the E5M2 format bits (+1152)."
+  (declare (ignore file))
+  (%208-bs-common "tcgen05-mxfp8-e5m2" ptx-string "mxf8f6f4.block_scale" 4 2 2 256
+                  '(144704640 681575568 1218446496 1755317424)))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-tcgen05-nvfp4-pipeline (file ptx-string)
+  "Endeavour 208 spec 16: the pipelined NVFP4 kernel, N = 256.  B has two 128-row blocks: 3 scale bulk
+   copies (A 1, B 2), 12 tensor-memory copies (A 4, B 8), 512 columns (256 + 48 rounded up), and two
+   commits (the slot release and acc-full)."
+  (declare (ignore file))
+  (and (%208-bs-common "tcgen05-nvfp4-pipeline" ptx-string "mxf4nvf4.block_scale.scale_vec::4X" 4 12 3 512 '(138413184))
+       (%208-check-counts "tcgen05-nvfp4-pipeline" ptx-string
+                          (list (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2
+                                      "slot release + acc-full")))))

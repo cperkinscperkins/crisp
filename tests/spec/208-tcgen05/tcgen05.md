@@ -53,8 +53,84 @@ that the host provides and the hoist matches.  Q2: metal testing on RunPod via `
     `(%tcgen05-reset D)`, which costs nothing because the first MMA overwrites.
   - It covers the synchronous form.  A warp-specialized pipeline splits the K loop between roles, so it
     stays `tile-stride` + `with-warp-specialization`, as on Hopper.
+  - Spec 12.  Its PTX is instruction-identical to spec 02's hand-written loop.  MMA_CORRECT on a B200
+    (16:03).
 
-## Phase 4 proposal: block-scaled microfloats (for review, 2026-11-05)
+**Built (2026-11-05):**
+- **The source rewrite**, at `visit-toplevel-form`, before pass 1 so scratch sizes and TMA descriptors
+  are right:
+  - `(make-scratch-matrix BLOCK (R K))` becomes a uchar codes tile `(R K/epb)` plus a hidden
+    `X--SCALES` tile of 512-byte atoms.  The scales tile is rounded to whole KB, because the hoist packs
+    tiles back to back and the next 128-byte-swizzled codes tile needs 1024-byte alignment.
+  - `load-tile .. :scales S` becomes `(%208-load-scales ..)`, then the codes load.
+  - The accumulate gains hidden `:%block` / `:%sf` options.
+  - The `scale-layout` declarations are parsed and checked here too.
+- **The scale copy** runs from the TMA load's own elected thread, in program order before the codes
+  load's `arrive.expect_tx`: `mbarrier.expect_tx` for the scale bytes, then one `cp.async.bulk` per
+  128-row block.
+- **The MMA** issues `tcgen05.cp.32x128b.warpx4` per scale atom into scale columns assigned per site,
+  then four block-scaled MMAs.  Each instruction has its own descriptor (its SF_ID).
+- **PTX ISA 8.7** (`-mattr=+ptx87`) is raised only for modules holding `.block_scale`, as 204 does with
+  +ptx84.
+- **Metadata:** a `:microfloat` entry on the block matrix and on its scales.  The CUDA harness sizes,
+  fills and TMA-describes codes in bytes, and builds a `:blocked-128x4` scales vector.  Its reference
+  decodes fp4 / e4m3 / e5m2 with ue4m3 / ue8m0 scales.
+- **ON METAL 2026-11-05 16:03 (B200), MMA_CORRECT:**
+  - 13 NVFP4, 14 MXFP4, 15 MXFP8-e4m3 and 17 MXFP8-e5m2 (128 x 128 x K);
+  - p1, NVFP4 at N = 256;
+  - q2, the three roles on one tile;
+  - the controls (spec 01 and spec 12).
+
+  So the tcgen05.cp descriptor's LBO = 0 reading was right, and so is D-206-3's low-nibble-first fp4
+  order: the hardware decodes it that way.
+- **Spec 16, the pipelined NVFP4 kernel, MMA_CORRECT on a B200 (16:23, 256 x 512 x 1024), on a 4-slot
+  ring.**
+  - On 3 slots it faulted ("unspecified launch failure").  The cause is **BUG 156**, a pre-existing
+    ring hazard, not anything block-scaled.
+  - A ring await takes its parity from its own visit count, lap = visit div ring-count.  The slot is
+    `(mod grid-k R)`, and grid-k restarts every tile.  So once a CTA does a second tile with
+    steps-per-tile not a multiple of R, the await waits on the wrong phase.
+  - Seven probes isolated it (`put_temp_files_here/208/p4/probes`):
+    - **pass:** single tile at N = 256; roles on one tile; 2 K-steps on one tile; one tile at
+      coordinates (1, 1);
+    - **fault:** several tiles per CTA, with or without `:on-complete`, on one CTA or two;
+    - **confirmation:** the same kernels pass on ring 4 (4 steps) and ring 1.
+
+    Every earlier pipelined spec used 8 steps on 4 slots.  compute-sanitizer timed out and gave
+    nothing.
+
+- **Error specs:** errors/15-22 cover:
+  - a load without `:scales`;
+  - an undeclared or unknown scale layout;
+  - a block with no kind;
+  - mixed blocks;
+  - a tile that is not one atom;
+  - an int accumulator;
+  - a declare naming a non-parameter.
+
+  Each is spec 13 with one change, so spec 13 is their positive control.
+- **Suites (2026-11-05):** E2E 1805/1805, negative 492/492, unit 392/392.  The 208 directory passes 39/39,
+  with and without `--differentiate`.  IR corpus: 2310 existing jobs identical; the 4 differences are
+  metacrisp paths and the 17 new jobs are the 208 specs.
+
+**Found along the way (for review):**
+- **D-208-18: uchar scratch was sized at 4 bytes per element** by the CUDA hoist.  Its width table
+  knew `uchar`, but not `unsigned char`, which is `crisp-type-to-cpp-type`'s spelling.  This is
+  pre-existing, and only a waste until a block-scaled ring asked for 648 KB.  Fixed in the hoist
+  overlay.
+- **D-208-19: an analysis-time error can be masked** by "Type Resolution: FAILED to instantiate struct
+  TENSOR_UCHAR_2_LOCAL_COMPACT_LAST".
+  - Pass 1's analysis of the body stops at the error, before the rewritten uchar scratch tile's
+    struct is instantiated.
+  - Pass 2 then builds the kernel's LLVM function type first, and fails on it.
+  - This is general to scratch types first reached after an early error.  For 208, every block rule
+    with literal inputs moved to rewrite time (errors/16, 19, 21 now give their own messages).
+- **An SBCL derived-type trap, twice.**  An overlay copy compiled before phase 3's
+  `(declaim (ftype .. %208-mma-kind))` checked the old 3- or 4-character return type.  Calling it
+  through a captured function object resurfaced "i8" in the built executable, but not in-process.
+  Fixed by a fresh `%208-gen-mma-plain`, called by name.
+
+## Phase 4 proposal: block-scaled microfloats (as approved, 2026-11-05)
 
 **What the hardware does.**  The multiply reads fp4 / fp8 codes from shared memory, as before.  It reads
 one scale per 16 or 32 K-elements of each row from **tensor memory**: two more address operands.  The
