@@ -1,0 +1,20 @@
+;; CHECK-FAIL: "K must be 64 for half / bfloat16"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_100a
+;; Endeavour 208 phase 1 -- the operand descriptors cover one 128-byte swizzle atom, 64 bf16 of K.
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix bfloat16 (128 32)))
+        (B-tile (make-scratch-matrix bfloat16 (128 32)))
+        (D      (make-tcgen05-accumulator float (128 128) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (tcgen05-accumulate-via-tile (128 128 32) D A-tile B-tile :swizzle :128b)
+    (store-tile D C (0 0))))

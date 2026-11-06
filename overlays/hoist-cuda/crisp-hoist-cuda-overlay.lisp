@@ -31,4 +31,8 @@
 ;;;; *201-scratch-size-expr* dropped.  %cuda-resolve-symbolic-size refuses it for LOCAL scratch.
 ;;;; EMPTY as of 2026-11-02 -- endeavours 204 / 205 (integer MMA reference, quantized buffers) and BUG 135
 ;;;; (a refused launch is fatal) folded into src/hoist-cuda/main.lisp.
+;;;; EMPTY as of 2026-11-06 -- endeavour 208 (16-bit --mma-test fills, block-scaled operands and reference,
+;;;; D-208-18 uchar width) folded into src/hoist-cuda/main.lisp: %hoist-elem-type-bytes replaced; the
+;;;; captured copies of %cuda-emit-tensor-arg / %cuda-emit-mma-reference became the -base functions;
+;;;; emit-kernel-args, %cuda-emit-tensor-map-encode, emit-structs split base + wrapper; the rest new.
 (in-package :crisp.hoist.cuda)

@@ -4607,3 +4607,32 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         corpus is byte-identical across the fold, so the timing may be coincidence.
         TO TRY: run the suite in halves (--filter) to see if it needs the long process; watch the
         process's memory; check CI (Linux), which has not been seen to crash.
+
+[x] 156 FIXED (endeavour 208, 2026-11-06) -- A RING AWAIT WAITS ON THE WRONG PHASE WHEN A TILE'S STEPS ARE NOT A MULTIPLE OF THE RING COUNT.
+        (await (ring-get BAR slot)) takes its parity from its own per-site visit counter:
+        lap = visit div ring-count (codegen.lisp, generate-node-ir semantic-nvvm-tma-wait).  That assumes
+        the site walks the slots in order, slot = visit mod ring-count.  Kernels index the ring with
+        (mod grid-k R), and grid-k restarts every output tile of a tile-stride.  So when a CTA does more
+        than one tile and steps-per-tile is not a multiple of R, the second tile's await uses the wrong
+        parity: it passes a phase that has not completed, and the full / empty protocol comes apart.
+        OBSERVED (endeavour 208, B200, 2026-11-05): the pipelined NVFP4 kernel (4 K-steps, ring 3) faulted,
+        "unspecified launch failure".  Isolated by probes (put_temp_files_here/208/p4/probes):
+          - one tile per CTA passes (q2, q3: 1 and 2 steps on ring 3);
+          - several tiles per CTA fault (r1: 1 step on ring 3; p2 / p3 / spec 16);
+          - the same kernels pass on ring 4 (4 steps) and ring 1 (s1, s2).
+        Every earlier pipelined spec (04, 05, 11, H100 contest kernels) used 8 steps on a 4-slot ring,
+        which is why nothing caught it.  Not block-scaled specific: bf16 spec 04 with K = 3 x 64 would
+        do the same.
+        Worked around in spec 16 (ring 4).  The compiler accepts the faulting kernel silently.
+        THEORIES for a fix (none tried): (a) take the parity from the slot index the kernel passes, with a
+        per-slot lap counter (needs the slot value at the await, which ring-get has); (b) refuse at
+        compile time when steps-per-tile is a compile-time constant that R does not divide; (c) document
+        that a ring's index must be a running count, not a per-tile one.
+        FIX 2026-11-06 (theory (a)): the await keeps ONE PHASE BIT PER SLOT in an entry-block i32 --
+        phase = init XOR ((bits >> slot) & 1), then the slot's bit flips -- which is the mbarrier's own
+        state whatever order the slots are visited in.  The slot is (address - ring base) / 8; the
+        analyzer passes the ring base in the node's :phase; a ring over 32 slots is refused.  For slots
+        visited in order the bit equals the old lap mod 2, so working kernels are unchanged (IR corpus:
+        only the 13 warp-specialized ring kernels moved).  On a B200: spec 16 back on 3 slots (now its
+        regression), spec 04 on 3 slots, and the three faulting probes are all MMA_CORRECT.  The H100
+        wgmma kernels share the await and are checked in the benchmarking pass.

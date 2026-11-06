@@ -946,6 +946,10 @@
 
     (initialize-function-parameters builder func param-nodes module var-env is-entry-point)
 
+    ;; Endeavour 208: a kernel with tcgen05 accumulators allocates its tensor memory here.
+    (when is-entry-point
+      (%208-emit-tmem-prologue builder module (semantic-function-name semantic-function)))
+
     ;; Endeavour 193: a function that may die gets the thread's die flag -- a kernel allocates and zeroes
     ;; it, a callee receives it as its trailing (LLVM-only) parameter.
     (when (%193-may-die-p (semantic-function-name semantic-function))
@@ -995,6 +999,9 @@
         ;; emitted -- but the fence was still emitted, putting a `barrier.cluster` instruction in
         ;; a module whose target has no clusters.  A degraded cluster needs no exit fence anyway:
         ;; with one workgroup per cluster there is no peer that could still be writing.
+        ;; Endeavour 208: ...and frees it before ret.
+        (when is-entry-point
+          (%208-emit-tmem-epilogue builder module (semantic-function-name semantic-function)))
         (when (and (eq *target-backend* :ptx) is-entry-point (%module-has-cluster-p)
                    (%arch-supports-clusters-p (or *ir-target-arch* :sm_80)))
           (log:info "cluster kernel: emitting exit fence before ret (BUG 050)")
@@ -6322,9 +6329,31 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
         (llvm-position-builder-at-end builder cont-bb)
         (values nil nil)))))
 
+;;; BUG 156: a ring await keeps ONE PHASE BIT PER SLOT.  An mbarrier flips its phase once per completion,
+;;; independently of the other slots, so one bit per slot is the hardware's own state whatever order the
+;;; slots are visited in.  The old per-site visit counter (lap = visit div R) assumed slot = visit mod R,
+;;; which broke when the kernel's index restarts every tile ((mod grid-k R), steps-per-tile not a
+;;; multiple of R).  For slots visited in order the bit equals lap mod 2.
+(defun %156-await-slot (builder module var-env di-builder di-scope location-map barrier-i base-node)
+  "BUG 156: the i32 slot index of a ring await.  BARRIER-I is the slot's mbarrier address (i64, which
+   ring-get built as base + slot*8); BASE-NODE is the ring's analyzed base, or NIL for a plain
+   (non-ring) barrier, whose slot is 0."
+  (let ((i32 (llvm-int32-type))
+        (i64 (llvm-int64-type)))
+    (if (null base-node)
+        (llvm-const-int i32 0 nil)
+        (let* ((base (generate-node-ir base-node builder module var-env di-builder di-scope location-map))
+               (diff (llvm-build-sub builder barrier-i base "ws_slot_bytes"))
+               (idx  (crisp.llvm-bindings::llvm-build-l-shr builder diff (llvm-const-int i64 3 nil) "ws_slot64")))
+          (llvm-build-trunc builder idx i32 "ws_slot")))))
+
 (defmethod generate-node-ir ((node semantic-nvvm-tma-wait) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 137/2d + 139/step4 — (await bar) for a :block TMA barrier."
+  "Endeavor 137/2d + 139/step4 — (await bar) for a :block TMA barrier.
+   BUG 156: the warp-spec await keeps ONE PHASE BIT PER SLOT in an entry-block i32 mask: the phase
+   is init XOR ((mask >> slot) & 1), and after the wait the slot's bit flips.  This is the
+   mbarrier's own state whatever order the kernel visits the slots in (the old per-site visit
+   counter assumed slot = visit mod ring-count)."
   (let* ((i32-type  (llvm-int32-type))
          (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
          (barrier-i (generate-node-ir (semantic-nvvm-tma-wait-barrier-node node) builder module var-env
@@ -6337,57 +6366,48 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
          (wait-bb   (llvm-append-basic-block parent "tma_wait"))
          (exit-bb   (llvm-append-basic-block parent "tma_wait_done")))
     (when ws-phase
-      ;; ---- Endeavor 139 multi-lap flipping parity ----------------------------
-      ;; Compute the runtime parity from a per-ring visit counter, spin on
-      ;; try_wait.parity(parity), increment the counter, return.  NO workgroup
-      ;; bar.sync (only one role's warps reach here) and NO re-init.
+      ;; ---- Endeavor 139 flipping parity; BUG 156 per-slot phase bits ----------
+      ;; NO workgroup bar.sync (only one role's warps reach here) and NO re-init.
       (let* ((is-list  (consp ws-phase))
              (init     (if is-list (first ws-phase) ws-phase))
-             (ring-n   (if is-list (max 1 (second ws-phase)) 1))
+             (ctr nil) (mask nil) (bit nil)
              (parity
               (if (not is-list)
                   ;; Legacy constant parity.
                   (llvm-const-int i32-type init nil)
-                  ;; Entry-block counter (persists across loop iterations): alloca +
-                  ;; init-store hoisted before the entry block's terminator.
+                  ;; Entry-block mask (persists across loop iterations): alloca + init-store
+                  ;; hoisted before the entry block's terminator.
                   (let* ((saved (llvm-get-insert-block builder))
                          (entry (crisp.llvm-bindings::llvm-get-entry-basic-block parent))
                          (term  (llvm-get-basic-block-terminator entry)))
                     (if (cffi:null-pointer-p term)
                         (llvm-position-builder-at-end builder entry)
                         (crisp.llvm-bindings::llvm-position-builder-before builder term))
-                    (let ((ctr (llvm-build-alloca builder i32-type "ws_pctr")))
-                      (llvm-build-store builder (llvm-const-int i32-type 0 nil) ctr)
-                      (llvm-position-builder-at-end builder saved)
-                      ;; visit = load ctr; q = visit / N; lap = q - (q/2)*2  (= q mod 2)
-                      (let* ((visit (llvm-build-load2 builder i32-type ctr "ws_visit"))
-                             (q     (llvm-build-udiv builder visit (llvm-const-int i32-type ring-n nil) "ws_lap_q"))
-                             (q2    (llvm-build-udiv builder q (llvm-const-int i32-type 2 nil) "ws_lap_q2"))
-                             (q2x2  (llvm-build-mul builder q2 (llvm-const-int i32-type 2 nil) "ws_lap_q2x2"))
-                             (lap   (llvm-build-sub builder q q2x2 "ws_lap"))
-                             ;; parity = init XOR lap; init is a compile-time 0/1:
-                             ;;   init 0 -> lap ; init 1 -> 1 - lap
-                             (par   (if (zerop init)
-                                        lap
-                                        (llvm-build-sub builder (llvm-const-int i32-type 1 nil) lap "ws_parity"))))
-                        ;; Stash the counter + visit on locals for the post-wait increment.
-                        (setf (gethash '%ws-ctr var-env) ctr
-                              (gethash '%ws-visit var-env) visit)
-                        par))))))
+                    (setf ctr (llvm-build-alloca builder i32-type "ws_phase_bits"))
+                    (llvm-build-store builder (llvm-const-int i32-type 0 nil) ctr)
+                    (llvm-position-builder-at-end builder saved)
+                    (let* ((slot (%156-await-slot builder module var-env di-builder di-scope location-map
+                                                  barrier-i (third ws-phase)))
+                           (m    (llvm-build-load2 builder i32-type ctr "ws_bits"))
+                           (sh   (crisp.llvm-bindings::llvm-build-l-shr builder m slot "ws_bits_sh"))
+                           (b    (crisp.llvm-bindings::llvm-build-and builder sh (llvm-const-int i32-type 1 nil) "ws_lap")))
+                      (setf mask m
+                            bit  (crisp.llvm-bindings::llvm-build-shl builder (llvm-const-int i32-type 1 nil) slot "ws_slot_bit"))
+                      ;; parity = init XOR lap; init is a compile-time 0/1.
+                      (if (zerop init)
+                          b
+                          (crisp.llvm-bindings::llvm-build-xor builder b (llvm-const-int i32-type 1 nil) "ws_parity")))))))
+        (log:debug "BUG 156 await codegen: ~:[constant parity ~a~;per-slot phase bits, init ~a~]"
+                   is-list init)
         (llvm-build-br builder wait-bb)
         (llvm-position-builder-at-end builder wait-bb)
         (let* ((complete (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr parity))
                (done     (llvm-build-icmp builder +llvm-int-ne+ complete (llvm-const-int i32-type 0 nil) "ws_done")))
           (llvm-build-cond-br builder done exit-bb wait-bb))
         (llvm-position-builder-at-end builder exit-bb)
-        ;; Increment the visit counter for the next lap (list path only).
+        ;; Flip the slot's phase bit for its next visit (list path only).
         (when is-list
-          (let* ((ctr   (gethash '%ws-ctr var-env))
-                 (visit (gethash '%ws-visit var-env))
-                 (next  (llvm-build-add builder visit (llvm-const-int i32-type 1 nil) "ws_visit_next")))
-            (llvm-build-store builder next ctr)
-            (remhash '%ws-ctr var-env)
-            (remhash '%ws-visit var-env)))
+          (llvm-build-store builder (crisp.llvm-bindings::llvm-build-xor builder mask bit "ws_bits_next") ctr))
         (return-from generate-node-ir (values (llvm-const-int (llvm-int64-type) 0 nil) nil))))
     ;; ---- 138 path (unchanged): try_wait.parity(0) + bar.sync + re-init --------
     (llvm-build-br builder wait-bb)
@@ -8333,3 +8353,608 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
                                                      (resolve-type-to-llvm elem-type) "cas_old_f")
                                 old-i)))
                 (values old nil))))))))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 208 -- tcgen05 lowering: tensor memory, descriptors, MMA issue, loads, TMA store, block scaling
+;;;; See tests/spec/208-tcgen05/tcgen05.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %208-asm (builder asm &optional (constraints "~{memory}") ret-type ptypes args)
+  "Endeavour 208.  One side-effecting inline-asm statement (void unless RET-TYPE)."
+  (%build-inline-asm-call builder (or ret-type (llvm-void-type)) ptypes args asm constraints))
+
+(defun %208-if (builder test thunk &optional (label "tc"))
+  "Endeavour 208.  if (TEST) { THUNK } -- a then block and a merge block; the builder ends in the merge."
+  (let* ((fn    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (then  (llvm-append-basic-block fn (format nil "~a_then" label)))
+         (merge (llvm-append-basic-block fn (format nil "~a_merge" label))))
+    (llvm-build-cond-br builder test then merge)
+    (llvm-position-builder-at-end builder then)
+    (funcall thunk)
+    (llvm-build-br builder merge)
+    (llvm-position-builder-at-end builder merge)))
+
+(defun %208-linear-tid (builder module)
+  "Endeavour 208.  The thread's linear index in the workgroup, i32."
+  (let ((v (generate-node-ir (make-semantic-gpu-builtin :builtin-name :get-local-linear-id
+                                                        :dimension nil :type 'ulong)
+                             builder module nil nil nil nil)))
+    (llvm-build-trunc builder v (llvm-int32-type) "tc_tid")))
+
+(defun %208-shared-global (module name llvm-type)
+  "Endeavour 208.  The addrspace(3) global NAME, created (undef, internal, 16-byte aligned) on first use."
+  (let ((g (llvm-get-named-global module name)))
+    (if (and g (not (cffi:null-pointer-p g)))
+        g
+        (let ((g (crisp.llvm-bindings:llvm-add-global-in-addrspace module llvm-type name 3)))
+          (crisp.llvm-bindings:llvm-set-initializer g (llvm-get-undef llvm-type))
+          (crisp.llvm-bindings::llvm-set-linkage g 8)      ; internal
+          (crisp.llvm-bindings::llvm-set-alignment g 16)
+          (log:debug "208: shared global ~a" name)
+          g))))
+
+(defun %208-tmem-slot (module)
+  "Endeavour 208.  The shared word tcgen05.alloc writes the kernel's tensor-memory address into."
+  (%208-shared-global module "__crisp_tmem_slot" (llvm-int32-type)))
+
+(defun %208-sync-mbar-global (module kernel n)
+  "Endeavour 208.  KERNEL's [N x i64] mbarriers, one per synchronous accumulate site."
+  (%208-shared-global module
+                      (format nil "__crisp_tc_mbar_~a"
+                              (substitute-if #\_ (lambda (c) (not (alphanumericp c))) (string-downcase kernel)))
+                      (if (> n 1) (crisp.llvm-bindings::llvm-array-type (llvm-int64-type) n) (llvm-int64-type))))
+
+(defun %208-pow2-columns (columns)
+  "Endeavour 208.  The tcgen05.alloc column count for COLUMNS: a power of two, at least 32."
+  (loop for c = 32 then (* c 2) when (>= c columns) return c))
+
+(defun %208-kernel-tc-info (kernel-name)
+  "Endeavour 208.  KERNEL-NAME's *tcgen05-kernels* entry when it uses tensor memory on PTX, else NIL."
+  (let ((info (gethash (string-upcase (princ-to-string kernel-name)) *tcgen05-kernels*)))
+    (and info (eq *target-backend* :ptx) (plusp (getf info :columns 0)) info)))
+
+(defun %208-emit-tmem-prologue (builder module kernel-name)
+  "Endeavour 208 (D-208-4).  At kernel entry, for a kernel with tcgen05 accumulators:
+     warp 0:   tcgen05.alloc of the kernel's columns (a power of two >= 32) into __crisp_tmem_slot,
+               then relinquish_alloc_permit, so a second CTA on the SM is not kept waiting;
+     thread 0: mbarrier.init (count 1) of each synchronous site's mbarrier;
+     all:      fence::before_thread_sync, bar.sync, fence::after_thread_sync -- the alloc's store
+               to shared memory is weak, and this is the ordering the PTX ISA prescribes."
+  (let ((info (%208-kernel-tc-info kernel-name)))
+    (when info
+      (let* ((i32   (llvm-int32-type))
+             (ncols (%208-pow2-columns (getf info :columns)))
+             (nsync (getf info :sync-sites 0))
+             (tid   (%208-linear-tid builder module))
+             (slot-addr (llvm-build-ptr-to-int builder (%208-tmem-slot module) i32 "tmem_slot_addr")))
+        (log:info "208: kernel ~a allocates ~a tensor-memory columns (~a used), ~a synchronous site~:p"
+                  kernel-name ncols (getf info :columns) nsync)
+        (%208-if builder (llvm-build-icmp builder +llvm-int-ult+ tid (llvm-const-int i32 32 nil) "tc_is_w0")
+                 (lambda ()
+                   (%208-asm builder (format nil "tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [$0], ~d;" ncols)
+                             "r,~{memory}" nil (list i32) (list slot-addr))
+                   (%208-asm builder "tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;"))
+                 "tc_alloc")
+        (when (plusp nsync)
+          (let ((mbar (%208-sync-mbar-global module (getf info :kernel (princ-to-string kernel-name)) nsync)))
+            (%208-if builder (llvm-build-icmp builder +llvm-int-eq+ tid (llvm-const-int i32 0 nil) "tc_is_t0")
+                     (lambda ()
+                       (dotimes (i nsync)
+                         (%gen-nvvm-mbarrier-init-shared builder module (%gen-nvvm-mbar-slot-ptr builder mbar i)
+                                                         (llvm-const-int i32 1 nil)))
+                       (%gen-nvvm-fence-proxy-async-shared builder))
+                     "tc_mbar_init")))
+        (%208-asm builder "tcgen05.fence::before_thread_sync;")
+        (%ptx-barrier builder module)
+        (%208-asm builder "tcgen05.fence::after_thread_sync;")))))
+
+(defun %208-emit-tmem-epilogue (builder module kernel-name)
+  "Endeavour 208 (D-208-4).  Before ret: every thread's tensor-memory work is ordered before a
+   bar.sync (fence::before_thread_sync / bar.sync / fence::after_thread_sync), then warp 0 frees the
+   allocation -- all of it must be freed before the kernel exits."
+  (let ((info (%208-kernel-tc-info kernel-name)))
+    (when info
+      (let* ((i32   (llvm-int32-type))
+             (ncols (%208-pow2-columns (getf info :columns)))
+             (tid   nil))
+        (%208-asm builder "tcgen05.fence::before_thread_sync;")
+        (%ptx-barrier builder module)
+        (%208-asm builder "tcgen05.fence::after_thread_sync;")
+        (setf tid (%208-linear-tid builder module))
+        (%208-if builder (llvm-build-icmp builder +llvm-int-ult+ tid (llvm-const-int i32 32 nil) "tc_is_w0")
+                 (lambda ()
+                   (let ((base (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base")))
+                     (%208-asm builder (format nil "tcgen05.dealloc.cta_group::1.sync.aligned.b32 $0, ~d;" ncols)
+                               "r,~{memory}" nil (list i32) (list base))))
+                 "tc_dealloc")))))
+
+(defun %208-smem-desc (builder base-ptr kslice-byte-off)
+  "Endeavour 208.  The 64-bit Blackwell shared-memory descriptor (CUTLASS UMMA::SmemDescriptor) of a
+   K-major operand under the 128-byte swizzle: start address >> 4 at [0,14), LBO 16 B (enc 1, unused
+   when swizzled), SBO 1024 B (enc 64: eight 128-byte rows per swizzle atom) at [32,46), VERSION 1 at
+   [46,48) -- the Blackwell marker -- base offset 0, layout SWIZZLE_128B = 2 at [61,64).  The K-slice
+   advances the start address by KSLICE-BYTE-OFF (32 bytes per K = 16 slice), as on wgmma.
+   NOTE that 2 at [61,64) is the same bit as wgmma's 1 at [62,64): only the version bit differs."
+  (let* ((i32 (llvm-int32-type)) (i64 (llvm-int64-type))
+         (const-val (logior (ash 1 16) (ash 64 32) (ash 1 46) (ash 2 61)))
+         (addr0 (llvm-build-ptr-to-int builder base-ptr i32 "tc_addr"))
+         (addr  (if (zerop kslice-byte-off) addr0
+                    (llvm-build-add builder addr0 (llvm-const-int i32 kslice-byte-off nil) "tc_addr_k")))
+         (sh    (crisp.llvm-bindings::llvm-build-l-shr builder addr (llvm-const-int i32 4 nil) "tc_sh"))
+         (msk   (crisp.llvm-bindings::llvm-build-and builder sh (llvm-const-int i32 #x3FFF nil) "tc_start"))
+         (st64  (llvm-build-zext builder msk i64 "tc_start64")))
+    (crisp.llvm-bindings::llvm-build-or builder st64 (llvm-const-int i64 const-val nil) "tc_desc")))
+
+(defun %208-entry-counter (builder name)
+  "Endeavour 208.  An i32 counter alloca'd and zeroed in the entry block (it persists across loop
+   iterations).  Returns the alloca; the builder is left where it was."
+  (let* ((i32   (llvm-int32-type))
+         (saved (llvm-get-insert-block builder))
+         (fn    (llvm-get-basic-block-parent saved))
+         (entry (crisp.llvm-bindings::llvm-get-entry-basic-block fn))
+         (term  (llvm-get-basic-block-terminator entry)))
+    (if (cffi:null-pointer-p term)
+        (llvm-position-builder-at-end builder entry)
+        (crisp.llvm-bindings::llvm-position-builder-before builder term))
+    (let ((ctr (llvm-build-alloca builder i32 name)))
+      (llvm-build-store builder (llvm-const-int i32 0 nil) ctr)
+      (llvm-position-builder-at-end builder saved)
+      ctr)))
+
+(defun %208-commit-asm (builder mbar-addr-i32)
+  "Endeavour 208.  tcgen05.commit: MBAR arrives (count 1) when every prior tcgen05 op of this thread
+   has completed.  Implies fence::before_thread_sync."
+  (%208-asm builder "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [$0];"
+            "r,~{memory}" nil (list (llvm-int32-type)) (list mbar-addr-i32)))
+
+(defun %208-barrier-addr (builder bar-val)
+  "Endeavour 208.  A barrier value (i64 of an addrspace(3) mbarrier) as the i32 shared address asm takes."
+  (let ((p (llvm-build-int-to-ptr builder bar-val (llvm-pointer-type (llvm-int8-type) 3) "tc_mbar")))
+    (llvm-build-ptr-to-int builder p (llvm-int32-type) "tc_mbar_addr")))
+
+(defun %208-tmem-ld32 (builder module taddr)
+  "Endeavour 208.  tcgen05.ld.32x32b.x32 + wait::ld at TADDR: a list of 32 i32 values."
+  (let* ((i32  (llvm-int32-type))
+         (asm  (format nil "tcgen05.ld.sync.aligned.32x32b.x32.b32 {~{$~d~^, ~}}, [$32];~%	tcgen05.wait::ld.sync.aligned;"
+                       (loop for i below 32 collect i)))
+         (cons (format nil "~{~a~^,~},r,~~{memory}" (loop repeat 32 collect "=r")))
+         (call (%build-inline-asm-call builder (%wgmma-struct-of-regs module i32 32) (list i32) (list taddr) asm cons)))
+    (loop for i below 32 collect (llvm-build-extract-value builder call i (format nil "tc_v~d" i)))))
+
+(defun %208-stage-base-i32 (builder var-env stage spec)
+  "Endeavour 208.  The staging buffer's shared address (i32), as %199-stage-base-i32 finds it, from the
+   implicit scratch record named STAGE with canonical type SPEC."
+  (let ((slot (gethash stage var-env)))
+    (unless slot
+      (error "store-tile-at :via :tma: missing implicit staging argument ~a" stage))
+    (let* ((sty (ensure-struct-llvm-type (mangle-template-struct-name (first spec) (rest spec))))
+           (v   (llvm-build-load2 builder sty slot "tc_stage_rec")))
+      (loop repeat 4
+            for kind = (crisp.llvm-bindings::llvm-get-type-kind (llvm-type-of v))
+            do (cl:cond
+                 ((= kind crisp.llvm-bindings::+llvm-pointer-type-kind+)
+                  (return-from %208-stage-base-i32
+                    (llvm-build-ptr-to-int builder v (llvm-int32-type) "tc_stage_addr")))
+                 ((= kind crisp.llvm-bindings::+llvm-struct-type-kind+)
+                  (setf v (llvm-build-extract-value builder v 0 "tc_stage_field")))
+                 (t (cl:return))))
+      (error "store-tile-at :via :tma: could not find the staging buffer's pointer in ~a" stage))))
+
+(defun %208-gen-tma-store (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  (store-tile-at (to-bfloat16 D) C (ROW COL) :via :tma) from tensor memory.  Each warp
+   owns 32 accumulator rows (lane quarter warp mod 4), each thread one row.  Per 64-column chunk:
+     tcgen05.ld two x32 -> 64 f32 -> 32 packed 16-bit pairs;
+     the thread writes its 128-byte row into its warp's 4 KB staging slice -- two 16 x 64 boxes of
+       2 KB, SWIZZLE_128B: 16-byte chunk j of box row r lives at chunk j ^ (r mod 8) -- as 8 x st.shared.v4;
+     fence.proxy.async + bar.warp.sync; lane 0 issues the two box stores (rows +0 and +16), commit.
+   Before a slice is rewritten, lane 0 waits for its previous reads; once more at the end.  The slice is
+   warp mod (staging slices), so a warpgroup that is not at warp 0 still gets four distinct slices."
+  (flet ((gen (n) (extract-primary-value builder
+                                         (generate-node-ir n builder module var-env di-builder di-scope location-map)
+                                         (semantic-node-type n))))
+    (destructuring-bind (d-node row-node col-node) (semantic-tcgen05-op-args node)
+      (let* ((pl     (semantic-tcgen05-op-plist node))
+             (i32    (llvm-int32-type))
+             (i64    (llvm-int64-type))
+             (n      (getf pl :n))
+             (bf16-p (string= (symbol-name (getf pl :element)) "BFLOAT16"))
+             (h16    (if bf16-p (crisp.llvm-bindings::llvm-bfloat-type) (crisp.llvm-bindings::llvm-half-type)))
+             (v2f    (llvm-vector-type (llvm-float-type) 2))
+             (v2h    (llvm-vector-type h16 2))
+             (d-val  (gen d-node))
+             (row0   (gen row-node))
+             (col0   (gen col-node))
+             (desc   (%tma-lookup-descriptor-ptr builder var-env (getf pl :dest-sym)
+                                                 (llvm-pointer-type (llvm-int8-type) 1))))
+        (unless desc
+          (error "store-tile-at :via :tma: no CUtensorMap descriptor for ~a in var-env" (getf pl :dest-sym)))
+        (flet ((k (v) (llvm-const-int i32 v nil))
+               (asm (types args text cons) (%build-inline-asm-call builder (llvm-void-type) types args text cons)))
+          (let* ((tmap  (llvm-build-ptr-to-int
+                         builder (llvm-build-addrspace-cast builder desc (llvm-pointer-type (llvm-int8-type) 0) "tc_map")
+                         i64 "tc_map_i64"))
+                 (tid   (%208-linear-tid builder module))
+                 (lane  (crisp.llvm-bindings::llvm-build-and builder tid (k 31) "tc_lane"))
+                 (warp  (crisp.llvm-bindings::llvm-build-l-shr builder tid (k 5) "tc_warp"))
+                 (wq    (crisp.llvm-bindings::llvm-build-and builder warp (k 3) "tc_wq"))
+                 (slice (crisp.llvm-bindings::llvm-build-urem builder warp (k (getf pl :slices)) "tc_slice"))
+                 (stage (%208-stage-base-i32 builder var-env (getf pl :stage) (getf pl :stage-spec)))
+                 (align (crisp.llvm-bindings::llvm-build-and builder (llvm-build-add builder stage (k 1023) "tc_pad")
+                                                             (k #xFFFFFC00) "tc_1k"))
+                 (base  (llvm-build-add builder align (llvm-build-mul builder slice (k *199-stage-bytes-per-warp*) "tc_soff")
+                                        "tc_slice_base"))
+                 (y0    (llvm-build-add builder row0 (crisp.llvm-bindings::llvm-build-shl builder wq (k 5) "tc_wq32") "tc_y"))
+                 (box   (crisp.llvm-bindings::llvm-build-l-shr builder lane (k 4) "tc_box"))
+                 (rr    (crisp.llvm-bindings::llvm-build-and builder lane (k 15) "tc_rr"))
+                 (sw    (crisp.llvm-bindings::llvm-build-and builder rr (k 7) "tc_sw"))
+                 (rowb  (llvm-build-add builder base
+                                        (llvm-build-add builder (crisp.llvm-bindings::llvm-build-shl builder box (k 11) "tc_box2k")
+                                                        (crisp.llvm-bindings::llvm-build-shl builder rr (k 7) "tc_rr128") "tc_rowoff")
+                                        "tc_row_base"))
+                 (tbase (llvm-build-add builder
+                                        (llvm-build-add builder (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base")
+                                                        (llvm-build-extract-value builder d-val 0 "tc_col") "tc_t0")
+                                        (crisp.llvm-bindings::llvm-build-shl builder wq (k 21) "tc_lane_bits") "tc_tbase")))
+            (%208-asm builder "tcgen05.fence::after_thread_sync;")
+            (dotimes (c (floor n 64))
+              (when (plusp c)
+                (asm (list i32) (list lane)
+                     "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+                (asm nil nil "bar.warp.sync -1;" ""))
+              (let* ((vals (append (%208-tmem-ld32 builder module (llvm-build-add builder tbase (k (* 64 c)) "tc_ta"))
+                                   (%208-tmem-ld32 builder module (llvm-build-add builder tbase (k (+ (* 64 c) 32)) "tc_tb"))))
+                     (packed (loop for (lo hi) on vals by #'cddr
+                                   collect (let* ((v (llvm-build-insert-element
+                                                      builder (llvm-get-undef v2f)
+                                                      (llvm-build-bit-cast builder lo (llvm-float-type) "tc_lo") (k 0) "tc_p0"))
+                                                  (v (llvm-build-insert-element
+                                                      builder v (llvm-build-bit-cast builder hi (llvm-float-type) "tc_hi") (k 1) "tc_p1")))
+                                             (llvm-build-bit-cast builder (llvm-build-fp-trunc builder v v2h "tc_cvt") i32 "tc_b32")))))
+                (dotimes (j 8)
+                  (let ((addr (llvm-build-add builder rowb
+                                              (crisp.llvm-bindings::llvm-build-shl
+                                               builder (crisp.llvm-bindings::llvm-build-xor builder (k j) sw "tc_jx") (k 4) "tc_j16")
+                                              "tc_st")))
+                    (asm (list i32 i32 i32 i32 i32)
+                         (list addr (nth (* 4 j) packed) (nth (+ (* 4 j) 1) packed)
+                               (nth (+ (* 4 j) 2) packed) (nth (+ (* 4 j) 3) packed))
+                         "st.shared.v4.b32 [$0], {$1, $2, $3, $4};" "r,r,r,r,r"))))
+              (asm nil nil "fence.proxy.async.shared::cta;" "")
+              (asm nil nil "bar.warp.sync -1;" "")
+              (dotimes (b 2)
+                (asm (list i32 i64 i32 i32 i32)
+                     (list lane tmap
+                           (llvm-build-add builder col0 (k (* 64 c)) "tc_x")
+                           (if (zerop b) y0 (llvm-build-add builder y0 (k 16) "tc_y16"))
+                           (if (zerop b) base (llvm-build-add builder base (k 2048) "tc_src")))
+                     "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [$1, {$2, $3}], [$4]; }"
+                     "r,l,r,r,r"))
+              (asm (list i32) (list lane)
+                   "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.commit_group; }" "r"))
+            (asm (list i32) (list lane)
+                 "{ .reg .pred p; setp.eq.u32 p, $0, 0; @p cp.async.bulk.wait_group.read 0; }" "r")
+            (asm nil nil "bar.warp.sync -1;" "")
+            (%208-asm builder "tcgen05.fence::before_thread_sync;")
+            (log:debug "208 codegen :via :tma: N=~a chunks=~a ~a slices=~a" n (floor n 64) (if bf16-p "bf16" "f16") (getf pl :slices))
+            (values (llvm-const-int i64 0 nil) nil)))))))
+
+(defun %208-idesc (m n elem b-elem)
+  "Endeavour 208.  The 32-bit instruction descriptor (CUTLASS UMMA::InstrDescriptor):
+   c_format at [4,6) (F32 = 1, S32 = 2); a_format / b_format at [7,10) / [10,13) (F16 0, BF16 1,
+   TF32 2; UINT8 0, INT8 1); A and B K-major (bits 15, 16 = 0); N >> 3 at [17,23); M >> 4 at
+   [24,29).  Saturate (bit 3) stays 0: an s32 accumulator wraps, as mma.sync's does."
+  (let ((af (nth-value 2 (%208-mma-kind elem)))
+        (bf (nth-value 2 (%208-mma-kind b-elem)))
+        (cf (if (%int-operand-p elem) 2 1)))
+    (logior (ash cf 4) (ash af 7) (ash bf 10) (ash (ash n -3) 17) (ash (ash m -4) 24))))
+
+(defun %208-gen-ld (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  tcgen05.ld.sync.aligned.32x32b.x32 + wait::ld: the thread's own lane (32(warp mod 4)
+   + lane) and the 32 columns of chunk C.  Phase 3: an s32 row (plist :int) keeps the cells as i32;
+   an f32 row bitcasts them.  Address = base + COLUMN + 32C + (lane << 16); the lane's
+   32(warp mod 4) part is (warp mod 4) << 21.  Returns the TCGEN05-ROW32-F32 record."
+  (let* ((d-node (first (semantic-tcgen05-op-args node)))
+         (chunk  (getf (semantic-tcgen05-op-plist node) :chunk))
+         (i32    (llvm-int32-type))
+         (d-val  (extract-primary-value builder
+                                        (generate-node-ir d-node builder module var-env di-builder di-scope location-map)
+                                        (semantic-node-type d-node)))
+         (col    (llvm-build-extract-value builder d-val 0 "tc_col"))
+         (tid    (%208-linear-tid builder module))
+         (w4     (crisp.llvm-bindings::llvm-build-and
+                  builder (crisp.llvm-bindings::llvm-build-l-shr builder tid (llvm-const-int i32 5 nil) "tc_warp")
+                  (llvm-const-int i32 3 nil) "tc_wq"))
+         (lane   (crisp.llvm-bindings::llvm-build-shl builder w4 (llvm-const-int i32 21 nil) "tc_lane_bits"))
+         (base   (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base"))
+         (addr   (llvm-build-add builder
+                                 (llvm-build-add builder (llvm-build-add builder base col "tc_a0") lane "tc_a1")
+                                 (llvm-const-int i32 (* 32 chunk) nil) "tc_taddr"))
+         (asm    (format nil "tcgen05.ld.sync.aligned.32x32b.x32.b32 {~{$~d~^, ~}}, [$32];~%	tcgen05.wait::ld.sync.aligned;"
+                         (loop for i below 32 collect i)))
+         (cons   (format nil "~{~a~^,~},r,~~{memory}" (loop repeat 32 collect "=r")))
+         (call   (%build-inline-asm-call builder (%wgmma-struct-of-regs module i32 32) (list i32) (list addr) asm cons))
+         (row-type (semantic-tcgen05-op-type node))
+         (agg    (llvm-get-undef (crisp-type-to-llvm-type row-type module))))
+    (dotimes (i 32)
+      (setf agg (llvm-build-insert-value
+                 builder agg
+                 (let ((cell (llvm-build-extract-value builder call i (format nil "tc_r~d" i))))
+                   (if (getf (semantic-tcgen05-op-plist node) :int)
+                       cell
+                       (llvm-build-bit-cast builder cell (llvm-float-type) (format nil "tc_f~d" i))))
+                 i (format nil "tc_row~d" i))))
+    (values agg nil)))
+
+(defun %208-gen-load-scales (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208 phase 4.  One elected thread (lane 0 inside a warp-spec role, else thread 0 -- the
+   TMA load's own rule, so it is the same thread and in program order before the codes load's
+   arrive.expect_tx): mbarrier.expect_tx for every scale byte, then one cp.async.bulk per row block,
+   completing on the barrier.  No arrival: the barrier's count is the codes loads', as before."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (destructuring-bind (s-ref sf-ref kext-node c0-node c1-node bar-node) (semantic-tcgen05-op-args node)
+      (let* ((pl     (semantic-tcgen05-op-plist node))
+             (i32    (llvm-int32-type))
+             (i64    (llvm-int64-type))
+             (aps    (getf pl :aps))
+             (nb     (getf pl :row-blocks))
+             (s-ptr  (nth-value 2 (gen s-ref)))
+             (sf-ptr (nth-value 2 (gen sf-ref)))
+             (kext   (gen kext-node))
+             (c0     (gen c0-node))
+             (c1     (gen c1-node))
+             (mbar   (%208-barrier-addr builder (gen bar-node)))
+             (katoms (crisp.llvm-bindings::llvm-build-udiv builder kext (llvm-const-int i64 (* 4 (getf pl :vec)) nil) "sf_katoms"))
+             (leader (if (getf pl :ws-leader)
+                         (llvm-build-icmp builder +llvm-int-eq+ (%ptx-read-warp-sreg builder module "laneid")
+                                          (llvm-const-int i32 0 nil) "sf_lane0")
+                         (llvm-build-icmp builder +llvm-int-eq+ (%208-linear-tid builder module)
+                                          (llvm-const-int i32 0 nil) "sf_tid0"))))
+        (unless (and s-ptr sf-ptr)
+          (error "208 %208-load-scales: no pointer for the scales (~a) or the scales tile (~a)" s-ptr sf-ptr))
+        (log:debug "208 gen load-scales: ~a row block~:p x ~a atom~:p" nb aps)
+        (%208-if builder leader
+                 (lambda ()
+                   (let ((s-addr  (llvm-build-ptr-to-int builder s-ptr i64 "sf_src0"))
+                         (sf-addr (llvm-build-ptr-to-int builder sf-ptr i32 "sf_dst0")))
+                     (%208-asm builder "mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [$0], $1;"
+                               "r,r,~{memory}" nil (list i32 i32)
+                               (list mbar (llvm-const-int i32 (* nb aps 512) nil)))
+                     (dotimes (j nb)
+                       (let* ((rb   (llvm-build-add builder (llvm-build-mul builder c0 (llvm-const-int i64 nb nil) "sf_rb0")
+                                                    (llvm-const-int i64 j nil) "sf_rb"))
+                              (atom (llvm-build-add builder (llvm-build-mul builder rb katoms "sf_rowatoms")
+                                                    (llvm-build-mul builder c1 (llvm-const-int i64 aps nil) "sf_katom")
+                                                    "sf_atom"))
+                              (src  (llvm-build-add builder s-addr
+                                                    (llvm-build-mul builder atom (llvm-const-int i64 512 nil) "sf_off")
+                                                    "sf_src"))
+                              (dst  (llvm-build-add builder sf-addr (llvm-const-int i32 (* j aps 512) nil) "sf_dst")))
+                         (%208-asm builder
+                                   "cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [$0], [$1], $2, [$3];"
+                                   "r,l,r,r,~{memory}" nil (list i32 i64 i32 i32)
+                                   (list dst src (llvm-const-int i32 (* aps 512) nil) mbar))))))
+                 "sf_issue")
+        (values (llvm-const-int i64 0 nil) nil)))))
+
+(defun %208-cp-desc (builder base-ptr byte-off)
+  "Endeavour 208 phase 4.  The tcgen05.cp source descriptor of one 512-byte scale atom: K-major,
+   no swizzle (layout 0), start >> 4 at [0,14), LBO 0 (one core matrix along K), SBO 128 B (enc 8:
+   8-row x 16-byte core matrices) at [32,46), version 1 at bit 46.  See isa-notes.md, Phase 4."
+  (let* ((i32 (llvm-int32-type)) (i64 (llvm-int64-type))
+         (addr0 (llvm-build-ptr-to-int builder base-ptr i32 "sf_addr"))
+         (addr  (if (zerop byte-off) addr0 (llvm-build-add builder addr0 (llvm-const-int i32 byte-off nil) "sf_addr_a")))
+         (msk   (crisp.llvm-bindings::llvm-build-and
+                 builder (crisp.llvm-bindings::llvm-build-l-shr builder addr (llvm-const-int i32 4 nil) "sf_sh")
+                 (llvm-const-int i32 #x3FFF nil) "sf_start")))
+    (crisp.llvm-bindings::llvm-build-or builder (llvm-build-zext builder msk i64 "sf_start64")
+                                        (llvm-const-int i64 (logior (ash 8 32) (ash 1 46)) nil) "sf_desc")))
+
+(defun %208-idesc-bs (m n info a-sf-id b-sf-id)
+  "Endeavour 208 phase 4.  The block-scaled instruction descriptor (CUTLASS InstrDescriptorBlockScaled):
+   b_sf_id [4,6), a_format [7,10), b_format [10,13), K-major (15, 16 = 0), N >> 3 [17,23),
+   scale_format bit 23 (UE4M3 0, UE8M0 1), M >> 4 [24,29), a_sf_id [29,31).  No c_format: D is f32."
+  (let ((f (getf info :fmt)))
+    (logior (ash b-sf-id 4) (ash f 7) (ash f 10) (ash (ash n -3) 17) (ash (getf info :sfmt) 23)
+            (ash (ash m -4) 24) (ash a-sf-id 29))))
+
+(defun %208-emit-sync-wait (builder site mbar-addr)
+  "Endeavour 208.  A synchronous site's wait: every executing thread waits for the site mbarrier's next
+   phase (parity from an entry-block visit counter), then fence::after_thread_sync.  Possible cleanup: %208-gen-mma
+   has the same code inline; it should call this."
+  (let* ((i32    (llvm-int32-type))
+         (ctr    (%208-entry-counter builder (format nil "tc_sync_ctr_~d" site)))
+         (visit  (llvm-build-load2 builder i32 ctr "tc_visit"))
+         (parity (crisp.llvm-bindings::llvm-build-and builder visit (llvm-const-int i32 1 nil) "tc_parity"))
+         (fn     (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (wait-bb (llvm-append-basic-block fn "tc_wait"))
+         (done-bb (llvm-append-basic-block fn "tc_wait_done")))
+    (llvm-build-br builder wait-bb)
+    (llvm-position-builder-at-end builder wait-bb)
+    (let ((ok (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr parity)))
+      (llvm-build-cond-br builder (llvm-build-icmp builder +llvm-int-ne+ ok (llvm-const-int i32 0 nil) "tc_done")
+                          done-bb wait-bb))
+    (llvm-position-builder-at-end builder done-bb)
+    (llvm-build-store builder (llvm-build-add builder visit (llvm-const-int i32 1 nil) "tc_visit_next") ctr)
+    (%208-asm builder "tcgen05.fence::after_thread_sync;")))
+
+(defun %208-gen-mma-bs (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208 phase 4.  The block-scaled D += (A*sA).(B*sB).  Lane 0 of the issuing warp:
+     1. tcgen05.cp.32x128b.warpx4 each scale atom into the site's scale columns -- A's atom a at
+        SF + 4a; B's row block j, atom a at SF + 4*aps + 4*(a*nb + j) (column n div 32 within a K atom);
+     2. four tcgen05.mma.kind::<block kind>, instruction kk reading scale atom (kk*spi) div 4 at
+        byte / half-word SF_ID (kk*spi) mod 4 -- a per-instruction instruction descriptor;
+     3. commit, to :on-complete's barrier or to the site's own mbarrier (then every thread waits).
+   The copies and MMAs come from one thread, so the tensor pipe keeps them in order (as CUTLASS)."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (destructuring-bind (d-node a-node b-node sfa-node sfb-node &optional bar-node) (semantic-tcgen05-op-args node)
+      (let* ((pl     (semantic-tcgen05-op-plist node))
+             (info   (getf pl :block))
+             (i32    (llvm-int32-type))
+             (i64    (llvm-int64-type))
+             (m (getf pl :m)) (n (getf pl :n))
+             (aps    (getf pl :aps))
+             (nb     (getf pl :row-blocks-b))
+             (spi    (getf info :spi))
+             (d-val  (extract-primary-value builder (gen d-node) (semantic-node-type d-node)))
+             (col    (llvm-build-extract-value builder d-val 0 "tc_col"))
+             (fresh  (llvm-build-extract-value builder d-val 1 "tc_fresh"))
+             (a-ptr  (nth-value 2 (gen a-node)))
+             (b-ptr  (nth-value 2 (gen b-node)))
+             (sfa-ptr (nth-value 2 (gen sfa-node)))
+             (sfb-ptr (nth-value 2 (gen sfb-node)))
+             (bar-addr (and bar-node (%208-barrier-addr builder (gen bar-node))))
+             (site   (getf pl :sync-site))
+             (mbar-addr (and site
+                             (let* ((kinfo (%208-kernel-tc-info (getf pl :kernel)))
+                                    (g (%208-sync-mbar-global module (getf pl :kernel) (getf kinfo :sync-sites 1))))
+                               (llvm-build-ptr-to-int builder (%gen-nvvm-mbar-slot-ptr builder g site) i32 "tc_sync_mbar"))))
+             (tid    (%208-linear-tid builder module))
+             (issuer (llvm-build-icmp builder +llvm-int-eq+ tid
+                                      (llvm-const-int i32 (* 32 (getf pl :issue-warp)) nil) "tc_issuer")))
+        (unless (and a-ptr b-ptr sfa-ptr sfb-ptr)
+          (error "208 block-scaled MMA: an operand did not yield a shared-memory pointer (a ~a b ~a sfa ~a sfb ~a)"
+                 a-ptr b-ptr sfa-ptr sfb-ptr))
+        (log:debug "208 gen mma-bs ~a ~ax~a aps ~a nb ~a sf-col ~a" (getf info :kind) m n aps nb (getf pl :sf-col))
+        (%208-if builder issuer
+                 (lambda ()
+                   (let* ((base (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base"))
+                          (dt   (llvm-build-add builder base col "tc_d"))
+                          (sfa  (llvm-build-add builder base (llvm-const-int i32 (getf pl :sf-col) nil) "tc_sfa"))
+                          (sfb  (llvm-build-add builder sfa (llvm-const-int i32 (* 4 aps) nil) "tc_sfb"))
+                          (en0  (llvm-build-zext builder
+                                                 (llvm-build-icmp builder +llvm-int-eq+ fresh (llvm-const-int i32 0 nil) "tc_acc")
+                                                 i32 "tc_en0")))
+                     (%208-asm builder "tcgen05.fence::after_thread_sync;")
+                     (flet ((cp (taddr src-ptr off)
+                              (%208-asm builder "tcgen05.cp.cta_group::1.32x128b.warpx4 [$0], $1;"
+                                        "r,l,~{memory}" nil (list i32 i64)
+                                        (list taddr (%208-cp-desc builder src-ptr off)))))
+                       (dotimes (a aps)
+                         (cp (llvm-build-add builder sfa (llvm-const-int i32 (* 4 a) nil) "tc_sfa_a") sfa-ptr (* a 512)))
+                       (dotimes (j nb)
+                         (dotimes (a aps)
+                           (cp (llvm-build-add builder sfb (llvm-const-int i32 (* 4 (+ (* a nb) j)) nil) "tc_sfb_a")
+                               sfb-ptr (* (+ (* j aps) a) 512)))))
+                     (dotimes (kk 4)
+                       (let* ((s   (* kk spi))
+                              (atm (floor s 4))
+                              (id  (mod s 4)))
+                         (%208-asm builder
+                                   (format nil "{ .reg .pred p; setp.ne.b32 p, $4, 0; tcgen05.mma.cta_group::1.kind::~a [$0], $1, $2, $3, [$5], [$6], p; }"
+                                           (getf info :kind))
+                                   "r,l,l,r,r,r,r,~{memory}" nil (list i32 i64 i64 i32 i32 i32 i32)
+                                   (list dt
+                                         (%208-smem-desc builder a-ptr (* kk 32))
+                                         (%208-smem-desc builder b-ptr (* kk 32))
+                                         (llvm-const-int i32 (%208-idesc-bs m n info id id) nil)
+                                         (if (zerop kk) en0 (llvm-const-int i32 1 nil))
+                                         (llvm-build-add builder sfa (llvm-const-int i32 (* 4 atm) nil) "tc_sfa_k")
+                                         (llvm-build-add builder sfb (llvm-const-int i32 (* 4 atm nb) nil) "tc_sfb_k")))))
+                     (%208-commit-asm builder (or bar-addr mbar-addr))))
+                 "tc_issue")
+        (when site
+          (%208-emit-sync-wait builder site mbar-addr))
+        (values (llvm-build-insert-value builder d-val (llvm-const-int i32 0 nil) 1 "tc_d_used") nil)))))
+
+(defmethod generate-node-ir ((node semantic-tcgen05-op) builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  Dispatch on the tcgen05 operation.  Phase 4 adds :load-scales."
+  (let ((void (lambda () (values (llvm-const-int (llvm-int64-type) 0 nil) nil))))
+    (ecase (semantic-tcgen05-op-op node)
+      (:mma (%208-gen-mma node builder module var-env di-builder di-scope location-map))
+      (:ld  (%208-gen-ld node builder module var-env di-builder di-scope location-map))
+      (:tma-store (%208-gen-tma-store node builder module var-env di-builder di-scope location-map))
+      (:load-scales (%208-gen-load-scales node builder module var-env di-builder di-scope location-map))
+      (:commit
+       (let* ((bar-addr (%208-barrier-addr builder (generate-node-ir (first (semantic-tcgen05-op-args node))
+                                                                    builder module var-env di-builder di-scope location-map)))
+              (i32 (llvm-int32-type))
+              (tid (%208-linear-tid builder module)))
+         (%208-if builder (llvm-build-icmp builder +llvm-int-eq+ tid
+                                           (llvm-const-int i32 (* 32 (getf (semantic-tcgen05-op-plist node) :issue-warp)) nil)
+                                           "tc_committer")
+                  (lambda () (%208-commit-asm builder bar-addr))
+                  "tc_commit")
+         (funcall void)))
+      (:fence-after  (%208-asm builder "tcgen05.fence::after_thread_sync;")  (funcall void))
+      (:fence-before (%208-asm builder "tcgen05.fence::before_thread_sync;") (funcall void)))))
+
+(defun %208-gen-mma-plain (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  The 16-bit / tf32 / int8 emitter (was %208-gen-mma).  D += A.B: lane 0 of the issuing warp builds the descriptors and issues K/16
+   tcgen05.mma.kind::f16 (the first with enable-input-d = !FRESH, the rest accumulating), then commits
+   -- to :on-complete's barrier, or to this site's own mbarrier, on which every executing thread then
+   waits (parity from an entry-block visit counter) before fence::after_thread_sync.  Returns D with
+   FRESH cleared."
+  (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
+    (destructuring-bind (d-node a-node b-node &optional bar-node) (semantic-tcgen05-op-args node)
+      (let* ((pl     (semantic-tcgen05-op-plist node))
+             (i32    (llvm-int32-type))
+             (i64    (llvm-int64-type))
+             (d-val  (extract-primary-value builder (gen d-node) (semantic-node-type d-node)))
+             (col    (llvm-build-extract-value builder d-val 0 "tc_col"))
+             (fresh  (llvm-build-extract-value builder d-val 1 "tc_fresh"))
+             (a-ptr  (nth-value 2 (gen a-node)))
+             (b-ptr  (nth-value 2 (gen b-node)))
+             (bar-addr (and bar-node (%208-barrier-addr builder (gen bar-node))))
+             (site   (getf pl :sync-site))
+             (mbar-addr (and site
+                             (let* ((info (%208-kernel-tc-info (getf pl :kernel)))
+                                    (g (%208-sync-mbar-global module (getf pl :kernel) (getf info :sync-sites 1))))
+                               (llvm-build-ptr-to-int builder (%gen-nvvm-mbar-slot-ptr builder g site) i32 "tc_sync_mbar"))))
+             (tid    (%208-linear-tid builder module))
+             (issuer (llvm-build-icmp builder +llvm-int-eq+ tid
+                                      (llvm-const-int i32 (* 32 (getf pl :issue-warp)) nil) "tc_issuer"))
+             (idesc  (%208-idesc (getf pl :m) (getf pl :n) (getf pl :elem) (getf pl :b-elem)))
+             (kind   (%208-mma-kind (getf pl :elem)))
+             (slices (floor (getf pl :k) (nth-value 1 (%208-mma-kind (getf pl :elem))))))
+        ;; As for wgmma: a tf32 MMA under a non-fast precision silently does not honour IEEE.
+        (when (and (string= kind "tf32") (not (eq *math-precision* :fast)))
+          (format *error-output*
+                  "WARNING: tcgen05-accumulate-via-tile uses tf32 tensor cores, but math-precision is '~(~a~)' — the IEEE accuracy request is not honored (results are tf32). Use (with-precision (fast) ...), (declaim (precision fast)), or --math-precision=fast.~%"
+                  *math-precision*))
+        (unless (and a-ptr b-ptr)
+          (error "tcgen05: A/B (~ tile 0 0) did not yield a shared-memory pointer (a ~a b ~a)" a-ptr b-ptr))
+        (log:debug "208 gen mma: idesc #x~8,'0x slices ~a issue-warp ~a site ~a on-complete ~a"
+                   idesc slices (getf pl :issue-warp) site (and bar-node t))
+        (%208-if builder issuer
+                 (lambda ()
+                   (let* ((base (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base"))
+                          (dt   (llvm-build-add builder base col "tc_d"))
+                          (en0  (llvm-build-zext builder
+                                                 (llvm-build-icmp builder +llvm-int-eq+ fresh (llvm-const-int i32 0 nil) "tc_acc")
+                                                 i32 "tc_en0")))
+                     (%208-asm builder "tcgen05.fence::after_thread_sync;")
+                     (dotimes (kk slices)
+                       (%208-asm builder
+                                 (format nil "{ .reg .pred p; setp.ne.b32 p, $4, 0; tcgen05.mma.cta_group::1.kind::~a [$0], $1, $2, $3, p; }" kind)
+                                 "r,l,l,r,r,~{memory}" nil (list i32 i64 i64 i32 i32)
+                                 (list dt
+                                       (%208-smem-desc builder a-ptr (* kk 32))
+                                       (%208-smem-desc builder b-ptr (* kk 32))
+                                       (llvm-const-int i32 idesc nil)
+                                       (if (zerop kk) en0 (llvm-const-int i32 1 nil)))))
+                     (%208-commit-asm builder (or bar-addr mbar-addr))))
+                 "tc_issue")
+        (when site
+          ;; Synchronous: every executing thread waits for this site's next phase.
+          (let* ((ctr    (%208-entry-counter builder (format nil "tc_sync_ctr_~d" site)))
+                 (visit  (llvm-build-load2 builder i32 ctr "tc_visit"))
+                 (parity (crisp.llvm-bindings::llvm-build-and builder visit (llvm-const-int i32 1 nil) "tc_parity"))
+                 (fn     (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+                 (wait-bb (llvm-append-basic-block fn "tc_wait"))
+                 (done-bb (llvm-append-basic-block fn "tc_wait_done")))
+            (llvm-build-br builder wait-bb)
+            (llvm-position-builder-at-end builder wait-bb)
+            (let ((ok (%gen-nvvm-mbarrier-try-wait-parity builder mbar-addr parity)))
+              (llvm-build-cond-br builder (llvm-build-icmp builder +llvm-int-ne+ ok (llvm-const-int i32 0 nil) "tc_done")
+                                  done-bb wait-bb))
+            (llvm-position-builder-at-end builder done-bb)
+            (llvm-build-store builder (llvm-build-add builder visit (llvm-const-int i32 1 nil) "tc_visit_next") ctr)
+            (%208-asm builder "tcgen05.fence::after_thread_sync;")))
+        (values (llvm-build-insert-value builder d-val (llvm-const-int i32 0 nil) 1 "tc_d_used") nil)))))
+
+(defun %208-gen-mma (node builder module var-env di-builder di-scope location-map)
+  "Endeavour 208.  Phase 4: a block-scaled MMA node (plist :block) goes to %208-gen-mma-bs; every other
+   one to %208-gen-mma-plain (by name).  Possible cleanup: one emitter with the two issue sequences."
+  (if (getf (semantic-tcgen05-op-plist node) :block)
+      (%208-gen-mma-bs node builder module var-env di-builder di-scope location-map)
+      (%208-gen-mma-plain node builder module var-env di-builder di-scope location-map)))

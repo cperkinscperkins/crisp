@@ -1260,10 +1260,13 @@
               (setf *math-precision* mode)
               (log:info "declaim (precision ~a) -> *math-precision* = ~a" key mode)))))))
 
-(defun visit-toplevel-form (form location visitor-fn)
+(defun visit-toplevel-form-base (form location visitor-fn)
   "Recursively visits a top-level form, handling macros and progn.
    Visitor-fn is called as (visitor-fn form location) for def-function forms.
-   Other forms are evaluated if they are not special forms handled by the walker."
+   Other forms are evaluated if they are not special forms handled by the walker.
+
+   Endeavour 208: visit-toplevel-form (below) wraps this; a def-function form passes through
+   %208-rewrite-block-kernel first."
   (cond
    ;; Endeavor 126: (declaim (precision KEY)) — file-level precision. Intercept
    ;; before the CL macro/eval path (CL's declaim -> proclaim rejects `precision`
@@ -1289,6 +1292,13 @@
    ;; Case 4: Other -> Eval (for side effects like defmacro, register-template)
    (t
      (eval form))))
+
+(defun visit-toplevel-form (form location visitor-fn)
+  "Endeavour 208 wrapper: a def-function form passes through %208-rewrite-block-kernel (scale-layout
+   declarations; block scratch tiles) before both passes see it; then the original walker."
+  (visit-toplevel-form-base
+           (if (and (consp form) (eq (car form) 'def-function)) (%208-rewrite-block-kernel form) form)
+           location visitor-fn))
 
 
 (defun %compile-standard-function (form location module builder di-builder di-compile-unit location-map)
@@ -2848,7 +2858,8 @@ in single-pass mode."
   "Returns the Crisp type of a semantic node.
    Extended for 092-dotimes and 114 Phase B (semantic-nvvm-cp-async-*).
    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
-   Endeavour 200 (BUG 145): semantic-while (void)."
+   Endeavour 200 (BUG 145): semantic-while (void).
+   Endeavour 208: semantic-tcgen05-op."
   (etypecase node
     ;; Endeavour 200 (BUG 145): a while as the last form of a let body is asked for its type.
     (semantic-while (semantic-while-type node))
@@ -2856,6 +2867,7 @@ in single-pass mode."
     (semantic-store-pair (semantic-store-pair-type node))
     (semantic-pair-ok-p (semantic-pair-ok-p-type node))
     (semantic-wgmma-tma-store (semantic-wgmma-tma-store-type node))
+    (semantic-tcgen05-op (semantic-tcgen05-op-type node))
     (semantic-to-workgroup-uniform (semantic-to-workgroup-uniform-type node))
     (semantic-to-warp-uniform (semantic-to-warp-uniform-type node))
     (semantic-dotimes (semantic-dotimes-type node))
@@ -2936,7 +2948,8 @@ in single-pass mode."
   "Returns the source location of a semantic node.
    Extended for 092-dotimes and 114 Phase B.
    Endeavour 197: semantic-store-pair, semantic-pair-ok-p.  Endeavour 199: semantic-wgmma-tma-store.
-   Endeavour 200 (BUG 145): semantic-while."
+   Endeavour 200 (BUG 145): semantic-while.
+   Endeavour 208: semantic-tcgen05-op."
   (etypecase node
     ;; Endeavour 200 (BUG 145).
     (semantic-while (semantic-while-source-location node))
@@ -2944,6 +2957,7 @@ in single-pass mode."
     (semantic-store-pair (semantic-store-pair-source-location node))
     (semantic-pair-ok-p (semantic-pair-ok-p-source-location node))
     (semantic-wgmma-tma-store (semantic-wgmma-tma-store-source-location node))
+    (semantic-tcgen05-op (semantic-tcgen05-op-source-location node))
     ;; Endeavor 122 (FFI) Pass 4: handle forms.
     (semantic-make-c-handle (semantic-make-c-handle-source-location node))
     (semantic-get-pointer (semantic-get-pointer-source-location node))

@@ -1,0 +1,57 @@
+;; Endeavour 208 phase 2 -- spec 05's kernel with a bf16 C written through the TMA: :via :tma from tensor
+;; memory.  Each epilogue warp owns 32 rows; per 64-column chunk it loads 64 f32 of its row
+;; (2 x tcgen05.ld.32x32b.x32), rounds them to bf16, writes its 128-byte row into its 4 KB staging slice in
+;; the 128-byte swizzle, and lane 0 sends the slice as two 16 x 64 TMA store boxes.  The descriptor and
+;; staging buffer come from endeavour 199's pass 1 unchanged; there is no stmatrix -- a thread already
+;; holds a whole row.
+;; 256 x 512 x 512 as in 05.  The reference decodes the bf16 C (endeavour 208's harness change).
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_100a] : validate-ptx-tcgen05-tma-store
+;; SKIP-WITH[--differentiate]: "tcgen05 has no backward yet (D-208-8)"
+;;
+;; MMA-DIMS: 256 512 512
+;; HOIST-ARCH: sm_100a
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tcgen05_tma_out (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 384) (local-size :set-to 192))      ; epilogue wg + producer + mma
+  (let ((A-ring    (make-scratch-matrix-ring bfloat16 (128 64) :ring-count 4))
+        (B-ring    (make-scratch-matrix-ring bfloat16 (256 64) :ring-count 4))
+        (acc       (make-tcgen05-accumulator-ring float (128 256) :ring-count 2))
+        (K         (inner-dimension A B))
+        (tiles     (to-ulong 0))
+        (empty     (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 1 :initial-state :signaled))
+        (full      (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 2 :initial-state :waiting))
+        (acc-full  (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :waiting))
+        (acc-empty (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 4 :initial-state :signaled)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (let ((s (mod tiles (to-ulong 2))))
+        (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
+          (:epilogue
+            (await (ring-get acc-full s))
+            (store-tile-at (to-bfloat16 (ring-get acc s)) C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256)))
+                           :via :tma)
+            (signal (ring-get acc-empty s)))
+          (:producer
+            (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+              (let ((slot (mod grid-k (to-ulong 4))))
+                (await (ring-get empty slot))
+                (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+                (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))
+          (:mma
+            (await (ring-get acc-empty s))
+            (let ((D (ring-get acc s)))
+              (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+                (let ((slot (mod grid-k (to-ulong 4))))
+                  (await (ring-get full slot))
+                  (tcgen05-accumulate-via-tile (128 256 64) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                               :swizzle :128b :on-complete (ring-get empty slot)))))
+            (tcgen05-commit (ring-get acc-full s)))))
+      (set! tiles (+ tiles (to-ulong 1))))))

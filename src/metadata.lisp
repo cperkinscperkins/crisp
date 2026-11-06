@@ -562,9 +562,18 @@
   (gethash (cons (string-upcase (string kernel-name)) (string-downcase (string param-name)))
            *reduction-launch-init*))
 
-(defun generate-declared-signature (sig &optional declared-params)
+(defun %208-param-block-info (type)
+  "Endeavour 208 phase 4.  The block plist when the parameter TYPE is a matrix of a microfloat block."
+  (let ((c (ignore-errors (canonicalize-type-specifier type))))
+    (and (consp c) (symbolp (first c)) (string-equal (symbol-name (first c)) "TENSOR")
+         (%208-block-info (second c)))))
+
+(defun generate-declared-signature-base (sig &optional declared-params)
   "Generates the declared-signature plist for a kernel's metadata.
-   Omits :access — storage handles are always treated as read-write by hoist code."
+   Omits :access — storage handles are always treated as read-write by hoist code.
+
+   Endeavour 208: generate-declared-signature (below) wraps this; it adds :microfloat to a block
+   operand and its scales vector."
   (let ((declared-args nil)
         (current-phys-index 0)
         (out-mode nil)
@@ -618,6 +627,35 @@
               (push entry declared-args)
               (incf current-phys-index width)))))
     (nreverse declared-args)))
+
+(defun generate-declared-signature (sig &optional declared-params)
+  "Endeavour 208 phase 4 wrapper.  The original entries, plus :microfloat on a parameter that holds a
+   block's codes -- (:block :base :scale :vec :scales S :layout L) -- and on its scales vector --
+   (:scales-of A :block .. :layout L) -- so the hoist sizes, fills and checks them (Q1 (b))."
+  (let* ((entries (generate-declared-signature-base sig declared-params))
+         (kname   (string-downcase (symbol-name (function-signature-name sig))))
+         (decls   (gethash kname *208-scale-layouts*))
+         (types   (loop for p in (or declared-params (function-signature-parameters sig))
+                        for nm = (if (consp p) (car p) (parameter-def-name p))
+                        unless (and (symbolp nm) (string-equal (symbol-name nm) "&OUT"))
+                          collect (cons (string-downcase (symbol-name nm))
+                                        (if (consp p) (cdr p) (parameter-def-type p))))))
+    (if (null decls)
+        entries
+        (mapcar (lambda (e)
+                  (let* ((nm   (getf e :name))
+                         (info (%208-param-block-info (cdr (assoc nm types :test #'string=))))
+                         (as-a (find nm decls :key (lambda (d) (getf d :of)) :test #'string=))
+                         (as-s (find nm decls :key (lambda (d) (getf d :scales)) :test #'string=))
+                         (s-of (and as-s (%208-param-block-info (cdr (assoc (getf as-s :of) types :test #'string=))))))
+                    (flet ((blk (i) (list :block (string-downcase (getf i :name)) :base (string-downcase (getf i :base))
+                                          :scale (string-downcase (getf i :scale)) :vec (getf i :vec))))
+                      (cond ((and info as-a)
+                             (append e (list :microfloat (append (blk info) (list :scales (getf as-a :scales) :layout (getf as-a :layout))))))
+                            ((and as-s s-of)
+                             (append e (list :microfloat (append (blk s-of) (list :scales-of (getf as-s :of) :layout (getf as-s :layout))))))
+                            (t e)))))
+                entries))))
 
 (defun generate-implicit-signature (sig declared-params)
   "Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap

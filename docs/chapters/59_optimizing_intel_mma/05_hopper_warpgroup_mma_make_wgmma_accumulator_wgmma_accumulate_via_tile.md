@@ -55,8 +55,8 @@ Shape rules — grounded in the ISA, checked at compile time:
 (wgmma-accumulate-via-tile (64 256 32) D A-tile B-tile :swizzle :128b)
 ```
 
-wgmma is **forward-only** (no autodiff) and NVIDIA-Hopper-only; on other targets use
-`mma-accumulate-via-tile`.
+wgmma is NVIDIA-Hopper-only; on other targets use `mma-accumulate-via-tile`.  It differentiates:
+the backward rewrites it to the sync MMA (endeavour 146), so the tile VJP supplies the gradient.
 
 **Storing the accumulator.**  `(store-tile D C (gy gx))` places a 64×N accumulator by tile index;
 `(store-tile-at D C (row col))` places it at an absolute origin (needed when two consumer warpgroups
@@ -102,7 +102,6 @@ operand (tf32 wgmma has no transpose), `:swizzle :128b`, and N a multiple of 64:
 
 A `:128b` TMA box is at most 128 bytes wide, so a `(64 256)` half tile is loaded as four 64-column boxes;
 `load-tile` does that by itself.  Blackwell (sm_100) has no
-wgmma — its tensor-core instruction is `tcgen05`, not yet in Crisp — so B200 kernels use
-`mma-accumulate-via-tile`.
+wgmma — its tensor-core instruction is `tcgen05`, below.
 
 

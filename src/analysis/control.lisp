@@ -495,6 +495,14 @@
              ((null e-single)
                (values t-type then-node else-node))
 
+             ;; Endeavour 208: a statement node typed with the symbol VOID (dotimes, store-tile, the
+             ;; tcgen05 forms) is void too.  The clauses above only knew NIL, so a warp-specialized kernel
+             ;; whose role bodies end differently -- an epilogue ending in (signal ..), a producer ending
+             ;; in a dotimes -- was refused here.  Only turns this error into the one-void-branch rule.
+             ((and (symbolp t-single) (string= (symbol-name t-single) "VOID"))
+               (values e-type then-node else-node))
+             ((and (symbolp e-single) (string= (symbol-name e-single) "VOID"))
+               (values t-type then-node else-node))
              (t
                (error "Branch type mismatch in IF expression. Then: ~a, Else: ~a" t-type e-type))))))))
 
@@ -1732,7 +1740,10 @@
 (defun analyze-await-expression-base (expr env context location)
   "Emits semantic-nvvm-cp-async-wait on :ptx; no-op fallback elsewhere.
    Endeavor 139: for a warp-spec ring (has :initial-state) the :phase is
-   (initial-phase ring-count) so codegen can inject the multi-lap flipping parity.
+   (initial-phase ring-count) so codegen can inject the flipping parity.
+   BUG 156: the :phase is (initial-phase ring-count ring-base-node) for a (ring-get RING i) barrier,
+   so codegen can recover the slot and keep one phase bit per slot.  A ring of more than 32 slots
+   is refused (the bits live in one i32).
 
    Endeavour 196: analyze-await-expression (below) adds the workgroup barrier after a cp.async wait."
   (unless (= (length expr) 2)
@@ -1746,10 +1757,22 @@
        (make-semantic-nvvm-tma-wait
         :barrier-node barrier-node
         :load-count (barrier-load-count-of (second expr))
-        ;; Endeavor 139: a warp-spec ring -> (initial-phase ring-count) for the flipping await;
+        ;; Endeavor 139: a warp-spec ring -> (initial-phase ring-count base) for the flipping await;
         ;; a plain 138 ring -> NIL (re-init await).
         :phase (let ((ip (barrier-initial-phase-of (second expr))))
-                 (when ip (list ip (barrier-ring-count-of (second expr)))))
+                 (when ip
+                   (let* ((ring-n (barrier-ring-count-of (second expr)))
+                          (ring   (%barrier-ring-form-p (second expr)))
+                          (base   (and ring
+                                       (analyze-expression ring env context (append location '(1 1))))))
+                     (when (> ring-n 32)
+                       (error 'crisp-compiler-error
+                         :message (format nil "await: the barrier ring ~S has ~a slots; at most 32 are supported (one phase bit per slot)"
+                                          ring ring-n)
+                         :source-location location))
+                     (log:debug "BUG 156 await: ring ~S, ~a slots, initial phase ~a (per-slot phase bits)"
+                                ring ring-n ip)
+                     (list ip ring-n base))))
         :type 'ulong
         :source-location location))
       ((eq mode :block)
@@ -5192,10 +5215,17 @@
            (wsid      (gensym "WSID"))
            (n         (length role-counts))
            ;; each role's body wrapped in a progn (in declaration order)
-           (bodies    (loop for (role . count) in role-counts
-                            do (progn count)
-                            collect (cons progn-sym
-                                          (cdr (assoc role role-blocks :test #'%role-name-eq)))))
+           ;; Endeavour 208: a GATED role body is (%in-warp-role FIRST COUNT BODY..), analysed as
+           ;; (progn BODY..) with the role's warps bound for the tcgen05 forms -- same node, same IR.
+           ;; The ungated (backward) lowering keeps plain progns: the AD walk runs before analysis.
+           (bodies    (let ((first-warp 0))
+                        (loop for (role . count) in role-counts
+                              for body = (cdr (assoc role role-blocks :test #'%role-name-eq))
+                              collect (prog1 (if gated
+                                                 (list* (intern "%IN-WARP-ROLE" (find-package :crisp.compiler))
+                                                        first-warp count body)
+                                                 (cons progn-sym body))
+                                        (incf first-warp count)))))
            ;; running-sum upper bounds t_1..t_n
            (thresholds (let ((acc 0))
                          (loop for (role . count) in role-counts
@@ -5460,6 +5490,11 @@
                 epilogue)))))
 
 
+(defvar *mmts-tcgen05-tile* nil
+  "Endeavour 208 (D-208-17).  While a matrix-multiply-tile-stride whose C-tile is a tcgen05 accumulator
+   is lowered: that C-tile's symbol.  %mmts-reset-forms then resets it by re-initialisation instead of
+   fill-tile + a workgroup sync.  NIL otherwise.")
+
 (defun %mmts-reset-forms (c-tile let-bindings tile-spec reset-value fill-sym sync-sym)
   "The per-OUTPUT-TILE accumulator reset (BUG 036), decided by WHERE the C-tile is bound.
 
@@ -5481,10 +5516,21 @@
                                     the macro (its caller) supplies one.  Endeavour 167
                                     behaviour change: before this, %mmts-lower gated the
                                     reset on REGISTER-P and scratch got nothing, leaving
-                                    every scratch call site to hand-write it."
+                                    every scratch call site to hand-write it.
+     * tcgen05 accumulator        -> Endeavour 208 (D-208-17), C-TILE eq *mmts-tcgen05-tile*.
+                                    Bound in :let: NOTHING, the binding is fresh every tile.
+                                    Bound outside: (set! D (%tcgen05-reset D)), which marks it
+                                    FRESH so the first MMA overwrites -- no write to tensor
+                                    memory, no barrier."
   (let* ((entry      (and (listp let-bindings) (assoc c-tile let-bindings)))
          (register-p (and (listp tile-spec) tile-spec (every #'integerp tile-spec))))
     (cond
+      ;; Endeavour 208: a tcgen05 accumulator resets by re-initialisation (or its :let binding).
+      ((and *mmts-tcgen05-tile* (eq c-tile *mmts-tcgen05-tile*))
+       (if entry
+           nil
+           (list (list (intern "SET!" (find-package :crisp-language)) c-tile
+                       (list (intern "%TCGEN05-RESET" (find-package :crisp.compiler)) c-tile)))))
       ;; Bound in :let and it is a register tile -> the binding resets it. Emit nothing.
       ((and entry (%register-tile-init-form-p (second entry))) nil)
       ;; Register tile bound in the enclosing let.
@@ -5563,7 +5609,11 @@
    extents), a scratch C-tile is a real tensor and passes itself as the spec.  Pre-167 the
    register case could only be recognised by the pre-lowering in src/mma.lisp, which reads
    the ENCLOSING let; when the tile is bound in :let the constructor is right here, so this
-   path handles it and the emitted inner let trips the SROA explosion on its own."
+   path handles it and the emitted inner let trips the SROA explosion on its own.
+
+   Endeavour 208 (D-208-17): a tcgen05 accumulator C-tile -- bound in :let or outside -- takes its
+   tile-spec from its (M N) (it has no extents~), and *mmts-tcgen05-tile* tells %mmts-reset-forms
+   to reset it by re-initialisation."
   (multiple-value-bind (c-form c-tile k-form k-step gy gx gk body)
       (%mmts-parse expr location)
     (let* ((entry     (%mmts-let-accumulator-entry c-tile body location))
@@ -5578,10 +5628,20 @@
                                (every #'integerp (third ctor)))
                           (third ctor)
                           c-tile))
-           (reset-val (if reg-ctor (fourth reg-ctor) 0.0)))
-      (analyze-expression
-       (%mmts-lower c-form c-tile tile-spec k-form k-step gy gx gk body location reset-val)
-       env context location))))
+           (reset-val (if reg-ctor (fourth reg-ctor) 0.0))
+           ;; Endeavour 208: an outer-bound tcgen05 accumulator (a :let one is caught above).
+           (tc-type   (and (null entry) (symbolp c-tile) (%208-source-type c-tile env context location)))
+           (tc-dims   (and tc-type (%tcgen05-acc-type-p tc-type) (gethash tc-type *tcgen05-acc-dims*)))
+           (tc-p      (or tc-dims
+                          (and ctor (consp ctor) (symbolp (first ctor))
+                               (string-equal (symbol-name (first ctor)) "MAKE-TCGEN05-ACCUMULATOR")))))
+      (when tc-dims
+        (setf tile-spec (list (first tc-dims) (second tc-dims))))
+      (log:debug "208 matrix-multiply-tile-stride: C-tile ~a tcgen05 ~a tile-spec ~a" c-tile (and tc-p t) tile-spec)
+      (let ((*mmts-tcgen05-tile* (and tc-p c-tile)))
+        (analyze-expression
+         (%mmts-lower c-form c-tile tile-spec k-form k-step gy gx gk body location reset-val)
+         env context location)))))
 
 
 ;;
@@ -6010,7 +6070,7 @@
 ;; TENSOR_FLOAT_2_GLOBAL_COMPACT_LAST, while the let-bound tile's type IS a (TENSOR ...) list.
 ;; get-array-element-type already handles BOTH -- it unmangles the template-struct name -- so it
 ;; replaces the bespoke extractor rather than teaching a second thing the same trick.
-(defun %tlc-check-elem-match (src tile env op-name location)
+(defun %tlc-check-elem-match-base (src tile env op-name location)
   "BUG 057: refuse a tile-staging op whose SOURCE and DESTINATION element types differ.
 
    A tile stage is a COPY.  Staging a `float` global into a `half` tile emitted no fptrunc and
@@ -6024,7 +6084,10 @@
 
    Both types come from a pure environment lookup, so no sub-expression is re-analysed and no
    side effect is duplicated.  Skipped whenever either side's element type cannot be determined,
-   which keeps a false refusal off kernels this was never about."
+   which keeps a false refusal off kernels this was never about.
+
+   Endeavour 208: %tlc-check-elem-match (below) wraps this; block codes staged into a uchar tile
+   are accepted before this check."
   (when (and (symbolp src) (symbolp tile))
     (let ((src-pd  (find-variable-in-env src env))
           (tile-pd (find-variable-in-env tile env)))
@@ -6039,3 +6102,15 @@
               :message (format nil "~a: element type mismatch — source ~a holds ~a but tile ~a holds ~a.  A tile stage is a COPY, not a conversion: it would write ~a-sized values into a ~a-sized buffer.  Give the tile the source's element type, or stage the conversion explicitly (workgroup-stride + a cast) so its cost is visible."
                                op-name src src-elem tile tile-elem src-elem tile-elem)
               :source-location location)))))))
+
+(defun %tlc-check-elem-match (src tile env op-name location)
+  "Endeavour 208 phase 4 wrapper.  A matrix of a microfloat block holds its packed codes, and the
+   source rewrite stages them into a uchar tile: that pair is the byte copy it looks like, so it is
+   accepted.  Every other pair goes to BUG 057's check."
+  (let* ((src-pd  (and (symbolp src) (find-variable-in-env src env)))
+         (tile-pd (and (symbolp tile) (find-variable-in-env tile env)))
+         (se (and src-pd (get-array-element-type (parameter-def-type src-pd))))
+         (te (and tile-pd (get-array-element-type (parameter-def-type tile-pd)))))
+    (if (and se te (%208-block-info se) (%208-sym= te "UCHAR"))
+        (log:debug "208 ~a: block codes ~a (~a) staged as bytes into ~a" op-name src se tile)
+        (%tlc-check-elem-match-base src tile env op-name location))))

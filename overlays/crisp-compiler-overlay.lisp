@@ -5,6 +5,24 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-11-06 -- endeavour 208 (tcgen05 on the B200: phases 1-4, D-208-17 mmts, BUG 156
+;;;; per-slot ring phase bits) folded into src/ by script (put_temp_files_here/208-fold/fold.py: LIVE
+;;;; copies by offset; capture wrappers split base + wrapper):
+;;;;   * new            -> semantic-tcgen05-op (src/semantic.lisp); the tcgen05 analyzers, block rewrite
+;;;;                       and scale layouts (src/mma.lisp); the tcgen05 lowering (src/codegen.lisp);
+;;;;                       %156-await-slot (codegen), %ll-needs-ptx87-p (compiler), *mmts-tcgen05-tile*
+;;;;                       (control), %208-param-block-info (metadata)
+;;;;   * replaced       -> %lower-warp-specialization, ensure-branch-compatibility, %mmts-reset-forms,
+;;;;                       analyze-matrix-multiply-tile-stride-expression, analyze-await-expression-base
+;;;;                       (control); generate-function-body, generate-node-ir semantic-nvvm-tma-wait
+;;;;                       (codegen); %qint-mma-binding-elems, %qint-mma-walk, register-mma-analyzers
+;;;;                       (mma); compile-to-ptx (compiler)
+;;;;   * base + wrapper -> visit-toplevel-form (core), %tlc-check-elem-match (control),
+;;;;                       generate-declared-signature (metadata), analyze-tcgen05-accumulate-via-tile (mma)
+;;;;   * clauses        -> semantic-node-type / -source-location (core); def-microfloat-block passes
+;;;;                       :shape to register-microfloat-block (macros)
+;;;;   * dropped        -> every *208-orig-* capture, the %208-mma-kind declaim, the dead copies
+;;;;
 ;;;; EMPTY as of 2026-11-04 -- endeavour 207 (int8 MMA lane: mma.sync m16n8k32, 1-byte prefetch, derived
 ;;;; register-tile gaps, scratch-ring width; then qint roles at the MMA and four typed mma.sync gaps) folded
 ;;;; into src/ by script (put_temp_files_here/207-fold/fold.py: LIVE copies by offset; no capture wrappers):

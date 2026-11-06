@@ -1,0 +1,25 @@
+;; CHECK-FAIL: "a block-scaled multiply accumulates in f32"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_100a
+;; Endeavour 208 phase 4 -- the block-scaled kinds have an f32 accumulator only.  With float it compiles (spec 13).
+
+(def-microfloat-block nvfp4 :base fp4 :scale fp8-e4m3 :accum float :shape (16))
+(def-type a-mat (matrix nvfp4 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix nvfp4 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type sa-vec (vector (scale nvfp4) :address-space :global :align :compact))
+(def-type sb-vec (vector (scale nvfp4) :address-space :global :align :compact))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel k (A SA B SB &out C)
+  (declare #'(a-mat sa-vec b-mat sb-vec &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128)
+           (scale-layout SA :of A :blocked-128x4)
+           (scale-layout SB :of B :blocked-128x4))
+  (let ((A-tile (make-scratch-matrix nvfp4 (128 256)))
+        (B-tile (make-scratch-matrix nvfp4 (128 256)))
+        (D      (make-tcgen05-accumulator int (128 128) 0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :scales SA :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :scales SB :barrier bar :swizzle :128b)
+    (await bar)
+    (tcgen05-accumulate-via-tile (128 128 256) D A-tile B-tile :swizzle :128b)
+    (store-tile-at D C (0 0))))

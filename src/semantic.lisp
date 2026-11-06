@@ -679,3 +679,18 @@ Returns the value at the location BEFORE the attempt (see the header for why not
   one-d-p       ;; T when the kernel's local-size is 1-D (tid.x is the linear thread index)
   type
   source-location)
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 208 -- tcgen05: one semantic node for every tcgen05 operation
+;;;; See tests/spec/208-tcgen05/tcgen05.md.
+;;;; ----------------------------------------------------------------------
+
+(defstruct semantic-tcgen05-op
+  "Endeavour 208.  One tcgen05 operation.  OP is :mma, :commit, :ld, :fence-after or :fence-before.
+   ARGS are the child nodes; PLIST holds the compile-time facts the lowering needs (shape, element,
+   issuing warp, the synchronous site's mbarrier index, the tensor-memory column chunk)."
+  op
+  args
+  plist
+  type
+  source-location)

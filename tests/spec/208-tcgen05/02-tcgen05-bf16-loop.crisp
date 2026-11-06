@@ -1,0 +1,41 @@
+;; Endeavour 208 phase 1 -- the synchronous accumulate in a real loop: TWO CTAs, each striding over TWO
+;; 128x128 output tiles, each tile a K loop of four 64-wide steps.
+;;
+;; What this adds over 01:
+;;   * (set! D (make-tcgen05-accumulator ..)) per tile -- the re-init rewrite (%tcgen05-reset): same
+;;     columns, FRESH again, so the first MMA of each tile overwrites the previous tile's sums;
+;;   * one synchronous site visited 8 times per CTA -- its mbarrier's parity must flip every visit;
+;;   * two CTAs, each allocating tensor memory (they may share an SM: relinquish_alloc_permit);
+;;   * the TMA tiles reloaded every step: the synchronous accumulate has finished READING them
+;;     before it returns, which is what makes the reload safe.
+;; 256 x 256 x 256: 4 output tiles over 2 CTAs, 4 K-steps each.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_100a] : validate-ptx-tcgen05-loop
+;; SKIP-WITH[--differentiate]: "tcgen05 has no backward yet (D-208-8)"
+;;
+;; MMA-DIMS: 256 256 256
+;; HOIST-ARCH: sm_100a
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tcgen05_loop (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 256) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix bfloat16 (128 64)))
+        (B-tile (make-scratch-matrix bfloat16 (128 64)))
+        (D      (make-tcgen05-accumulator float (128 128) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier :mode :block)))
+    (tile-stride C (128 128) (grid-y grid-x)
+      (set! D (make-tcgen05-accumulator float (128 128) 0.0))
+      (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+        (load-tile A A-tile (grid-y grid-k) :barrier bar :swizzle :128b)
+        (load-tile B B-tile (grid-x grid-k) :barrier bar :swizzle :128b)
+        (await bar)
+        (tcgen05-accumulate-via-tile (128 128 64) D A-tile B-tile :swizzle :128b))
+      (store-tile D C (grid-y grid-x)))))

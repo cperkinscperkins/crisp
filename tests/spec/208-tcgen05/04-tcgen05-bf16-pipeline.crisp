@@ -1,0 +1,59 @@
+;; Endeavour 208 phase 2 -- the asynchronous pipeline: three roles, and the MMA never waits for itself.
+;;
+;;   warps 0..3  :epilogue -- await acc-full, store D (tcgen05.ld), signal acc-empty
+;;   warp  4     :producer -- TMA loads into a 4-slot ring, as on Hopper
+;;   warp  5     :mma      -- await acc-empty, re-init D, then per K-step: await the slot, issue the MMAs
+;;                            with :on-complete (ring-get empty slot) -- the MMA's own completion frees the
+;;                            slot for the producer (D-208-2) -- and after the K loop (tcgen05-commit
+;;                            acc-full): the accumulator is ready once every MMA of the tile is done (D-208-3).
+;;
+;; Nothing synchronous: no compiler-owned mbarrier, so the PTX has exactly two commits (one per K-step
+;; slot release, one per tile) and no wait inside the MMA role other than the ring's.  ONE accumulator,
+;; so the epilogue of a tile does not yet overlap the next tile's MMAs (two accumulators is the next spec).
+;; 256 x 512 x 512: 4 output tiles of 128 x 256 over 2 CTAs, 8 K-steps each (two laps of the ring).
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_100a] : validate-ptx-tcgen05-pipeline
+;; SKIP-WITH[--differentiate]: "tcgen05 has no backward yet (D-208-8)"
+;;
+;; MMA-DIMS: 256 512 512
+;; HOIST-ARCH: sm_100a
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float    :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tcgen05_pipe (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 384) (local-size :set-to 192))      ; epilogue wg + producer + mma
+  (let ((A-ring    (make-scratch-matrix-ring bfloat16 (128 64) :ring-count 4))
+        (B-ring    (make-scratch-matrix-ring bfloat16 (256 64) :ring-count 4))
+        (D         (make-tcgen05-accumulator float (128 256) 0.0))
+        (K         (inner-dimension A B))
+        (empty     (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 1 :initial-state :signaled))
+        (full      (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 2 :initial-state :waiting))
+        (acc-full  (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 1 :initial-state :waiting))
+        (acc-empty (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 4 :initial-state :signaled)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
+        (:epilogue
+          (await (ring-get acc-full 0))
+          (store-tile D C (grid-y grid-x))
+          (signal (ring-get acc-empty 0)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))
+        (:mma
+          (await (ring-get acc-empty 0))
+          (set! D (make-tcgen05-accumulator float (128 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get full slot))
+              (tcgen05-accumulate-via-tile (128 256 64) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                           :swizzle :128b :on-complete (ring-get empty slot))))
+          (tcgen05-commit (ring-get acc-full 0)))))))

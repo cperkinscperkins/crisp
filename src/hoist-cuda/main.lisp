@@ -364,8 +364,10 @@
               (format t "Warning: Skipping complex typedef for ~a: ~a~%" alias-name target-type)))))
     (format stream "~%")))
 
-(defun emit-structs (stream structs)
-  "Generate C++ struct definitions from metadata (mirrors L0 hoist)."
+(defun emit-structs-base (stream structs)
+  "Generate C++ struct definitions from metadata (mirrors L0 hoist).
+
+   Endeavour 208: emit-structs (below) wraps this; it skips records with tensor members."
   (when structs
     (format stream "// Struct Definitions~%")
     (dolist (struct-def structs)
@@ -412,6 +414,17 @@
           (format stream "        return os;~%")
           (format stream "    }~%")
           (format stream "};~%~%"))))))
+
+(defun emit-structs (stream structs)
+  "Endeavour 208 phase 4 wrapper: a record with a TENSOR member (a def-microfloat-block's codes and
+   scales, or any record of handles) has no C spelling, and D-206-1 keeps it out of kernel
+   signatures, so the host never needs it: it is skipped.  The rest go to the original."
+  (emit-structs-base stream
+           (remove-if (lambda (s)
+                        (some (lambda (m) (and (consp m) (consp (second m)) (symbolp (first (second m)))
+                                               (string-equal (symbol-name (first (second m))) "TENSOR")))
+                              (cddr s)))
+                      structs)))
 
 (defun emit-helpers (stream)
   "Generate C++ helper: read PTX file and CUDA error checking."
@@ -799,7 +812,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
    The canonical width table for the CUDA hoist's sizer AND emitters, which must agree:
    %cuda-shared-layout computes the launch request and the per-tile offsets from the same
    numbers, and BUG 046 was exactly the divergence that results when they do not.
-   Unknown types keep the historical 4, so a type this table has not met is sized as before."
+   Unknown types keep the historical 4, so a type this table has not met is sized as before.
+   Endeavour 208: unsigned char -- what crisp-type-to-cpp-type gives for uchar -- was missing, so every
+   uchar scratch tile was sized 4 bytes per element (found when a block-scaled ring asked for 648 KB)."
   (cond
     ((or (string-equal elem-str "double")
          (string-equal elem-str "int64_t")
@@ -814,6 +829,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (string-equal elem-str "ushort")) 2)
     ((or (string-equal elem-str "char")
          (string-equal elem-str "uchar")
+         (string-equal elem-str "unsigned char")   ; Endeavour 208: crisp-type-to-cpp-type's spelling of uchar
+         (string-equal elem-str "signed char")
          (string-equal elem-str "uint8_t")
          (string-equal elem-str "int8_t")
          (string-equal elem-str "bool")) 1)
@@ -1170,7 +1187,19 @@ overrides the runtime SM-count query in the grid-size heuristic."
         (incf current-idx)
         (values current-idx (nreverse arg-names))))))
 
-(defun %cuda-emit-tensor-arg (stream param param-name param-type param-dir arg-index dispatch-info)
+;;; Endeavour 208: the block-operand state, bound by emit-kernel-args (below).  These defvars must
+;;; precede every function that binds them.
+(defvar *208-mf-roles* nil
+  "Endeavour 208 phase 4.  While a kernel's args are emitted under --mma-test: alist of parameter name
+   (string) -> :a / :b, the rank-2 inputs in signature order (the harness's role rule), so a scales
+   vector knows its matrix's role wherever it sits in the signature.")
+
+(defvar *208-mf-params* nil
+  "Endeavour 208 phase 4.  Alist of block-matrix parameter name (C spelling) -> plist (:epb ..), filled
+   as their args are emitted; the tensor-map encoder uses the byte-space variables of these.")
+
+(defun %cuda-emit-tensor-arg-base (stream param param-name param-type param-dir arg-index dispatch-info)
+  "Endeavour 208: %cuda-emit-tensor-arg (below) wraps this; block codes and scales get their own allocations."
   (let* ((rank        (or (getf param :rank)
                           (let ((n3 (third param-type))) (if (integerp n3) n3 1))))
          (elem-type   (second param-type))
@@ -1235,6 +1264,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
         (format stream "    {~%")
         (format stream "        ~a* h = new ~a[~d];~%" elem-str elem-str total-elems)
         (cond
+          ;; Endeavour 208: a 16-bit operand is filled with ENCODED small integers.
+          ((and (member mma-role '(:a :b)) (%208-mma-16bit-kind elem-type))
+           (%208-emit-16bit-fill stream total-elems (%208-mma-16bit-kind elem-type) (if (eq mma-role :a) 5 3)))
           ((member mma-role '(:a :b))
            (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = (~a)((int)(_i % ~d) + (~d));~%"
                    total-elems elem-str (if (eq mma-role :a) 5 3) (%cuda-mma-int-offset mma-role elem-str)))
@@ -1286,8 +1318,21 @@ overrides the runtime SM-count query in the grid-size heuristic."
                           :elem-type elem-str
                           :direction param-dir
                           :mma-role  mma-role
+                          :mma-16bit (%208-mma-16bit-kind elem-type)   ; endeavour 208
                           :base      param-name-cpp))
         (values current-idx (nreverse arg-names) alloc)))))
+
+(defun %cuda-emit-tensor-arg (stream param param-name param-type param-dir arg-index dispatch-info)
+  "Endeavour 208 phase 4 wrapper: under --mma-test, a block matrix or its scales vector (:microfloat in
+   the metadata) is emitted by %208-emit-mf-codes-arg / %208-emit-mf-scales-arg; anything else by the
+   original."
+  (let ((mf (getf param :microfloat)))
+    (cond ((and mf *mma-test-dims* (getf mf :scales))
+           (%208-emit-mf-codes-arg stream param-name mf arg-index))
+          ((and mf *mma-test-dims* (getf mf :scales-of))
+           (%208-emit-mf-scales-arg stream param-name mf arg-index))
+          (t (%cuda-emit-tensor-arg-base stream param param-name param-type param-dir
+                      arg-index dispatch-info)))))
 
 (defun %cuda-emit-struct-arg (stream param-name param-type aliases arg-index)
   (let* ((base-type      (%struct-base-type param-type))
@@ -1346,7 +1391,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
           (t (error "cuTensorMapEncodeTiled: unsupported element type ~a (need float/double/half/bfloat16)"
                     elem-type)))))
 
-(defun %cuda-emit-tensor-map-encode (stream param)
+(defun %cuda-emit-tensor-map-encode-base (stream param)
   "Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map
    descriptor and copy the 128-byte descriptor to device global (option A), leaving the device pointer
    in <name> (forward-declared earlier at the descriptor's ABI slot).  References the DESCRIBED tensor's
@@ -1355,7 +1400,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
      - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents
        in-order and gstride = the outer (N) stride.  Otherwise the row-major reversal (extents reversed,
        gstride = dim-0 stride), matching the nvcc-verified H100 reference.  Gated on :128b so the
-       battle-tested 137/138 :none col-major path (symmetric tiles) is untouched."
+       battle-tested 137/138 :none col-major path (symmetric tiles) is untouched.
+
+   Endeavour 208: %cuda-emit-tensor-map-encode (below) wraps this; a block operand's map uses its byte extents."
   (let* ((name      (substitute #\_ #\- (getf param :name)))
          (describes (substitute #\_ #\- (getf param :describes)))
          (rank      (getf param :rank))
@@ -1395,6 +1442,24 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));~%")
     (format stream "    CUDA_CHECK(cuMemAlloc(&~a, sizeof(CUtensorMap)));~%" name)
     (format stream "    CUDA_CHECK(cuMemcpyHtoD(~a, &~a_host, sizeof(CUtensorMap)));~%" name name)))
+
+(defun %cuda-emit-tensor-map-encode (stream param)
+  "Endeavour 208 phase 4 wrapper: a descriptor of a block matrix is encoded over BYTES -- UINT8, the
+   K-contiguous extent divided by codes-per-byte (<d>_bext / <d>_bstr) -- so the codes tile's 128-byte
+   box is 256 fp4 or 128 fp8 codes.  The original emits it, with the byte variables in place of the
+   element ones."
+  (let* ((describes (substitute #\_ #\- (or (getf param :describes) "")))
+         (blk (assoc describes *208-mf-params* :test #'string=)))
+    (if (null blk)
+        (%cuda-emit-tensor-map-encode-base stream param)
+        (let ((text (with-output-to-string (s)
+                      (%cuda-emit-tensor-map-encode-base s param))))
+          (format stream "~%    // Endeavour 208: ~a is block codes -- the descriptor is in bytes~a"
+                  describes
+                  (reduce (lambda (acc pair) (%208-replace-all acc (car pair) (cdr pair)))
+                          (list (cons (format nil "~a_ext" describes) (format nil "~a_bext" describes))
+                                (cons (format nil "~a_str" describes) (format nil "~a_bstr" describes)))
+                          :initial-value text))))))
 
 
 
@@ -1506,14 +1571,27 @@ overrides the runtime SM-count query in the grid-size heuristic."
 ;; bury it; a two-line wrapper says exactly what is added and when.  Same shape as the
 ;; emit-launch wrapper above.  %emit-kernel-args-base still resets
 ;; *cuda-shared-scratch-offset* itself.
-(defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
+(defun emit-kernel-args-base (stream declared-sig aliases records dispatch-info)
   "BUG 046: seeds *cuda-shared-cell-offset* from %cuda-shared-layout so LOCAL
-   cells are laid out ABOVE the scratch tensors rather than on top of the first one."
+   cells are laid out ABOVE the scratch tensors rather than on top of the first one.
+
+   Endeavour 208: emit-kernel-args (below) wraps this; it records the block operands first."
   ;; NOTE: no log4cl here on purpose -- the hoister is built as its own application and
   ;; does not depend on log4cl (src/hoist-cuda/main.lisp contains zero log: calls).  The
   ;; layout it chose is visible in the emitted .cu as a `shared offset` comment per param.
   (setf *cuda-shared-cell-offset* (nth-value 1 (%cuda-shared-layout declared-sig aliases)))
   (%emit-kernel-args-base stream declared-sig aliases records dispatch-info))
+
+(defun emit-kernel-args (stream declared-sig aliases records dispatch-info)
+  "Endeavour 208 phase 4 wrapper: binds *208-mf-roles* (rank-2 inputs in order -> :a, :b) and
+   *208-mf-params*, then the original."
+  (let ((*208-mf-roles* (let ((n 0))
+                          (loop for p in declared-sig
+                                when (and (eql (getf p :rank) 2) (eq (getf p :direction) :in)
+                                          (not (eq (getf p :kind) :tensor-map)))
+                                  collect (cons (getf p :name) (if (zerop (prog1 n (incf n))) :a :b)))))
+        (*208-mf-params* nil))
+    (emit-kernel-args-base stream declared-sig aliases records dispatch-info)))
 
 
 
@@ -1980,7 +2058,7 @@ overrides the runtime SM-count query in the grid-size heuristic."
         ((string-equal elem-str "unsigned char") 200)
         (t 0)))
 
-(defun %cuda-emit-mma-reference (stream allocations)
+(defun %cuda-emit-mma-reference-base (stream allocations)
   "Emit a stride-agnostic host reference C = A.B (copy A/B/C back to host, compare).
 
    Endeavour 165: the reference follows the kernel's ELEMENT TYPE instead of being emitted in
@@ -1997,7 +2075,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
    benchmark oracle has.  Run at tf32's tolerance an fp64 check would pass on an fp32 result and
    tell us nothing.
 
-   Float emission is byte-identical to before."
+   Float emission is byte-identical to before.
+
+   Endeavour 208: %cuda-emit-mma-reference (below) wraps this; a block-scaled kernel gets its own reference."
   (destructuring-bind (m n k) *mma-test-dims*
     (let ((a (find :a allocations :key (lambda (x) (getf x :mma-role))))
           (b (find :b allocations :key (lambda (x) (getf x :mma-role))))
@@ -2011,7 +2091,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
                (intp (and (or narrowp (member ct (quote ("int" "unsigned int")) :test (function string-equal))) t))
                ;; The accumulator is the OUTPUT's type: that is what the kernel actually
                ;; produced and what we are checking.
-               (acct    (if narrowp "int" ct))
+               ;; Endeavour 208: a 16-bit C is decoded and compared in float.
+               (acct    (cond (narrowp "int") ((getf c :mma-16bit) "float") (t ct)))
                (zero    (cond (intp "0") (doublep "0.0") (t "0.0f")))
                (rel     (cond (intp "0") (doublep "1e-10") (t "1e-2f")))
                (abs     (cond (intp "0") (doublep "1e-12") (t "1e-3f")))
@@ -2025,19 +2106,28 @@ overrides the runtime SM-count query in the grid-size heuristic."
           ;; OpenMP-parallel: this O(N^3) host C=A.B check dominated the large-size sweep (68
           ;; GFLOP at 4096 = minutes single-threaded).  reduction(+:mma_bad) avoids data races;
           ;; the pragma is a harmless no-op if the harness is built without -fopenmp.
+          ;; Endeavour 208: a 16-bit A / B is decoded before it is multiplied.
+          (when (getf a :mma-16bit)
+            (%208-emit-16bit-decoder stream (getf a :mma-16bit)))
+          (when (getf c :mma-16bit)
+            (%208-emit-16bit-decoder-named stream (getf c :mma-16bit) "crisp_dec_c"))
           (format stream "      uint64_t mma_bad = 0;~%")
           (format stream "      #pragma omp parallel for schedule(static) reduction(+:mma_bad)~%")
           (format stream "      for (uint64_t i = 0; i < ~dULL; i++) for (uint64_t j = 0; j < ~dULL; j++) {~%" m n)
           (format stream "        ~a acc = ~a;~%" acct zero)
           (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++)~%" k)
-          (format stream "            acc += ~a_h[i*~a_str0 + kk*~a_str1] * ~a_h[kk*~a_str0 + j*~a_str1];~%" ab ab ab bb bb bb)
+          (if (getf a :mma-16bit)
+              (format stream "            acc += crisp_dec(~a_h[i*~a_str0 + kk*~a_str1]) * crisp_dec(~a_h[kk*~a_str0 + j*~a_str1]);~%" ab ab ab bb bb bb)
+              (format stream "            acc += ~a_h[i*~a_str0 + kk*~a_str1] * ~a_h[kk*~a_str0 + j*~a_str1];~%" ab ab ab bb bb bb))
           (when (/= *mma-scale* 1)
             (format stream "        acc = acc * ~d.0~a;   // --mma-scale (MMA fired ~d times per fragment)~%"
                     *mma-scale* scale-suffix *mma-scale*))
           (when narrowp
             (multiple-value-bind (lo hi) (if (string-equal ct "char") (values -128 127) (values 0 255))
               (format stream "        if (acc < ~d) acc = ~d; if (acc > ~d) acc = ~d;~%" lo lo hi hi)))
-          (format stream "        ~a got = ~a_h[i*~a_str0 + j*~a_str1];~%" acct cb cb cb)
+          (if (getf c :mma-16bit)
+              (format stream "        float got = crisp_dec_c(~a_h[i*~a_str0 + j*~a_str1]);~%" cb cb cb)
+              (format stream "        ~a got = ~a_h[i*~a_str0 + j*~a_str1];~%" acct cb cb cb))
           (format stream "        ~a d = got - acc; if (d < 0) d = -d;~%" acct)
           (format stream "        if (d > ~a * (acc < 0 ? -acc : acc) + ~a) mma_bad++;~%" rel abs)
           (format stream "      }~%")
@@ -2046,6 +2136,54 @@ overrides the runtime SM-count query in the grid-size heuristic."
           (format stream "      std::cout << std::endl;~%")
           (format stream "      delete[] ~a_h; delete[] ~a_h; delete[] ~a_h;~%" ab bb cb)
           (format stream "    }~%"))))))
+
+(defun %cuda-emit-mma-reference (stream allocations)
+  "Endeavour 208 phase 4 wrapper: with block-matrix operands, the reference is
+     C[i][j] = sum_k (dec(A[i][k]) * sA(i, k/vec)) * (dec(B[k][j]) * sB(j, k/vec))
+   with the scales read through the :blocked-128x4 layout, compared in float with a tolerance of 1e-3
+   of the sum of |terms| (the products are exact; only the summation order may differ).  Anything
+   else goes to the original."
+  (let ((a (find :a allocations :key (lambda (x) (getf x :mma-role))))
+        (b (find :b allocations :key (lambda (x) (getf x :mma-role))))
+        (c (find :c allocations :key (lambda (x) (getf x :mma-role)))))
+    (if (not (and a b c (getf a :microfloat) (getf b :microfloat)))
+        (%cuda-emit-mma-reference-base stream allocations)
+        (let* ((sa (find (getf a :name) allocations :key (lambda (x) (getf x :mf-scales-of)) :test #'equal))
+               (sb (find (getf b :name) allocations :key (lambda (x) (getf x :mf-scales-of)) :test #'equal))
+               (mf (getf a :microfloat))
+               (vec (getf mf :vec))
+               (sdec (if (string-equal (getf mf :scale) "fp8-e8m0") "mf_e8m0" "mf_e4m3")))
+          (unless (and sa sb)
+            (error "208 harness: block operands ~a / ~a need their scales vectors (scale-layout declares)" (getf a :name) (getf b :name)))
+          (destructuring-bind (m n k) *mma-test-dims*
+            (format stream "~%    // Endeavour 208: block-scaled host reference (~a, scales per ~a, :blocked-128x4)~%" (getf mf :block) vec)
+            (format stream "    {~%")
+            (dolist (x (list a sa b sb c))
+              (let ((ty (if (eq x c) (or (getf c :elem-type) "float") "unsigned char")))
+                (format stream "      ~a* ~a_h = new ~a[~d]; CUDA_CHECK(cuMemcpyDtoH(~a_h, ~a_ptr, ~d * sizeof(~a)));~%"
+                        ty (getf x :base) ty (getf x :count) (getf x :base) (getf x :base) (getf x :count) ty)))
+            (%208-emit-mf-decoders stream)
+            (format stream "      uint64_t mma_bad = 0;~%")
+            (format stream "      #pragma omp parallel for schedule(static) reduction(+:mma_bad)~%")
+            (format stream "      for (uint64_t i = 0; i < ~dULL; i++) for (uint64_t j = 0; j < ~dULL; j++) {~%" m n)
+            (format stream "        double acc = 0.0, mag = 0.0;~%")
+            (format stream "        for (uint64_t kk = 0; kk < ~dULL; kk++) {~%" k)
+            (format stream "          double t = (double)~a * ~a(~a_h[mf_blk(i, kk / ~d, ~dULL)]) * (double)~a * ~a(~a_h[mf_blk(j, kk / ~d, ~dULL)]);~%"
+                    (%208-mf-elem-expr a "i" "kk") sdec (getf sa :base) vec (getf sa :mf-katoms)
+                    (%208-mf-elem-expr b "kk" "j") sdec (getf sb :base) vec (getf sb :mf-katoms))
+            (format stream "          acc += t; mag += t < 0 ? -t : t;~%        }~%")
+            (format stream "        double got = ~a_h[i*~a_str0 + j*~a_str1];~%" (getf c :base) (getf c :base) (getf c :base))
+            (format stream "        double d = got - acc; if (d < 0) d = -d;~%")
+            (format stream "        if (d > 1e-3 * mag + 1e-6) { if (mma_bad < 4) printf(\"  C[%llu][%llu] = %g, expected %g\\n\", (unsigned long long)i, (unsigned long long)j, got, acc); mma_bad++; }~%")
+            (format stream "      }~%")
+            (format stream "      std::cout << (mma_bad == 0 ? \"MMA_CORRECT\" : \"MMA_WRONG\");~%")
+            (format stream "      if (mma_bad) std::cout << \" (\" << mma_bad << \" mismatches)\";~%")
+            (format stream "      std::cout << std::endl;~%")
+            (format stream "      printf(\"  C[0][0] = %g, C[~d][~d] = %g\\n\", (double)~a_h[0], (double)~a_h[(~dULL)*~a_str0 + (~dULL)*~a_str1]);~%"
+                    (1- m) (1- n) (getf c :base) (getf c :base) (1- m) (getf c :base) (1- n) (getf c :base))
+            (format stream "      delete[] ~a_h; delete[] ~a_h; delete[] ~a_h; delete[] ~a_h; delete[] ~a_h;~%"
+                    (getf a :base) (getf sa :base) (getf b :base) (getf sb :base) (getf c :base))
+            (format stream "    }~%"))))))
 
 
 ;;;; ----------------------------------------------------------------------
@@ -2137,3 +2275,158 @@ overrides the runtime SM-count query in the grid-size heuristic."
     (format stream "            std::cerr << \"WARNING: log ~a not found in the module\" << std::endl;~%" record)
     (format stream "        }~%")
     (format stream "    }~%~%")))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 208 -- the --mma-test harness: 16-bit fills / decoders, block-scaled operands (codes + blocked scales) and their reference
+;;;; See tests/spec/208-tcgen05/tcgen05.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %208-mma-16bit-kind (elem-type)
+  "Endeavour 208.  :bf16 / :f16 for a bfloat16 / half Crisp element type, else NIL."
+  (let ((n (and elem-type (symbolp elem-type) (symbol-name elem-type))))
+    (cond ((null n) nil)
+          ((string= n "BFLOAT16") :bf16)
+          ((string= n "HALF") :f16)
+          (t nil))))
+
+(defun %208-emit-16bit-fill (stream total-elems kind modulus)
+  "Endeavour 208.  Fill a 16-bit MMA operand with (_i % MODULUS) ENCODED as KIND.  Small integers are
+   exact in both formats, so the reference is exact too."
+  (format stream "        auto crisp_enc = [](float f) -> uint16_t { uint32_t x; std::memcpy(&x, &f, 4); ~a };~%"
+          (if (eq kind :bf16)
+              "return (uint16_t)(x >> 16);"
+              "uint32_t s = (x >> 16) & 0x8000u; int e = (int)((x >> 23) & 0xffu) - 112; uint32_t m = x & 0x7fffffu; if (((x >> 23) & 0xffu) == 0u || e <= 0) return (uint16_t)s; if (e >= 31) return (uint16_t)(s | 0x7c00u); return (uint16_t)(s | ((uint32_t)e << 10) | (m >> 13));"))
+  (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = crisp_enc((float)((int)(_i % ~d)));   // endeavour 208: ~(~a~) bits~%"
+          total-elems modulus kind))
+
+(defun %208-emit-16bit-decoder (stream kind)
+  "Endeavour 208.  The reference's decoder for a 16-bit operand of KIND."
+  (format stream "      auto crisp_dec = [](uint16_t h) -> float { ~a };   // endeavour 208: ~(~a~)~%"
+          (if (eq kind :bf16)
+              "uint32_t x = (uint32_t)h << 16; float f; std::memcpy(&f, &x, 4); return f;"
+              "uint32_t s = ((uint32_t)h & 0x8000u) << 16, e = ((uint32_t)h >> 10) & 0x1fu, m = (uint32_t)h & 0x3ffu, x; if (e == 0u) x = s; else if (e == 31u) x = s | 0x7f800000u | (m << 13); else x = s | ((e + 112u) << 23) | (m << 13); float f; std::memcpy(&f, &x, 4); return f;")
+          kind))
+
+(defun %208-emit-16bit-decoder-named (stream kind name)
+  "Endeavour 208.  A decoder lambda NAME for a 16-bit value of KIND (:bf16 / :f16)."
+  (format stream "      auto ~a = [](uint16_t h) -> float { ~a };   // endeavour 208: ~(~a~)~%"
+          name
+          (if (eq kind :bf16)
+              "uint32_t x = (uint32_t)h << 16; float f; std::memcpy(&f, &x, 4); return f;"
+              "uint32_t s = ((uint32_t)h & 0x8000u) << 16, e = ((uint32_t)h >> 10) & 0x1fu, m = (uint32_t)h & 0x3ffu, x; if (e == 0u) x = s; else if (e == 31u) x = s | 0x7f800000u | (m << 13); else x = s | ((e + 112u) << 23) | (m << 13); float f; std::memcpy(&f, &x, 4); return f;")
+          kind))
+
+(defun %208-mf-epb (mf)
+  "Endeavour 208.  Codes per byte of the block described by the :microfloat plist MF."
+  (if (string-equal (getf mf :base) "fp4") 2 1))
+
+(defun %208-emit-args-tail (stream nm ptr bytes rank strides extents length)
+  "Endeavour 208.  The tensor ABI after the allocation, as %cuda-emit-tensor-arg emits it: ptr,
+   byte_size, offsets, strides, extents, length.  Returns the arg names in order."
+  (let ((args (list ptr)))
+    (format stream "    uint64_t ~a_byte_size = ~dULL;~%" nm bytes)
+    (push (format nil "~a_byte_size" nm) args)
+    (dotimes (k rank)
+      (format stream "    uint64_t ~a_off~d = 0ULL;~%" nm k) (push (format nil "~a_off~d" nm k) args))
+    (dotimes (k rank)
+      (format stream "    uint64_t ~a_str~d = ~dULL;~%" nm k (nth k strides)) (push (format nil "~a_str~d" nm k) args))
+    (dotimes (k rank)
+      (format stream "    uint64_t ~a_ext~d = ~dULL;~%" nm k (nth k extents)) (push (format nil "~a_ext~d" nm k) args))
+    (format stream "    uint64_t ~a_length = ~dULL;~%" nm length)
+    (push (format nil "~a_length" nm) args)
+    (nreverse args)))
+
+(defun %208-emit-mf-codes-arg (stream param-name mf arg-index)
+  "Endeavour 208 phase 4.  A block matrix (role :a = (M K), :b = (K N) K-contiguous): allocated and
+   filled as bytes -- fp4 two distinct codes per byte, every code reachable; fp8 finite codes with both
+   signs -- with element extents and strides for the kernel and byte-space <nm>_bext<k> / <nm>_bstr<k>
+   for its TMA descriptor."
+  (let* ((nm   (substitute #\_ #\- param-name))
+         (ptr  (format nil "~a_ptr" nm))
+         (role (or (cdr (assoc param-name *208-mf-roles* :test #'string-equal)) :a))
+         (epb  (%208-mf-epb mf))
+         (base (string-downcase (getf mf :base))))
+    (incf *mma-input-counter*)
+    (destructuring-bind (m n k) *mma-test-dims*
+      (let* ((extents (if (eq role :a) (list m k) (list k n)))
+             (ci      (if (eq role :a) 1 0))                 ; the K-contiguous dimension
+             (strides (if (eq role :a) (list k 1) (list 1 k)))
+             (bext    (loop for e in extents for i from 0 collect (if (= i ci) (floor e epb) e)))
+             (bstr    (loop for s in strides collect (if (= s 1) 1 (floor s epb))))
+             (elems   (* (first extents) (second extents)))
+             (bytes   (floor elems epb)))
+        (format stream "~%    // Endeavour 208: ~a holds ~a codes (~a ~a block ~a): (~a ~a) elements, ~d bytes~%"
+                param-name base (getf mf :block) (getf mf :scale) (getf mf :vec) (first extents) (second extents) bytes)
+        (format stream "    CUdeviceptr ~a;~%    CUDA_CHECK(cuMemAlloc(&~a, ~d));~%" ptr ptr bytes)
+        (format stream "    {~%        unsigned char* h = new unsigned char[~d];~%" bytes)
+        (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = ~a;~%" bytes
+                (cond ((= epb 2) (if (eq role :a)
+                                     "(unsigned char)((((_i * 3 + 1) % 16)) | (((_i * 5 + 2) % 16) << 4))"
+                                     "(unsigned char)((((_i * 7 + 3) % 16)) | (((_i * 11 + 5) % 16) << 4))"))
+                      ((string= base "fp8-e4m3") "(unsigned char)(((_i * 37) % 0x70) | (((_i >> 3) & 1) << 7))")
+                      (t "(unsigned char)(((_i * 29) % 0x78) | (((_i >> 3) & 1) << 7))")))
+        (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~d));~%        delete[] h;~%    }~%" ptr bytes)
+        (dotimes (i 2)
+          (format stream "    uint64_t ~a_bext~d = ~dULL;  uint64_t ~a_bstr~d = ~dULL;~%" nm i (nth i bext) nm i (nth i bstr)))
+        (push (cons nm (list :epb epb)) *208-mf-params*)
+        (let ((args (%208-emit-args-tail stream nm ptr bytes 2 strides extents elems)))
+          (values (+ arg-index (length args)) args
+                  (list :name param-name :ptr ptr :count bytes :elem-type "unsigned char" :direction :in
+                        :mma-role role :base nm :microfloat mf :ci ci :bstr bstr)))))))
+
+(defun %208-emit-mf-scales-arg (stream param-name mf arg-index)
+  "Endeavour 208 phase 4.  The scales of block matrix (:scales-of) in :blocked-128x4: rows R (M for A,
+   N for B) padded to 128, K/vec scales per row padded to 4; R/128 x K/(4 vec) atoms of 512 bytes.
+   Filled with finite positive scales near 1 (ue8m0 2^-2..2^2, ue4m3 0.5..1.9)."
+  (let* ((nm   (substitute #\_ #\- param-name))
+         (ptr  (format nil "~a_ptr" nm))
+         (of   (getf mf :scales-of))
+         (role (or (cdr (assoc of *208-mf-roles* :test #'string-equal)) :a))
+         (vec  (getf mf :vec)))
+    (destructuring-bind (m n k) *mma-test-dims*
+      (let* ((rows   (if (eq role :a) m n))
+             (katoms (ceiling (ceiling k vec) 4))
+             (bytes  (* (ceiling rows 128) 128 katoms 4)))
+        (format stream "~%    // Endeavour 208: ~a = the ~a scales of ~a, :blocked-128x4 (~a rows, ~a atoms per 128 rows), ~d bytes~%"
+                param-name (getf mf :scale) of rows katoms bytes)
+        (format stream "    CUdeviceptr ~a;~%    CUDA_CHECK(cuMemAlloc(&~a, ~d));~%" ptr ptr bytes)
+        (format stream "    {~%        unsigned char* h = new unsigned char[~d];~%" bytes)
+        (format stream "        for (size_t _i = 0; _i < ~d; _i++) h[_i] = ~a;~%" bytes
+                (if (string-equal (getf mf :scale) "fp8-e8m0")
+                    "(unsigned char)(125 + (_i * 7) % 5)"
+                    "(unsigned char)(0x30 + (_i * 3) % 16)"))
+        (format stream "        CUDA_CHECK(cuMemcpyHtoD(~a, h, ~d));~%        delete[] h;~%    }~%" ptr bytes)
+        (let ((args (%208-emit-args-tail stream nm ptr bytes 1 (list 1) (list bytes) bytes)))
+          (values (+ arg-index (length args)) args
+                  (list :name param-name :ptr ptr :count bytes :elem-type "unsigned char" :direction :in
+                        :mma-role nil :base nm :mf-scales-of of :mf-katoms katoms :microfloat mf)))))))
+
+(defun %208-replace-all (string old new)
+  "Endeavour 208.  STRING with every occurrence of OLD replaced by NEW."
+  (with-output-to-string (o)
+    (loop with start = 0
+          for p = (search old string :start2 start)
+          do (write-string string o :start start :end (or p (length string)))
+             (if p (progn (write-string new o) (setf start (+ p (length old)))) (return)))))
+
+(defun %208-emit-mf-decoders (stream)
+  "Endeavour 208 phase 4.  C decoders of the OCP microfloat formats, exact (powers of two)."
+  (format stream "      auto mf_fp4  = [](unsigned v) -> float { unsigned m = v & 1, e = (v >> 1) & 3; float g = e == 0 ? 0.5f * m : ldexpf(1.0f + 0.5f * m, (int)e - 1); return (v & 8) ? -g : g; };~%")
+  (format stream "      auto mf_e4m3 = [](unsigned v) -> float { unsigned m = v & 7, e = (v >> 3) & 15; float g = e == 0 ? ldexpf((float)m / 8.0f, -6) : ldexpf(1.0f + m / 8.0f, (int)e - 7); return (v & 128) ? -g : g; };~%")
+  (format stream "      auto mf_e5m2 = [](unsigned v) -> float { unsigned m = v & 3, e = (v >> 2) & 31; float g = e == 0 ? ldexpf((float)m / 4.0f, -14) : ldexpf(1.0f + m / 4.0f, (int)e - 15); return (v & 128) ? -g : g; };~%")
+  (format stream "      auto mf_e8m0 = [](unsigned v) -> float { return ldexpf(1.0f, (int)v - 127); };~%")
+  (format stream "      auto mf_blk  = [](uint64_t r, uint64_t j, uint64_t katoms) -> uint64_t { return ((r / 128) * katoms + j / 4) * 512 + (r % 32) * 16 + ((r % 128) / 32) * 4 + (j % 4); };~%"))
+
+(defun %208-mf-elem-expr (alloc row col)
+  "Endeavour 208 phase 4.  C expression decoding element (ROW COL) of the block matrix ALLOC (role :a
+   is (M K), :b is (K N)); fp4's even element is the low nibble (D-206-3)."
+  (let* ((mf (getf alloc :microfloat)) (nm (getf alloc :base)) (epb (%208-mf-epb mf))
+         (bstr (getf alloc :bstr)) (ci (getf alloc :ci))
+         (kexpr (if (= ci 1) col row))
+         (byte (if (= ci 1)
+                   (format nil "~a_h[~a * ~dULL + (~a) / ~d]" nm row (first bstr) col epb)
+                   (format nil "~a_h[(~a) / ~d + ~a * ~dULL]" nm row epb col (second bstr))))
+         (base (string-downcase (getf mf :base))))
+    (cond ((= epb 2) (format nil "mf_fp4(((~a) & 1) ? (~a >> 4) : (~a & 15))" kexpr byte byte))
+          ((string= base "fp8-e4m3") (format nil "mf_e4m3(~a)" byte))
+          (t (format nil "mf_e5m2(~a)" byte)))))

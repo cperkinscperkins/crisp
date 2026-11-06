@@ -317,6 +317,40 @@ that element type, N is a multiple of 64, and the kernel declares `(local-size :
 adds a staging buffer of 16 KB per warpgroup (+1 KB) to the kernel's shared memory -- leave room for it
 under the 227 KB limit.
 
+**Blackwell (B200): tcgen05** -- endeavour 208, MMA_CORRECT on a B200.  Compile with
+`--ir-target-arch=sm_100a`; plain `sm_100` is refused.  The accumulator lives in tensor memory:
+`(make-tcgen05-accumulator float (128 N) 0.0)` in a `let`, or `(make-tcgen05-accumulator-ring float (128 N)
+:ring-count 2)` and `(ring-get ACC s)` for two of them.
+
+- **Rules:**
+  - M is 128, and N is a multiple of 16 up to 256.
+  - A kernel's accumulators fit in 512 columns (N each).
+  - The initial value is 0.
+- **The accumulate:** `(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b)`.
+  - A is `(128 K)` and B is `(N K)`, TMA-loaded with `:swizzle :128b`.
+  - K is 64 for half / bfloat16, 32 for float (tf32), and 128 for char / uchar.
+  - 8-bit operands (char, uchar, a `def-qint`) need an int or `(accum Q)` accumulator:
+    `(make-tcgen05-accumulator int (128 N) 0)`.  The qint and sign rules are the other MMA paths'.
+  - Without options it is synchronous.  With `:on-complete BAR` it returns at once, and BAR arrives
+    when the multiply is done.
+  - `(tcgen05-commit BAR)` signals that every multiply so far is done.
+- **Storing it back:** `store-tile` / `store-tile-at` (and `:via :tma` with `to-half` / `to-bfloat16`)
+  must run on exactly 4 warps, so the storing role is 4 warps, or the kernel is 128 threads.
+  `(store-tile-at (to-q-out D 1.0) C (row col))` requantizes an int accumulator as it stores it (direct
+  stores only, not `:via :tma`).
+- **Block-scaled microfloats:** a matrix of a `def-microfloat-block` holds its packed codes, `(M K)`
+  in elements.  Its scales are a vector of `(scale BLOCK)`.
+  - Declare their layout: `(scale-layout SA :of A :blocked-128x4)`.
+  - Load a block tile with `(load-tile A A-tile (gy gk) :scales SA :barrier bar :swizzle :128b)`, and
+    multiply two of them.
+  - The blocks are NVFP4 (fp4, fp8-e4m3, 16), MXFP4 (fp4, fp8-e8m0, 32) and MXFP8 (fp8-e4m3/e5m2,
+    fp8-e8m0, 32).
+  - K is 256 for fp4 and 128 for fp8.  N is 128 or 256.  The accumulator is float.  The design
+    document has the layout.
+- **`matrix-multiply-tile-stride`** takes a tcgen05 accumulator as its C-tile, and resets it per tile
+  for you.
+- **Not built yet:** M = 64, `cta_group::2`.  It is forward-only.
+
 ---
 
 ## 11. Quantized integers and microfloat blocks
@@ -403,7 +437,8 @@ two handles, packed codes and one scale per block:
 - The scale rounds up, so a block's largest element is never clipped.  `fp4` packs the even element in
   the low nibble.
 - No arithmetic on blocks or codes, and `(*! w w)` is refused: dequantize to `half` or `float` and use
-  the MMA paths.  (Native block-scaled MMA needs Blackwell's `tcgen05`, not yet supported.)
+  the MMA paths.  Native block-scaled MMA is Blackwell's `tcgen05` (section 10): a matrix of the block
+  type, multiplied in hardware, with no dequantize step.
 - For training, `(fake-quant-NAME x y)` writes each element of `x` through the format into `y`, with
   `dy/dx = 1` backward.  `quantize-to`, `dequantize-from` and the element reads have no gradient.
 
