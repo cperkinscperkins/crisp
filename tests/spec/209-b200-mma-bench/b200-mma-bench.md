@@ -88,6 +88,44 @@ installed by bench-on-pod; 208 never built the compiler ON a B200 pod -- it ship
                  --chapters=_b200_tune,chap7_tcgen05,chap7_tcgen05_bf16,sec2_top,sec2_top_bf16,sec2_top_fp16,sec2_top_int8,sec4_int8_requant,sec2_top_nvfp4,sec2_top_mxfp4,sec2_top_mxfp8 &&
                scripts/pull-runpod-results.sh {host} {port}'
 
+## Step 7 results — smoke + tuning, B200, 2026-11-06 (34 min, ~$4.60, pod confirmed gone)
+
+66 sweeps, **every point verified** (fixture block-scaled path, fixed grid, every tcgen05 lane, both
+CUTLASS SM100 peers, cuBLASLt NVFP4 / MXFP8).  Table: put_temp_files_here/209/smoke-summary.txt
+(results: put_temp_files_here/209/smoke/, scratch only).  TFLOPS (TOPS for int8) at N=8192:
+
+| lane | Crisp persistent r4 | Crisp tile grid r4 | Crisp Ch 7 (tile grid r2) | cuBLAS(Lt) | best CUTLASS |
+|---|---:|---:|---:|---:|---:|
+| tf32 | 293 | 717 | 767 | 1036 | 964 (256x256 2-SM) |
+| bf16 | 543 | 1224 | 1304 | 1993 | 1770 (2-SM) |
+| fp16 | 543 | 1224 | — | 1993 | 1808 (2-SM) |
+| int8 | 984 | 2048 | — | 3727 | 3442 (2-SM) |
+| requant | 574 | 1222 | — | 4125 | — |
+| nvfp4 | 1066 (r4) | not built | — | 5532 | 3434 (2-SM) |
+| mxfp4 | 1272 (r4) | not built | — | **no algorithm** (status 7, CUDA 12.8) | 3587 (2-SM) |
+| mxfp8 | 899 (r4) | not built | — | 3080 | 1659 (2-SM) |
+
+**F-209-3 — the persistent kernels lose most of their CTAs.**  tile-stride strides each dimension
+by its OWN group count (`src/analysis/control.lisp`, START_i = GID_i*TS_i, STRIDE_i = TS_i*NG_i).
+A persistent 1-D launch of 148 CTAs has NG_1 = 1, so only the CTAs whose x id < M/128 own a row of
+tiles: 32 of 148 work at 4096, 64 at 8192.  The ratios match (tile grid / persistent = 3.8x at
+4096, 2.3x at 8192).  208's specs never saw it: 2 CTAs, 2 row-tiles.  Correct results, silent
+loss -- a trap for any persistent author.  **BUG 157, fixed in the overlay 2026-11-06** (Chris
+chose the compiler fix; chapter 6 takes the new rule too and is re-measured, option (i)): a rank-2
+compile-time tile-stride in a kernel with a fixed 1-D global size takes endeavour 144's flat
+column-strip walk (`%expand-tile-stride-swizzled`) at the profile's strip width or 1.  Specs 01 / 02
+here (01 fails with `CRISP_TILE_VISIT=linear`); IR corpus moved only fixed-size rank-2 kernels
+(28 jobs incl. matrix-multiply-tile-stride and 208's tcgen05 specs, all explained); suites green
+(1807 / 492).  Tuning round 2 sweeps the strip width through a `;; BENCH-TILE-VISIT: grouped:N`
+line the harness exports as `CRISP_TILE_VISIT` for that kernel only.  D-209-4 stays until chapter
+6's one-workgroup declaration itself is fixed (F-209-1): honoring it would still launch one
+workgroup, whatever the walk.
+
+Other readings: Ch 7 (ring 2: 96 KB of ring, so two CTAs per SM) beats the ring-4 tile grid (one
+CTA per SM) -- a second resident CTA overlaps one tile's epilogue with another's mainloop, which is
+what the accumulator ring was meant to do.  The 2-SM CUTLASS configs win at 4096-8192 almost
+everywhere; Crisp has no cta_group::2.  Below 4096 Crisp trails CUTLASS 2x (bf16 1024: 78 vs 174).
+
 ## Findings
 
 **F-209-1 — kernels with no declared global-size are launched on a 32 x 64 tile grid.**  The fixture

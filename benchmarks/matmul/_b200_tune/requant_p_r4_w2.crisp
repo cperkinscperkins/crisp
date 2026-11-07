@@ -1,27 +1,35 @@
-;; Section 2, B200 (sm_100a) -- fp16 operands, fp32 accumulator and C.  Endeavour 209.
+;; Section 2, B200 (sm_100a) -- s8 x s8, s32 accumulator, C REQUANTIZED to s8: sat8(rne(acc * 0.003)).  Endeavour 209.
 ;;
 ;; GENERATED from ONE template by scripts/crisp_bench/gen_b200.py, so a difference between two
 ;; B200 lanes is the FORMAT and nothing else.  Endeavour 208's kernel (spec 11's shape): warp-specialized
 ;; :epilogue 4 / :producer 1 / :mma 1, a TMA ring of A and B^T tiles (128-byte swizzle), tcgen05 with the
 ;; accumulator in tensor memory.
 ;;
-;; PERSISTENT: (global-size :set-to 28416) is one CTA per SM (148 x 192); tile-stride walks
-;; the tiles over them, and the accumulator is a 2-slot RING in tensor memory (2 x 256 columns, all
-;; 512), so the epilogue stores tile t while the MMA warp computes tile t+1.
-;; Ring depth 4: 4 x (128 + 256) x 64 elements of A/B per stage.
+;; PERSISTENT: (global-size :set-to 28416) is one workgroup per SM (148 x 192); tile-stride
+;; walks ONE flat tile index over them (F-209-3), and the accumulator is a 2-slot RING in tensor memory
+;; (2 x 256 columns, all 512), so the epilogue stores tile t while the MMA warp computes tile t+1.
+;; Tile visit: column strips 2 tiles wide (endeavour 144's grouped walk), for L2 reuse.
+;; BENCH-TILE-VISIT: grouped:2
+;; Ring depth 4: 4 x (128 + 256) x 128 elements of A/B per stage.
+;;
+;; The requantize epilogue of sec4_int8_requant/matmul_int8_requant.crisp (H100): `(to-q-a acc m)` on
+;; the store's source narrows each accumulator element as it is stored (205).  The harness reads
+;; the multiplier from the line below, so its oracle applies the same rule.
+;; BENCH-REQUANT-MULTIPLIER: 0.003
 ;; Requires sm_100a.
 
-(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
-(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
-(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-qint q-a :base char :accum int)
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix q-a :address-space :global :align :compact :contiguous-term :row-major))
 
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
            (global-size :set-to 28416)
            (local-size :set-to 192))                 ; epilogue warpgroup + producer warp + mma warp
-  (let ((A-ring    (make-scratch-matrix-ring half (128 64) :ring-count 4))
-        (B-ring    (make-scratch-matrix-ring half (256 64) :ring-count 4))   ; B^T: N x K
-        (acc       (make-tcgen05-accumulator-ring float (128 256) :ring-count 2))
+  (let ((A-ring    (make-scratch-matrix-ring char (128 128) :ring-count 4))
+        (B-ring    (make-scratch-matrix-ring char (256 128) :ring-count 4))   ; B^T: N x K
+        (acc       (make-tcgen05-accumulator-ring (accum q-a) (128 256) :ring-count 2))
         (K         (inner-dimension A B))
         (tiles     (to-ulong 0))
         (empty     (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 1 :initial-state :signaled))
@@ -33,10 +41,10 @@
         (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
           (:epilogue
             (await (ring-get acc-full s))
-            (store-tile (ring-get acc s) C (grid-y grid-x))
+            (store-tile-at (to-q-a (ring-get acc s) 0.003) C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256))))
             (signal (ring-get acc-empty s)))
           (:producer
-            (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+            (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
               (let ((slot (mod grid-k (to-ulong 4))))
                 (await (ring-get empty slot))
                 (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
@@ -44,10 +52,10 @@
           (:mma
             (await (ring-get acc-empty s))
             (let ((D (ring-get acc s)))
-              (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+              (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
                 (let ((slot (mod grid-k (to-ulong 4))))
                   (await (ring-get full slot))
-                  (tcgen05-accumulate-via-tile (128 256 64) D (ring-get A-ring slot) (ring-get B-ring slot)
+                  (tcgen05-accumulate-via-tile (128 256 128) D (ring-get A-ring slot) (ring-get B-ring slot)
                                                :swizzle :128b :on-complete (ring-get empty slot)))))
             (tcgen05-commit (ring-get acc-full s)))))
       (set! tiles (+ tiles (to-ulong 1))))))

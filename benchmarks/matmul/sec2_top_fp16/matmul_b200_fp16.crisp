@@ -5,9 +5,9 @@
 ;; :epilogue 4 / :producer 1 / :mma 1, a TMA ring of A and B^T tiles (128-byte swizzle), tcgen05 with the
 ;; accumulator in tensor memory.
 ;;
-;; PERSISTENT: (global-size :set-to 28416) is one CTA per SM (148 x 192); tile-stride walks
-;; the tiles over them, and the accumulator is a 2-slot RING in tensor memory (2 x 256 columns, all
-;; 512), so the epilogue stores tile t while the MMA warp computes tile t+1.
+;; PERSISTENT: (global-size :set-to 28416) is one workgroup per SM (148 x 192); tile-stride
+;; walks ONE flat tile index over them (F-209-3), and the accumulator is a 2-slot RING in tensor memory
+;; (2 x 256 columns, all 512), so the epilogue stores tile t while the MMA warp computes tile t+1.
 ;; Ring depth 4: 4 x (128 + 256) x 64 elements of A/B per stage.
 ;; Requires sm_100a.
 

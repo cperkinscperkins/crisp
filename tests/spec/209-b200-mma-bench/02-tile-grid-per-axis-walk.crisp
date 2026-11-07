@@ -1,0 +1,24 @@
+;; Endeavour 209, F-209-3 -- POSITIVE CONTROL for 01: a declared TILE grid keeps the per-axis walk.
+;;
+;; The same kernel as 01, but the grid is the tile grid (global-size :derive-from C :strategy
+;; :strided; the 2 x 2 tile-shape is inferred), so the launch is 2 x 2 workgroups and each owns
+;; exactly one tile.  Workgroup (x, y) takes tile (row x, col y) and records its x id:
+;;   C = 0 0 0 0 / 0 0 0 0 / 1 1 1 1 / 1 1 1 1.
+;; Only a FIXED 1-D global size selects the flat walk; this one must not move.
+;;
+;; SKIP-WITH[--differentiate]: "work-distribution check; stores a ulong workgroup id"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1
+
+(def-type m-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel tile_grid_walk (&out C)
+  (declare #'(&out m-t => nil)
+           (global-size :derive-from C :strategy :strided)
+           (local-size  :set-to 1))
+  (tile-stride C (2 2) (gy gx)
+    (dotimes (i 2)
+      (dotimes (j 2)
+        (set! (~ C (+ (* gy (to-ulong 2)) (to-ulong i)) (+ (* gx (to-ulong 2)) (to-ulong j)))
+              (get-workgroup-id 0))))))

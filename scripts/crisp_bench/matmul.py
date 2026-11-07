@@ -357,6 +357,26 @@ class ContenderBuildError(Exception):
         super().__init__("%s failed to build (exit %s)" % (name, returncode))
 
 
+def bench_compile_env(src_path):
+    """Endeavour 209: the environment for compiling SRC_PATH, or None for the inherited one.
+
+    A kernel may carry `;; BENCH-TILE-VISIT: grouped:<n> | linear` to fix its tile visit order for THIS
+    compile only -- exported as CRISP_TILE_VISIT, the compiler's own escape hatch (endeavour 144:
+    a compiler knob, never kernel syntax).  That is how the B200 tuning sweeps the column-strip
+    width of a persistent kernel: each variant names its width in its header, read here, never
+    inferred."""
+    try:
+        m = re.search(r";;\s*BENCH-TILE-VISIT:\s*(\S+)", Path(src_path).read_text(errors="replace"))
+    except Exception:
+        m = None
+    if not m:
+        return None
+    env = dict(os.environ)
+    env["CRISP_TILE_VISIT"] = m.group(1)
+    print(f"  (CRISP_TILE_VISIT={m.group(1)} for {Path(src_path).name}, from its BENCH-TILE-VISIT line)",
+          file=sys.stderr)
+    return env
+
 def time_compile(cmd, name=None, **kw):
     """Compile, returning wall-clock ms.  Raises ContenderBuildError on a non-zero exit.
 
@@ -1056,7 +1076,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     try:
         dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=" + HW["arch_target"],
                                  *hw_profile_flags(), *prec_flags,
-                                 "--log-level=off", str(src)])
+                                 "--log-level=off", str(src)], env=bench_compile_env(src))
     except subprocess.CalledProcessError:
         print(f"cuda-fixed: crisp-compile failed for {src.name}", file=sys.stderr)
         return empty
@@ -1071,7 +1091,7 @@ def run_cuda_fixed_sweep(chapter, kernel_src, comp_name, harness_bin, sizes, war
     try:
         sh([crisp_compiler, "--hoist=cuda", "--ir-target-arch=" + HW["arch_target"],
             *hw_profile_flags(), *prec_flags, "--log-level=off", str(src)],
-           capture_output=True, text=True)
+           capture_output=True, text=True, env=bench_compile_env(src))
     except Exception:
         pass
     # SELECT THE METACRISP BY KERNEL NAME, not by glob.  `glob(f"{stem}_*.metacrisp")` with
@@ -1425,7 +1445,7 @@ def main():
                     return
                 crisp_prec = [f"--math-precision={prec}",
                               f"--denormal-handling={'ftz' if ftz else 'preserve'}"]
-                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=" + HW["arch_target"], *hw_profile_flags(), *crisp_prec, "--log-level=off", str(src_path)], name=comp_name)
+                dev_c_ms = time_compile([crisp_compiler, "--ir-target=ptx", "--ir-target-arch=" + HW["arch_target"], *hw_profile_flags(), *crisp_prec, "--log-level=off", str(src_path)], name=comp_name, env=bench_compile_env(src_path))
                 all_c_ms = dev_c_ms
                 if use_fixture:
                     # THE REVIEWED FIXTURE.  (The generated harness, retired 2026-10-16, was 16-bit
