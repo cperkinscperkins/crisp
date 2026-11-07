@@ -22,7 +22,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 5 | Contenders: cuBLASLt block-scaled ceiling; CUTLASS SM100 peers (tf32, 16-bit, int8, block-scaled) | done |
 | 6 | Local proof (below) | done |
 | 7 | B200 smoke + tuning rental (`_b200_tune` + every B200 lane, small/mid sizes, --scratch) | done (round 1 2026-11-06; round 2 after BUG 157 2026-11-07, D-209-8) |
-| 8 | B200 full sweep | |
+| 8 | B200 full sweep | done 2026-11-07 (87 min, ~$11.60, 83 result files; F-209-4, F-209-5) |
 | 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B) | |
 | 10 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerate after 8) |
 
@@ -188,6 +188,34 @@ they print the gate and only the cuBLAS(Lt) rows run.  Closing it is a compiler 
 `map-elements!` on a tensor-memory accumulator as ld / apply / st, or fuse it into the epilogue's
 store) -- Chris's call whether it belongs to this endeavour.  sec3_cluster_multicast is gated the
 same way (its kernels are wgmma; 152 found multicast a negative on Hopper).
+
+**F-209-4 — chapter 6 f64 (warp-specialized) FAILS verification on the B200 at N = 1024..8192.**
+Step 8: `chap6_warp_specialization_f64` and `sec2_top_f64 Crisp_V_warpspec` (same kernel family)
+have max_abs_err 1-9 at 1024 / 2048 / 4096 / 8192; 256, 512, 16384, 32768 pass (err ~1e-13..1e-11).
+H100 (old run, before BUG 156 / BUG 157) passed every size with err 0.  Every other f64 chapter,
+and chapter 6 tf32 / bf16, pass on the B200.  What is known:
+- BUG 157 MOVES this kernel: it declares `:set-to 96` (one workgroup), so it now takes the flat
+  walk, and the PTX differs from `CRISP_TILE_VISIT=linear` (2244 lines).
+- The fixture launches it on a (N/32) x (N/64) grid (D-209-4, F-209-1) for (N/64) x (N/32) tiles
+  of 64 x 32.  OLD walk: half the workgroups idle, the rest do 2 tiles.  FLAT walk: every
+  workgroup does exactly 1 tile (the flatten uses both ids and both counts, so coverage holds).
+- Integer-sized errors against otherwise-exact results = a few partial products lost or doubled,
+  not a missed tile (that would be off by the whole dot product).  Shape of a ring race.
+Theories, untested: (T1) a latent race in chapter 6 f64's producer / consumer ring, exposed by
+twice as many working workgroups (more residency, more memory pressure); (T2) BUG 156's per-slot
+phase bits are wrong for this ring shape (H100's pass predates them); (T3) Blackwell-specific
+timing.  BMG has no f64 lane, so it cannot be tested locally.  Proposed test, folded into step 9's
+H100 rental: both kernels at 256..8192 with the flat walk and with `CRISP_TILE_VISIT=linear`.
+H100 flat fails + linear passes -> T1 / T2 (walk-exposed, not B200); H100 flat passes -> T3 or
+needs a B200 A/B.
+
+**F-209-5 — report.py §2 publishes unverified points.**  The §2 emitter's `_best`, `_best_named`
+and variant gather never read `configuration.verified` (§1 and the 16-bit rollup already drop
+them -- "UNVERIFIED POINTS ARE NOT NUMBERS").  So the regenerated report shows F-209-4's failing
+points as the B200 f64 envelope and best single.  It also shows, and has for months, the H100 /
+H200 tf32 points at N >= 4096 from the pre-fixture path (12 iterations, no check: verified false,
+max_abs_err None) -- step 9 re-measures those through the fixture.  Proposed fix: filter in those
+three places.
 
 ## Decisions (D-209-n)
 

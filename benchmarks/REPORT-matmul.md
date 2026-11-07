@@ -8,6 +8,7 @@
 | NVIDIA H100 80GB HBM3 | 2026-11-04 | Crisp `e20cf277` (runpod) | `h100-80gb-hbm3` (queried*) |
 | NVIDIA H200 | 2026-09-13 | Crisp `66a7911d` (runpod) | `h200` (queried*) |
 | NVIDIA A100-SXM4-80GB | 2026-11-04 | Crisp `da445a6e` (runpod) | `a100-sxm4-80gb` (queried*) |
+| NVIDIA B200 | 2026-11-07 | Crisp `adcd44f9` (runpod) | `b200` (queried*) |
 
 > \* **queried / supplied**: the profile's QUERIED keys were read off the device, but its MEASURED keys (`:tile-visit-strip-width` above all) were never swept for this part and are absent, which selects safe defaults rather than tuned ones. Such a row is honest about the hardware it ran on and fair to compare *within* the device; it may understate Crisp against a row whose profile was fully tuned. A **NONE** row was compiled with no profile at all and is not comparable to published figures.
 
@@ -154,6 +155,137 @@ GRF-bounded tile sweep
 
 </details>
 
+### NVIDIA B200 · tf32 · `fast`
+
+**Rollup — Crisp TFLOPS, every chapter × every N.**
+
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | naive loops, no tensor cores | 0.7 | 1.0 | 1.1 | 1.1 | 1.1 | 1.1 | 1.1 | — |
+| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | 0.4 | 1.6 | 5.9 | 5.8 | 6.6 | 6.4 | 6.2 |
+| 2 | matrix-multiply-tile-stride | 0.1 | 0.4 | 1.6 | 5.9 | 5.8 | 6.6 | 6.4 | 6.2 |
+| 3 | cp.async | 0.7 | 3.3 | 14.1 | 25.2 | 37.3 | 47.7 | 49.2 | 48.7 |
+| 4 | TMA descriptor (CUtensorMap) | 1.1 | 5.7 | 24.8 | 51.0 | 58.5 | 72.8 | 74.2 | 74.6 |
+| 5 | SMEM ring | 1.3 | 5.9 | 27.8 | 52.9 | 99.1 | 107.2 | 110.8 | 113.1 |
+| 6 | warp specialization | 1.6 | 8.9 | 36.5 | 73.2 | 86.8 | 87.3 | 87.9 | 83.5 |
+| 7 | tcgen05 (Blackwell; wgmma needs sm_90a) | 1.3 | 8.6 | 59.8 | 345.2 | 589.2 | 773.5 | 780.7 | 629.8 |
+
+<details><summary><b>Per-chapter detail</b></summary>
+
+#### Ch 0 — Does it run at all?
+naive loops, no tensor cores
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control |
+|---:|---:|---:|---:|
+| 256 | 0.7 (0.049) | 0.7 (0.045) | 0.92× |
+| 512 | 1.0 (0.265) | 1.0 (0.273) | 1.03× |
+| 1024 | 1.1 (2.024) | 1.0 (2.129) | 1.05× |
+| 2048 | 1.1 (15.917) | 1.0 (16.797) | 1.06× |
+| 4096 | 1.1 (126.963) | 1.0 (134.520) | 1.06× |
+| 8192 | 1.1 (1006.730) | 1.0 (1082.401) | 1.08× |
+| 16384 | 1.1 (8045.180) | 1.0 (8653.663) | 1.08× |
+| 32768 | — | — | — |
+
+#### Ch 1 — Can we reach the tensor cores?
+hand-rolled mma-accumulate-via-tile
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 0 |
+|---:|---:|---:|---:|---:|
+| 256 | 0.1 (0.345) | 0.7 (0.047) | 0.14× | 0.14× |
+| 512 | 0.4 (0.684) | 3.0 (0.088) | 0.13× | 0.39× |
+| 1024 | 1.6 (1.370) | 12.5 (0.171) | 0.12× | 1.48× |
+| 2048 | 5.9 (2.915) | 43.5 (0.395) | 0.14× | **5.46×** |
+| 4096 | 5.8 (23.794) | 39.9 (3.444) | 0.14× | **5.34×** |
+| 8192 | 6.6 (167.301) | 44.5 (24.685) | 0.15× | **6.02×** |
+| 16384 | 6.4 (1382.100) | 43.7 (201.071) | 0.15× | **5.82×** |
+| 32768 | 6.2 (11363.100) | 43.9 (1603.224) | 0.14× | — |
+
+#### Ch 2 — What does tiling buy?
+matrix-multiply-tile-stride
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 1 |
+|---:|---:|---:|---:|---:|
+| 256 | 0.1 (0.347) | 2.1 (0.016) | 0.05× | 0.99× |
+| 512 | 0.4 (0.685) | 5.0 (0.053) | 0.08× | 1.00× |
+| 1024 | 1.6 (1.373) | 6.1 (0.354) | 0.26× | 1.00× |
+| 2048 | 5.9 (2.917) | 6.4 (2.697) | 0.92× | 1.00× |
+| 4096 | 5.8 (23.830) | 6.4 (21.402) | 0.90× | 1.00× |
+| 8192 | 6.6 (167.144) | 6.4 (171.248) | 1.02× | 1.00× |
+| 16384 | 6.4 (1381.560) | 6.4 (1368.522) | 0.99× | 1.00× |
+| 32768 | 6.2 (11365.000) | 6.4 (10948.721) | 0.96× | 1.00× |
+
+#### Ch 3 — Can the fetch overlap the math?
+cp.async
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 2 |
+|---:|---:|---:|---:|---:|
+| 256 | 0.7 (0.047) | 2.3 (0.015) | 0.31× | **7.40×** |
+| 512 | 3.3 (0.082) | 4.5 (0.060) | 0.73× | **8.35×** |
+| 1024 | 14.1 (0.153) | 5.1 (0.419) | **2.74×** | **8.99×** |
+| 2048 | 25.2 (0.681) | 5.3 (3.236) | **4.75×** | **4.28×** |
+| 4096 | 37.3 (3.680) | 5.3 (25.795) | **7.01×** | **6.48×** |
+| 8192 | 47.7 (23.057) | 5.3 (206.012) | **8.93×** | **7.25×** |
+| 16384 | 49.2 (178.928) | 5.3 (1646.398) | **9.20×** | **7.72×** |
+| 32768 | 48.7 (1445.230) | 5.3 (13167.666) | **9.11×** | **7.86×** |
+
+#### Ch 4 — Can the fetch itself be cheap?
+TMA descriptor (CUtensorMap)
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 3 |
+|---:|---:|---:|---:|---:|
+| 256 | 1.1 (0.029) | 2.3 (0.015) | 0.51× | **1.60×** |
+| 512 | 5.7 (0.047) | 4.5 (0.060) | 1.28× | **1.75×** |
+| 1024 | 24.8 (0.087) | 5.1 (0.418) | **4.83×** | **1.76×** |
+| 2048 | 51.0 (0.337) | 5.3 (3.236) | **9.61×** | **2.02×** |
+| 4096 | 58.5 (2.351) | 5.3 (25.790) | **10.97×** | **1.57×** |
+| 8192 | 72.8 (15.105) | 5.3 (206.003) | **13.64×** | **1.53×** |
+| 16384 | 74.2 (118.561) | 5.3 (1646.413) | **13.89×** | **1.51×** |
+| 32768 | 74.6 (942.788) | 5.3 (13167.617) | **13.97×** | **1.53×** |
+
+#### Ch 5 — Can several fetches be in flight?
+SMEM ring
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 4 |
+|---:|---:|---:|---:|---:|
+| 256 | 1.3 (0.026) | 2.3 (0.014) | 0.56× | 1.15× |
+| 512 | 5.9 (0.045) | 4.5 (0.060) | 1.32× | 1.04× |
+| 1024 | 27.8 (0.077) | 5.3 (0.408) | **5.27×** | 1.12× |
+| 2048 | 52.9 (0.325) | 5.5 (3.147) | **9.69×** | 1.04× |
+| 4096 | 99.1 (1.387) | 5.5 (25.058) | **18.06×** | **1.69×** |
+| 8192 | 107.2 (10.254) | 5.5 (199.795) | **19.48×** | 1.47× |
+| 16384 | 110.8 (79.383) | 5.5 (1597.355) | **20.12×** | 1.49× |
+| 32768 | 113.1 (622.081) | 5.5 (12777.177) | **20.54×** | **1.52×** |
+
+#### Ch 6 — Can the math stop waiting on bookkeeping?
+warp specialization
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 5 |
+|---:|---:|---:|---:|---:|
+| 256 | 1.6 (0.021) | — | — | 1.22× |
+| 512 | 8.9 (0.030) | — | — | **1.51×** |
+| 1024 | 36.5 (0.059) | — | — | 1.31× |
+| 2048 | 73.2 (0.235) | — | — | 1.38× |
+| 4096 | 86.8 (1.584) | — | — | 0.88× |
+| 8192 | 87.3 (12.593) | — | — | 0.81× |
+| 16384 | 87.9 (100.110) | — | — | 0.79× |
+| 32768 | 83.5 (842.394) | — | — | 0.74× |
+
+#### Ch 7 — Can one instruction do more math?
+tcgen05 (Blackwell; wgmma needs sm_90a)
+
+| N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 6 |
+|---:|---:|---:|---:|---:|
+| 256 | 1.3 (0.025) | — | — | 0.82× |
+| 512 | 8.6 (0.031) | — | — | 0.96× |
+| 1024 | 59.8 (0.036) | — | — | **1.64×** |
+| 2048 | 345.2 (0.050) | — | — | **4.72×** |
+| 4096 | 589.2 (0.233) | — | — | **6.79×** |
+| 8192 | 773.5 (1.421) | — | — | **8.86×** |
+| 16384 | 780.7 (11.268) | — | — | **8.88×** |
+| 32768 | 629.8 (111.725) | — | — | **7.54×** |
+
+</details>
+
 ### NVIDIA H100 80GB HBM3 · tf32 · `fast`
 
 **Rollup — Crisp TFLOPS, every chapter × every N.**
@@ -167,7 +299,7 @@ GRF-bounded tile sweep
 | 4 | TMA descriptor (CUtensorMap) | 1.6 | 7.0 | 27.8 | 75.1 | 79.5 | 80.2 | 69.5 | 57.4 | 56.3 | — |
 | 5 | SMEM ring | 1.8 | 8.1 | 31.4 | 73.4 | 77.0 | 79.6 | 82.6 | 57.0 | 50.5 | — |
 | 6 | warp specialization | 3.6 | 17.9 | 64.8 | 85.0 | 88.5 | 88.2 | 54.3 | 52.0 | 48.6 | — |
-| 7 | wgmma | 3.2 | 19.4 | 102.8 | 259.6 | 310.0 | 259.4 | 224.5 | 255.2 | 261.3 | — |
+| 7 | wgmma (Hopper; tcgen05 needs sm_100a) | 3.2 | 19.4 | 102.8 | 259.6 | 310.0 | 259.4 | 224.5 | 255.2 | 261.3 | — |
 
 <details><summary><b>Per-chapter detail</b></summary>
 
@@ -284,7 +416,7 @@ warp specialization
 | 77824 | — | — | — | — |
 
 #### Ch 7 — Can one instruction do more math?
-wgmma
+wgmma (Hopper; tcgen05 needs sm_100a)
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 6 |
 |---:|---:|---:|---:|---:|
@@ -314,7 +446,7 @@ wgmma
 | 4 | TMA descriptor (CUtensorMap) | 1.3 | 6.2 | 25.5 | 40.0 | 62.2 | 70.1 | 65.7 | 64.0 | 63.1 | — |
 | 5 | SMEM ring | 1.4 | 6.8 | 25.2 | 42.4 | 66.3 | 70.0 | 69.8 | 69.9 | 64.6 | — |
 | 6 | warp specialization | 2.2 | 12.8 | 40.6 | 62.1 | 70.0 | 74.7 | 61.7 | 61.3 | 58.5 | — |
-| 7 | wgmma | 2.1 | 13.5 | 72.9 | 241.8 | 310.4 | 293.8 | 253.0 | 256.2 | 293.4 | — |
+| 7 | wgmma (Hopper; tcgen05 needs sm_100a) | 2.1 | 13.5 | 72.9 | 241.8 | 310.4 | 293.8 | 253.0 | 256.2 | 293.4 | — |
 
 <details><summary><b>Per-chapter detail</b></summary>
 
@@ -431,7 +563,7 @@ warp specialization
 | 102400 | — | — | — | — |
 
 #### Ch 7 — Can one instruction do more math?
-wgmma
+wgmma (Hopper; tcgen05 needs sm_100a)
 
 | N | Crisp TFLOPS (ms) | Control TFLOPS (ms) | vs Control | vs ch 6 |
 |---:|---:|---:|---:|---:|
@@ -553,6 +685,111 @@ register ring + prefetch
 
 </details>
 
+### NVIDIA B200 · bf16 · `fast`
+
+**Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
+
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | naive loops, no tensor cores | — | — | — | — | — | — | — | — |
+| 1 | hand-rolled mma-accumulate-via-tile | 0.2 | 0.7 | 2.6 | 9.1 | 8.5 | 9.6 | 9.4 | 9.3 |
+| 2 | matrix-multiply-tile-stride | 0.2 | 0.7 | 2.6 | 9.1 | 8.5 | 9.6 | 9.4 | 9.3 |
+| 3 | cp.async | — | — | — | — | — | — | — | — |
+| 4 | TMA descriptor (CUtensorMap) | 1.4 | 7.7 | 36.6 | 72.8 | 102.2 | 127.4 | 130.5 | 130.7 |
+| 5 | SMEM ring | 1.6 | 9.0 | 40.1 | 70.2 | 125.6 | 137.8 | 142.9 | 144.5 |
+| 6 | warp specialization | 2.1 | 12.5 | 51.2 | 101.7 | 125.5 | 128.3 | 126.9 | 127.1 |
+| 7 | tcgen05 (Blackwell; wgmma needs sm_90a) | 1.4 | 10.5 | 74.3 | 439.8 | 927.0 | 1317.7 | 1471.2 | 1201.9 |
+
+**Fastest rung per size** — N=256: **ch 6** (2.1) · N=512: **ch 6** (12.5) · N=1024: **ch 7** (74.3) · N=2048: **ch 7** (439.8) · N=4096: **ch 7** (927.0) · N=8192: **ch 7** (1317.7) · N=16384: **ch 7** (1471.2) · N=32768: **ch 7** (1201.9)
+
+<details><summary><b>Per-chapter detail (16-bit)</b></summary>
+
+#### Ch 1 — Can we reach the tensor cores?
+hand-rolled mma-accumulate-via-tile
+
+| N | Crisp bf16 TFLOPS |
+|---:|---:|
+| 256 | 0.2 |
+| 512 | 0.7 |
+| 1024 | 2.6 |
+| 2048 | 9.1 |
+| 4096 | 8.5 |
+| 8192 | 9.6 |
+| 16384 | 9.4 |
+| 32768 | 9.3 |
+
+#### Ch 2 — What does tiling buy?
+matrix-multiply-tile-stride
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 0.2 | 1.00× |
+| 512 | 0.7 | 1.00× |
+| 1024 | 2.6 | 1.00× |
+| 2048 | 9.1 | 1.00× |
+| 4096 | 8.5 | 1.00× |
+| 8192 | 9.6 | 1.00× |
+| 16384 | 9.4 | 1.00× |
+| 32768 | 9.3 | 1.00× |
+
+#### Ch 4 — Can the fetch itself be cheap?
+TMA descriptor (CUtensorMap)
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 1.4 | **8.96×** |
+| 512 | 7.7 | **11.77×** |
+| 1024 | 36.6 | **14.02×** |
+| 2048 | 72.8 | **7.95×** |
+| 4096 | 102.2 | **12.01×** |
+| 8192 | 127.4 | **13.22×** |
+| 16384 | 130.5 | **13.84×** |
+| 32768 | 130.7 | **14.02×** |
+
+#### Ch 5 — Can several fetches be in flight?
+SMEM ring
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 1.6 | 1.14× |
+| 512 | 9.0 | 1.17× |
+| 1024 | 40.1 | 1.09× |
+| 2048 | 70.2 | 0.97× |
+| 4096 | 125.6 | 1.23× |
+| 8192 | 137.8 | 1.08× |
+| 16384 | 142.9 | 1.10× |
+| 32768 | 144.5 | 1.10× |
+
+#### Ch 6 — Can the math stop waiting on bookkeeping?
+warp specialization
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 2.1 | 1.28× |
+| 512 | 12.5 | 1.39× |
+| 1024 | 51.2 | 1.28× |
+| 2048 | 101.7 | 1.45× |
+| 4096 | 125.5 | 1.00× |
+| 8192 | 128.3 | 0.93× |
+| 16384 | 126.9 | 0.89× |
+| 32768 | 127.1 | 0.88× |
+
+#### Ch 7 — Can one instruction do more math?
+tcgen05 (Blackwell; wgmma needs sm_90a)
+
+| N | Crisp bf16 TFLOPS | vs previous chapter |
+|---:|---:|---:|
+| 256 | 1.4 | 0.67× |
+| 512 | 10.5 | 0.83× |
+| 1024 | 74.3 | 1.45× |
+| 2048 | 439.8 | **4.33×** |
+| 4096 | 927.0 | **7.38×** |
+| 8192 | 1317.7 | **10.27×** |
+| 16384 | 1471.2 | **11.59×** |
+| 32768 | 1201.9 | **9.46×** |
+
+</details>
+
 ### NVIDIA H100 80GB HBM3 · bf16 · `fast`
 
 **Rollup — Crisp TFLOPS, every 16-bit chapter × every N.**
@@ -566,7 +803,7 @@ register ring + prefetch
 | 4 | TMA descriptor (CUtensorMap) | 1.7 | 9.0 | 34.6 | 64.2 | 103.3 | 109.8 | 110.0 | 109.5 | — |
 | 5 | SMEM ring | 1.7 | 9.2 | 32.1 | 46.8 | 73.1 | 82.9 | 86.9 | 87.5 | — |
 | 6 | warp specialization | 2.1 | 11.9 | 32.2 | 58.2 | 74.6 | 79.4 | 83.3 | 83.8 | — |
-| 7 | wgmma | 2.2 | 16.1 | 98.3 | 334.8 | 484.2 | 569.3 | 449.7 | 435.4 | — |
+| 7 | wgmma (Hopper; tcgen05 needs sm_100a) | 2.2 | 16.1 | 98.3 | 334.8 | 484.2 | 569.3 | 449.7 | 435.4 | — |
 
 **Fastest rung per size** — N=256: **ch 7** (2.2) · N=512: **ch 7** (16.1) · N=1024: **ch 7** (98.3) · N=2048: **ch 7** (334.8) · N=4096: **ch 7** (484.2) · N=8192: **ch 7** (569.3) · N=16384: **ch 7** (449.7) · N=32768: **ch 7** (435.4)
 
@@ -648,7 +885,7 @@ warp specialization
 | 77824 | — | — |
 
 #### Ch 7 — Can one instruction do more math?
-wgmma
+wgmma (Hopper; tcgen05 needs sm_100a)
 
 | N | Crisp bf16 TFLOPS | vs previous chapter |
 |---:|---:|---:|
@@ -677,7 +914,7 @@ wgmma
 | 4 | TMA descriptor (CUtensorMap) | 1.7 | 8.9 | 34.4 | 66.1 | 101.7 | 110.3 | 112.8 | 114.0 | 112.6 |
 | 5 | SMEM ring | 1.7 | 9.3 | 32.2 | 47.2 | 73.2 | 82.3 | 84.2 | 84.6 | 84.9 |
 | 6 | warp specialization | 2.1 | 12.1 | 32.4 | 58.4 | 74.7 | 78.8 | 80.6 | 81.2 | 81.5 |
-| 7 | wgmma | 2.3 | 15.6 | 99.5 | 362.0 | 503.8 | 583.2 | 514.3 | 487.7 | 513.6 |
+| 7 | wgmma (Hopper; tcgen05 needs sm_100a) | 2.3 | 15.6 | 99.5 | 362.0 | 503.8 | 583.2 | 514.3 | 487.7 | 513.6 |
 
 **Fastest rung per size** — N=256: **ch 7** (2.3) · N=512: **ch 7** (15.6) · N=1024: **ch 7** (99.5) · N=2048: **ch 7** (362.0) · N=4096: **ch 7** (503.8) · N=8192: **ch 7** (583.2) · N=16384: **ch 7** (514.3) · N=32768: **ch 7** (487.7) · N=102400: **ch 7** (513.6)
 
@@ -759,7 +996,7 @@ warp specialization
 | 102400 | 81.5 | 0.96× |
 
 #### Ch 7 — Can one instruction do more math?
-wgmma
+wgmma (Hopper; tcgen05 needs sm_100a)
 
 | N | Crisp bf16 TFLOPS | vs previous chapter |
 |---:|---:|---:|
@@ -790,6 +1027,19 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 | Ch 4 register-resident | 4.7 (1.59×) | 20.6 (1.72×) | 48.1 (**2.00×**) | 38.2 (**2.30×**) | 26.7 (**1.99×**) | 26.3 (**2.23×**) | 26.9 (**2.04×**) |
 | Ch 5 ring + prefetch | 5.3 (1.54×) | 15.7 (1.56×) | 39.6 (1.78×) | 49.7 (1.77×) | 31.4 (**1.82×**) | 22.1 (1.74×) | 15.0 (**2.27×**) |
 
+## § 1b — The Technique Ladder in 16-bit · NVIDIA B200
+
+*The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with two things changed: the operand element type, and the K step 8 → 16 (the native tensor-core shape for 16-bit operands is (8 16 16), not (8 16 8)). The C accumulator stays f32 in both.*
+
+Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline is **tf32 on the tensor cores**, not fp32 on the vector units. No Control/Peer/Ceiling columns: the chapter controls are tf32 only, so this is a Crisp-vs-Crisp ladder. § 1.5 above carries the full 16-bit ladder for this GPU; this table adds only the tf32 ratio.
+
+| chapter | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Ch 1 hand-rolled MMA | 0.2 (1.64×) | 0.7 (1.67×) | 2.6 (1.67×) | 9.1 (1.55×) | 8.5 (1.47×) | 9.6 (1.47×) | 9.4 (1.48×) | 9.3 (1.51×) |
+| Ch 2 tiling macro | 0.2 (1.66×) | 0.7 (1.67×) | 2.6 (1.67×) | 9.1 (1.55×) | 8.5 (1.48×) | 9.6 (1.46×) | 9.4 (1.48×) | 9.3 (1.51×) |
+| Ch 4 register-resident | 1.4 (1.25×) | 7.7 (1.35×) | 36.6 (1.48×) | 72.8 (1.43×) | 102.2 (1.75×) | 127.4 (1.75×) | 130.5 (1.76×) | 130.7 (1.75×) |
+| Ch 5 ring + prefetch | 1.6 (1.24×) | 9.0 (1.52×) | 40.1 (1.44×) | 70.2 (1.33×) | 125.6 (1.27×) | 137.8 (1.29×) | 142.9 (1.29×) | 144.5 (1.28×) |
+
 ## § 1b — The Technique Ladder in 16-bit · NVIDIA H100 80GB HBM3
 
 *The same chapters as section 1, in bfloat16. Each kernel is its tf32 twin with two things changed: the operand element type, and the K step 8 → 16 (the native tensor-core shape for 16-bit operands is (8 16 16), not (8 16 8)). The C accumulator stays f32 in both.*
@@ -815,6 +1065,26 @@ Cells read **bf16 TFLOPS (× vs the same chapter in tf32)**. The 32-bit baseline
 | Ch 2 tiling macro | 0.2 (1.64×) | 0.7 (1.71×) | 2.6 (1.75×) | 8.3 (1.53×) | 8.1 (1.50×) | 8.0 (1.48×) | 8.0 (1.49×) | 7.9 (1.53×) | — |
 | Ch 4 register-resident | 1.7 (1.35×) | 8.9 (1.45×) | 34.4 (1.35×) | 66.1 (1.65×) | 101.7 (1.63×) | 110.3 (1.57×) | 112.8 (1.72×) | 114.0 (1.78×) | 112.6 (tf32 n/a) |
 | Ch 5 ring + prefetch | 1.7 (1.28×) | 9.3 (1.37×) | 32.2 (1.28×) | 47.2 (1.11×) | 73.2 (1.10×) | 82.3 (1.18×) | 84.2 (1.21×) | 84.6 (1.21×) | 84.9 (tf32 n/a) |
+
+## § 1c — The Technique Ladder in 64-bit · NVIDIA B200
+
+*The same chapters at IEEE double. Cells read **fp64 TFLOPS**, and the rightmost column is each rung's ratio to the Chapter 0 vector-fp64 floor.*
+
+**Chapter 7 is absent by hardware, not unmeasured.** wgmma covers fp16/bf16/tf32/fp8/int8; there is no fp64 warpgroup MMA in any form, so Chapter 6 is the top of this ladder.
+
+**These rows are not comparable cell-for-cell with the tf32 ladder.** An fp64 accumulator fragment is 8×8 holding 2 doubles per lane = 4 registers, so the tf32 chapters' 64×64 tile would need 256 registers/thread — one over the architectural 255. Every 64-bit rung therefore runs at 64×32. fp64 costs 2× the registers at equal tile size, which is part of the 64-bit result rather than a tuning choice.
+
+*Expectation under test (from § 2): the fp64 tensor core measured only 1.20–1.53× over vector fp64, while cuBLAS sits ~1.9× above the best CUTLASS DMMA config — both DMMA, so that larger gap is scheduling. If that holds, the distance on this ladder should be in chapters 2–6, not chapter 1.*
+
+| chapter | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 | vs Ch 0 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Ch 0 naive (no tensor cores) | 0.4 | 0.5 | 0.5 | 0.5 | 0.5 | 0.5 | 0.5 | — | 1.00× |
+| Ch 1 hand-rolled MMA | 0.2 | 0.7 | 2.9 | 4.4 | 5.0 | 5.0 | 5.0 | 4.9 | 6.13× |
+| Ch 2 tiling macro | 0.2 | 0.7 | 2.9 | 4.4 | 5.0 | 5.0 | 5.0 | 4.9 | 6.12× |
+| Ch 3 async staging (cp.async) | 0.3 | 1.2 | 5.0 | 8.8 | 17.2 | 18.3 | 18.6 | 18.9 | 18.18× |
+| Ch 4 TMA (:block) | 0.6 | 2.5 | 10.5 | 15.3 | 26.9 | 28.5 | 30.6 | 31.7 | 30.18× |
+| Ch 5 ring + prefetch | 0.6 | 2.7 | 11.1 | 16.4 | 28.9 | 32.0 | 33.6 | 34.3 | 32.90× |
+| Ch 6 warp specialization | 1.5 | 7.9 | 24.1 | 27.6 | 32.0 | 32.7 | 32.9 | 33.0 | 41.87× |
 
 ## § 1c — The Technique Ladder in 64-bit · NVIDIA H100 80GB HBM3
 
@@ -970,7 +1240,7 @@ Crisp is **outside-in**: the user picks the configuration, exactly as SYCL-TLA's
 
 ### Intel(R) Graphics [0xe20b] · int8 · `fast` *(s8 · s8 → s32 integer tensor cores · cells are TOPS)*
 
-*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (oneMKL); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*
+*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (oneMKL); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, tcgen05 `kind::i8` on a B200, and `mma.sync` m16n8k32 on A100 / Ada.*
 
 Crisp is **outside-in**: the user picks the configuration, exactly as a template library's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 4 variants measured.
 
@@ -999,7 +1269,7 @@ Crisp is **outside-in**: the user picks the configuration, exactly as a template
 
 ### NVIDIA A100-SXM4-80GB · int8 · `fast` *(s8 · s8 → s32 integer tensor cores · cells are TOPS)*
 
-*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (cuBLASLt); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*
+*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (cuBLASLt); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, tcgen05 `kind::i8` on a B200, and `mma.sync` m16n8k32 on A100 / Ada.*
 
 Crisp is **outside-in**: the user picks the configuration, exactly as a template library's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`base`) — what you get without per-size tuning. 2 variants measured.
 
@@ -1026,6 +1296,254 @@ Crisp is **outside-in**: the user picks the configuration, exactly as a template
 |---|---|---:|---:|---:|
 | **Crisp** | Crisp | 1.12 s | 1.12 s | 1.00× |
 | **cuBLASLt_INT8** | Ceiling | *precompiled* | 2.76 s | — |
+
+</details>
+
+### NVIDIA B200 · tf32 · `fast`
+
+| N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.6 (0.021) `chap6_warp_specialization` | — | 3.1 (0.011) | 5.4 (0.006) | 0.52× | 30% |
+| 512 | 9.9 (0.027) `sec2_top` | 4.5 (0.060) | 21.4 (0.013) | 25.5 (0.011) | 0.46× | 39% |
+| 1024 | 64.0 (0.034) `sec2_top` | 5.3 (0.408) | 146.2 (0.015) | 199.2 (0.011) | 0.44× | 32% |
+| 2048 | 345.2 (0.050) `chap7_tcgen05` | — | 581.0 (0.030) | 683.4 (0.025) | 0.59× | 51% |
+| 4096 | 589.5 (0.233) `sec2_top` | 5.5 (25.061) | 814.4 (0.169) | 871.0 (0.158) | 0.72× | 68% |
+| 8192 | 773.5 (1.421) `chap7_tcgen05` | — | 966.6 (1.138) | 1036.5 (1.061) | 0.80× | 75% |
+| 16384 | 780.7 (11.268) `chap7_tcgen05` | — | 719.9 (12.218) | 994.3 (8.847) | 1.08× | 79% |
+| 32768 | 629.8 (111.725) `chap7_tcgen05` | — | 669.3 (105.140) | 899.8 (78.203) | 0.94× | 70% |
+
+<details><summary><b>Compilation & Build Overhead</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 809 ms | 809 ms | 1.00× |
+| **CUTLASS** | Peer | 25.79 s | 66.61 s | **31.9× slower** |
+| **cuBLAS** | Ceiling | *precompiled* | 4.62 s | — |
+
+</details>
+
+### NVIDIA B200 · bf16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
+
+| N | Crisp BF16 | Control<br>CUDA_Apples_BF16 | **Peer**<br>CUTLASS_BF16 | Ceiling<br>cuBLAS_BF16 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.4 (0.024) | 1.9 (0.018) | 3.2 (0.011) `sm100_256x128c2` | 2.5 (0.013) | 0.44× | 55% |
+| 512 | 8.4 (0.032) | 4.0 (0.067) | 24.8 (0.011) `sm100_256x128c2` | 21.0 (0.013) | 0.34× | 40% |
+| 1024 | 76.9 (0.028) | 4.8 (0.450) | 172.1 (0.012) `sm100_256x128c2` | 141.9 (0.015) | 0.45× | 54% |
+| 2048 | 431.0 (0.040) | 5.0 (3.450) | 827.2 (0.021) `sm100_256x128c2` | 685.7 (0.025) | 0.52× | 63% |
+| 4096 | 925.6 (0.148) | 5.0 (27.337) | 1636.2 (0.084) `sm100_256x128c2` | 1414.2 (0.097) | 0.57× | 65% |
+| 8192 | 1303.5 (0.844) | 5.0 (218.931) | 1787.1 (0.615) `sm100_256x256c2` | 1989.2 (0.553) | 0.73× | 66% |
+| 16384 | 1474.3 (5.966) | 5.0 (1750.354) | 1553.0 (5.664) `sm100_256x256c2` | 2119.3 (4.151) | 0.95× | 70% |
+| 32768 | 1203.1 (58.492) | 5.0 (13999.479) | 1326.4 (53.053) `sm100_256x256c2` | 1816.1 (38.748) | 0.91× | 66% |
+
+<details><summary><b>Compilation & Build Overhead (BF16)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 854 ms | 855 ms | 1.00× |
+| **CUDA_Apples_BF16** | Control | 1.81 s | 9.26 s | **2.1× slower** |
+| **CUTLASS_BF16** | Peer | 26.07 s | 50.81 s | **30.5× slower** |
+| **cuBLAS_BF16** | Ceiling | *precompiled* | 4.92 s | — |
+
+</details>
+
+### NVIDIA B200 · fp16 · `fast` *(Native 270+ TFLOPS Matrix Engines)*
+
+| N | Crisp FP16 | Control<br>CUDA_Apples_FP16 | **Peer**<br>CUTLASS_FP16 | Ceiling<br>cuBLAS_FP16 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.4 (0.024) | 2.0 (0.017) | 3.2 (0.011) `sm100_256x128c2` | 2.4 (0.014) | 0.44× | 58% |
+| 512 | 10.4 (0.026) | 4.7 (0.057) | 24.8 (0.011) `sm100_128x128` | 19.0 (0.014) | 0.42× | 55% |
+| 1024 | 72.1 (0.030) | 5.8 (0.371) | 171.2 (0.013) `sm100_256x128c2` | 131.8 (0.016) | 0.42× | 55% |
+| 2048 | 436.8 (0.039) | 6.1 (2.810) | 819.7 (0.021) `sm100_256x128c2` | 661.2 (0.026) | 0.53× | 66% |
+| 4096 | 926.7 (0.148) | 6.2 (22.228) | 1631.8 (0.084) `sm100_256x128c2` | 1399.5 (0.098) | 0.57× | 66% |
+| 8192 | 1311.5 (0.838) | 6.1 (178.970) | 1816.6 (0.605) `sm100_256x256c2` | 1984.9 (0.554) | 0.72× | 66% |
+| 16384 | 1498.5 (5.870) | 6.1 (1431.753) | 1568.9 (5.607) `sm100_256x256c2` | 2114.5 (4.160) | 0.96× | 71% |
+| 32768 | 1231.2 (57.156) | 6.1 (11451.867) | 1345.3 (52.306) `sm100_256x256c2` | 1901.4 (37.010) | 0.92× | 65% |
+
+<details><summary><b>Compilation & Build Overhead (FP16)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 855 ms | 856 ms | 1.00× |
+| **CUDA_Apples_FP16** | Control | 1.89 s | 7.54 s | **2.2× slower** |
+| **CUTLASS_FP16** | Peer | 26.31 s | 61.68 s | **30.8× slower** |
+| **cuBLAS_FP16** | Ceiling | *precompiled* | 5.23 s | — |
+
+</details>
+
+### NVIDIA B200 · f64 · `ieee` *(IEEE double · DMMA tensor cores)*
+
+*IEEE double. Cells read **TFLOPS (kernel ms)**, and Crisp's envelope names the variant that produced each cell. Chapter 7 has no fp64 form: wgmma covers fp16/bf16/tf32/fp8/int8 and there is no fp64 warpgroup MMA in any form.*
+
+**`64F_PEDANTIC` is reported but is NOT a disable-tensor-cores switch.** That reading is imported from fp32, where PEDANTIC forbids tf32; it does not transfer, because DMMA is bit-identical IEEE double and PEDANTIC has no numerical reason to refuse it. The DMMA-vs-vector question is answered by the CUTLASS `OpClassTensorOp` / `OpClassSimt` pair in the reference table below, where the lowering is chosen rather than inferred.
+
+Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's pipeline depth is a template argument. So two Crisp columns, and the gap between them is *what tuning is worth*. **Envelope** is the best variant at each size, naming which one. **Best single** is the one fixed choice that does best across all sizes (`warpspec`) — what you get without per-size tuning. 2 variants measured.
+
+| N | Crisp F64<br>**envelope** | Crisp F64<br>best single (`warpspec`) | Control<br>CUDA_Apples_F64 | **Peer**<br>CUTLASS_F64 | Ceiling<br>cuBLAS_F64 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.4 (0.024) `warpspec` | 1.4 | — | 1.9 (0.018) `64x64x16w32x32s4` | 2.2 (0.015) | 0.74× | 62% |
+| 512 | 7.5 (0.036) `warpspec` | 7.5 | — | 10.0 (0.027) `64x64x16w32x32s4` | 12.4 (0.022) | 0.76× | 60% |
+| 1024 | 23.6 (0.091) `warpspec` | 23.6 | — | 27.5 (0.078) `64x64x16w32x32s4` | 27.4 (0.078) | 0.86× | 86% |
+| 2048 | 27.4 (0.627) `warpspec` | 27.4 | — | 35.1 (0.490) `64x64x16w32x32s4` | 34.2 (0.503) | 0.78× | 80% |
+| 4096 | 32.0 (4.297) `warpspec` | 32.0 | — | 36.0 (3.812) `128x128x16w32x64s3` | 35.0 (3.924) | 0.89× | 91% |
+| 8192 | 32.7 (33.632) `warpspec` | 32.7 | — | 36.5 (30.141) `64x64x16w32x32s4` | 35.8 (30.751) | 0.90× | 91% |
+| 16384 | 33.6 (262.084) `base` | 32.9 | — | 36.7 (239.475) `128x128x16w32x64s3` | 36.1 (243.460) | 0.91× | 93% |
+| 32768 | 34.3 (2054.250) `base` | 33.0 | — | 36.8 (1910.665) `128x128x16w32x64s3` | 36.1 (1948.418) | 0.93× | 95% |
+
+**Reference builds (F64).** Not contenders: each isolates a lowering or a compute type, and is excluded from the columns above so those stay one build per class.
+
+| reference | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cuBLAS `64F_PEDANTIC` (compute type, still DMMA) | 2.2 | 12.4 | 27.3 | 33.6 | 34.7 | 35.8 | 36.1 | 36.1 |
+| CUTLASS SIMT (vector fp64, no tensor cores) | 0.7 | 3.0 | 12.6 | 25.4 | 29.3 | 28.8 | 28.1 | 28.1 |
+
+
+> **⚠ SIGN FLIPS — these variants reverse with problem size.**
+> Each wins somewhere and loses somewhere, both beyond the measured run-to-run
+> spread, so a single fixed choice is not available and the envelope above is
+> assembled from *different kernels*. Picking by one size will mislead you at another.
+
+> | variant | wins at | loses at |
+> |---|---|---|
+> | `warpspec` | 256 (+141%), 512 (+189%), 1024 (+114%), 2048 (+67%), 4096 (+12%), 8192 (+2%) | **32768 (-4%)** |
+
+
+<details><summary><b>Compilation & Build Overhead (F64)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 930 ms | 930 ms | 1.00× |
+| **CUTLASS_F64** | Peer | 3.04 s | 12.38 s | **3.3× slower** |
+| **cuBLAS_F64** | Ceiling | *precompiled* | 5.69 s | — |
+
+</details>
+
+### NVIDIA B200 · int8 · `fast` *(s8 · s8 → s32 integer tensor cores · cells are TOPS)*
+
+*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The Peer is CUTLASS's SM100 builder (endeavour 209: the B200 is the only device with an int8 peer); there is no hand-written Control at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, tcgen05 `kind::i8` on a B200, and `mma.sync` m16n8k32 on A100 / Ada.*
+
+| N | Crisp INT8 | Control<br>CUDA_Apples_INT8 | **Peer**<br>CUTLASS_INT8 | Ceiling<br>cuBLASLt_INT8 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.6 (0.021) | — | 3.0 (0.011) `sm100_128x128` | 1.7 (0.020) | 0.53× | 97% |
+| 512 | 12.2 (0.022) | — | 23.8 (0.011) `sm100_128x128` | 12.9 (0.021) | 0.51× | 94% |
+| 1024 | 91.1 (0.024) | — | 167.8 (0.013) `sm100_128x128` | 100.6 (0.021) | 0.54× | 91% |
+| 2048 | 568.8 (0.030) | — | 1013.0 (0.017) `sm100_128x128` | 686.5 (0.025) | 0.56× | 83% |
+| 4096 | 1418.6 (0.097) | — | 2610.9 (0.053) `sm100_256x128c2` | 2312.9 (0.059) | 0.54× | 61% |
+| 8192 | 2104.1 (0.523) | — | 3452.5 (0.318) `sm100_256x256c2` | 3670.5 (0.300) | 0.61× | 57% |
+| 16384 | 2628.6 (3.346) | — | 3081.3 (2.855) `sm100_256x256c2` | 3256.2 (2.701) | 0.85× | 81% |
+| 32768 | 2597.4 (27.092) | — | 2861.4 (24.593) `sm100_256x256c2` | 3091.5 (22.762) | 0.91× | 84% |
+
+**Reference builds (INT8).** Not contenders: each isolates a lowering or a compute type, and is excluded from the columns above so those stay one build per class.
+
+| reference | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Crisp `mma.sync` m16n8k32 (the A100 / Ada instruction, run on Hopper) | 1.2 | 6.7 | 30.9 | 73.2 | 102.2 | 109.9 | 113.4 | 114.0 |
+
+
+<details><summary><b>Compilation & Build Overhead (INT8)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 784 ms | 785 ms | 1.00× |
+| **CUTLASS_INT8** | Peer | 25.48 s | 67.21 s | **32.5× slower** |
+| **cuBLASLt_INT8** | Ceiling | *precompiled* | 5.50 s | — |
+
+</details>
+
+### NVIDIA B200 · int8→s8 · `fast` *(requantized s8 output · cells are TOPS)*
+
+*The int8 GEMM above with its s32 accumulator narrowed to s8 on the way out: `(store-tile-at (to-q-a D m) C ..)`, m = 0.003, fp32 multiply, nearest-even, saturate. The Ceiling is cuBLASLt with an s8 C and alpha = m. Exact against that oracle (max_abs_err 0). Cells read **TOPS (kernel ms)**.*
+
+| N | Crisp INT8→S8 | **Ceiling**<br>cuBLASLt_INT8→S8 | vs Ceiling |
+|---:|---:|---:|---:|
+| 256 | 0.7 (0.048) | 3.1 (0.011) | 23% |
+| 512 | 5.6 (0.048) | 22.7 (0.012) | 24% |
+| 1024 | 42.9 (0.050) | 127.8 (0.017) | 34% |
+| 2048 | 276.6 (0.062) | 698.1 (0.025) | 40% |
+| 4096 | 711.5 (0.193) | 2529.4 (0.054) | 28% |
+| 8192 | 1236.0 (0.890) | 4120.4 (0.267) | 30% |
+| 16384 | 1886.2 (4.663) | 3204.0 (2.745) | 59% |
+| 32768 | 2170.1 (32.427) | 4352.4 (16.168) | 50% |
+
+<details><summary><b>Compilation & Build Overhead (INT8→S8)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 626 ms | 627 ms | 1.00× |
+| **cuBLASLt_INT8→S8** | Ceiling | *precompiled* | 5.08 s | — |
+
+</details>
+
+### NVIDIA B200 · nvfp4 · `fast` *(fp4 e2m1 codes, a ue4m3 scale per 16 · fp32 C)*
+
+*Block-scaled MMA (tcgen05 `kind::mxf4nvf4` / `mxf4` / `mxf8f6f4`): codes plus a scale per block along K, in the `:blocked-128x4` layout every contender here shares. Verified against the block-scaled oracle: codes 0..4 / 0..2 and power-of-two scales that vary by row AND K-block, so a kernel that ignored or misplaced its scales fails. The Ceiling is cuBLASLt with block scales; the Peer is CUTLASS's SM100 block-scaled builder. Cells read **TFLOPS (kernel ms)**.*
+
+| N | Crisp NVFP4 | Control<br>CUDA_Apples_NVFP4 | **Peer**<br>CUTLASS_NVFP4 | Ceiling<br>cuBLASLt_NVFP4 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.5 (0.023) | — | 2.6 (0.013) `sm100_256x256c2` | 1.5 (0.022) | 0.57× | 97% |
+| 512 | 11.5 (0.023) | — | 20.1 (0.013) `sm100_256x256c2` | 12.8 (0.021) | 0.57× | 90% |
+| 1024 | 83.9 (0.026) | — | 150.1 (0.014) `sm100_256x256c2` | 107.9 (0.020) | 0.56× | 78% |
+| 2048 | 574.9 (0.030) | — | 1036.4 (0.017) `sm100_256x256c2` | 738.5 (0.023) | 0.55× | 78% |
+| 4096 | 1282.0 (0.107) | — | 2370.3 (0.058) `sm100_256x256c2` | 2180.2 (0.063) | 0.54× | 59% |
+| 8192 | 2276.0 (0.483) | — | 3456.0 (0.318) `sm100_256x256c2` | 5399.9 (0.204) | 0.66× | 42% |
+| 16384 | 2889.7 (3.044) | — | 3031.0 (2.902) `sm100_256x256c2` | 4412.2 (1.994) | 0.95× | 65% |
+| 32768 | 3290.1 (21.388) | — | 3058.2 (23.010) `sm100_256x256c2` | 4964.3 (14.175) | 1.08× | 66% |
+
+<details><summary><b>Compilation & Build Overhead (NVFP4)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 1.18 s | 1.19 s | 1.00× |
+| **CUTLASS_NVFP4** | Peer | 44.54 s | 109.72 s | **37.6× slower** |
+| **cuBLASLt_NVFP4** | Ceiling | *precompiled* | 6.03 s | — |
+
+</details>
+
+### NVIDIA B200 · mxfp4 · `fast` *(fp4 e2m1 codes, a ue8m0 scale per 32 · fp32 C)*
+
+*Block-scaled MMA (tcgen05 `kind::mxf4nvf4` / `mxf4` / `mxf8f6f4`): codes plus a scale per block along K, in the `:blocked-128x4` layout every contender here shares. Verified against the block-scaled oracle: codes 0..4 / 0..2 and power-of-two scales that vary by row AND K-block, so a kernel that ignored or misplaced its scales fails. The Ceiling is cuBLASLt with block scales; the Peer is CUTLASS's SM100 block-scaled builder. Cells read **TFLOPS (kernel ms)**.*
+
+| N | Crisp MXFP4 | Control<br>CUDA_Apples_MXFP4 | **Peer**<br>CUTLASS_MXFP4 | Ceiling<br>cuBLASLt_MXFP4 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.4 (0.024) | — | 3.1 (0.011) `sm100_256x256c2` | — | 0.46× | — |
+| 512 | 10.9 (0.025) | — | 24.1 (0.011) `sm100_256x256c2` | — | 0.45× | — |
+| 1024 | 80.9 (0.027) | — | 167.4 (0.013) `sm100_256x256c2` | — | 0.48× | — |
+| 2048 | 569.6 (0.030) | — | 1159.5 (0.015) `sm100_256x256c2` | — | 0.49× | — |
+| 4096 | 1421.1 (0.097) | — | 2474.1 (0.056) `sm100_256x256c2` | — | 0.57× | — |
+| 8192 | 2637.0 (0.417) | — | 3626.0 (0.303) `sm100_256x256c2` | — | 0.73× | — |
+| 16384 | 3491.2 (2.520) | — | 3106.9 (2.831) `sm100_256x256c2` | — | 1.12× | — |
+| 32768 | 4096.4 (17.178) | — | 3142.3 (22.394) `sm100_256x256c2` | — | 1.30× | — |
+
+<details><summary><b>Compilation & Build Overhead (MXFP4)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 1.01 s | 1.01 s | 1.00× |
+| **CUTLASS_MXFP4** | Peer | 26.47 s | 104.90 s | **26.3× slower** |
+
+</details>
+
+### NVIDIA B200 · mxfp8 · `fast` *(fp8 e4m3 codes, a ue8m0 scale per 32 · fp32 C)*
+
+*Block-scaled MMA (tcgen05 `kind::mxf4nvf4` / `mxf4` / `mxf8f6f4`): codes plus a scale per block along K, in the `:blocked-128x4` layout every contender here shares. Verified against the block-scaled oracle: codes 0..4 / 0..2 and power-of-two scales that vary by row AND K-block, so a kernel that ignored or misplaced its scales fails. The Ceiling is cuBLASLt with block scales; the Peer is CUTLASS's SM100 block-scaled builder. Cells read **TFLOPS (kernel ms)**.*
+
+| N | Crisp MXFP8 | Control<br>CUDA_Apples_MXFP8 | **Peer**<br>CUTLASS_MXFP8 | Ceiling<br>cuBLASLt_MXFP8 | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.5 (0.022) | — | 2.7 (0.013) `sm100_256x256c2` | 1.8 (0.019) | 0.57× | 85% |
+| 512 | 10.4 (0.026) | — | 20.4 (0.013) `sm100_256x256c2` | 12.5 (0.021) | 0.51× | 83% |
+| 1024 | 82.4 (0.026) | — | 148.1 (0.015) `sm100_256x256c2` | 104.9 (0.020) | 0.56× | 79% |
+| 2048 | 544.5 (0.032) | — | 933.7 (0.018) `sm100_256x256c2` | 640.7 (0.027) | 0.58× | 85% |
+| 4096 | 1147.8 (0.120) | — | 1456.9 (0.094) `sm100_256x256c2` | 2143.2 (0.064) | 0.79× | 54% |
+| 8192 | 1845.1 (0.596) | — | 1680.3 (0.654) `sm100_256x256c2` | 3095.2 (0.355) | 1.10× | 60% |
+| 16384 | 2292.2 (3.837) | — | 1648.3 (5.336) `sm100_256x256c2` | 2924.3 (3.008) | 1.39× | 78% |
+| 32768 | 2189.9 (32.134) | — | 1620.8 (43.415) `sm100_256x256c2` | 2985.7 (23.568) | 1.35× | 73% |
+
+<details><summary><b>Compilation & Build Overhead (MXFP8)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp** | Crisp | 885 ms | 886 ms | 1.00× |
+| **CUTLASS_MXFP8** | Peer | 33.66 s | 92.48 s | **38.0× slower** |
+| **cuBLASLt_MXFP8** | Ceiling | *precompiled* | 5.08 s | — |
 
 </details>
 
@@ -1177,7 +1695,7 @@ Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's 
 
 ### NVIDIA H100 80GB HBM3 · int8 · `fast` *(s8 · s8 → s32 integer tensor cores · cells are TOPS)*
 
-*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (cuBLASLt); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*
+*C (s32) = A (s8) · B (s8), exact: every point verified against the integer formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane (endeavour 207) is Crisp against the vendor library (cuBLASLt); there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, tcgen05 `kind::i8` on a B200, and `mma.sync` m16n8k32 on A100 / Ada.*
 
 | N | Crisp INT8 | **Ceiling**<br>cuBLASLt_INT8 | vs Ceiling |
 |---:|---:|---:|---:|
@@ -1372,6 +1890,15 @@ Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's 
 
 *Techniques whose honest answer is "it depends."* Controlled pairs:
 
+### TMA Multicast · NVIDIA B200
+
+*Same 64×128 cluster kernel with and without TMA multicast. Cells are TFLOPS; the last row is `(multicast / cluster − 1)`, so positive means multicast won.*
+
+| contender | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| cuBLAS (Ceiling) | 5.4 | 25.1 | 202.7 | 682.6 | 871.2 | 1036.5 | 999.2 | 898.8 |
+| multicast vs cluster | — | — | — | — | — | — | — | — |
+
 ### TMA Multicast · NVIDIA H100 80GB HBM3
 
 *Same 64×128 cluster kernel with and without TMA multicast. Cells are TFLOPS; the last row is `(multicast / cluster − 1)`, so positive means multicast won.*
@@ -1464,6 +1991,36 @@ Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowerin
 | **oneDNN + Custom** | Ceiling | *precompiled* | 6.11 s | — |
 
 </details>
+
+### NVIDIA B200 · tf32 · `fast`
+
+#### Ch 1 — Standard Epilogue (ReLU)
+
+| N | Crisp Fused | **Peer**<br>CUTLASS Fused | **Ceiling**<br>cuBLASLt Fused | Baseline+2nd Kernel<br>cuBLAS + ReLU | vs Peer | vs Ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 256 | — | — | 2.7 (0.013) | 1.7 (0.020) | — | — |
+| 512 | — | — | 15.9 (0.017) | 11.1 (0.024) | — | — |
+| 1024 | — | — | 113.2 (0.019) | 75.6 (0.028) | — | — |
+| 2048 | — | — | 461.2 (0.037) | 325.2 (0.053) | — | — |
+| 4096 | — | — | 817.3 (0.168) | 635.7 (0.216) | — | — |
+| 8192 | — | — | 1027.2 (1.070) | 874.0 (1.258) | — | — |
+| 16384 | — | — | 1004.7 (8.755) | 927.2 (9.487) | — | — |
+| 32768 | — | — | 909.5 (77.368) | 880.0 (79.965) | — | — |
+
+#### Ch 2 — Custom Epilogue (Arbitrary User Function)
+
+> *Ceilings (oneDNN / cuBLASLt) cannot fuse arbitrary user functions — forced to pay 2nd kernel + HBM round-trip.*
+
+| N | Crisp Fused | **Peer**<br>CUTLASS Fused | Ceiling (2nd Kernel)<br>cuBLASLt + Custom | vs Peer | **vs Ceiling (2nd Kernel)** |
+|---:|---:|---:|---:|---:|---:|
+| 256 | — | — | 2.5 (0.014) | — | — |
+| 512 | — | — | 8.6 (0.031) | — | — |
+| 1024 | — | — | 97.0 (0.022) | — | — |
+| 2048 | — | — | 370.0 (0.046) | — | — |
+| 4096 | — | — | 651.7 (0.211) | — | — |
+| 8192 | — | — | 874.5 (1.257) | — | — |
+| 16384 | — | — | 932.9 (9.428) | — | — |
+| 32768 | — | — | 882.8 (79.707) | — | — |
 
 ### NVIDIA H100 80GB HBM3 · tf32 · `fast`
 
