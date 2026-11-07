@@ -1925,7 +1925,10 @@ def main():
             # undeclared arm gets the fixture's default 32 x 64 grid).  F-209-4: chapter 6 f64 as
             # step 8 ran it, on BUG 157's flat walk and forced back to the per-axis walk.  The lane
             # (and so the precision pass) comes from each dir's name, as for every chapter.
-            for _ab in ("_f2091_ab", "_f2091_ab_bf16", "_f2091_ab_int8", "_f2094_f64_ab"):
+            # F-209-7: chapter 7 as-is (252 registers, one workgroup per SM) vs with
+            # (occupancy-target 320) (168 registers, two per SM).
+            for _ab in ("_f2091_ab", "_f2091_ab_bf16", "_f2091_ab_int8", "_f2094_f64_ab",
+                        "_f2097_occ", "_f2097_occ_bf16"):
                 for _tv in sorted((HERE / _ab).glob("*.crisp")):
                     run_target(_ab, _tv.name, _tv.stem + ".ptx", f"Crisp_V_{_tv.stem}",
                                [], is_crisp=True, use_fixture=True)

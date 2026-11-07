@@ -228,6 +228,14 @@ OPEN
       now gets the linearised walk (144's flat column-strip walk) for its rank-2 tile-stride; worth
       2.1-2.6x on the B200's persistent kernels.  Still open: the HOIST choosing a residency-capped
       grid on its own (today the author writes `:set-to`).
+- [ ] Codegen-changing ENVIRONMENT VARIABLES are hidden inputs (same kernel + same flags, different PTX
+      depending on the shell).  Benchmarking may keep them (it is outside normal hoisting); anything
+      genuinely useful to authors should become a flag, API, declaration, or def-hardware-profile key.
+      Candidates (2026-11-07, endeavour 209 review with Chris): CRISP_TILE_VISIT (endeavour 144 --
+      visit order / strip width; the profile already has :tile-visit-strip-width, a per-kernel
+      declaration may be the author-facing half), CRISP_CACHE_CONTROL / _KERNELS (cache-control
+      policy).  CRISP_USE_SYSTEM_TOOLS is toolchain plumbing, not codegen.  The benchmark fixture's
+      CRISP_MATMUL_* / CRISP_BENCH_* are the fixture's private contract and stay env.
 - [ ] `map-elements!` on a tcgen05 (tensor-memory) accumulator -- F-209-2, proposed as endeavour 210.
       Refused today ("unsupported target type TCGEN05-ACC-F32-128X256"); it works on MMA fragments
       and register tiles.  Without it §4 (fused ReLU / custom epilogue) has no B200 Crisp row, which

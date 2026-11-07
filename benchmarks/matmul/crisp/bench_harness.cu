@@ -252,9 +252,12 @@ int main(int argc, char **argv) {
         std::cerr << "WARNING: kernel uses " << local_bytes
                   << " bytes of local memory per thread (register spill or stack array)\n";
 
-    // Opt in to >48KB dynamic shared memory when the kernel asks for it; without this the launch
-    // fails rather than silently under-allocating.
-    if (shared_bytes > 48u * 1024u) {
+    // Opt in to the kernel's dynamic shared memory; without this the launch fails rather than
+    // silently under-allocating.  ALWAYS, not only above 48 KB (endeavour 209, F-209-6): the
+    // driver's default dynamic limit is 48 KB MINUS the kernel's STATIC shared memory, so a
+    // cluster kernel with two static mbarriers (32 B) and exactly 49152 B of rings was refused at
+    // launch ("invalid argument").  The hoisted harness has always set it unconditionally.
+    if (shared_bytes > 0) {
         CU_OK(cuFuncSetAttribute(kernel, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
                                  (int)shared_bytes), "cuFuncSetAttribute(dynamic smem)");
     }

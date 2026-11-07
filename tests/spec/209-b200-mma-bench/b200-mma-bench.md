@@ -209,6 +209,47 @@ and a two-month-older compiler, so the drop is confounded: apparatus, compiler d
 (sec2 bf16 declared 362 / undeclared 355).  The asymmetry (2wg_deep up under the same apparatus
 change) argues against the apparatus being the whole story.  Not yet attributed.
 
+**BUG 156 attribution, local (2026-11-07, put_temp_files_here/209/b156/).**  A second compiler: HEAD
+in a detached worktree with ONLY the pre-156 await (`generate-node-ir semantic-nvvm-tma-wait` from
+c73284f9, script-extracted, appended to the worktree's overlay; it reads only the first two
+elements of :phase, so HEAD's analyzer feeds it unchanged).  Same kernels, both compilers, sm_90a:
+- registers and spills IDENTICAL in every kernel (chap7 bf16 / tf32 252, 2wg_deep 168, ch6 164,
+  ch6 f64 154; 0 spill, 0 stack);
+- opcode delta per kernel is a handful of integer ops at the awaits (chap7 bf16: +2 xor, +2 and,
+  +2 shr, -2 bfe, +-2 add / mov / shl / cvt) -- nothing near the MMA work.
+So BUG 156 is an unlikely cause of F-209-7's 37%.  And it CANNOT be F-209-4's cause in the declared
+arm: one tile per workgroup visits the slots in order (0 1 0 1 ...), where the per-slot bit equals
+the old lap mod 2 at every visit -- the two awaits compute identical parities.  Lead withdrawn.
+F-209-4 now: chapter 6 f64 is its tf32 twin with ONLY the geometry changed (double, 64x16 / 16x32
+rings, 64x32 tile, Kt 16, mma (8 8 4)); the handshake is identical and tf32 / bf16 pass, and the
+non-specialized f64 chapters pass.  So the race is in the warp-specialized lowering of the f64
+`(8 8 4)` path (its consumers' smem reads vs the producer's TMA refill of the slot), not in the
+kernel's protocol.  Next test needs metal: compute-sanitizer (racecheck / synccheck) on the fixture
+at N=1024, and the failing elements' positions (tile edge? K-step?).
+
+**F-209-7 has a mechanism: OCCUPANCY.**  The 09-12 run was NOT a different harness -- same fixture
+style, same iteration schedule (2048: 20 / 100, 4096: 2 / 12, 8192: 2 / 5), compiler cc116e8c, kernel
+source unchanged but for D-209-9's line -- and 2048 matches (335 vs 328).  A third compiler built at
+cc116e8c (worktree, put_temp_files_here/209/b156/cmp2), same source and profile file:
+
+| chapter 7 bf16, sm_90a | registers | stack | workgroups / SM (160 threads, 65536 regs, 80 KB rings) |
+|---|---:|---:|---:|
+| cc116e8c (09-12) | 168 | 608 B | 2 |
+| HEAD | 252 | 0 | 1 |
+
+HEAD's epilogue keeps C in registers for packed `st.global.v2` stores (endeavours 196-199; the
+old compiler staged it through local memory), which raised the count past the 204 that two
+workgroups allow.  One per SM loses the epilogue / mainloop overlap -- the same effect as the B200's
+ring-2 tile grid (D-209-8) -- and explains why 2048 (too few tiles) does not move while 4096+ lose
+23-37%.  `(occupancy-target 320)` gets 168 registers back (+916 B spills, `.minnctapersm 2`).
+Whether 2 x spilled beats 1 x clean is the metal question: fenced `_f2097_occ{,_bf16}/` (chapter 7
+base vs occ320).
+
+**Apparatus added for 9b (benchmarking only):** the fixture always opts in to its dynamic shared
+memory (F-209-6); `CRISP_BENCH_VERIFY_DIAG=1` makes fill_verify.h check EVERY element, keep going,
+and print the mismatch count and the first 32 positions; put_temp_files_here/209/f2094_diag.py runs
+that x3 plus compute-sanitizer racecheck / synccheck on the F-209-4 arms on the pod.
+
 ## Findings
 
 **F-209-1 — kernels with no declared global-size are launched on a 32 x 64 tile grid.**  The fixture

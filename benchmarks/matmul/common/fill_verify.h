@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <vector>
@@ -128,6 +130,13 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
                                    uint64_t mf_vec = 0) {        // 209: >0 = block-scaled, scales per mf_vec
     VerifyResult r;
     if (M == 0 || N == 0) return r;
+    // DIAGNOSTIC MODE (endeavour 209, F-209-4; benchmarking only, never in a canonical run):
+    // CRISP_BENCH_VERIFY_DIAG=1 checks EVERY element instead of a 64 x 64 sample, does not stop at the
+    // first mismatch, and prints the mismatch count plus the first 32 positions to stderr -- where a
+    // wrong kernel is wrong (a tile edge, one fragment, one K-step) is the evidence a race leaves.
+    const bool diag = std::getenv("CRISP_BENCH_VERIFY_DIAG") != nullptr;
+    uint64_t diag_bad = 0;
+    if (diag) smax = std::max(M, N);
     const uint64_t si = std::max<uint64_t>(1, (M + smax - 1) / smax);
     const uint64_t sj = std::max<uint64_t>(1, (N + smax - 1) / smax);
 
@@ -151,24 +160,32 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
         const double rel  = err / std::max(1e-300, std::fabs(want));
         if (err > r.max_abs_err) r.max_abs_err = err;
         if (rel > r.max_rel_err) r.max_rel_err = rel;
-        if (err > rtol * std::max(1.0, std::fabs(want))) r.verified = false;
+        if (err > rtol * std::max(1.0, std::fabs(want))) {
+            r.verified = false;
+            if (diag && diag_bad++ < 32)
+                std::fprintf(stderr, "DIAG mismatch C[%llu][%llu] got %.17g want %.17g (err %.3g)\n",
+                             (unsigned long long)i, (unsigned long long)j, got, want, err);
+        }
     };
 
     std::vector<double> span;
     // Read along whichever axis is CONTIGUOUS in C's storage, so each read is one short span.
     if (c.s1 <= c.s0) {                       // row-major: a sampled ROW is contiguous
-        for (uint64_t i = 0; i < M && r.verified; i += si) {
+        for (uint64_t i = 0; i < M && (r.verified || diag); i += si) {
             const uint64_t first = i * c.s0;
             read_span(first, (N - 1) * c.s1 + 1, span);
-            for (uint64_t j = 0; j < N && r.verified; j += sj) check(i, j, span[j * c.s1]);
+            for (uint64_t j = 0; j < N && (r.verified || diag); j += sj) check(i, j, span[j * c.s1]);
         }
     } else {                                  // column-major: a sampled COLUMN is contiguous
-        for (uint64_t j = 0; j < N && r.verified; j += sj) {
+        for (uint64_t j = 0; j < N && (r.verified || diag); j += sj) {
             const uint64_t first = j * c.s1;
             read_span(first, (M - 1) * c.s0 + 1, span);
-            for (uint64_t i = 0; i < M && r.verified; i += si) check(i, j, span[i * c.s0]);
+            for (uint64_t i = 0; i < M && (r.verified || diag); i += si) check(i, j, span[i * c.s0]);
         }
     }
+    if (diag)
+        std::fprintf(stderr, "DIAG %llu of %llu checked elements wrong (max_abs_err %.3g)\n",
+                     (unsigned long long)diag_bad, (unsigned long long)r.checked, r.max_abs_err);
     return r;
 }
 
