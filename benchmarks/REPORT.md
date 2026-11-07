@@ -12,7 +12,7 @@
 | device | data captured | Crisp commit | environment | hardware profile |
 |---|---|---|---|---|
 | Intel(R) Graphics [0xe20b] | 2026-11-05 | `1432b489` | docker | `bmg` |
-| NVIDIA H100 80GB HBM3 | 2026-11-04 | `e20cf277` | runpod | `h100-80gb-hbm3` |
+| NVIDIA H100 80GB HBM3 | 2026-11-07 | `d8f3af62` | runpod | `h100-80gb-hbm3` |
 | NVIDIA H200 | 2026-09-13 | `66a7911d` | runpod | `h200` |
 | NVIDIA A100-SXM4-80GB | 2026-11-04 | `da445a6e` | runpod | `a100-sxm4-80gb` |
 | NVIDIA B200 | 2026-11-07 | `adcd44f9` | runpod | `b200` |

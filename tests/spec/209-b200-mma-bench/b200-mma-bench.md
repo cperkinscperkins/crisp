@@ -23,7 +23,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 6 | Local proof (below) | done |
 | 7 | B200 smoke + tuning rental (`_b200_tune` + every B200 lane, small/mid sizes, --scratch) | done (round 1 2026-11-06; round 2 after BUG 157 2026-11-07, D-209-8) |
 | 8 | B200 full sweep | done 2026-11-07 (87 min, ~$11.60, 83 result files; F-209-4, F-209-5) |
-| 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B; F-209-4 A/B; tf32 re-measured) | ready: put_temp_files_here/209/step9-on-pod.sh (D-209-9..12) |
+| 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B; F-209-4 A/B; tf32 re-measured) | done 2026-11-07 (47 min, ~$3.10): F-209-1 measured; F-209-4 narrowed; F-209-6, F-209-7 found |
 | 10 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerate after 8) |
 
 ## What was built (2026-11-06)
@@ -164,6 +164,50 @@ Readings:
 - N = 1024 is 40-90 TFLOPS for every variant: 64 tiles on 148 SMs; launch- and latency-bound.
 
 Promoted (D-209-8): `gen_b200.py`'s defaults; each lane kernel is now byte-identical to its winner.
+
+## Step 9 results — H100 re-run, 2026-11-07 (47 min, ~$3.10, pod confirmed gone)
+
+A/B pairs (scratch, put_temp_files_here/209/step9-ab-summary.txt) then the full sweep (75 result
+files).  TFLOPS (TOPS for int8):
+
+**F-209-1 measured -- the surplus grid costs up to 29%.**  Identical PTX per pair, grid only:
+
+| pair (surplus) | 2048 | 4096 | 8192 | 16384 |
+|---|---:|---:|---:|---:|
+| chap5 tf32 (2x): declared / undeclared | 91.1 / 52.0 | 96.6 / 82.9 | 76.9 / 67.0 | 60.5 / 59.8 |
+| sec2 tf32 (8x) | 183.8 / 180.3 | 200.5 / 199.9 | 186.6 / 185.1 | 185.7 / 186.6 |
+| sec2 bf16 (8x) | 326.9 / 311.0 | 375.7 / 363.8 | 362.3 / 355.0 | 366.8 / 363.1 |
+| 2wg_deep bf16 (16x) | 475.1 / 424.6 | 726.5 / 659.4 | 800.1 / 643.8 | 641.9 / 629.8 |
+| int8 (16x) | 680.4 / 581.4 | 1187.5 / 1020.7 | 1442.2 / 1117.0 | 1268.9 / 1245.3 |
+
+Not proportional to the surplus (sec2 tf32 at 8x barely moves): it costs where the idle
+workgroups crowd out a second resident working one.  D-209-9 stands.
+
+**F-209-4 is NOT B200-specific and NOT the walk.**  On the H100, chapter 6 f64 fails on BUG 157's
+flat walk (1024..8192, err 3-6), on the per-axis walk (`ws_linear`: 4096 and 16384, err 7 / 6), and
+as the declared kernel in the full sweep (1024 / 2048 / 4096, err 3); sec2_top_f64 warpspec fails at
+1024..8192.  Every walk, both GPUs, different sizes from run to run: a race in this kernel family or
+in how it is compiled.  T3 (Blackwell) and the walk are ruled out; T2 (BUG 156's per-slot phase
+bits -- this is one of the 13 kernels BUG 156 moved) is the lead; T1 (a latent race in the kernel,
+with the old H100 pass predating today's GPU fill) is still open.  Chapter 6 tf32 / bf16 pass.
+
+**F-209-6 -- sec3 cluster kernels fail to LAUNCH through the fixture** (CUDA error 1, invalid
+argument, every size; both Crisp kernels; empty result files saved, "NO ROW" printed).  Not D-209-9:
+the old H100 / H200 sec3 rows were the pre-fixture hoisted harness, so this is their first fixture
+run.  Cause (from the code, not yet run): the kernel has 32 B of STATIC shared memory (two mbarriers,
+`.visible .shared __crisp_mbar_1/2`) on top of exactly 49152 B dynamic.  The driver's default dynamic
+limit is 48 KB minus static, so the launch needs the opt-in; the fixture opts in only when DYNAMIC
+alone exceeds 48 KB, while the hoisted harness always calls cuFuncSetAttribute(MAX_DYNAMIC, 49152).
+No other fixture kernel has static shared memory.  The fixture's dry-run sits after cuInit (its
+comment says before), so this could not be checked without a GPU.
+
+**F-209-7 -- the single-warpgroup wgmma kernels read 30-37% below their 09-12 numbers.**  chap7_wgmma /
+sec2_top bf16 at 8192: 569 -> 361; tf32 at 8192: 274 -> 187 (and 2048: 260 -> 184).  Meanwhile
+2wg_deep rose (614 -> 761) and int8 / requant rose.  The 09-12 numbers were the OLD hoisted harness
+and a two-month-older compiler, so the drop is confounded: apparatus, compiler drift, and BUG 156
+(which moved these kernels and was first run on Hopper here).  The A/B shows it is not the grid
+(sec2 bf16 declared 362 / undeclared 355).  The asymmetry (2wg_deep up under the same apparatus
+change) argues against the apparatus being the whole story.  Not yet attributed.
 
 ## Findings
 
