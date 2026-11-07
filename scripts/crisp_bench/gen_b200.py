@@ -226,7 +226,14 @@ if __name__ == "__main__":
             for ring in (2, 3):
                 write(T / f"{lane}_tg_r{ring}.crisp", block_kernel(lane, ring, False))
     else:
+        # Round 2's winners (2026-11-07, put_temp_files_here/209/round2-summary.txt):
+        #   dense lanes: the TILE GRID at ring 2 (two workgroups per SM, chapter 7's shape) won at
+        #     N = 4096 / 8192 / 16384 in every lane (int8 ties persistent r4_w4 at 8192);
+        #   block lanes: PERSISTENT at ring 4 (+6..26% over the best tile grid at 16384); strip width 2
+        #     won at 16384 and tied at 8192.  Theory, unmeasured: 256 accumulator columns plus the
+        #     scales' columns exceed half of tensor memory, so a second tile-grid workgroup cannot
+        #     co-reside and overlap its mainloop with the first one's epilogue.
         for lane, (d, f, *_r) in DENSE.items():
-            write(MM / d / f, dense_kernel(lane, 4, True))
+            write(MM / d / f, dense_kernel(lane, 2, False))
         for lane, (d, f, *_r) in BLOCK.items():
-            write(MM / d / f, block_kernel(lane, 3))
+            write(MM / d / f, block_kernel(lane, 4, True, visit=2))

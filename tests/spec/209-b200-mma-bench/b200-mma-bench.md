@@ -21,7 +21,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 4 | Crisp B200 kernels: Ch 7 tcgen05 (tf32, bf16); §2 tf32/bf16/fp16/int8/requant/NVFP4/MXFP4/MXFP8 | done (§4 fused: F-209-2) |
 | 5 | Contenders: cuBLASLt block-scaled ceiling; CUTLASS SM100 peers (tf32, 16-bit, int8, block-scaled) | done |
 | 6 | Local proof (below) | done |
-| 7 | B200 smoke + tuning rental (`_b200_tune` + every B200 lane, small/mid sizes, --scratch) | needs a pushed branch |
+| 7 | B200 smoke + tuning rental (`_b200_tune` + every B200 lane, small/mid sizes, --scratch) | done (round 1 2026-11-06; round 2 after BUG 157 2026-11-07, D-209-8) |
 | 8 | B200 full sweep | |
 | 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B) | |
 | 10 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerate after 8) |
@@ -31,7 +31,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 - **matmul.py**: cc 10.x -> `sm_100a`; CUTLASS `-arch` from the device; the TENSOR-CORE GATE (a
   Crisp kernel whose code uses `wgmma-` / `tcgen05-` forms prints `GATE: ... requires sm_90a /
   sm_100a` on the other generation and is not run); fixture env: fixed grid from `(global-size
-  :set-to N)` (multi-CTA only, D-209-4), `@bytes` per scratch, block-matrix operands (`ELEM=mf`,
+  :set-to N)` (multi-workgroup only, D-209-4), `@bytes` per scratch, block-matrix operands (`ELEM=mf`,
   `MF=base:scale:vec`, `ARG_SA/_SB` by `:scales-of`); lanes: `chap7_tcgen05`, `chap7_tcgen05_bf16`,
   `matmul_b200*.crisp` in sec2_top / _bf16 / _fp16 / _int8 / sec4_int8_requant, new
   `sec2_top_nvfp4` / `_mxfp4` / `_mxfp8`, fenced `_b200_tune`; on a B200 the Sm90 CUTLASS peers
@@ -105,11 +105,11 @@ CUTLASS SM100 peers, cuBLASLt NVFP4 / MXFP8).  Table: put_temp_files_here/209/sm
 | mxfp4 | 1272 (r4) | not built | — | **no algorithm** (status 7, CUDA 12.8) | 3587 (2-SM) |
 | mxfp8 | 899 (r4) | not built | — | 3080 | 1659 (2-SM) |
 
-**F-209-3 — the persistent kernels lose most of their CTAs.**  tile-stride strides each dimension
+**F-209-3 — the persistent kernels lose most of their workgroups.**  tile-stride strides each dimension
 by its OWN group count (`src/analysis/control.lisp`, START_i = GID_i*TS_i, STRIDE_i = TS_i*NG_i).
-A persistent 1-D launch of 148 CTAs has NG_1 = 1, so only the CTAs whose x id < M/128 own a row of
+A persistent 1-D launch of 148 workgroups has NG_1 = 1, so only the workgroups whose x id < M/128 own a row of
 tiles: 32 of 148 work at 4096, 64 at 8192.  The ratios match (tile grid / persistent = 3.8x at
-4096, 2.3x at 8192).  208's specs never saw it: 2 CTAs, 2 row-tiles.  Correct results, silent
+4096, 2.3x at 8192).  208's specs never saw it: 2 workgroups, 2 row-tiles.  Correct results, silent
 loss -- a trap for any persistent author.  **BUG 157, fixed in the overlay 2026-11-06** (Chris
 chose the compiler fix; chapter 6 takes the new rule too and is re-measured, option (i)): a rank-2
 compile-time tile-stride in a kernel with a fixed 1-D global size takes endeavour 144's flat
@@ -121,10 +121,49 @@ line the harness exports as `CRISP_TILE_VISIT` for that kernel only.  D-209-4 st
 6's one-workgroup declaration itself is fixed (F-209-1): honoring it would still launch one
 workgroup, whatever the walk.
 
-Other readings: Ch 7 (ring 2: 96 KB of ring, so two CTAs per SM) beats the ring-4 tile grid (one
-CTA per SM) -- a second resident CTA overlaps one tile's epilogue with another's mainloop, which is
+Other readings: Ch 7 (ring 2: 96 KB of ring, so two workgroups per SM) beats the ring-4 tile grid (one
+workgroup per SM) -- a second resident workgroup overlaps one tile's epilogue with another's mainloop, which is
 what the accumulator ring was meant to do.  The 2-SM CUTLASS configs win at 4096-8192 almost
 everywhere; Crisp has no cta_group::2.  Below 4096 Crisp trails CUTLASS 2x (bf16 1024: 78 vs 174).
+
+## Step 7b results — tuning round 2 after BUG 157, B200, 2026-11-07 (14 min, ~$1.90, pod confirmed gone)
+
+`round2-on-pod.sh` on the pushed branch (7067c201): the 58 `_b200_tune` variants + Ch 7 x 2 at
+N = 1024 / 4096 / 8192 / 16384, every point verified; then 208-tcgen05 on metal (**39 / 39**, its
+codegen moved with BUG 157) and these 209 specs on CUDA (**2 / 2** -- the flat walk verified on
+NVIDIA hardware, not only the BMG).  Table: put_temp_files_here/209/round2-summary.txt.  TFLOPS
+(TOPS for int8) at 8192 / 16384; "p" = persistent, rN = ring depth, wN = strip width:
+
+| lane | best persistent | best tile grid | Ch 7 | round-1 persistent (8192) | cuBLAS(Lt) 8192 | best CUTLASS 8192 |
+|---|---:|---:|---:|---:|---:|---:|
+| tf32 | 660 / 697 (r4_w4) | **766 / 773** (r2) | 755 / 767 | 293 | 1036 | 964 |
+| bf16 | 1208 / 1338 (r4_w4) | **1300 / 1439** (r2) | 1293 / 1436 | 543 | 1993 | 1770 |
+| fp16 | 1208 / 1340 (r4_w4) | **1304 / 1474** (r2) | — | 543 | 1993 | 1808 |
+| int8 | 2113 / 2529 (r4_w4) | **2111 / 2606** (r2) | — | 984 | 3727 | 3442 |
+| requant | 1252 / 1779 (r4) | **1234 / 1879** (r2) | — | 574 | 4125 | — |
+| nvfp4 | **2277 / 2870** (r4_w2) | 2131 / 2698 (r3) | — | 1066 | 5532 | 3434 |
+| mxfp4 | **2662 / 3548** (r4_w2) | 2474 / 2968 (r3) | — | 1272 | no algorithm | 3587 |
+| mxfp8 | **1868 / 2274** (r4_w2) | 1659 / 1811 (r3) | — | 899 | 3080 | 1659 |
+
+Readings:
+- **BUG 157 is worth 2.1-2.6x on metal.**  Same kernel, same ring (p_r4_w1 vs round 1's persistent
+  r4), only the walk changed: tf32 293 -> 652, bf16 543 -> 1183, int8 984 -> 2052 at 8192.
+- **Dense lanes: the tile grid at ring 2 wins** at 4096 / 8192 / 16384 (int8 ties p_r4_w4 at 8192;
+  requant's persistent leads by 1.4% at 8192 only).  Two resident workgroups per SM overlap one
+  tile's epilogue with the other's mainloop, and beat one persistent workgroup with a 2-slot
+  accumulator ring: tf32 +11-16%, bf16 / fp16 +8-10%, int8 +0-3%.  It is chapter 7's shape, and it measures the same as chapter 7.
+- **Block lanes: persistent ring 4 wins** by 7-13% at 8192 and 6-26% at 16384.  Theory, unmeasured:
+  their accumulator plus scale columns exceed half of tensor memory, so a second tile-grid
+  workgroup cannot co-reside (D-209-5's reason for ONE accumulator).  Strip width 2 vs 1 is noise
+  at 8192 and +1..8% at 16384.
+- **Strip width** helps the dense persistent kernels at 16384 (bf16 w1 1232 -> w4 1338), barely at 8192.
+- **Ring depth 4 > 3** for every persistent kernel.
+- Against the peers at 8192: tf32 74% of cuBLAS, bf16/fp16 65%, int8 57%, nvfp4 41%, mxfp8 61%
+  (and ahead of the 128-code-K-tile CUTLASS peer, D-209-6), mxfp4 74% of CUTLASS.  The 16384 peers
+  are first measured in step 8.
+- N = 1024 is 40-90 TFLOPS for every variant: 64 tiles on 148 SMs; launch- and latency-bound.
+
+Promoted (D-209-8): `gen_b200.py`'s defaults; each lane kernel is now byte-identical to its winner.
 
 ## Findings
 
@@ -132,13 +171,13 @@ everywhere; Crisp has no cta_group::2.  Below 4096 Crisp trails CUTLASS 2x (bf16
 takes its grid from the metacrisp's `:tile-shape`, which exists only when the kernel declares
 `(global-size :derive-from C :strategy :strided)` (then it is inferred from tile-stride, endeavour
 143).  27 NVIDIA benchmark kernels declare no global-size, so the fixture uses its default
-`CRISP_MATMUL_TILE=32,64`: for a 64 x 256 tile that is 8x the CTAs it has tiles for, for 128 x 256 it
-is 16x.  tile-stride strides over whatever grid it gets, so the extra CTAs find no tile and exit --
+`CRISP_MATMUL_TILE=32,64`: for a 64 x 256 tile that is 8x the workgroups it has tiles for, for 128 x 256 it
+is 16x.  tile-stride strides over whatever grid it gets, so the extra workgroups find no tile and exit --
 results are CORRECT, which is why nothing caught it -- but each still runs its prologue, and the
-idle ones dispatch AFTER the working ones (blockIdx order), on SMs a 192 KB ring lets hold one CTA.
+idle ones dispatch AFTER the working ones (blockIdx order), on SMs a 192 KB ring lets hold one workgroup.
 Affected H100 rows: chap5 (2x), chap7_wgmma / _bf16 (8x), sec2_top tf32 / bf16 / fp16 (8x; the
 2wg_deep variants 16x), sec2_top_int8 (16x; sync 2x / w8 8x), sec4_int8_requant (16x), sec3, sec4
-fused (4-8x).  The f64 64 x 32 kernels get the right CTA count with the axes mismatched.  Size of
+fused (4-8x).  The f64 64 x 32 kernels get the right workgroup count with the axes mismatched.  Size of
 the effect: unmeasured -- an A/B on the H100 re-run (step 9).  Every B200 kernel declares its grid.
 Survey: put_temp_files_here/209/f209-1-scope.txt.
 
@@ -162,9 +201,9 @@ same way (its kernels are wgmma; 152 found multicast a negative on Hopper).
 - **D-209-3.** The block-scaled oracle uses power-of-two scales that vary by row AND K-block,
   `2^((r + 2kb) % 3 - 1)`: unit scales would pass a kernel that ignores them.
 - **D-209-4.** The fixture launches `(global-size :set-to N)` as declared only when N names MORE
-  than one CTA.  Chapter 6 (tf32 / bf16 / f64) declares one CTA (`:set-to 96`, block 96) and has
+  than one workgroup.  Chapter 6 (tf32 / bf16 / f64) declares one workgroup (`:set-to 96`, block 96) and has
   always been launched on a tile grid; honoring it would serialize those rows.  Pending F-209-1.
-- **D-209-5.** B200 §2 kernels are PERSISTENT (one CTA per SM, 148 x 192) with a 2-slot
+- **D-209-5.** B200 §2 kernels are PERSISTENT (one workgroup per SM, 148 x 192) with a 2-slot
   tensor-memory accumulator ring, ring depth 4; the block lanes keep ONE accumulator (two
   256-column slots plus the scales' columns exceed 512) and ring depth 3.  These are starting
   points: `_b200_tune` measures ring 3 / 4 and the tile-grid shape, and the winner is promoted.
@@ -172,6 +211,11 @@ same way (its kernels are wgmma; 152 found multicast a negative on Hopper).
   A.B): with an fp32 C the epilogue carve-out leaves no shared memory for the mainloop.  Same
   computation; it needs `--expt-relaxed-constexpr` (CUTLASS's CMake passes it) and a 128-code K tile
   for MXFP8.
+- **D-209-8.** (2026-11-07, round 2) The dense B200 lanes (tf32 / bf16 / fp16 / int8 / requant) are
+  TILE-GRID kernels at ring depth 2 (two workgroups per SM, one accumulator); the block lanes
+  (NVFP4 / MXFP4 / MXFP8) stay PERSISTENT at ring depth 4, strip width 2.  Supersedes D-209-5's
+  starting points.  All eight compile and pass ptxas for sm_100a with 0 spills (102 / 106-108 / 64
+  registers).
 - **D-209-7.** The B200's int8 lane gets a CUTLASS SM100 peer (the builder takes `int8_t`); the
   Hopper int8 lane still has none.  The report shows a Peer column only where one was measured.
 
