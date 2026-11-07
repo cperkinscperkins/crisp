@@ -32,6 +32,7 @@
 
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
            (local-size :set-to 160))          ; 4 consumer warps (warpgroup 0) + 1 producer warp
   (let ((A-ring (make-scratch-matrix-ring bfloat16 (64 64)  :ring-count 2))   ; 2 x 64(M) x 64(K)
         (B-ring (make-scratch-matrix-ring bfloat16 (256 64) :ring-count 2))   ; 2 x 256(N) x 64(K) B^T

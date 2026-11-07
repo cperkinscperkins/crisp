@@ -23,7 +23,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 6 | Local proof (below) | done |
 | 7 | B200 smoke + tuning rental (`_b200_tune` + every B200 lane, small/mid sizes, --scratch) | done (round 1 2026-11-06; round 2 after BUG 157 2026-11-07, D-209-8) |
 | 8 | B200 full sweep | done 2026-11-07 (87 min, ~$11.60, 83 result files; F-209-4, F-209-5) |
-| 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B) | |
+| 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B; F-209-4 A/B; tf32 re-measured) | ready: put_temp_files_here/209/step9-on-pod.sh (D-209-9..12) |
 | 10 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerate after 8) |
 
 ## What was built (2026-11-06)
@@ -244,6 +244,26 @@ three places.
   (NVFP4 / MXFP4 / MXFP8) stay PERSISTENT at ring depth 4, strip width 2.  Supersedes D-209-5's
   starting points.  All eight compile and pass ptxas for sm_100a with 0 spills (102 / 106-108 / 64
   registers).
+- **D-209-9.** (2026-11-07, F-209-1) Every NVIDIA benchmark kernel DECLARES its tile grid,
+  `(global-size :derive-from C :strategy :strided)`: inserted in the 25 that had none, and it
+  replaces chapter 6's `(global-size :set-to 96)` (four kernels: chapter 6 tf32 / bf16 / f64 and
+  sec2_top_f64 warpspec), which named ONE workgroup -- the thread count written as the grid.  Local
+  proof (put_temp_files_here/209/f2091/): the 25 compile to byte-identical PTX for sm_90a, so the
+  launch grid is the only change; the 4 chapter 6 kernels leave BUG 157's flat walk for the per-axis
+  walk on a matched grid; every metacrisp now carries the tile-stride's `:tile-shape`.  The A/B is
+  measured, not assumed: fenced `_f2091_ab{,_bf16,_int8}/` hold `<x>_declared` / `<x>_undeclared`
+  pairs (sec2 tf32 8x, chap5 2x, sec2 bf16 8x, 2wg_deep 16x, int8 16x surplus), identical PTX per pair.
+  D-209-4 is now inert (no published kernel declares a one-workgroup `:set-to`); it stays as a guard.
+- **D-209-10.** (2026-11-07, F-209-2) `map-elements!` on a tcgen05 accumulator is a compiler
+  feature with its own specs and A|D coverage, so it is endeavour 210 (plan/scramble.md, Tiles /
+  tensors), not a 209 step.  §4's B200 rows stay cuBLASLt-only until then.
+- **D-209-11.** (2026-11-07, F-209-5, Chris) No report filter: the fix is SOLID DATA.  Step 9
+  re-measures the H100 tf32 points through the fixture; F-209-4's B200 points are re-measured once
+  it is understood.  Until then the regenerated report carries those points.
+- **D-209-12.** (2026-11-07, F-209-4) The F-209-4 A/B rides step 9: fenced `_f2094_f64_ab/` holds
+  chapter 6 f64 exactly as step 8 ran it (`ws_flat`) and the same kernel with
+  `;; BENCH-TILE-VISIT: linear` (`ws_linear`, different PTX).  Both launch on the 32 x 64 default
+  grid, as in step 8.  The declared chapter 6 f64 (D-209-9) is the third arm, in the full sweep.
 - **D-209-7.** The B200's int8 lane gets a CUTLASS SM100 peer (the builder takes `int8_t`); the
   Hopper int8 lane still has none.  The report shows a Peer column only where one was measured.
 

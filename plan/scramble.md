@@ -224,6 +224,16 @@ OPEN
       Today :tile-shape launches one block per tile, and a 1-D :strided grid under N-D tile-stride
       serialises an axis (the L0 7.6x trap).  Probe: 3% on the H100 contest kernel once stores were packed
       (endeavour 197 doc).  Also the natural home for tile rasterisation (L2 reuse).  Endeavour 197 step 2.
+      PARTLY DONE 2026-11-06, endeavour 209 / BUG 157: a kernel that DECLARES a fixed 1-D global size
+      now gets the linearised walk (144's flat column-strip walk) for its rank-2 tile-stride; worth
+      2.1-2.6x on the B200's persistent kernels.  Still open: the HOIST choosing a residency-capped
+      grid on its own (today the author writes `:set-to`).
+- [ ] `map-elements!` on a tcgen05 (tensor-memory) accumulator -- F-209-2, proposed as endeavour 210.
+      Refused today ("unsupported target type TCGEN05-ACC-F32-128X256"); it works on MMA fragments
+      and register tiles.  Without it §4 (fused ReLU / custom epilogue) has no B200 Crisp row, which
+      is Crisp's capability claim (an arbitrary activation fused, where cuBLASLt cannot).  Lower as
+      tcgen05.ld -> apply -> store in the epilogue warps, or fuse into the epilogue's store.  Needs its
+      own specs, --differentiate coverage, and a metal check; then the §4 B200 rows.
 - [x] stmatrix + TMA-store epilogue for wgmma accumulators -- DONE, endeavour 199:
       `(store-tile-at (to-half D) C (r c) :via :tma)`; H100 contest kernel 255.5 -> 228.0 us, exact
       (tests/spec/199-tma-store/tma-store.md).  Persistence measured at only ~1 us on top of it.

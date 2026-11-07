@@ -1920,6 +1920,16 @@ def main():
                 run_target("_b200_tune", _tv.name, _tv.stem + ".ptx", f"Crisp_V_{_tv.stem}",
                            [], is_crisp=True, use_fixture=True)
 
+            # Endeavour 209 A/B pairs (fenced `_` dirs, scratch).  F-209-1: <x>_declared vs
+            # <x>_undeclared -- identical PTX, the launch grid is the only difference (the
+            # undeclared arm gets the fixture's default 32 x 64 grid).  F-209-4: chapter 6 f64 as
+            # step 8 ran it, on BUG 157's flat walk and forced back to the per-axis walk.  The lane
+            # (and so the precision pass) comes from each dir's name, as for every chapter.
+            for _ab in ("_f2091_ab", "_f2091_ab_bf16", "_f2091_ab_int8", "_f2094_f64_ab"):
+                for _tv in sorted((HERE / _ab).glob("*.crisp")):
+                    run_target(_ab, _tv.name, _tv.stem + ".ptx", f"Crisp_V_{_tv.stem}",
+                               [], is_crisp=True, use_fixture=True)
+
             # §2 Top — BLOCK-SCALED (Endeavour 209, B200 only): NVFP4 / MXFP4 / MXFP8.  Codes plus a
             # scale per 16 or 32 along K, fp32 C.  The Crisp kernel is endeavour 208's block-scaled
             # tcgen05 pipeline; the ceiling is cuBLASLt with block scales; the peer is CUTLASS's SM100
