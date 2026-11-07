@@ -51,6 +51,40 @@ __global__ void crisp_fill_u16_kernel(uint16_t *p, uint64_t n, uint32_t mod,
     }
 }
 
+// ---- Endeavour 209: block-scaled operands (see fill_verify.h for the convention) -----------------
+// fmt: 0 = fp4 (e2m1, two codes per byte, the EVEN element in the low nibble -- D-206-3),
+//      1 = fp8 e4m3, 2 = fp8 e5m2.  v is 0..4, exact in all three.
+__device__ inline uint8_t crisp_mf_code(uint32_t v, int fmt) {
+    if (fmt == 0) { const uint8_t t[5] = {0x0, 0x2, 0x4, 0x5, 0x6}; return t[v]; }        // 0 1 2 3 4
+    if (fmt == 1) { const uint8_t t[5] = {0x00, 0x38, 0x40, 0x44, 0x48}; return t[v]; }
+    const uint8_t t[5] = {0x00, 0x3C, 0x40, 0x42, 0x44}; return t[v];
+}
+
+// One BYTE per thread.  Logical element `flat` lives in byte flat / epb, so the operand must be
+// contiguous along K (A row-major, B column-major) -- the only layout the block MMAs take.
+__global__ void crisp_fill_mf_codes_kernel(uint8_t *p, uint64_t nbytes, uint32_t mod, int fmt) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nbytes) return;
+    if (fmt == 0)
+        p[i] = (uint8_t)(crisp_mf_code((uint32_t)((2 * i) % mod), 0)
+                         | (crisp_mf_code((uint32_t)((2 * i + 1) % mod), 0) << 4));
+    else
+        p[i] = crisp_mf_code((uint32_t)(i % mod), fmt);
+}
+
+// The :blocked-128x4 scale layout (cuBLAS's / CUTLASS's): R rows padded to 128, ceil(K/vec) scales
+// per row padded to 4; atoms of 128 x 4 = 512 bytes, atom (r/128, j/4) at ((r/128)*katoms + j/4)*512,
+// and inside it (r%32)*16 + ((r%128)/32)*4 + j%4.  Each thread inverts that for one byte.
+__global__ void crisp_fill_mf_scales_kernel(uint8_t *p, uint64_t nbytes, uint64_t katoms, int e8m0) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nbytes) return;
+    const uint64_t atom = i / 512, w = i % 512;
+    const uint64_t r = (atom / katoms) * 128 + ((w % 16) / 4) * 32 + w / 16;
+    const uint64_t j = (atom % katoms) * 4 + w % 4;
+    const int e = mf_scale_exp(r, j);
+    p[i] = e8m0 ? (uint8_t)(127 + e) : (uint8_t)((7 + e) << 3);   // ue8m0 | ue4m3 (positive e4m3)
+}
+
 namespace detail {
 inline void cuda_must(cudaError_t rc, const char *what) {
     if (rc != cudaSuccess) {
@@ -90,6 +124,43 @@ inline void cuda_fill_encoded(void *ptr, uint64_t n, uint32_t mod, const char *e
 }
 
 // Zero a device buffer of `bytes` bytes (0.0 is all-zero bits in every encoding used here).
+// Endeavour 209.  Codes of a block-matrix operand of `n` LOGICAL elements.  base: "fp4" | "fp8-e4m3"
+// | "fp8-e5m2" (the metacrisp's :base).  Returns the byte count it filled.
+inline uint64_t cuda_fill_mf_codes(void *ptr, uint64_t n, uint32_t mod, const char *base) {
+    const std::string b(base);
+    const int fmt = (b == "fp4") ? 0 : (b == "fp8-e4m3") ? 1 : (b == "fp8-e5m2") ? 2 : -1;
+    if (fmt < 0) { std::fprintf(stderr, "fill_cuda: unknown block base '%s'\n", base); std::exit(2); }
+    const uint64_t nbytes = fmt == 0 ? n / 2 : n;
+    const uint32_t B = 1024;
+    crisp_fill_mf_codes_kernel<<<detail::fill_grid(nbytes, B), dim3(B, 1, 1)>>>(
+        static_cast<uint8_t *>(ptr), nbytes, mod, fmt);
+    detail::cuda_must(cudaGetLastError(), "mf codes fill launch");
+    detail::cuda_must(cudaDeviceSynchronize(), "mf codes fill synchronize");
+    return nbytes;
+}
+
+// Bytes of the :blocked-128x4 scales of a matrix with `rows` rows and K columns, one scale per `vec`.
+inline uint64_t mf_scales_bytes(uint64_t rows, uint64_t K, uint64_t vec) {
+    const uint64_t katoms = ((K + vec - 1) / vec + 3) / 4;
+    return ((rows + 127) / 128) * 128 * katoms * 4;
+}
+
+// Endeavour 209.  The scales of a `rows` x K block matrix.  scale: "fp8-e8m0" (MX) or "fp8-e4m3"
+// (NVFP4's ue4m3).
+inline void cuda_fill_mf_scales(void *ptr, uint64_t rows, uint64_t K, uint64_t vec, const char *scale) {
+    const uint64_t katoms = ((K + vec - 1) / vec + 3) / 4;
+    const uint64_t nbytes = mf_scales_bytes(rows, K, vec);
+    const std::string s(scale);
+    if (s != "fp8-e8m0" && s != "fp8-e4m3") {
+        std::fprintf(stderr, "fill_cuda: unknown scale format '%s'\n", scale); std::exit(2);
+    }
+    const uint32_t B = 1024;
+    crisp_fill_mf_scales_kernel<<<detail::fill_grid(nbytes, B), dim3(B, 1, 1)>>>(
+        static_cast<uint8_t *>(ptr), nbytes, katoms, s == "fp8-e8m0" ? 1 : 0);
+    detail::cuda_must(cudaGetLastError(), "mf scales fill launch");
+    detail::cuda_must(cudaDeviceSynchronize(), "mf scales fill synchronize");
+}
+
 inline void cuda_zero(void *ptr, size_t bytes) {
     detail::cuda_must(cudaMemset(ptr, 0, bytes), "zero");
 }
@@ -99,7 +170,8 @@ inline void cuda_zero(void *ptr, size_t bytes) {
 // scale and tolerance) or "s32" (the 8-bit integer MMAs, Endeavour 207; exact).  POST applies a section-4 activation to the expected value.
 inline VerifyResult cuda_verify(const void *C, const char *enc, uint64_t M, uint64_t N, uint64_t K,
                                 Strides a, Strides b, Strides c,
-                                const std::function<double(double)> &post = {}) {
+                                const std::function<double(double)> &post = {},
+                                uint64_t mf_vec = 0) {      // Endeavour 209: >0 = block-scaled operands
     const bool f64 = std::string(enc) == "f64";
     const bool s32 = std::string(enc) == "s32";   // Endeavour 207: the 8-bit integer MMAs' accumulator
     const bool s8  = std::string(enc) == "s8";    // Endeavour 207: a requantized (narrowed) C
@@ -127,7 +199,7 @@ inline VerifyResult cuda_verify(const void *C, const char *enc, uint64_t M, uint
         }
     };
     const double scale = f64 ? FILL_F64_SCALE * FILL_F64_SCALE : 1.0;
-    return verify_sampled(M, N, K, a, b, c, read, scale, 64, post, f64 ? FILL_F64_RTOL : FILL_RTOL);
+    return verify_sampled(M, N, K, a, b, c, read, scale, 64, post, f64 ? FILL_F64_RTOL : FILL_RTOL, mf_vec);
 }
 
 // The two layouts the CUDA harnesses use (M x K A, K x N B, M x N C):

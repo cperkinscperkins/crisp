@@ -47,8 +47,14 @@
 //          CRISP_MATMUL_ARG_A    A's FIRST argument index                      (default 0)
 //          CRISP_MATMUL_ARG_B    B's FIRST argument index                      (default 9)
 //          CRISP_MATMUL_ARG_C    C's FIRST argument index                      (default 18)
-//          CRISP_MATMUL_SCRATCH  scratch tiles, "idx:ext0:ext1[,...]"          (default "")
+//          CRISP_MATMUL_SCRATCH  scratch tiles, "idx:ext0:ext1[:ext2][@bytes][,...]" (default "")
+//                                @bytes = that scratch's element width (209); absent = A's width
 //          CRISP_MATMUL_TENSORMAP  TMA descriptors, "idx:a|b:box0:box1:swz[,...]" (default "")
+//          CRISP_MATMUL_GRID=fixed + CRISP_MATMUL_GLOBAL=<threads>   a PERSISTENT kernel (209): its
+//                                declared (global-size :set-to N), launched as N / block CTAs
+//          CRISP_MATMUL_ELEM=mf + CRISP_MATMUL_MF="base:scale:vec"   BLOCK-SCALED operands (209),
+//                                e.g. "fp4:fp8-e4m3:16" (NVFP4); A row-major, B column-major codes
+//          CRISP_MATMUL_ARG_SA / _SB   first argument of A's / B's scales vector (rank 1, 6 args)
 //   stdout: one JSON object -- correct / max_abs_err / kernel_median_us / gflops
 //
 // The accumulator (C) is f32 for every element type EXCEPT f64.  Every 16-bit MMA here
@@ -92,7 +98,7 @@ static const char *env_or(const char *k, const char *d) {
 
 // A scratch tile is rank 2; a RING is rank 3 (slots x rows x cols) and flattens to twelve
 // kernel arguments rather than nine.  Chapters 5 and 6 are rings, so rank is not optional.
-struct Scratch { int idx; int rank; uint64_t e0, e1, e2, off; };
+struct Scratch { int idx; int rank; uint64_t e0, e1, e2, off, w; };   // w: element bytes (209)
 
 static std::vector<std::string> split(const std::string &s, char d) {
     std::vector<std::string> out; std::string cur; std::istringstream is(s);
@@ -137,7 +143,22 @@ int main(int argc, char **argv) {
     // what makes those four correct rather than four separate edits.
     // Endeavour 207: s8 / u8 = 1 (C is then s32).
     const bool int8 = (elem == "s8" || elem == "u8");
-    const uint64_t ebytes = (elem == "f32") ? 4 : (elem == "f64") ? 8 : int8 ? 1 : 2;
+    // Endeavour 209: BLOCK-SCALED operands.  A and B are packed CODES (fp4: two per byte; fp8: one),
+    // each with a scales vector of its own in the :blocked-128x4 layout.  ebytes is 1 (the unit
+    // everything about them is addressed in); `epb` is codes per byte.
+    const bool mf = (elem == "mf");
+    std::string mf_base, mf_scale; uint64_t mf_vec = 0, epb = 1;
+    if (mf) {
+        auto g = split(env_or("CRISP_MATMUL_MF", ""), ':');
+        if (g.size() != 3) { std::cerr << "CRISP_MATMUL_ELEM=mf needs CRISP_MATMUL_MF=base:scale:vec\n"; return 1; }
+        mf_base = g[0]; mf_scale = g[1]; mf_vec = std::stoull(g[2]);
+        epb = (mf_base == "fp4") ? 2 : 1;
+    }
+    const int iSA = std::atoi(env_or("CRISP_MATMUL_ARG_SA", "-1"));
+    const int iSB = std::atoi(env_or("CRISP_MATMUL_ARG_SB", "-1"));
+    if (mf && (iSA < 0 || iSB < 0)) { std::cerr << "a block-scaled kernel needs CRISP_MATMUL_ARG_SA/_SB\n"; return 1; }
+    if (mf && (K % (2 * mf_vec) != 0)) { std::cerr << "K must be a multiple of 2 x vec for block operands\n"; return 1; }
+    const uint64_t ebytes = (elem == "f32") ? 4 : (elem == "f64") ? 8 : (int8 || mf) ? 1 : 2;
     // C's width.  Separate from ebytes because a 16-bit MMA accumulates in fp32 -- C is wider
     // than A/B there -- while fp64 is fp64 throughout.
     // Endeavour 207 -- the REQUANTIZE epilogue.  CRISP_MATMUL_REQUANT=<m> says the kernel stores C as
@@ -165,7 +186,13 @@ int main(int argc, char **argv) {
     // generated harness.
     std::vector<Scratch> scratch;
     uint64_t shared_bytes = 0;
-    for (const auto &tok : split(env_or("CRISP_MATMUL_SCRATCH", ""), ',')) {
+    for (const auto &tok0 : split(env_or("CRISP_MATMUL_SCRATCH", ""), ',')) {
+        // Endeavour 209: an optional `@bytes` suffix is the scratch's OWN element width (a block
+        // kernel's code and scale rings are bytes while its C is fp32).  Absent = A's width, which
+        // is what every scratch was sized at before.
+        std::string tok = tok0; uint64_t w = ebytes;
+        const size_t at = tok.find('@');
+        if (at != std::string::npos) { w = std::stoull(tok.substr(at + 1)); tok = tok.substr(0, at); }
         auto f = split(tok, ':');
         if (f.size() < 3) continue;
         Scratch s{};
@@ -174,8 +201,15 @@ int main(int argc, char **argv) {
         s.e0   = std::stoull(f[1]);
         s.e1   = std::stoull(f[2]);
         s.e2   = (s.rank == 3) ? std::stoull(f[3]) : 1;
+        s.w    = w;
+        // PACKED, exactly as hoist-cuda assigns them (no alignment) -- the 768-byte fp16 rung
+        // depends on it for occupancy.  A :128b-swizzled TMA destination must be 1024-aligned,
+        // so an offset that is not is reported (it never was for the kernels in this suite).
         s.off  = shared_bytes;
-        shared_bytes += s.e0 * s.e1 * s.e2 * ebytes;
+        if (s.off % 1024 != 0 && std::string(env_or("CRISP_MATMUL_TENSORMAP", "")).find("128b") != std::string::npos)
+            std::cerr << "WARNING: scratch at arg " << s.idx << " sits at shared offset " << s.off
+                      << ", not 1024-aligned, in a kernel with 128B-swizzled TMA\n";
+        shared_bytes += s.e0 * s.e1 * s.e2 * w;
         scratch.push_back(s);
     }
     std::sort(scratch.begin(), scratch.end(), [](const Scratch &a, const Scratch &b) { return a.idx < b.idx; });
@@ -229,7 +263,8 @@ int main(int argc, char **argv) {
     // Same fill as the L0 fixture: small exact integers, so bf16 truncation and f16 rounding are
     // both lossless and the reference is an exact comparison rather than a tolerance argument.
     const uint64_t nA = M * K, nB = K * N, nC = M * N;
-    const size_t bytesA = (size_t)(nA * ebytes), bytesB = (size_t)(nB * ebytes);
+    // A block operand is nA / epb bytes of codes (two fp4 codes per byte).
+    const size_t bytesA = (size_t)(mf ? nA / epb : nA * ebytes), bytesB = (size_t)(mf ? nB / epb : nB * ebytes);
     // DEVICE FILL (common/fill_cuda.cuh).  This harness used to fill A and B on the CPU and copy them
     // across: measured 2026-09-13 on an H100 at N=77824, that CPU fill took 201 s of a 219 s setup --
     // longer than the whole timeout, before the GPU did any work.  No host copies of A, B or C remain;
@@ -239,8 +274,22 @@ int main(int argc, char **argv) {
     CU_OK(cuMemAlloc(&dB, bytesB), "cuMemAlloc B");
     CU_OK(cuMemAlloc(&dC, (size_t)nC * cbytes), "cuMemAlloc C");
     const auto fill_t0 = std::chrono::steady_clock::now();
+    // Endeavour 209: block operands get their codes, and a scales vector each (A's rows are M, B's N).
+    CUdeviceptr dSA = 0, dSB = 0;
+    uint64_t bytesSA = 0, bytesSB = 0;
+    if (mf) {
+        crisp_bench::cuda_fill_mf_codes((void *)dA, nA, crisp_bench::FILL_MOD_A, mf_base.c_str());
+        crisp_bench::cuda_fill_mf_codes((void *)dB, nB, crisp_bench::FILL_MOD_B, mf_base.c_str());
+        bytesSA = crisp_bench::mf_scales_bytes(M, K, mf_vec);
+        bytesSB = crisp_bench::mf_scales_bytes(N, K, mf_vec);
+        CU_OK(cuMemAlloc(&dSA, bytesSA), "cuMemAlloc SA");
+        CU_OK(cuMemAlloc(&dSB, bytesSB), "cuMemAlloc SB");
+        crisp_bench::cuda_fill_mf_scales((void *)dSA, M, K, mf_vec, mf_scale.c_str());
+        crisp_bench::cuda_fill_mf_scales((void *)dSB, N, K, mf_vec, mf_scale.c_str());
+    } else {
     crisp_bench::cuda_fill_encoded((void *)dA, nA, crisp_bench::FILL_MOD_A, elem.c_str());
     crisp_bench::cuda_fill_encoded((void *)dB, nB, crisp_bench::FILL_MOD_B, elem.c_str());
+    }
     const double fill_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - fill_t0).count();
     CU_OK(cuMemsetD8(dC, 0, (size_t)nC * cbytes), "zero C");
@@ -284,9 +333,17 @@ int main(int argc, char **argv) {
         slot[base + 11] = e0 * e1 * e2;     // length, in ELEMENTS
     };
     for (const auto &s : scratch) {
-        if (s.rank == 3) bind_tensor3(s.idx, s.off, s.e0, s.e1, s.e2);
-        else             bind_tensor(s.idx, (CUdeviceptr)s.off, s.e0 * s.e1 * ebytes, s.e0, s.e1);
+        if (s.rank == 3) { bind_tensor3(s.idx, s.off, s.e0, s.e1, s.e2); slot[s.idx + 1] = s.e0 * s.e1 * s.e2 * s.w; }
+        else             bind_tensor(s.idx, (CUdeviceptr)s.off, s.e0 * s.e1 * s.w, s.e0, s.e1);
     }
+    // Endeavour 209: a scales vector is a RANK-1 tensor, six arguments: ptr, byte_size, off0, str0,
+    // ext0, length -- in bytes, as the 208 hoist binds it.
+    auto bind_vec = [&](int base, CUdeviceptr ptr, uint64_t bytes) {
+        if (base < 0 || base + 5 >= argc_k) return;
+        slot[base + 0] = (uint64_t)ptr; slot[base + 1] = bytes; slot[base + 2] = 0;
+        slot[base + 3] = 1;             slot[base + 4] = bytes; slot[base + 5] = bytes;
+    };
+    if (mf) { bind_vec(iSA, dSA, bytesSA); bind_vec(iSB, dSB, bytesSB); }
 
     // ---- CUtensorMap descriptors (TMA) ----------------------------------------------------
     // Chapters 4/5/6 fetch through cp.async.bulk.tensor, whose first kernel arguments are not
@@ -328,16 +385,32 @@ int main(int argc, char **argv) {
         const std::string orient = (f.size() >= 6) ? f[5] : "kn";
 
         const bool isA = (wh == "a" || wh == "A");
+        // Endeavour 209: a descriptor for C (a `:via :tma` store) is REFUSED, loudly.  Binding it as
+        // B's -- what the fixture did before -- launches a kernel whose stores go through a map of
+        // the wrong tensor.  Every contender's C is fp32 (s32 for int8); a 16-bit TMA-stored C is not
+        // a comparable row, so this is not a gap in any section yet.
+        if (!isA && wh != "b" && wh != "B") {
+            std::cerr << "the fixture does not bind a tensormap for '" << wh << "' (arg " << idx
+                      << "): only A's and B's.  A :via :tma store of C is not measurable here.\n";
+            return 4;
+        }
         CUdeviceptr base = isA ? dA : dB;
         // Extents as this harness ALLOCATED them: A is M x K, B is K x N, both row-major.
-        const uint64_t e0 = isA ? M : (orient == "nk" ? N : K);
-        const uint64_t e1 = isA ? K : (orient == "nk" ? K : N);
+        // A block operand's descriptor is in BYTES along K (the metacrisp's :element-type uchar):
+        // K / epb bytes per row, which is what its :box-dims are in too.
+        const uint64_t Kst = mf ? K / epb : K;
+        const uint64_t e0 = isA ? M : (orient == "nk" ? N : Kst);
+        const uint64_t e1 = isA ? Kst : (orient == "nk" ? Kst : N);
+        if (mf && !isA && orient != "nk") {
+            std::cerr << "a block-scaled B must be staged K-contiguous (col-major, 'nk')\n"; return 4;
+        }
 
         CUtensorMapDataType dt;
         if      (elem == "bf16") dt = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
         else if (elem == "f16")  dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT16;
         else if (elem == "f64")  dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT64;
-        else if (int8)           dt = CU_TENSOR_MAP_DATA_TYPE_UINT8;   // 207: bytes; the sign is the MMA's
+        else if (int8 || mf)     dt = CU_TENSOR_MAP_DATA_TYPE_UINT8;   // 207: bytes; the sign is the MMA's
+                                                                       // 209: block codes are bytes too
         else                     dt = CU_TENSOR_MAP_DATA_TYPE_FLOAT32;
 
         uint64_t gdim[2] = { e1, e0 };                 // reversed: innermost first
@@ -369,7 +442,17 @@ int main(int argc, char **argv) {
 
     // ---- grid ------------------------------------------------------------------------------
     unsigned gx, gy;
-    if (gmode == "one-thread-per") {
+    if (gmode == "fixed") {
+        // Endeavour 209: a PERSISTENT kernel -- (global-size :set-to N) -- launched exactly as
+        // declared, N / block CTAs on x.  Its tile-stride walks every tile over those CTAs.
+        const uint64_t G = std::strtoull(env_or("CRISP_MATMUL_GLOBAL", "0"), nullptr, 10);
+        if (G == 0 || G % local[0] != 0) {
+            std::cerr << "CRISP_MATMUL_GRID=fixed needs CRISP_MATMUL_GLOBAL, a multiple of the block\n";
+            return 1;
+        }
+        gx = (unsigned)(G / local[0]);
+        gy = 1;
+    } else if (gmode == "one-thread-per") {
         gx = (unsigned)((N + local[0] - 1) / (local[0] ? local[0] : 1));
         gy = (unsigned)((M + (local[1] ? local[1] : 1) - 1) / (local[1] ? local[1] : 1));
     } else {
@@ -455,7 +538,8 @@ int main(int argc, char **argv) {
     const crisp_bench::VerifyResult vr = crisp_bench::cuda_verify(
         (void *)dC, elem == "f64" ? "f64" : requant ? "s8" : int8 ? "s32" : "f32", M, N, K,
         crisp_bench::rm(K), b_is_nk ? crisp_bench::cm(K) : crisp_bench::rm(N), crisp_bench::rm(N),
-        requant ? crisp_bench::requant_s8(rq_m) : std::function<double(double)>{});
+        requant ? crisp_bench::requant_s8(rq_m) : std::function<double(double)>{},
+        mf ? mf_vec : 0);                       // 209: block-scaled -- B is K-contiguous (b_is_nk)
     const bool verified = vr.verified;
     const double max_abs_err = vr.max_abs_err;
     const uint64_t checked = vr.checked;
@@ -465,6 +549,7 @@ int main(int argc, char **argv) {
               << "  \"kernel\": \"" << kname << "\",\n"
               << "  \"M\": " << M << ", \"N\": " << N << ", \"K\": " << K << ",\n"
               << "  \"elem\": \"" << elem << "\", \"grid_mode\": \"" << gmode << "\",\n"
+              << "  \"mf\": \"" << (mf ? env_or("CRISP_MATMUL_MF", "") : "") << "\",\n"
               << "  \"block\": [" << local[0] << ", " << local[1] << ", " << local[2] << "],\n"
               << "  \"grid\": [" << gx << ", " << gy << ", 1],\n"
               << "  \"shared_bytes\": " << shared_bytes << ",\n"
@@ -489,6 +574,8 @@ int main(int argc, char **argv) {
 
     for (CUdeviceptr t : tmap_dev) cuMemFree(t);
     cuMemFree(dA); cuMemFree(dB); cuMemFree(dC);
+    if (dSA) cuMemFree(dSA);
+    if (dSB) cuMemFree(dSB);
     cuModuleUnload(module);
     cuDevicePrimaryCtxRelease(dev);
     return verified ? 0 : 3;

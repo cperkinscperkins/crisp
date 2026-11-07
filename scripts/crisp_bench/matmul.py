@@ -659,6 +659,9 @@ def l0_fixture_env(crisp_src, metacrisp):
     return env
 
 
+_SCRATCH_ELEM_BYTES = {"uchar": 1, "char": 1, "bfloat16": 2, "half": 2, "float": 4,
+                       "int": 4, "uint": 4, "double": 8, "long": 8, "ulong": 8}
+
 def _fixture_arg_layout(meta):
     """Argument layout of a matmul kernel, read from its metacrisp, for BOTH reviewed fixtures.
 
@@ -692,6 +695,25 @@ def _fixture_arg_layout(meta):
     declared = _entries(declared_sec)
     scratch  = _entries(scratch_sec)
 
+    # Endeavour 209: a block-matrix kernel declares its SCALES as parameters of their own
+    # (`(A SA B SB &out C)`), so A/B/C are no longer the first three declared.  Each scales vector
+    # names the matrix it scales (:scales-of); they are set aside here and bound by role.
+    # The WHOLE record of each parameter, up to the next `:name` -- :microfloat follows :range, so
+    # the _entries blob (which stops at :range) never contains it.
+    def _record(section, name):
+        i = section.find(':name "' + name + '"')
+        if i < 0:
+            return ""
+        j = section.find(":name", i + 6)
+        return section[i:j] if j > 0 else section[i:]
+    _all_declared = declared
+    declared = [d for d in _all_declared if ":scales-of" not in _record(declared_sec, d[0])]
+    for d in _all_declared:
+        so = re.search(r':scales-of\s+"([^"]+)"', _record(declared_sec, d[0]))
+        if so and declared:
+            role = "SA" if so.group(1).lower() == declared[0][0].lower() else "SB"
+            env["CRISP_MATMUL_ARG_" + role] = str(d[1])
+
     if len(declared) >= 3:
         env["CRISP_MATMUL_ARG_A"] = str(declared[0][1])
         env["CRISP_MATMUL_ARG_B"] = str(declared[1][1])
@@ -710,7 +732,13 @@ def _fixture_arg_layout(meta):
         sm = re.search(r":size-expr\s+\((\d+)\s+(\d+)(?:\s+(\d+))?\)", seg[:400])
         if sm:
             dims = [g for g in sm.groups() if g]
-            specs.append(":".join([str(st)] + dims))
+            # Endeavour 209: the scratch's OWN element width, as a `@bytes` suffix.  The fixture used
+            # to size every scratch at A's width; a block-matrix kernel mixes code rings and scale
+            # rings (both `uchar`) with an fp32 C, and its A "element" is half a byte.  Every
+            # existing kernel's scratch has A's element type, so this changes none of them.
+            ty = re.search(r":type\s+\(tensor\s+([A-Za-z0-9\-]+)", seg[:400])
+            w = _SCRATCH_ELEM_BYTES.get(ty.group(1).lower()) if ty else None
+            specs.append(":".join([str(st)] + dims) + (f"@{w}" if w else ""))
     if specs:
         env["CRISP_MATMUL_SCRATCH"] = ",".join(specs)
     return env, scratch_sec
@@ -756,6 +784,23 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
 
     gs = _sexp_after(meta, ":global-size")
     env["CRISP_MATMUL_GRID"] = "one-thread-per" if ":one-thread-per" in gs else "strided"
+    # Endeavour 209: a PERSISTENT kernel states its total thread count, `(global-size :set-to N)`,
+    # and tile-stride walks the tiles over however many CTAs that makes.  The fixture used to
+    # ignore it and launch one CTA per tile of a default 32x64, which for a 128x256 tcgen05 kernel
+    # is 16x too many CTAs.  global-size is author intent: launched exactly as declared.
+    #
+    # EXCEPT A ONE-CTA DECLARATION, pending F-209-1 (tests/spec/209-b200-mma-bench/b200-mma-bench.md).
+    # chapter 6 (tf32 / bf16 / f64) declares (global-size :set-to 96) with a 96-thread block -- one
+    # CTA for the whole matrix -- and the fixture has always ignored it and launched a tile grid.
+    # Honoring it would serialize every chapter-6 row; changing what the published rows measured is
+    # Chris's call with F-209-1, so until then only a multi-CTA declaration is launched as declared.
+    _fixed = re.search(r":set-to\s+(\d+)", gs)
+    _lnums = re.findall(r"\d+", ls)
+    if _fixed and _lnums and int(_fixed.group(1)) <= int(_lnums[0]):
+        _fixed = None
+    if _fixed:
+        env["CRISP_MATMUL_GRID"] = "fixed"
+        env["CRISP_MATMUL_GLOBAL"] = _fixed.group(1)
     tnums = re.findall(r"\d+", _sexp_after(gs, ":tile-shape"))
     if len(tnums) >= 2:
         env["CRISP_MATMUL_TILE"] = f"{tnums[0]},{tnums[1]}"
@@ -776,6 +821,15 @@ def cuda_fixture_env(crisp_src, metacrisp, ptx_path):
         env["CRISP_MATMUL_ELEM"] = {"double": "f64", "bfloat16": "bf16",
                                     "half": "f16", "float": "f32",
                                     "char": "s8", "uchar": "u8"}[m.group(1)]
+    # Endeavour 209: a BLOCK MATRIX (def-microfloat-block) operand.  Its element type is the block's
+    # own name, so the regex above cannot see it and the fixture used to default to f32.  The
+    # metacrisp records the block on A: base codes, scale format, vector length.  Read, never
+    # inferred from the name -- `nvfp4` is just what this kernel's author called it.
+    mf = re.search(r':microfloat\s+\(:block\s+"([^"]+)"\s+:base\s+"([^"]+)"\s+:scale\s+"([^"]+)"'
+                   r'\s+:vec\s+(\d+)', meta)
+    if mf:
+        env["CRISP_MATMUL_ELEM"] = "mf"
+        env["CRISP_MATMUL_MF"] = f"{mf.group(2).lower()}:{mf.group(3).lower()}:{mf.group(4)}"
 
     km = re.search(r"\(def-kernel\s+([A-Za-z0-9_\-]+)", src)
     if km:
@@ -1119,6 +1173,14 @@ def _detect_nvidia_arch():
                            capture_output=True, text=True, timeout=10)
         cap = (p.stdout or "").strip().splitlines()[0].strip() if p.returncode == 0 else ""
         if re.fullmatch(r"\d+\.\d+", cap):
+            # Endeavour 209: compute capability 10.x is the Blackwell datacenter part (B200 / GB200),
+            # whose tensor core (tcgen05) exists only on the ARCHITECTURE-SPECIFIC target -- Crisp
+            # refuses `sm_100` for it and ptxas would too.  The `a` target is a superset for every
+            # other chapter (mma.sync, cp.async, TMA), so the whole sweep compiles for `sm_100a`.
+            # Hopper stays `sm_90`, unchanged: its wgmma kernels upgrade the target themselves, and
+            # changing the H100 command lines would make its rows a different experiment.
+            if cap.split(".")[0] == "10":
+                return "sm_" + cap.replace(".", "") + "a"
             return "sm_" + cap.replace(".", "")
     except Exception:
         pass
@@ -1318,6 +1380,22 @@ def main():
                       "SKIPPING target '" + str(comp_name) + "'.")
                 return
 
+            # Endeavour 209: THE TENSOR-CORE GATE.  wgmma exists only on Hopper (sm_90a) and tcgen05
+            # only on the Blackwell datacenter part (sm_100a), so a chapter-7-class kernel runs on
+            # one generation and prints its gate on the other -- a stated absence, never a compile
+            # failure dressed as a missing row.  Decided from the kernel's CODE (comments stripped:
+            # the chapter-7 headers name both instructions).
+            if is_crisp:
+                _code = "\n".join(l.split(";", 1)[0] for l in
+                                  src_path.read_text(errors="replace").splitlines())
+                _need = ("sm_90a", "wgmma") if re.search(r"\((?:make-)?wgmma-", _code) else \
+                        ("sm_100a", "tcgen05") if re.search(r"\((?:make-)?tcgen05-", _code) else None
+                _have = HW["arch_target"]
+                if _need and not _have.startswith(_need[0][:5]):
+                    print(f"  GATE: {chapter}/{source_name} ({comp_name}) requires {_need[0]} "
+                          f"({_need[1]}); this device is {_have} -- not run.", flush=True)
+                    return
+
             bin_path = HERE / chapter / bin_name
             try:
                 return _run_target_inner(chapter, comp_name, flags, is_sycl, is_cublas,
@@ -1498,9 +1576,15 @@ def main():
 
             # §1 Ch 7 — WGMMA + Warp Specialization (Hopper warpgroup MMA)
             run_target("chap7_wgmma", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
+            # §1 Ch 7, Blackwell's answer (Endeavour 209) — tcgen05 (one thread issues 128x256; D in
+            # tensor memory).  The same question as chap7_wgmma; each prints the other's gate.
+            run_target("chap7_tcgen05", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
 
             # §2 — Top MMA Benchmarks (All 4 contender classes)
             run_target("sec2_top", "matmul.crisp", "matmul.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
+            # Endeavour 209: the B200's Crisp contender (tcgen05, persistent, accumulator ring).  The
+            # gate runs exactly one of these two "Crisp" rows per device.
+            run_target("sec2_top", "matmul_b200.crisp", "matmul_b200.ptx", "Crisp", [], is_crisp=True, use_fixture=True)
             run_target("sec2_top", "cuda_control.cu", "cuda_control", "CUDA_Apples", nvcc_flags)
             # CUTLASS include is REPO-RELATIVE, matching how SYCL-TLA is located below.  It used
             # to be the absolute "-I/workspace/cutlass/include" -- a path specific to one RunPod
@@ -1514,7 +1598,16 @@ def main():
             # machine.  Verified on an H100 NVL 2026-08-29: with both paths, all 11 peer builds
             # succeed in ~22s each.
             cutlass_util_inc = HERE.parent.parent / "third_party" / "cutlass" / "tools" / "util" / "include"
-            cutlass_base_flags = ["-O3", "-std=c++17", "-arch=sm_90a",
+            # Endeavour 209: the arch is the DETECTED device's architecture-specific target (sm_90a on
+            # Hopper, sm_100a on a B200), not a hard-coded sm_90a.  The Sm90 peers below need wgmma
+            # and so run only on Hopper; the B200 gets the Sm100 (tcgen05) peers instead -- see
+            # `_blackwell` further down.
+            # (sm_80 / sm_89 have no `a` target; they keep the plain arch, and the Sm90 peers fail to
+            # build there exactly as they did under the old hard-coded sm_90a.)
+            _cutlass_arch = (HW["arch_target"] + "a" if HW["arch_target"] in ("sm_90",)
+                             else HW["arch_target"])
+            _blackwell = HW["arch_target"].startswith("sm_10")
+            cutlass_base_flags = ["-O3", "-std=c++17", "-arch=" + _cutlass_arch,
                                   f"-I{cutlass_inc}", f"-I{cutlass_util_inc}"]
             # THE tf32 PEER IS SWEPT TOO, and the reason is measured rather than aesthetic.  This
             # contender had never compiled on any machine (see cutlass_peer.cu defect 1), so its
@@ -1532,9 +1625,26 @@ def main():
                 ("256x128x32", ["-DCFG_TILE_M=256", "-DCFG_TILE_N=128", "-DCFG_TILE_K=32"]),
                 ("64x256x32",  ["-DCFG_TILE_M=64",  "-DCFG_TILE_N=256", "-DCFG_TILE_K=32"]),
             ]
-            for _cfg, _dflags in cutlass_tf32_configs:
-                run_target("sec2_top", "cutlass_peer.cu", f"cutlass_peer_{_cfg}",
-                           f"CUTLASS_V_{_cfg}", cutlass_base_flags + _dflags)
+            # Endeavour 209: the SM100 peers (one source, common/cutlass_peer_sm100.cuh, per-lane
+            # wrappers).  The sweep includes the 2-SM MMA (M=256 on a cluster of 2), which Crisp does
+            # not emit -- so it also measures how much of a Crisp gap is that one instruction.
+            cutlass_sm100_configs = [
+                ("sm100_128x256",    ["-DCFG_TILE_M=128", "-DCFG_TILE_N=256"]),
+                ("sm100_128x128",    ["-DCFG_TILE_M=128", "-DCFG_TILE_N=128"]),
+                ("sm100_256x256c2",  ["-DCFG_TILE_M=256", "-DCFG_TILE_N=256", "-DCFG_CLUSTER_M=2"]),
+                ("sm100_256x128c2",  ["-DCFG_TILE_M=256", "-DCFG_TILE_N=128", "-DCFG_CLUSTER_M=2"]),
+            ]
+            def run_cutlass_sm100(chapter, src="cutlass_peer_sm100.cu", configs=None, extra=()):
+                """The B200's CUTLASS peer rows for CHAPTER, one per SM100 configuration."""
+                for _cfg, _dflags in (configs or cutlass_sm100_configs):
+                    run_target(chapter, src, f"{Path(src).stem}_{_cfg}", f"CUTLASS_V_{_cfg}",
+                               cutlass_base_flags + list(extra) + _dflags)
+            if _blackwell:
+                run_cutlass_sm100("sec2_top")
+            else:
+                for _cfg, _dflags in cutlass_tf32_configs:
+                    run_target("sec2_top", "cutlass_peer.cu", f"cutlass_peer_{_cfg}",
+                               f"CUTLASS_V_{_cfg}", cutlass_base_flags + _dflags)
             run_target("sec2_top", "cublas_ceiling.cu", "cublas_ceiling", "CUBLAS_Optimal", cublas_flags, is_cublas=True)
 
             # §2.1 / §2.2 — 16-BIT TOP MMA, NVIDIA (endeavour 159).
@@ -1670,6 +1780,10 @@ def main():
             # would measure a different kernel than chap7_wgmma and make the rows incomparable.
             run_target("chap7_wgmma_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
                        [], is_crisp=True, use_fixture=True)
+            # Endeavour 209: Blackwell's chapter-7 answer at 16 bits (chap7_tcgen05 with the element
+            # type and K-step changed, as chap7_wgmma_bf16 is to chap7_wgmma).
+            run_target("chap7_tcgen05_bf16", "matmul.crisp", "matmul.ptx", "Crisp",
+                       [], is_crisp=True, use_fixture=True)
 
             # Endeavour 162 GEOMETRY VARIANTS (underscore dirs -- not ladder chapters, not §1.5).
             # chap7_wgmma_bf16 is 64x256 on ONE warpgroup; CUTLASS's winner at 4096 is 128x256.
@@ -1725,6 +1839,9 @@ def main():
                 # a 64,64 tile here would measure a different kernel than the one promoted.
                 run_target(_ch, f"matmul_{_sfx}.crisp", f"matmul_{_sfx}.ptx", "Crisp",
                            [], is_crisp=True, use_fixture=True)
+                # Endeavour 209: the B200's Crisp contender; the gate runs one "Crisp" per device.
+                run_target(_ch, f"matmul_b200_{_sfx}.crisp", f"matmul_b200_{_sfx}.ptx", "Crisp",
+                           [], is_crisp=True, use_fixture=True)
                 # Endeavour 162: the 128x256 two-warpgroup, ring-depth-4 geometry, PROMOTED here
                 # from an underscore probe.  A VARIANT and not a replacement, because the two
                 # kernels CROSS OVER: on an H100 NVL the base wins at 1024 (97.8 vs 74.0) and 2048
@@ -1737,12 +1854,14 @@ def main():
                            [], is_crisp=True, use_fixture=True)
                 run_target(_ch, f"cuda_control_{_sfx}.cu", f"cuda_control_{_sfx}",
                            f"CUDA_Apples_{_tag}", nvcc_flags)
-                for _cfg, _dflags in cutlass_16bit_configs:
+                for _cfg, _dflags in ([] if _blackwell else cutlass_16bit_configs):
                     # CUTLASS_V_<cfg> so the peer column can name which configuration produced a
                     # cell, the same provenance rule the Crisp variants already follow.  A
                     # best-per-size number the reader cannot reproduce is not an honest number.
                     run_target(_ch, f"cutlass_peer_{_sfx}.cu", f"cutlass_peer_{_sfx}_{_cfg}",
                                f"CUTLASS_V_{_cfg}", cutlass_16bit_flags + _dflags)
+                if _blackwell:
+                    run_cutlass_sm100(_ch)
                 run_target(_ch, f"cublas_ceiling_{_sfx}.cu", f"cublas_ceiling_{_sfx}",
                            f"CUBLAS_Optimal_{_tag}", cublas_flags, is_cublas=True)
 
@@ -1755,14 +1874,50 @@ def main():
             if _hopper:
                 run_target("sec2_top_int8", "matmul_int8.crisp", "matmul_int8.ptx", "Crisp",
                            [], is_crisp=True, use_fixture=True)
+            # Endeavour 209: on a B200 the tcgen05 kind::i8 kernel is THE Crisp contender, and the
+            # sync kernel is its variant exactly as on Hopper.
+            if _blackwell:
+                run_target("sec2_top_int8", "matmul_b200_int8.crisp", "matmul_b200_int8.ptx", "Crisp",
+                           [], is_crisp=True, use_fixture=True)
             run_target("sec2_top_int8", "matmul_int8_sync.crisp", "matmul_int8_sync.ptx",
-                       "Crisp_V_sync" if _hopper else "Crisp", [], is_crisp=True, use_fixture=True)
+                       "Crisp_V_sync" if (_hopper or _blackwell) else "Crisp", [], is_crisp=True, use_fixture=True)
             # VARIANT: the sync kernel over 8 warps (128x128 tile, 32x64 per warp) -- the 1-warp
             # chapter-5 geometry spills its 128 accumulator registers.
             run_target("sec2_top_int8", "matmul_int8_sync_w8.crisp", "matmul_int8_sync_w8.ptx",
                        "Crisp_V_sync_w8", [], is_crisp=True, use_fixture=True)
             run_target("sec2_top_int8", "cublaslt_int8.cu", "cublaslt_int8", "CUBLASLt_INT8",
                        cublas_flags + ["-lcublasLt"], is_cublas=True)
+            if _blackwell:
+                # Endeavour 209: an int8 PEER exists on the B200 (the SM100 builder takes int8_t like
+                # any other element); the Hopper lane never had one.
+                run_cutlass_sm100("sec2_top_int8")
+
+            # Endeavour 209 TUNING (fenced `_` dir: runs only when named in --chapters, results go to
+            # scratch).  Every B200 lane's generated variants -- persistent ring 3 / 4, the tile-grid
+            # shape -- through the same fixture, so the winner promoted into a lane was measured
+            # by the apparatus that will publish it.  scripts/crisp_bench/gen_b200.py --tune.
+            for _tv in sorted((HERE / "_b200_tune").glob("*.crisp")):
+                run_target("_b200_tune", _tv.name, _tv.stem + ".ptx", f"Crisp_V_{_tv.stem}",
+                           [], is_crisp=True, use_fixture=True)
+
+            # §2 Top — BLOCK-SCALED (Endeavour 209, B200 only): NVFP4 / MXFP4 / MXFP8.  Codes plus a
+            # scale per 16 or 32 along K, fp32 C.  The Crisp kernel is endeavour 208's block-scaled
+            # tcgen05 pipeline; the ceiling is cuBLASLt with block scales; the peer is CUTLASS's SM100
+            # block-scaled builder.  One format per directory (one precision per ladder).
+            for _ch, _fmt in (("sec2_top_nvfp4", "nvfp4"), ("sec2_top_mxfp4", "mxfp4"),
+                              ("sec2_top_mxfp8", "mxfp8")):
+                run_target(_ch, f"matmul_b200_{_fmt}.crisp", f"matmul_b200_{_fmt}.ptx", "Crisp",
+                           [], is_crisp=True, use_fixture=True)
+                if not _blackwell:
+                    print(f"  GATE: {_ch} (cuBLASLt / CUTLASS block-scaled) requires sm_100a; this device "
+                          f"is {HW['arch_target']} -- not run.", flush=True)
+                    continue
+                run_target(_ch, "cublaslt_blockscaled.cu", "cublaslt_blockscaled",
+                           f"CUBLASLt_{_fmt.upper()}", cublas_flags + ["-lcublasLt"], is_cublas=True)
+                run_cutlass_sm100(_ch, "cutlass_peer_sm100_bs.cu", [
+                    ("sm100_128x256",   ["-DCFG_TILE_M=128", "-DCFG_TILE_N=256"]),
+                    ("sm100_256x256c2", ["-DCFG_TILE_M=256", "-DCFG_TILE_N=256", "-DCFG_CLUSTER_M=2"]),
+                ], extra=["--expt-relaxed-constexpr"])     # the block-scaled mainloop needs it
 
             # §4 int8 epilogue — REQUANTIZE (Endeavour 207): C (s8) = sat8(rne(acc * m)).  The Crisp
             # kernel narrows in its store (205's to-q on wgmma, Hopper only); the peer is cuBLASLt with
@@ -1770,6 +1925,11 @@ def main():
             if _hopper:
                 run_target("sec4_int8_requant", "matmul_int8_requant.crisp", "matmul_int8_requant.ptx",
                            "Crisp_Requant", [], is_crisp=True, use_fixture=True)
+            if _blackwell:
+                # Endeavour 209: the same narrowing store, from tensor memory (208 spec 10's to-q).
+                run_target("sec4_int8_requant", "matmul_b200_int8_requant.crisp",
+                           "matmul_b200_int8_requant.ptx", "Crisp_Requant", [], is_crisp=True,
+                           use_fixture=True)
             run_target("sec4_int8_requant", "cublaslt_int8_requant.cu", "cublaslt_int8_requant",
                        "CUBLASLt_Requant", cublas_flags + ["-lcublasLt"], is_cublas=True)
 

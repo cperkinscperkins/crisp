@@ -1,0 +1,59 @@
+;; Chapter 7, BLACKWELL'S ANSWER (endeavour 209): "can one instruction do more math?" -- tcgen05.
+;;
+;; chap7_wgmma's twin on a B200 (sm_100a), where wgmma does not exist.  One question, one answer per
+;; generation: Hopper's is a warpgroup MMA (64 x 256 per instruction, accumulator in 128 threads'
+;; registers); Blackwell's is tcgen05 (128 x 256 issued by ONE thread, accumulator in tensor memory).
+;; Everything else is chap7_wgmma's kernel: tf32, a 2-slot TMA ring, K-step 32 (128 bytes, the
+;; 128-byte swizzle), one CTA per output tile.
+;;
+;; ONE DELIBERATE DIFFERENCE: this kernel DECLARES its grid, `(global-size :derive-from C :strategy
+;; :strided)`, so the tile-shape (128 256) is inferred and recorded.  chap7_wgmma declares none, and
+;; the fixture then launches it on its default 32 x 64 tile -- 8x the CTAs it has tiles for, the
+;; extra ones idle (finding F-209-1 in tests/spec/209-b200-mma-bench/b200-mma-bench.md).
+;;
+;; THE ROLES DIFFER BECAUSE THE INSTRUCTION DOES.  wgmma needs a whole warpgroup to issue and holds
+;; D in its registers, so chap7_wgmma's consumers both multiply and store.  tcgen05 is issued by one
+;; thread and D lives in tensor memory, so the multiply is one warp (:mma) and the store is a
+;; separate warpgroup (:epilogue) that reads D out of tensor memory once the MMA warp commits it.
+;; 4 + 1 + 1 warps = 192 threads.  The tile is 128 x 256 because 128 is tcgen05's native M (one
+;; CTA, cta_group::1) -- wgmma's 64 would be half an instruction.
+;;
+;; Requires sm_100a.  On Hopper this chapter prints its gate, as chap7_wgmma does on a B200.
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)   ; the tile grid, inferred from tile-stride
+           (local-size :set-to 192))                ; epilogue warpgroup + producer warp + mma warp
+  (let ((A-ring    (make-scratch-matrix-ring float (128 32) :ring-count 2))
+        (B-ring    (make-scratch-matrix-ring float (256 32) :ring-count 2))   ; B^T: N x K
+        (D         (make-tcgen05-accumulator float (128 256) 0.0))
+        (K         (inner-dimension A B))
+        (empty     (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :signaled))
+        (full      (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting))
+        (acc-full  (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 1 :initial-state :waiting))
+        (acc-empty (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 4 :initial-state :signaled)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
+        (:epilogue
+          (await (ring-get acc-full 0))
+          (store-tile D C (grid-y grid-x))
+          (signal (ring-get acc-empty 0)))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k) :barrier (ring-get full slot) :swizzle :128b))))
+        (:mma
+          (await (ring-get acc-empty 0))
+          (set! D (make-tcgen05-accumulator float (128 256) 0.0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (tcgen05-accumulate-via-tile (128 256 32) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                           :swizzle :128b :on-complete (ring-get empty slot))))
+          (tcgen05-commit (ring-get acc-full 0)))))))

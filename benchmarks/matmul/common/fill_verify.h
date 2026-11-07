@@ -45,6 +45,28 @@ constexpr double FILL_F64_SCALE = 1.0 + 1.0 / 33554432.0;     // 1 + 2^-25, exac
 constexpr double FILL_F64_RTOL  = 1e-10;
 constexpr double FILL_RTOL      = 1e-3;                        // f32 / tf32 / f16 / bf16
 
+// ---- Endeavour 209: BLOCK-SCALED operands (NVFP4 / MXFP4 / MXFP8) -------------------------------
+// The CODES follow the convention above: logical element `flat` holds flat % 5 (A) or flat % 3 (B).
+// 0..4 are exact in e2m1 (fp4), e4m3 and e5m2, so nothing changes for the codes.
+//
+// THE SCALES MUST NOT BE 1.  A kernel that never applies its scales (or applies A's to B, or reads
+// the 128x4 layout wrong) passes against unit scales.  So every scale is a power of two that VARIES
+// with both its row and its K-block:
+//
+//     scale(r, kb) = 2 ^ ((r + 2*kb) % 3 - 1)          in {0.5, 1, 2}
+//
+// r is the row of the scaled matrix (M for A, N for B) and kb = k / vec.  Powers of two keep every
+// product exact (codes <= 4 and 2, scales <= 2 each: |term| <= 32 in quarter steps), so the check
+// stays the plain FILL_RTOL comparison.  The device writes these through the :blocked-128x4 layout;
+// the host recomputes them from the formula -- which is what tests the layout.
+#if defined(__CUDACC__)
+#define CRISP_BENCH_HD __host__ __device__
+#else
+#define CRISP_BENCH_HD
+#endif
+CRISP_BENCH_HD inline int mf_scale_exp(uint64_t r, uint64_t kb) { return (int)((r + 2 * kb) % 3) - 1; }
+inline double mf_scale(uint64_t r, uint64_t kb) { return std::ldexp(1.0, mf_scale_exp(r, kb)); }
+
 // 16-bit operands are filled as RAW 16-bit PATTERNS, not by converting a float on the device.
 // Storing a float into a half/bfloat16 tensor element in a Crisp kernel produced wrong values on
 // 2026-09-13 (both widths; f32 was correct; plan/bugs.md BUG 059) -- so the host encodes the five fill values once and
@@ -102,7 +124,8 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
                                    const ReadSpan &read_span,
                                    double scale = 1.0, uint64_t smax = 64,
                                    const std::function<double(double)> &post = {},
-                                   double rtol = FILL_RTOL) {
+                                   double rtol = FILL_RTOL,
+                                   uint64_t mf_vec = 0) {        // 209: >0 = block-scaled, scales per mf_vec
     VerifyResult r;
     if (M == 0 || N == 0) return r;
     const uint64_t si = std::max<uint64_t>(1, (M + smax - 1) / smax);
@@ -110,6 +133,11 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
 
     auto expected = [&](uint64_t i, uint64_t j) {
         double acc = 0.0;
+        if (mf_vec)
+            for (uint64_t k = 0; k < K; ++k)
+                acc += fill_a(i * a.s0 + k * a.s1) * mf_scale(i, k / mf_vec)
+                     * fill_b(k * b.s0 + j * b.s1) * mf_scale(j, k / mf_vec);
+        else
         for (uint64_t k = 0; k < K; ++k)
             acc += fill_a(i * a.s0 + k * a.s1) * fill_b(k * b.s0 + j * b.s1);
         // POST is the section-4 activation applied after the multiply (ReLU, or the custom quadratic

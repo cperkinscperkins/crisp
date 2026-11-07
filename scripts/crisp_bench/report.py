@@ -95,13 +95,29 @@ MMA_TECHNIQUES = [
     {
         "num": 7,
         "key": "chap7_wgmma",
-        "alt_keys": ["chap3_wgmma", "intel_prefetch"],
+        # Endeavour 209: ONE question, one answer per GENERATION.  chap7_tcgen05 is Blackwell's
+        # (tcgen05 does not exist on Hopper, wgmma does not exist on a B200), so a device has data
+        # under exactly one of the two keys and the row names the instruction it measured.
+        "alt_keys": ["chap7_tcgen05", "chap3_wgmma", "intel_prefetch"],
         "question": "Can one instruction do more math?",
         "desc_nv": "wgmma",
+        "desc_nv_by_key": {"chap7_tcgen05": "tcgen05 (Blackwell; wgmma needs sm_90a)",
+                           "chap7_wgmma": "wgmma (Hopper; tcgen05 needs sm_100a)"},
         "desc_intel": "GRF-bounded tile sweep",
         "has_tensor_cores": True
     },
 ]
+
+def _tech_desc(tech, gpu_data, platform, suffix=""):
+    """The description of ladder row TECH on one GPU: the per-generation answer when the row has
+    one (endeavour 209: chapter 7 is wgmma on Hopper, tcgen05 on a B200), named by whichever key
+    the GPU actually has data under; otherwise the platform's fixed description."""
+    if platform != "nvidia":
+        return tech["desc_intel"]
+    for k, d in tech.get("desc_nv_by_key", {}).items():
+        if (k + suffix) in gpu_data:
+            return d
+    return tech["desc_nv"]
 
 def _is_crisp(name: str) -> bool:
     return name == "Crisp" or name.startswith("Crisp_")
@@ -428,7 +444,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         rollup_rows = []
         for tech in MMA_TECHNIQUES:
             tnum = tech["num"]
-            tname = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+            tname = _tech_desc(tech, matmul_data[gpu], platform)
             ch_key = tech["key"]
             alt_keys = tech.get("alt_keys", [])
 
@@ -455,7 +471,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         for tech in MMA_TECHNIQUES:
             tnum = tech["num"]
             tquestion = tech["question"]
-            tdesc = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+            tdesc = _tech_desc(tech, matmul_data[gpu], platform)
             ch_key = tech["key"]
             alt_keys = tech.get("alt_keys", [])
 
@@ -576,7 +592,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             lines.append("| " + " | ".join(header) + " |")
             lines.append("|" + "|".join(["---"] * len(header)) + "|")
             for tech in MMA_TECHNIQUES:
-                tname = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+                tname = _tech_desc(tech, matmul_data[gpu], platform, "_bf16")
                 row = [str(tech["num"]), tname]
                 for s in sizes:
                     v = _tf16(tech, s)
@@ -601,7 +617,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
             prev16 = {}
             first = True
             for tech in present:
-                tdesc = tech["desc_nv"] if platform == "nvidia" else tech["desc_intel"]
+                tdesc = _tech_desc(tech, matmul_data[gpu], platform, "_bf16")
                 lines.append(f"#### Ch {tech['num']} — {tech['question']}")
                 lines.append(f"{tdesc}\n")
                 hdr = ["N", "Crisp bf16 TFLOPS"] + ([] if first else ["vs previous chapter"])
@@ -792,7 +808,7 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         # chap4_cheap_fetch included: it is a mainloop like the others, and leaving it out made the
         # BMG 16384 cell read 8.7 (sec2_top) while Ch 4 had measured 13.2 at the same size.  The
         # cell names its winning chapter, so widening the pool cannot hide where a number came from.
-        top_keys = ["sec2_top", "chap7_wgmma", "chap6_warp_specialization", "chap5_multistage_ring", "chap4_cheap_fetch", "chap3_wgmma", "intel_prefetch"]
+        top_keys = ["sec2_top", "chap7_wgmma", "chap7_tcgen05", "chap6_warp_specialization", "chap5_multistage_ring", "chap4_cheap_fetch", "chap3_wgmma", "intel_prefetch"]
         
         # Collect all unique sizes across top keys
         all_s = set()
@@ -1231,16 +1247,25 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
         if _i8_hopper:
             _i8_extra.append(("Crisp `mma.sync` m16n8k32 (the A100 / Ada instruction, run on Hopper)",
                               lambda k: k.startswith("Crisp_V_sync")))
+        # Endeavour 209: a lane is SLIM only where it HAS no peer.  The B200 int8 lane has a CUTLASS
+        # SM100 peer (the Hopper one never did), and slim would silently drop its column.
+        def _has_peer(chapter_key):
+            d = matmul_data[gpu].get(chapter_key, {}).get("fast", {})
+            return any(_is_peer(c) for pts in d.values() for c in pts)
         _emit_16bit_top(
             "sec2_top_int8", "INT8", "s8 · s8 → s32 integer tensor cores · cells are TOPS",
-            slim=True, ceil_name=_i8_lib,
+            slim=not _has_peer("sec2_top_int8"), ceil_name=_i8_lib,
             crisp_reject=(lambda k: k.startswith("Crisp_V_sync")) if _i8_hopper else None,
             preamble=[
                 "*C (s32) = A (s8) · B (s8), exact: every point verified against the integer "
-                "formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. The slim lane "
-                f"(endeavour 207) is Crisp against the vendor library ({_i8_lib}); there is no "
-                "hand-written Control or CUTLASS / SYCL-TLA peer at int8. Crisp's kernel is "
-                "`(8 16 32)` XMX on BMG, wgmma on Hopper, and `mma.sync` m16n8k32 on A100 / Ada.*",
+                "formula with max_abs_err 0. Cells read **TOPS (kernel ms)**. "
+                + (("The Peer is CUTLASS's SM100 builder (endeavour 209: the B200 is the only "
+                    "device with an int8 peer); there is no hand-written Control at int8. ")
+                   if _has_peer("sec2_top_int8") else
+                   (f"The slim lane (endeavour 207) is Crisp against the vendor library ({_i8_lib}); "
+                    "there is no hand-written Control or CUTLASS / SYCL-TLA peer at int8. "))
+                + "Crisp's kernel is `(8 16 32)` XMX on BMG, wgmma on Hopper, tcgen05 `kind::i8` "
+                "on a B200, and `mma.sync` m16n8k32 on A100 / Ada.*",
             ],
             extra=_i8_extra or None)
         # The requantizing epilogue: the same int8 GEMM with C narrowed to s8 as it is stored
@@ -1255,6 +1280,24 @@ def render_matmul_suite(matmul_data: dict, provenance: dict) -> List[str]:
                 "saturate. The Ceiling is cuBLASLt with an s8 C and alpha = m. Exact against that "
                 "oracle (max_abs_err 0). Cells read **TOPS (kernel ms)**.*",
             ])
+
+        # §2 BLOCK-SCALED (endeavour 209, B200 only): NVFP4 / MXFP4 / MXFP8.  One section per
+        # format, because one precision per ladder.  The emitter prints nothing where there is no
+        # data, so Hopper and Intel are unaffected.
+        for _bk, _btag, _bnote in (
+                ("sec2_top_nvfp4", "NVFP4", "fp4 e2m1 codes, a ue4m3 scale per 16 · fp32 C"),
+                ("sec2_top_mxfp4", "MXFP4", "fp4 e2m1 codes, a ue8m0 scale per 32 · fp32 C"),
+                ("sec2_top_mxfp8", "MXFP8", "fp8 e4m3 codes, a ue8m0 scale per 32 · fp32 C")):
+            _emit_16bit_top(
+                _bk, _btag, _bnote, slim=not _has_peer(_bk), ceil_name="cuBLASLt",
+                preamble=[
+                    "*Block-scaled MMA (tcgen05 `kind::mxf4nvf4` / `mxf4` / `mxf8f6f4`): codes plus "
+                    "a scale per block along K, in the `:blocked-128x4` layout every contender here "
+                    "shares. Verified against the block-scaled oracle: codes 0..4 / 0..2 and "
+                    "power-of-two scales that vary by row AND K-block, so a kernel that ignored or "
+                    "misplaced its scales fails. The Ceiling is cuBLASLt with block scales; the Peer "
+                    "is CUTLASS's SM100 block-scaled builder. Cells read **TFLOPS (kernel ms)**.*",
+                ])
 
 
     # Section 3: Situational Techniques
