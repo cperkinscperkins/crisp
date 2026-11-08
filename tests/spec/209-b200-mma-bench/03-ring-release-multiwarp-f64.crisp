@@ -1,0 +1,60 @@
+;; Endeavour 209, F-209-4 -- a ring released by ONE lane per warp must still order the WHOLE warp's
+;; shared-memory reads before the producer may refill the slot.
+;;
+;; This is chapter 6 f64's kernel (benchmarks/matmul/chap6_warp_specialization_f64): one producer warp
+;; streams A/B k-steps by TMA into a two-deep ring; TWO consumer warps read each slot with ld.shared
+;; (m8n8k4 f64 fragments) and then `signal` the slot's empty barrier.  `signal` arrives from lane 0
+;; only (the barrier counts warps), and an mbarrier arrive is a release of the ARRIVING THREAD's
+;; accesses.  Before D-209-13 nothing ordered lanes 1..31's loads before lane 0's arrive, so the
+;; producer's next TMA could land under them: on the H100 and the B200, 0.1-0.25% of C wrong at
+;; N = 1024..8192, a different set every run -- invisible to compute-sanitizer (it does not model
+;; the async proxy) and to every single-warp ring spec, where the lanes move together.  Now every
+;; lane executes fence.acq_rel.cta first (cluster scope for a :mode :cluster barrier).
+;;
+;; Two checks:
+;;   * PTX (local, every CI run): each lane-0 release arrive has its own fence.acq_rel shortly before.
+;;   * Metal (an H100 pod, scripts/run-on-pod.sh): 1024^3 with the hoist's exact integer fill and
+;;     a full host reference at f64 tolerance.  Positive control, endeavour 209 step 11: the same
+;;     harness with the fence-less PTX -- see b200-mma-bench.md.
+;;
+;; MMA-DIMS: 1024 1024 1024
+;; HOIST-HARDWARE-PROFILE: h100d
+;; HOIST-ARCH: sm_90
+;; TEST-WITH[--hardware-profile=h100d --ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-signal-fence
+;; SKIP-DEFAULT-PASS
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+
+;; m8n8k4 f64 is a profile shape (as in 165/03): a Hopper-like profile with only that shape.
+(def-hardware-profile h100d :simd-width 32 :mma-shapes ((8 8 4)))
+
+(def-type a-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix double :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix double :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel ring_release_multiwarp (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size  :set-to 96))          ; 3 warps: 1 producer + 2 consumers
+  (let ((A-ring  (make-scratch-matrix-ring double (64 16) :ring-count 2))
+        (B-ring  (make-scratch-matrix-ring double (16 32) :ring-count 2))
+        (C-tile  (make-register-tile double (64 32) 0.0d :warps '(false true true)))
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting)))
+    (tile-stride C (64 32) (grid-y grid-x)
+      (with-warp-specialization (:producer 1 :consumer 2)
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot))
+              (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot)))))
+        (:consumer
+          (fill-tile C-tile 0.0d)            ; a workgroup visits several output tiles
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 16)))
+            (let ((slot (mod grid-k (to-ulong 2))))
+              (await (ring-get full slot))
+              (mma-accumulate-via-tile (8 8 4) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+              (signal (ring-get empty slot))))   ; lane 0 arrives; every lane fences first
+          (store-tile C-tile C (grid-y grid-x)))))))

@@ -28,7 +28,8 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 9c | H100: k-step fill decode of F-209-4; tf32 control; occ repeat; F-209-8 HEAD vs cc116e8c PTX | done 2026-11-07 (6 min, ~$0.40): F-209-4 = producer overwrites an unread slot; F-209-8 = compiler (registers) |
 | 9d | H100: fence probes p0-p4 on chapter 6 f64 | done 2026-11-07: fence.acq_rel.cta on all lanes fixes, -4% (D-209-13) |
 | 10 | B200: F-209-4 fix gate + re-sweep of the signal chapters | done 2026-11-07 (65 min, ~$8.65): gate PASS (0 wrong x18); 61 files all verified; tcgen05 fence cost ~0, chapter 6 -4..-6% |
-| 11 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerated after 10) |
+| 11 | H100, Chris away: fold, occupancy-target 320 (7 kernels), spec 209/03, fence A/B, occ480 (11, 11b, 11c) | done 2026-11-08 (50 min, ~$3.40): all green; F-209-9 found (cluster-scope fence -45% on multicast; `.cta` recovers it, proposed) |
+| 12 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerated after 11c) |
 
 ## What was built (2026-11-06)
 
@@ -455,7 +456,193 @@ Fence price, new / step 8:
   rows (nor in step 8); listing those chapters only re-ran their cuBLAS contenders.  Pricing the
   fence on wgmma needs the H100 re-measure.
 
+## Step 11 — Chris away, 2026-11-08: items 1-5 (decisions for review below)
+
+Chris (going to bed): "go ahead and do 1 through 5 by yourself."  The five items:
+
+1. Re-measure the `signal` kernels on the H100 after the fix (prices the fence on wgmma).
+2. F-209-7: `occupancy-target` on the chap7 wgmma kernels.
+3. F-209-8: the `(occupancy-target 480)` probe on sec3.
+4. A multi-warp metal regression spec for rings.
+5. Fold the BUG 157 and F-209-4 overlays into src.
+
+### Decisions for review (each one reversible)
+
+- **R-1 (item 5): fold done by script, overlay emptied LAST.**  put_temp_files_here/209-fold/fold.py
+  copies the four live forms by offset: `%ts-persistent-grid-p` (new) and `%expand-tile-stride-form`
+  (replaced) into src/analysis/control.lisp; `%gen-nvvm-fence-acq-rel` (new, right after
+  `%gen-nvvm-fence-proxy-async-shared`) and the semantic-signal `generate-node-ir` method (replaced)
+  into src/codegen.lisp.  Overlay backup: put_temp_files_here/209-fold/pre-fold/.  gen-specials: no
+  change.  IR corpus, 2333 jobs before/after: byte-identical apart from one llvm-spirv invocation that
+  failed transiently in the parallel run (091/08; passes 3/3 alone).
+- **R-2 (item 2): `(occupancy-target 320)` added to FOUR files**, not two:
+  chap7_wgmma/matmul.crisp and chap7_wgmma_bf16/matmul.crisp, plus sec2_top/matmul.crisp and
+  sec2_top_bf16/matmul_bf16.crisp, which are code-identical promotions of them (H100 rows; the B200
+  uses matmul_b200*.crisp).  Changing only chapter 7 would have made sec2_top's H100 row a different,
+  slower kernel than the chapter it was promoted from.  Not added to 2wg_deep (two consumer
+  warpgroups, unmeasured).  Basis: 9b's scratch A/B, +19..83%, every point verified; the 16384 dip is
+  real.
+- **R-3 (item 4): new spec 209/03 = chapter 6 f64's kernel at 1024^3** through the hoist's
+  `--mma-test` harness (exact integer fill, full host reference at f64 tolerance), plus a new PTX
+  validator `validate-ptx-signal-fence` (tests/run-specs.lisp, after validate-ptx-mbarrier: every
+  plain `mbarrier.arrive` needs its own `fence.acq_rel` within 16 lines).  The validator went
+  straight into tests/run-specs.lisp, not the spec-runner overlay, because item 5 is folding
+  everything anyway.  It is local CI coverage; the metal check needs a pod.
+- **R-4 (items 1, 3, 4 together): ONE H100 rental** (put_temp_files_here/209/step11-on-pod.sh).  The
+  local tree is not pushed, so the script clones the branch, ships the changed files, and commits
+  them in the pod's clone.  It then runs:
+  - the canonical sweep of the 14 `signal` chapters;
+  - the ring/signal metal spec families;
+  - spec 03's positive control;
+  - the probe.
+- **R-5 (item 1): the fence is priced by an exact A/B, not by step 9 vs now.**  Each kernel is
+  compiled twice by the same folded compiler: once as-is, and once with `%gen-nvvm-fence-acq-rel`
+  redefined to emit nothing (put_temp_files_here/209/nofence/nofence.lisp; apparatus, never
+  shipped).  The two PTX files differ only in the fence lines.  Step 9's numbers are confounded by
+  D-209-9 and by the occupancy change.
+
+### Step 11 results — H100, 2026-11-08 (31 min, ~$2.10, pod jt7hz9vbmaawho confirmed gone)
+
+The shipped tree was verified in the pod's own commit before the sweep (2c657a6b "step 11 local
+tree").  Outputs are in put_temp_files_here/209/step11/: probe.txt, poscontrol.txt, specs.txt.  The
+summaries are step11-summary.txt and step11-vs-step9.txt.
+
+**Gate on Hopper -- F-209-4 fixed** (k-step fill, every element, chapter 6 f64):
+
+| arm | N=1024 wrong x3 | N=2048 | N=4096 |
+|---|---|---|---|
+| fenced (as compiled) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fence-less twin (positive control) | 3072 / 1472 / 1888 | 10688 / 8512 / 9088 | 34816 / 25440 / 31776 |
+
+**Spec 03 on metal (item 4).**  Its own `--mma-test` harness at 1024^3 reports MMA_CORRECT 3/3 with the
+pod-compiled PTX and MMA_WRONG 3/3 with the fence-less twin.  So the spec detects the race.
+
+There are two caveats:
+- The twin was compiled LOCALLY.  The pod's Linux toolchain emits different PTX text (5460 differing
+  lines against the local fenced copy), so the WRONG arm also changes toolchain.  The fixture gate
+  above is the clean control.
+- The spec-runner pass of filter 209 died on the pod (rc=1, no summary; logs were not kept), as did
+  filters 152 and 138.  139 (12/12), 154 (3/3) and 140 (7/7) passed on metal.  Step 11b re-runs the
+  three that died, with logs.
+
+**Sweep (item 1): 53 result files, every point verified.**  Ratios against step 9:
+- **chap7 wgmma and sec2_top tf32/bf16** (now `occupancy-target 320`): +22..78% at N >= 2048
+  (bf16 8192: 362 -> 622).  But -7..14% at N <= 1024.
+- **chapter 6 (ld.shared consumers): -3..-7%** -- the fence's price where it is required.
+- **sec3 multicast: -17..-45%** -- see F-209-9.
+- **Everything else: within +/-6%.**
+
+**Fence price on Hopper, exact A/B (fence | fence-less twin, TFLOPS):**
+
+| kernel | 4096 | 8192 | cost |
+|---|---:|---:|---:|
+| chap6 tf32 | 82.6 / 89.0 | 82.4 / 88.3 | -7% |
+| chap6 bf16 | 104.1 / 109.6 | 109.6 / 114.6 | -4..-5% |
+| chap6 f64 | 26.8 / 27.8 (twin wrong) | 23.1 / 23.4 (twin wrong) | -1..-4% |
+| chap7 wgmma tf32 occ320 | 329.6 / 331.5 | 273.8 / 276.8 | -1% |
+| chap7 wgmma bf16 occ320 | 602.4 / 609.6 | 660.8 / 666.5 | -1% |
+| sec3 cluster (fence.acq_rel.cta) | 233.1 / 233.1 | 217.7 / 220.2 | 0..-1% |
+| **sec3 multicast (fence.acq_rel.cluster)** | **126.8 / 208.2** | **118.2 / 213.8** | **-39..-45%** |
+
+**F-209-9 (NEW) -- the cluster-scope fence costs multicast 39-45%.**  `fence.acq_rel.cluster` on
+every lane, every k-step, is far dearer than the CTA-scope fence (which is free on the wgmma
+kernels).  The multicast consumers read through wgmma (the async proxy) and are complete after
+`wgmma.wait_group`, so this kernel may not need the fence at all.  That is the refinement D-209-13
+reserved "only if a cost shows", and the cost shows.
+
+I did NOT change the compiler: that is a correctness call for Chris.  Step 11b prices a CTA-scope
+fence on the multicast kernel as the middle option.
+
+**F-209-8 arms (item 3), fenced, TFLOPS at 2048 / 4096 / 8192:**
+
+| arm | registers | cluster | multicast |
+|---|---|---|---|
+| as-is | 164-168 | 201 / 233 / 219 | 112 / 127 / 118 |
+| `(occupancy-target 480)` | 128 (+~50 B spills) | 189 / 232 / 189 | 111 / 145 / 139 |
+| `(occupancy-target 640)` | 96 (+300 B spills) | 195 / 213 / 193 | 149 / 167 / 151 |
+
+occ480 is not a win for either kernel: plain cluster loses up to 14% at 8192, and multicast gains less
+than occ640.  The multicast gains here are measured under the -45% fence, and step 9d (no fence)
+showed occ640 multicast at only +1..12%.  Recommendation: no `occupancy-target` on sec3.  F-209-8's
+remaining cause is still the register growth (96 -> 164), and F-209-9 dwarfs it for now.
+
+### Step 11b results — H100, 2026-11-08 (8 min, ~$0.55, pod c1qducalm2tv9q confirmed gone)
+
+**The step 11 spec "crashes" were the APPARATUS.**  Each of filters 209, 152 and 138 died on its first
+spec with a default pass.  That pass shells out to `clang -x ir -c`, and bench-on-pod.sh's dependency
+step installs llc-21 but not clang-21 (run-on-pod.sh installs both).  The families that passed (139,
+154, 140) are all SKIP-DEFAULT-PASS specs.  Not a compiler failure.  Step 11c installs clang-21 and
+re-runs the three.
+
+**F-209-9, the middle option: a CTA-scope fence recovers ALL of multicast's speed.**  TFLOPS x3:
+
+| sec3 multicast | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|
+| `fence.acq_rel.cluster` (as compiled) | 113.0 | 127.0 | 118.2 |
+| `fence.acq_rel.cta` (one word changed in the PTX) | 187.7 | 207.8 | 214.3 |
+| no fence | 188.3 | 207.7 | 213.7 |
+
+Every point verified.  The fence exists to make each lane's own reads of its OWN workgroup's shared
+memory complete before lane 0's arrive.  CTA scope is the scope of those reads, and the overwriting
+multicast lands in this workgroup's shared memory.  So `.cta` is arguably the right scope even for a
+`:mode :cluster` barrier: it orders the reads exactly as it does for the plain barrier, while lane 0's
+remote `mbarrier.arrive` carries the cluster-scope release.
+
+**Proposed for Chris (NOT applied):** in the semantic-signal method, always emit `fence.acq_rel.cta`
+(drop the `(if (> extent 1) "cluster" "cta")`).  A further option skips the fence for consumers whose
+reads are all async-proxy (wgmma / tcgen05).  It measured -1% on chap7 and 0% on sec3 cluster, so it
+buys little once the scope is `.cta`.
+
+**`(occupancy-target 320)` A/B on the remaining single-warpgroup wgmma kernels** (fenced, TFLOPS x3,
+as-is -> occ320):
+
+| kernel | 1024 | 2048 | 4096 | 8192 | 16384 |
+|---|---:|---:|---:|---:|---:|
+| sec2_top fp16 | 118.7 -> 118.9 | 324.5 -> 449.9 | 377.3 -> 605.9 | 369.9 -> 664.6 | 373.6 -> 469.4 |
+| sec4 fused relu | 84.2 -> 80.8 | 183.1 -> 266.4 | 201.4 -> 332.3 | 190.7 -> 281.0 | 189.5 -> 227.6 |
+| sec4 fused custom | 83.6 -> 79.1 | 182.1 -> 267.0 | 201.0 -> 332.7 | 190.6 -> 280.7 | 189.1 -> 227.2 |
+
+At small N, chapter 7 (as-is -> occ320): tf32 256 / 512 / 1024 / 2048 = 2.6 / 15.7 / 84.0 / 183.3 ->
+2.4 / 15.4 / 85.2 / 281.0; bf16 2.9 / 19.6 / 119.6 / 324.5 -> 2.8 / 19.0 / 120.4 / 456.2.  The small-N
+price is 0..8% on tiny absolute numbers.  So step 11's -7..14% at N <= 1024 against step 9 is mostly
+run-to-run apparatus, not occupancy.
+
+- **R-6: `(occupancy-target 320)` also added to sec2_top_fp16/matmul_fp16.crisp,
+  sec4_fused_relu/matmul_wgmma_ws_relu.crisp and sec4_fused_custom/matmul_wgmma_ws_custom.crisp.**
+  These are the same 160-thread, single-warpgroup shape; the A/B above shows +37..80% at 2048-8192,
+  +20% at 16384, and -1..-6% at 1024.  Step 11c re-sweeps their three chapters.
+
+### Step 11c results — H100, 2026-11-08 (11 min, ~$0.75, pod 6izrucnxdhrc38 confirmed gone)
+
+**Metal specs, with clang-21 installed:** 209 3/3, 152-DSMEM-Cluster 23/23, 138-pipeline-ring 11/11.
+Spec 03's `Hoist[CUDA] -> validate-cuda-mma-run` pass ran on the H100 and printed MMA_CORRECT.  With
+step 11's 139 (12/12), 154 (3/3) and 140 (7/7), every ring / signal / cluster family passes on metal
+with the folded compiler.
+
+**Re-sweep with R-6 (canonical, every point verified), TFLOPS at 2048 / 4096 / 8192 / 16384:**
+- sec2_top fp16 Crisp: 454 / 605 / 643 / 459, against step 11's 329 / 375 / 363 / 367.
+- sec4 fused relu: 270 / 332 / 270 / 227.
+- sec4 fused custom: 269 / 333 / 267 / 226.  Both sec4 kernels were at 183 / 200 / 187 / 188.
+
+### Step 11 summary (items 1-5)
+
+| item | state |
+|---|---|
+| 1. H100 re-measure after the fix | done: every point verified; the fence costs 0..-1% on wgmma CTA-scope kernels and -3..-7% on chapter 6; **-39..-45% on multicast (F-209-9, fix proposed, not applied)** |
+| 2. occupancy-target on chap7 | done (R-2, R-6): seven kernels, +22..80% at 2048-8192 |
+| 3. occ480 probe | done: not a win; no occupancy-target on sec3 |
+| 4. multi-warp metal regression spec | done: 209/03 + `validate-ptx-signal-fence`, positive-controlled locally (8 kernels fenced / fence-less) and on metal (MMA_WRONG without the fence) |
+| 5. fold | done (R-1): corpus identical, unit / E2E 1807 / negative 492 green, all metal families green |
+
+Three H100 rentals, 50 min, ~$3.40 in all, every pod confirmed gone.
+
 ## Findings
+
+**F-209-9 — D-209-13's CLUSTER-scope fence costs sec3 multicast 39-45% (OPEN, needs Chris).**
+`fence.acq_rel.cluster` is emitted on every lane, every k-step, for a `:mode :cluster` barrier.  A
+`.cta` fence measures the same as no fence (Step 11b), and the reads it orders are of the workgroup's
+own shared memory.  Proposed: always `.cta`.  Not applied while Chris was away; the reports
+regenerated after step 11 show the fenced multicast row (118-127 TFLOPS at 4096-8192).
 
 **F-209-1 — kernels with no declared global-size are launched on a 32 x 64 tile grid.**  The fixture
 takes its grid from the metacrisp's `:tile-shape`, which exists only when the kernel declares

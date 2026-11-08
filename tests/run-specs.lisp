@@ -3269,6 +3269,36 @@
         (return-from validate-ptx-mbarrier nil)))
     t))
 
+(defun validate-ptx-signal-fence (file ptx-string)
+  "Endeavour 209 (F-209-4, D-209-13): every lane-0 ring RELEASE -- a plain mbarrier.arrive, not the
+   producer's mbarrier.arrive.expect_tx -- must have its own fence.acq_rel (.cta or .cluster) within
+   the 32 PTX lines before it, with no other CTA-scope release in between.  A :mode :cluster signal is
+   one fence then one remote arrive per peer, so the backward scan steps over shared::cluster arrives.  The fence is executed by every lane
+   ahead of the leader branch; without it only lane 0's shared-memory reads are ordered before the
+   arrive, and the producer's next TMA can overwrite data the other lanes have not read yet."
+  (declare (ignore file))
+  (let* ((lines (coerce (uiop:split-string ptx-string :separator '(#\Newline)) 'vector))
+         (releases 0))
+    (loop for i from 0 below (length lines)
+          for line = (aref lines i)
+          when (and (search "mbarrier.arrive" line) (not (search "expect_tx" line)))
+            do (incf releases)
+               (let ((fenced nil))
+                 (loop for j from (1- i) downto (max 0 (- i 32))
+                       for prev = (aref lines j)
+                       do (cond ((search "fence.acq_rel." prev) (setf fenced t) (cl:return))
+                                ((and (search "mbarrier.arrive" prev) (not (search "expect_tx" prev))
+                                      (not (search "shared::cluster" prev)))
+                                 (cl:return))))
+                 (unless fenced
+                   (format *error-output* "FAIL: release with no fence.acq_rel in the 32 lines before it (PTX line ~d):~%  ~a~%"
+                           (1+ i) (string-trim '(#\Space #\Tab #\Return) line))
+                   (return-from validate-ptx-signal-fence nil))))
+    (when (zerop releases)
+      (format *error-output* "FAIL: no mbarrier.arrive release found -- the kernel has no signal~%")
+      (return-from validate-ptx-signal-fence nil))
+    t))
+
 ;;;; ----------------------------------------------------------------------
 ;;;; Endeavour 192 (cache hints) -- spec validators (PTX: opcode qualifiers per ld/st, _grad entries skipped; SPIR-V: delegation)
 ;;;; See tests/spec/192-cache-hints/cache-hints.md.
