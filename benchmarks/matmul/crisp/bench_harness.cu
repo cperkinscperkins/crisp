@@ -70,6 +70,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -368,7 +369,7 @@ int main(int argc, char **argv) {
     // choices for a K-contiguous col-major B, and no 16-bit kernel reaches it yet -- wgmma is
     // tf32-only (%check-wgmma-shape gates K=8), so a 16-bit swizzled descriptor cannot arise.
     // If that changes, this must grow the col-major branch rather than silently mis-describe.
-    std::vector<CUdeviceptr> tmap_dev;
+    std::deque<CUtensorMap> tmaps;
     for (const auto &tok : split(env_or("CRISP_MATMUL_TENSORMAP", ""), ',')) {
         auto f = split(tok, ':');
         if (f.size() < 4) continue;
@@ -440,11 +441,11 @@ int main(int argc, char **argv) {
                       << ": " << (es ? es : "?") << "\n";
             return 2;
         }
-        CUdeviceptr dmap;
-        CU_OK(cuMemAlloc(&dmap, sizeof(CUtensorMap)), "cuMemAlloc tensormap");
-        CU_OK(cuMemcpyHtoD(dmap, &host_map, sizeof(CUtensorMap)), "H2D tensormap");
-        tmap_dev.push_back(dmap);
-        if (idx >= 0 && idx < argc_k) slot[idx] = (uint64_t)dmap;
+        // Endeavour 210 (option B): the kernel takes the descriptor BY VALUE, as a __grid_constant__
+        // parameter, so its kernelParams entry points at the 128-byte map itself -- no device copy.
+        // A deque keeps every map's address stable until the launches are done.
+        tmaps.push_back(host_map);
+        if (idx >= 0 && idx < argc_k) params[idx] = &tmaps.back();
     }
 
     // ---- grid ------------------------------------------------------------------------------
@@ -579,7 +580,6 @@ int main(int argc, char **argv) {
               << "  \"gflops\": " << gflops << "\n"
               << "}" << std::endl;
 
-    for (CUdeviceptr t : tmap_dev) cuMemFree(t);
     cuMemFree(dA); cuMemFree(dB); cuMemFree(dC);
     if (dSA) cuMemFree(dSA);
     if (dSB) cuMemFree(dSB);

@@ -209,3 +209,205 @@
 
 
 (in-package :crisp.compiler)
+
+
+;;;; ---------------------------------------------------------------------------------------------
+;;;; Endeavour 210, item 6 (2026-11-08): CUDA TMA descriptors pass BY VALUE as __grid_constant__
+;;;; kernel parameters (option B), replacing option A (a pointer to a device-global copy).
+;;;;
+;;;; Why: the CUDA Programming Guide (Asynchronous Data Copies, TMA) recommends a const
+;;;; __grid_constant__ parameter, and says a tensor map in GLOBAL memory "requires a fence in each
+;;;; thread block" (fence.proxy.tensormap::generic.acquire.sys when the host wrote it) and "may be
+;;;; slower".  Crisp emitted no such fence.
+;;;;
+;;;; Shape: inside the compiler the descriptor is a GENERIC pointer everywhere (it used to be
+;;;; addrspace 1).  Only the kernel's own parameter changes: `ptr byval([128 x i8]) align 64`, named
+;;;; in !nvvm.annotations as "grid_constant".  NVPTX then emits `.param .align 64 .b8 k_param_N[128]`
+;;;; and takes its address with cvta.param -- no local copy -- and that generic pointer is what the
+;;;; TMA instructions and every helper function receive.  LLVM 21.1.5 IGNORES the
+;;;; "nvvm.grid_constant" PARAMETER attribute (it copies the param to .local and hands TMA a local
+;;;; address); only the annotation works (put_temp_files_here/210/gc/, ptxas-checked for sm_90a).
+;;;; ---------------------------------------------------------------------------------------------
+
+;; src/codegen.lisp (new, near %tma-lookup-descriptor-ptr)
+(defun %210-tensor-map-spec-p (type-spec)
+  "Endeavour 210.  True when TYPE-SPEC is a CUDA TMA descriptor type, (TENSOR-MAP SRC)."
+  (and (consp type-spec) (symbolp (first type-spec))
+       (string-equal (symbol-name (first type-spec)) "TENSOR-MAP")))
+
+;; src/types/validation.lisp -- fold as the TENSOR-MAP clause of resolve-type-to-llvm (generic
+;; pointer, addrspace 0, instead of addrspace 1)
+(defvar *210-orig-resolve-type-to-llvm* (fdefinition 'resolve-type-to-llvm)
+  "Endeavour 210 overlay capture -- dropped at fold time.")
+
+(defun resolve-type-to-llvm (type-spec)
+  "Endeavour 210 overlay wrapper: a (TENSOR-MAP SRC) descriptor is a GENERIC i8 pointer to the
+   128-byte CUtensorMap.  In a kernel it is the address of the by-value __grid_constant__ parameter
+   (%210-mark-grid-constant-tensor-maps); helper functions receive that same pointer.  Everything
+   else resolves as before."
+  (if (%210-tensor-map-spec-p type-spec)
+      (llvm-pointer-type (llvm-int8-type) 0)
+      (funcall *210-orig-resolve-type-to-llvm* type-spec)))
+
+;; src/codegen.lisp
+(defun %tma-lookup-descriptor-ptr (builder var-env src-name glob-ptr-type)
+  "Endeavor 137 Phase 2b: reconstruct the CUtensorMap descriptor implicit-arg name
+   (SRC_TENSORMAP_FROM_FN -- the same deterministic name the scan pass registered) and LOAD the
+   descriptor pointer from its var-env slot (implicit params are alloca'd like every param).
+   Returns the ptr or NIL if absent (no src symbol / not registered), so the caller falls back to
+   the Phase-2a stand-in.
+
+   Endeavour 210: the descriptor is a GENERIC pointer (the __grid_constant__ parameter's address),
+   so it is loaded as addrspace 0 whatever GLOB-PTR-TYPE the caller passes -- loading it as
+   addrspace 1 would reinterpret a param-space address as a global one.  The callers' addrspace
+   casts to generic are then no-ops (LLVM returns the value unchanged).  GLOB-PTR-TYPE goes away
+   at fold time."
+  (declare (ignore glob-ptr-type))
+  (when (and src-name (symbolp src-name) *compiler-context*)
+    (let* ((fn    (compiler-context-current-compiling-function *compiler-context*))
+           (uname (intern (format nil "~a_TENSORMAP_FROM_~a" src-name fn) (symbol-package src-name)))
+           (slot  (gethash uname var-env)))
+      (when slot
+        (llvm-build-load2 builder (llvm-pointer-type (llvm-int8-type) 0) slot "tma_desc_ptr")))))
+
+;; src/codegen.lisp (new, before ensure-opencl-kernel-metadata)
+(defconstant +210-tensor-map-bytes+ 128
+  "Endeavour 210.  sizeof(CUtensorMap): struct { alignas(64) cuuint64_t opaque[16]; }.")
+
+(defconstant +210-tensor-map-align+ 64
+  "Endeavour 210.  alignof(CUtensorMap).")
+
+(defun %210-mark-grid-constant-tensor-maps (func semantic-function module)
+  "Endeavour 210.  On PTX, give every TMA descriptor parameter of the kernel FUNC the by-value
+   __grid_constant__ ABI: `byval([128 x i8]) align 64` on the parameter, and one
+   !nvvm.annotations entry !{ptr @k, !\"grid_constant\", !{i32 i1, i32 i2 ...}} naming them
+   (1-based parameter positions, as clang emits it).
+
+   A parameter's LLVM position is counted the way %compute-kernel-cache-hints counts it -- each
+   semantic parameter is (length (get-expanded-types TYPE MODULE)) LLVM parameters wide -- and the
+   parameter found there must be a pointer, or this ERRORS: a descriptor marked at the wrong
+   position would be a silently wrong launch ABI.  Not an entry point, or not PTX: nothing."
+  (when (and (eq *target-backend* :ptx) (semantic-function-is-entry-point semantic-function))
+    (let ((phys 0) (positions '()))
+      (dolist (node (semantic-function-param-list semantic-function))
+        (let* ((type  (semantic-param-type node))
+               (width (or (ignore-errors (length (get-expanded-types type module))) 1)))
+          (when (%210-tensor-map-spec-p type)
+            (push (cons phys (semantic-param-name node)) positions))
+          (incf phys width)))
+      (when positions
+        (setf positions (nreverse positions))
+        (let* ((ctx      (llvm-get-module-context module))
+               (i32      (llvm-int32-type))
+               (byval-k  (llvm-get-enum-attribute-kind-for-name "byval" 5))
+               (align-k  (llvm-get-enum-attribute-kind-for-name "align" 5))
+               (map-type (llvm-array-type (llvm-int8-type) +210-tensor-map-bytes+))
+               (n        (length positions)))
+          (dolist (pos positions)
+            (let* ((index (car pos))
+                   (param (llvm-get-param func index)))
+              (unless (and param (not (cffi:null-pointer-p param))
+                           (crisp.llvm-bindings::llvm-type-kind-is-pointer? (llvm-type-of param)))
+                (error "Endeavour 210: TMA descriptor ~a of kernel ~a should be LLVM parameter ~a, but that parameter is not a pointer -- the by-value ABI would be wrong."
+                       (cdr pos) (semantic-function-name semantic-function) index))
+              (llvm-add-attribute-at-index
+               func (1+ index) (crisp.llvm-bindings::llvm-create-type-attribute ctx byval-k map-type))
+              (llvm-add-attribute-at-index
+               func (1+ index) (crisp.llvm-bindings::llvm-create-enum-attribute ctx align-k
+                                                                                 +210-tensor-map-align+))
+              (log:info "210: kernel ~a: TMA descriptor ~a = parameter ~a, by value (__grid_constant__)"
+                        (semantic-function-name semantic-function) (cdr pos) index)))
+          (cffi:with-foreign-objects ((idx-arr :pointer n) (entry :pointer 3))
+            (loop for pos in positions for k from 0
+                  do (setf (cffi:mem-aref idx-arr :pointer k)
+                           (llvm-value-as-metadata (llvm-const-int i32 (1+ (car pos)) 0))))
+            (let ((key "grid_constant"))
+              (setf (cffi:mem-aref entry :pointer 0) (llvm-value-as-metadata func)
+                    (cffi:mem-aref entry :pointer 1) (llvm-md-string-in-context2 ctx key (length key))
+                    (cffi:mem-aref entry :pointer 2) (llvm-md-node-in-context2 ctx idx-arr n)))
+            (llvm-add-named-metadata-operand
+             module "nvvm.annotations"
+             (crisp.llvm-bindings::llvm-metadata-as-value ctx (llvm-md-node-in-context2 ctx entry 3)))))))))
+
+;; src/codegen.lisp -- fold as a call at the end of ensure-opencl-kernel-metadata's entry-point branch
+(defvar *210-orig-ensure-opencl-kernel-metadata* (fdefinition 'ensure-opencl-kernel-metadata)
+  "Endeavour 210 overlay capture -- dropped at fold time.")
+
+(defun ensure-opencl-kernel-metadata (func semantic-function module)
+  "Endeavour 210 overlay wrapper: the original, then the by-value __grid_constant__ ABI for the
+   kernel's TMA descriptor parameters (%210-mark-grid-constant-tensor-maps)."
+  (multiple-value-prog1 (funcall *210-orig-ensure-opencl-kernel-metadata* func semantic-function module)
+    (%210-mark-grid-constant-tensor-maps func semantic-function module)))
+
+;; src/metadata.lisp -- fold into generate-implicit-signature's TENSOR-MAP clause
+(defvar *210-orig-generate-implicit-signature* (fdefinition 'generate-implicit-signature)
+  "Endeavour 210 overlay capture -- dropped at fold time.")
+
+(defun generate-implicit-signature (sig declared-params)
+  "Endeavour 210 overlay wrapper: a :kind :tensor-map entry now says how it is passed --
+   :address-space :param, :passing :by-value, :bytes 128, :align 64 -- because a host binds the
+   128-byte CUtensorMap ITSELF (kernelParams[i] = &map), not a device pointer to a copy."
+  (let ((entries (funcall *210-orig-generate-implicit-signature* sig declared-params)))
+    (mapcar (lambda (e)
+              (if (and (listp e) (eq (getf e :kind) :tensor-map))
+                  (let ((e (copy-list e)))
+                    (setf (getf e :address-space) :param
+                          (getf e :passing) :by-value
+                          (getf e :bytes) +210-tensor-map-bytes+
+                          (getf e :align) +210-tensor-map-align+)
+                    e)
+                  e))
+            entries)))
+
+;; src/codegen.lisp  (REPLACES the copy above -- two bindings need their package prefix)
+(defun %210-mark-grid-constant-tensor-maps (func semantic-function module)
+  "Endeavour 210.  On PTX, give every TMA descriptor parameter of the kernel FUNC the by-value
+   __grid_constant__ ABI: `byval([128 x i8]) align 64` on the parameter, and one
+   !nvvm.annotations entry !{ptr @k, !\"grid_constant\", !{i32 i1, i32 i2 ...}} naming them
+   (1-based parameter positions, as clang emits it).
+
+   A parameter's LLVM position is counted the way %compute-kernel-cache-hints counts it -- each
+   semantic parameter is (length (get-expanded-types TYPE MODULE)) LLVM parameters wide -- and the
+   parameter found there must be a pointer, or this ERRORS: a descriptor marked at the wrong
+   position would be a silently wrong launch ABI.  Not an entry point, or not PTX: nothing."
+  (when (and (eq *target-backend* :ptx) (semantic-function-is-entry-point semantic-function))
+    (let ((phys 0) (positions '()))
+      (dolist (node (semantic-function-param-list semantic-function))
+        (let* ((type  (semantic-param-type node))
+               (width (or (ignore-errors (length (get-expanded-types type module))) 1)))
+          (when (%210-tensor-map-spec-p type)
+            (push (cons phys (semantic-param-name node)) positions))
+          (incf phys width)))
+      (when positions
+        (setf positions (nreverse positions))
+        (let* ((ctx      (llvm-get-module-context module))
+               (i32      (llvm-int32-type))
+               (byval-k  (crisp.llvm-bindings::llvm-get-enum-attribute-kind-for-name "byval" 5))
+               (align-k  (crisp.llvm-bindings::llvm-get-enum-attribute-kind-for-name "align" 5))
+               (map-type (llvm-array-type (llvm-int8-type) +210-tensor-map-bytes+))
+               (n        (length positions)))
+          (dolist (pos positions)
+            (let* ((index (car pos))
+                   (param (llvm-get-param func index)))
+              (unless (and param (not (cffi:null-pointer-p param))
+                           (crisp.llvm-bindings::llvm-type-kind-is-pointer? (llvm-type-of param)))
+                (error "Endeavour 210: TMA descriptor ~a of kernel ~a should be LLVM parameter ~a, but that parameter is not a pointer -- the by-value ABI would be wrong."
+                       (cdr pos) (semantic-function-name semantic-function) index))
+              (llvm-add-attribute-at-index
+               func (1+ index) (crisp.llvm-bindings::llvm-create-type-attribute ctx byval-k map-type))
+              (llvm-add-attribute-at-index
+               func (1+ index) (crisp.llvm-bindings::llvm-create-enum-attribute ctx align-k
+                                                                                 +210-tensor-map-align+))
+              (log:info "210: kernel ~a: TMA descriptor ~a = parameter ~a, by value (__grid_constant__)"
+                        (semantic-function-name semantic-function) (cdr pos) index)))
+          (cffi:with-foreign-objects ((idx-arr :pointer n) (entry :pointer 3))
+            (loop for pos in positions for k from 0
+                  do (setf (cffi:mem-aref idx-arr :pointer k)
+                           (llvm-value-as-metadata (llvm-const-int i32 (1+ (car pos)) 0))))
+            (let ((key "grid_constant"))
+              (setf (cffi:mem-aref entry :pointer 0) (llvm-value-as-metadata func)
+                    (cffi:mem-aref entry :pointer 1) (crisp.llvm-bindings::llvm-md-string-in-context2 ctx key (length key))
+                    (cffi:mem-aref entry :pointer 2) (llvm-md-node-in-context2 ctx idx-arr n)))
+            (llvm-add-named-metadata-operand
+             module "nvvm.annotations"
+             (crisp.llvm-bindings::llvm-metadata-as-value ctx (llvm-md-node-in-context2 ctx entry 3)))))))))

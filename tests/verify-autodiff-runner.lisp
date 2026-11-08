@@ -1783,7 +1783,8 @@
                                  described-extents described-strides)
   "Encode a CUtensorMap for TM-PARAM (a :kind :tensor-map implicit-param
    plist) over the already-allocated DESCRIBED-BUFFER, and bind the
-   descriptor's device pointer into slot ARG-INDEX.
+   descriptor into slot ARG-INDEX -- Endeavour 210: BY VALUE, all 128 bytes
+   (the kernel's __grid_constant__ parameter), not its device pointer.
 
    DESCRIBED-EXTENTS / DESCRIBED-STRIDES are the described tensor's own
    extents and strides in ELEMENT units, outermost-first — the same values
@@ -1839,7 +1840,12 @@
                  +CU-TENSOR-MAP-INTERLEAVE-NONE+ swz
                  +CU-TENSOR-MAP-L2-PROMOTION-NONE+
                  +CU-TENSOR-MAP-FLOAT-OOB-FILL-NONE+)))
-    (%cuk-set-pointer kernel arg-index desc)))
+    ;; Endeavour 210 (option B): the kernel takes the descriptor BY VALUE (__grid_constant__), so
+    ;; the slot holds the 128 bytes themselves, not a pointer to them.
+    (%cuk-set-slot kernel arg-index +CU-TENSOR-MAP-BYTES+
+                   (lambda (b)
+                     (loop for i from 0 below +CU-TENSOR-MAP-BYTES+
+                           do (setf (cffi:mem-aref b :uint8 i) (cffi:mem-aref desc :uint8 i)))))))
 
 (defconstant +cuda-default-shared-cap+ 49152
   "Default per-block dynamic shared limit.  Above this a kernel must opt in
