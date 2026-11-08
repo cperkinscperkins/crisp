@@ -289,6 +289,10 @@ int main(int argc, char **argv) {
         CU_OK(cuMemAlloc(&dSB, bytesSB), "cuMemAlloc SB");
         crisp_bench::cuda_fill_mf_scales((void *)dSA, M, K, mf_vec, mf_scale.c_str());
         crisp_bench::cuda_fill_mf_scales((void *)dSB, N, K, mf_vec, mf_scale.c_str());
+    } else if (crisp_bench::kstep_fill().ks) {
+        // F-209-4 diagnostic only: A encodes its k-step, B = 1 (fill_verify.h, kstep_fill).
+        crisp_bench::cuda_fill_kstep((void *)dA, nA, K, (void *)dB, nB, elem == "f64" ? "f64" : "f32",
+                                     crisp_bench::kstep_fill());
     } else {
     crisp_bench::cuda_fill_encoded((void *)dA, nA, crisp_bench::FILL_MOD_A, elem.c_str());
     crisp_bench::cuda_fill_encoded((void *)dB, nB, crisp_bench::FILL_MOD_B, elem.c_str());

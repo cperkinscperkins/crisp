@@ -119,6 +119,24 @@ inline std::function<double(double)> requant_s8(float m) {
     };
 }
 
+// DIAGNOSTIC K-STEP FILL (endeavour 209, F-209-4; benchmarking only, never in a canonical run).
+// CRISP_BENCH_FILL_KSTEP="ks[:rowmul]" fills A[i][k] = (k / ks + 1) + rowmul * (i % 64) and B = 1
+// (no fp64 precision scale), so a wrong C element's signed error DECODES: each A value read from the
+// wrong place contributes (k-step it came from - k-step it should have) + rowmul * (row delta).
+// On a 2-slot ring, -2 per element = stale data (read before the load landed), +2 = overwritten
+// (released too early), +-1 = the other slot.  Only the Crisp CUDA fixture honors it (row-major A).
+struct KstepFill { uint64_t ks = 0, rowmul = 0; };
+inline KstepFill kstep_fill() {
+    KstepFill f;
+    const char *s = std::getenv("CRISP_BENCH_FILL_KSTEP");
+    if (s && *s) {
+        char *end = nullptr;
+        f.ks = std::strtoull(s, &end, 10);
+        if (end && *end == ':') f.rowmul = std::strtoull(end + 1, nullptr, 10);
+    }
+    return f;
+}
+
 // A strided ~64 x 64 sample over the WHOLE of C (M x N), C = scale * (A . B), A is M x K, B is K x N.
 // Stops at the first mismatch, like the fixtures always have.
 inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
@@ -140,9 +158,17 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
     const uint64_t si = std::max<uint64_t>(1, (M + smax - 1) / smax);
     const uint64_t sj = std::max<uint64_t>(1, (N + smax - 1) / smax);
 
+    // K-step fill (above): C[i][j] = sum_k (k/ks + 1) + rowmul * (i%64) * K, independent of j.
+    const KstepFill kf = kstep_fill();
+    double kstep_base = 0.0;
+    if (kf.ks) for (uint64_t k = 0; k < K; ++k) kstep_base += (double)(k / kf.ks + 1);
+    std::vector<std::pair<long long, uint64_t>> diag_hist;   // signed error -> count (diag only)
+
     auto expected = [&](uint64_t i, uint64_t j) {
         double acc = 0.0;
-        if (mf_vec)
+        if (kf.ks)
+            acc = kstep_base + (double)kf.rowmul * (double)(i % 64) * (double)K;
+        else if (mf_vec)
             for (uint64_t k = 0; k < K; ++k)
                 acc += fill_a(i * a.s0 + k * a.s1) * mf_scale(i, k / mf_vec)
                      * fill_b(k * b.s0 + j * b.s1) * mf_scale(j, k / mf_vec);
@@ -160,8 +186,16 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
         const double rel  = err / std::max(1e-300, std::fabs(want));
         if (err > r.max_abs_err) r.max_abs_err = err;
         if (rel > r.max_rel_err) r.max_rel_err = rel;
-        if (err > rtol * std::max(1.0, std::fabs(want))) {
+        // Under the k-step fill every value is an exact integer (f32 sums stay below 2^24), so any
+        // error of a whole unit is a wrong read; a relative 1e-3 would hide a -2 in a sum of 10^5.
+        if (kf.ks ? (err > 0.5) : (err > rtol * std::max(1.0, std::fabs(want)))) {
             r.verified = false;
+            if (diag) {
+                const long long se = std::llround(got - want);
+                auto it = std::find_if(diag_hist.begin(), diag_hist.end(),
+                                       [se](const std::pair<long long, uint64_t> &p) { return p.first == se; });
+                if (it == diag_hist.end()) diag_hist.push_back({se, 1}); else ++it->second;
+            }
             if (diag && diag_bad++ < 32)
                 std::fprintf(stderr, "DIAG mismatch C[%llu][%llu] got %.17g want %.17g (err %.3g)\n",
                              (unsigned long long)i, (unsigned long long)j, got, want, err);
@@ -182,6 +216,15 @@ inline VerifyResult verify_sampled(uint64_t M, uint64_t N, uint64_t K,
             read_span(first, (M - 1) * c.s0 + 1, span);
             for (uint64_t i = 0; i < M && (r.verified || diag); i += si) check(i, j, span[i * c.s0]);
         }
+    }
+    if (diag) {
+        // The signed-error histogram, most frequent first (with the k-step fill, each value decodes).
+        std::sort(diag_hist.begin(), diag_hist.end(),
+                  [](const std::pair<long long, uint64_t> &x, const std::pair<long long, uint64_t> &y) {
+                      return x.second > y.second; });
+        for (size_t h = 0; h < diag_hist.size() && h < 40; ++h)
+            std::fprintf(stderr, "DIAGHIST err %lld count %llu\n", diag_hist[h].first,
+                         (unsigned long long)diag_hist[h].second);
     }
     if (diag)
         std::fprintf(stderr, "DIAG %llu of %llu checked elements wrong (max_abs_err %.3g)\n",

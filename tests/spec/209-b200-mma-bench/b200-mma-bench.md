@@ -25,6 +25,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 8 | B200 full sweep | done 2026-11-07 (87 min, ~$11.60, 83 result files; F-209-4, F-209-5) |
 | 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B; F-209-4 A/B; tf32 re-measured) | done 2026-11-07 (47 min, ~$3.10): F-209-1 measured; F-209-4 narrowed; F-209-6, F-209-7 found |
 | 9b | H100: F-209-7 occupancy A/B; F-209-4 diagnostics; sec3 through the fixed fixture | done 2026-11-07 (re-run 11 min, ~$0.75, after an 85-min apt.llvm.org stall, ~$5.65): occ320 +19..83%; F-209-4 = race on A; F-209-6 fixed; F-209-8 found |
+| 9c | H100: k-step fill decode of F-209-4; tf32 control; occ repeat; F-209-8 HEAD vs cc116e8c PTX | done 2026-11-07 (6 min, ~$0.40): F-209-4 = producer overwrites an unread slot; F-209-8 = compiler (registers) |
 | 10 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerate after 8) |
 
 ## What was built (2026-11-06)
@@ -306,6 +307,55 @@ verified (H100, canonical sizes):
 **F-209-8 (new) -- multicast now LOSES to plain cluster** at every size (-2.5..-10.5%); the previous
 report (old hoisted harness, 1789260xxx results) had it +15..25% at 2048..8192.  Same confound as
 F-209-7 had: old harness vs fixture, and a different compiler.  Unattributed.
+
+## Step 9c results — H100, 2026-11-07 (6 min, ~$0.40, pod confirmed gone)
+
+Apparatus (benchmarking only): `CRISP_BENCH_FILL_KSTEP=ks[:rowmul]` in fill_verify.h / fill_cuda.cuh /
+bench_harness.cu -- A[i][k] = (k/ks + 1) + rowmul*(i%64), B = 1, exact integer check, plus a signed-error
+histogram (`DIAGHIST`).  A wrong A value adds (k-step read - k-step wanted) + rowmul*(row delta).
+Blind to B by construction (B = 1).  Script put_temp_files_here/209/f2099_diag.py; output step9c-diag.txt.
+
+**F-209-4 -- the producer OVERWRITES a slot the consumer has not read yet (a WAR on the ring).**
+- chapter 6 f64 (declared) and ws_flat, N = 1024 / 2048 / 4096 x3: every error is **+8**
+  (rarely +16 / +24), never a multiple of 4096.  Same row, so not a fragment-mapping fault.
+- +8 decodes exactly: a consumer lane holds 4 A values of ONE row per stage (16-deep k-step / 4 per
+  m8n8k4), and each came from **k-step + 2 -- the SAME slot's NEXT fill** on a 2-slot ring.  +16 / +24
+  are two / three stages hit.  Not stale data (that would be negative), not the other slot (+-1).
+- **tf32 twin (control): 0 wrong in all 9 runs, exact check.**  Its PTX has the same handshake
+  (lane-0 release per consumer warp, 2 + 2 arrivals, same try_wait shape), so the bug is either in a
+  part the twin also has and only f64 timing exposes (DMMA is ~7x slower per stage than tf32 mma.sync,
+  so the producer sits waiting on `empty` far more often), or in what differs: the 4-substep
+  (16-deep / k4) consumer body.
+- SASS (9b) shows the warp's own LDS complete before its release, so the producer must be getting
+  through `empty` WITHOUT that warp's arrival.  Theories, in order:
+  1. the producer's `empty` parity passes one round early on a slot (`:initial-state :signaled`
+     bookkeeping) -- it would then refill slot s at round r+1 while consumers read round r;
+  2. the two consumer warps make DIFFERENT numbers of arrivals (e.g. a trip-count difference between
+     them, or a release on a path one warp skips), so one warp's extra arrival completes a phase;
+  3. a sync gap the tf32 twin also has but never loses (its per-stage consumer time is short).
+  Tests: (1)/(2) local -- trace the producer's parity sequence and each consumer's arrive count per
+  slot through the IR (no GPU); (3) a ring-count-3 arm: a same-slot overwrite then reads +3 per value
+  (+12), which confirms the ring distance and that it is the next fill.
+
+**F-209-7 repeat at 16384 (x3, tight):** tf32 189.3 / 189.0 / 189.0 -> occ320 229.6 / 229.8 / 230.1
+(+21%); bf16 372.2 x3 -> 467-468 (+26%).  The 16384 dip of the occ320 arms is REAL and reproducible
+(4096 / 8192 peak higher: 330 / 666), not noise.
+
+**F-209-8 -- ATTRIBUTED to the compiler, not the apparatus.**  Same fixture, same 64x128 grid, x3:
+
+| TFLOPS (N) | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|
+| HEAD cluster | 201.2 | 233.6 | 225.1 |
+| HEAD multicast | 189.3 | 209.1 | 213.6 |
+| cc116e8c cluster | 154.9 | 191.7 | 189.7 |
+| cc116e8c multicast | 187.8 | 217.8 | 239.5 |
+
+cc116e8c reproduces the old report (multicast +21 / +14 / +26% over cluster).  Since then the compiler
+made plain cluster FASTER (+30 / +22 / +19%) and multicast SLOWER (+1 / -4 / -11%).  ptxas (local):
+cc116e8c 96 registers both kernels; HEAD 164 (cluster) / 168 (multicast), 0 spills either way.  At 160
+threads, 96 registers allows 4 workgroups/SM by registers, 164-168 allows 2 -- the F-209-7 shape
+again (the packed epilogue is the lead suspect).  Test: `(occupancy-target 640)` on the multicast kernel
+(caps ~102 registers) -- if multicast gets its +26% back, occupancy is the mechanism.
 
 ## Findings
 

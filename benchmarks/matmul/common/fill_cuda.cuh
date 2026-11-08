@@ -123,6 +123,36 @@ inline void cuda_fill_encoded(void *ptr, uint64_t n, uint32_t mod, const char *e
     detail::cuda_must(cudaDeviceSynchronize(), "fill synchronize");
 }
 
+// DIAGNOSTIC K-STEP FILL (endeavour 209, F-209-4; see kstep_fill in fill_verify.h).  A is row-major
+// M x K (flat = i*K + k): A[i][k] = (k/ks + 1) + rowmul*(i%64).  B (any layout) = 1.  f32 / f64 only.
+template <typename T>
+__global__ void crisp_fill_kstep_a_kernel(T *p, uint64_t n, uint64_t K, uint64_t ks, uint64_t rowmul) {
+    const uint64_t f = (uint64_t)blockIdx.x * (uint64_t)blockDim.x + (uint64_t)threadIdx.x;
+    if (f < n) p[f] = (T)((double)((f % K) / ks + 1) + (double)rowmul * (double)((f / K) % 64));
+}
+template <typename T>
+__global__ void crisp_fill_ones_kernel(T *p, uint64_t n) {
+    const uint64_t f = (uint64_t)blockIdx.x * (uint64_t)blockDim.x + (uint64_t)threadIdx.x;
+    if (f < n) p[f] = (T)1;
+}
+inline void cuda_fill_kstep(void *A, uint64_t nA, uint64_t K, void *B, uint64_t nB, const char *enc,
+                            const KstepFill &kf) {
+    const uint32_t T = 1024;
+    const dim3 block(T, 1, 1);
+    const std::string e(enc);
+    if (e == "f32") {
+        crisp_fill_kstep_a_kernel<float><<<detail::fill_grid(nA, T), block>>>(static_cast<float *>(A), nA, K, kf.ks, kf.rowmul);
+        crisp_fill_ones_kernel<float><<<detail::fill_grid(nB, T), block>>>(static_cast<float *>(B), nB);
+    } else if (e == "f64") {
+        crisp_fill_kstep_a_kernel<double><<<detail::fill_grid(nA, T), block>>>(static_cast<double *>(A), nA, K, kf.ks, kf.rowmul);
+        crisp_fill_ones_kernel<double><<<detail::fill_grid(nB, T), block>>>(static_cast<double *>(B), nB);
+    } else {
+        std::fprintf(stderr, "fill_cuda: CRISP_BENCH_FILL_KSTEP supports f32 / f64 only, not '%s'\n", enc); std::exit(2);
+    }
+    detail::cuda_must(cudaGetLastError(), "kstep fill launch");
+    detail::cuda_must(cudaDeviceSynchronize(), "kstep fill synchronize");
+}
+
 // Zero a device buffer of `bytes` bytes (0.0 is all-zero bits in every encoding used here).
 // Endeavour 209.  Codes of a block-matrix operand of `n` LOGICAL elements.  base: "fp4" | "fp8-e4m3"
 // | "fp8-e5m2" (the metacrisp's :base).  Returns the byte count it filled.
@@ -198,7 +228,8 @@ inline VerifyResult cuda_verify(const void *C, const char *enc, uint64_t M, uint
             out.assign(buf.begin(), buf.end());
         }
     };
-    const double scale = f64 ? FILL_F64_SCALE * FILL_F64_SCALE : 1.0;
+    // The k-step diagnostic fill carries no fp64 precision scale (see cuda_fill_kstep).
+    const double scale = (f64 && !kstep_fill().ks) ? FILL_F64_SCALE * FILL_F64_SCALE : 1.0;
     return verify_sampled(M, N, K, a, b, c, read, scale, 64, post, f64 ? FILL_F64_RTOL : FILL_RTOL, mf_vec);
 }
 
