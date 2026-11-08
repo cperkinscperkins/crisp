@@ -337,6 +337,63 @@ Blind to B by construction (B = 1).  Script put_temp_files_here/209/f2099_diag.p
   slot through the IR (no GPU); (3) a ring-count-3 arm: a same-slot overwrite then reads +3 per value
   (+12), which confirms the ring distance and that it is the next fill.
 
+**Local trace of the f64 handshake (2026-11-07, PTX + SASS, no GPU) -- theories 1 and 2 do NOT hold
+on paper:**
+- Phase bits: producer `%r126`, consumer `%r127`, both zeroed ONCE at kernel entry (before the
+  tile loop) and carried across tiles.  Producer waits `empty[s]` on parity `NOT bit[s]` (passes on a
+  fresh barrier = `:signaled`), flips after issuing; consumer waits `full[s]` on `bit[s]`, flips in the
+  latch.  Same slot function, same per-tile trip count (`K >> 4`) on both sides.
+- Arrivals: `empty` = 2 = lane 0 of each of the 2 consumer warps (`%laneid != 0` skips); `full` = 2 =
+  the producer's two `arrive.expect_tx` (8192 + 4096).  The producer never reaches the release path.
+- SASS: all 32 `LDS.64` sit between the `full` TRYWAIT and the release `SYNCS.ARRIVE`; the last DMMA
+  consumes the last LDS, so every load has returned before the arrive issues.  Nothing sunk below it.
+- So under per-instruction semantics the ring cannot be overrun, yet metal shows a row of A replaced by
+  the slot's next fill.  What is left is below the instruction level:
+  (4) cross-proxy WAR -- generic-proxy LDS, then a generic release, then the producer's
+      async-proxy TMA write, with no `fence.proxy.async` between;
+  (5) a lane-0 release orders only lane 0's own reads in the memory model; the other 31 lanes' reads
+      are not ordered before it without a warp-level sync;
+  (3) a gap the tf32 twin shares but never loses, which f64's slow consumer exposes.
+  Test plan: hand-edited PTX probes on metal (no compiler change) -- P0 unmodified, P1
+  `fence.proxy.async.shared::cta` before the release arrive, P2 `bar.warp.sync -1` before it,
+  each through the k-step fill x5.
+
+**Step 9d -- PTX probes on metal (H100, 2026-11-07, 2 min, ~$0.15; a first try died in 11 s on a
+pod-side `tar` ownership error, ~$0.05).**  Hand-edited chapter 6 f64 PTX, each insertion just before
+the consumer's lane-0 release branch (all 32 lanes execute it); k-step fill, every element checked:
+
+| probe | inserted (SASS) | wrong, N=2048 x5 | wrong, N=4096 x3 | TFLOPS @4096 |
+|---|---|---|---|---:|
+| p0 | nothing | 6240..9888 | 28640..31744 | 28.0 (unverified) |
+| p2 | `bar.warp.sync -1` (ptxas drops it) | 5248..8928 | 22816..27488 | 28.0 (unverified) |
+| p4 | `fence.acq_rel.cta` (`MEMBAR.ALL.CTA`) | **0** | **0** | 26.8-27.0 |
+| p1 | `fence.proxy.async.shared::cta` (`MEMBAR.ALL.CTA` + `FENCE.VIEW.ASYNC.S`) | **0** | **0** | 26.8 |
+| p3 | p1 + p2 | **0** | **0** | 26.8 |
+
+**F-209-4 has its mechanism: theory 5.**  A plain CTA-scope fence by every lane before the elected
+release is enough (p4); the proxy fence adds nothing beyond its MEMBAR (p1 = p4).  So the one-lane
+`mbarrier.arrive` releases only lane 0's reads: the other 31 lanes' shared loads are not ordered
+before it, and the producer's next TMA can land under them.  "The last DMMA consumed the last load"
+was the wrong mental model -- issue order is not memory order.  Price of the fence: -4% (28.0 ->
+26.8-27.0 TFLOPS) on a kernel that was wrong.  The tf32 twin has the SAME release shape and simply
+never loses the race (short consumer stage) -- it is latent there, and in any Crisp ring whose
+consumers read shared memory through the generic proxy and release from one elected lane.
+
+**F-209-8 -- occupancy is PART of it** (same fixture, TILE=64,128, x3):
+
+| TFLOPS (N) | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|
+| HEAD cluster (164 regs) | 201.4 | 233.0 | 219.5 |
+| HEAD multicast (168 regs) | 188.7 | 208.2 | 213.8 |
+| cluster `(occupancy-target 640)` (96 regs, 300 B spills) | 195.1 | 213.1 | 193.6 |
+| multicast `(occupancy-target 640)` (96 regs, 300 B spills) | 211.8 | 229.2 | 215.6 |
+| cc116e8c multicast (96 regs, 0 spills; step 9c) | 187.8 | 217.8 | 239.5 |
+
+Occupancy 640 buys multicast +12 / +10 / +1% but costs plain cluster -3 / -9 / -12%, and it does NOT
+recover cc116e8c's 240 at 8192 (that compiler got 96 registers WITHOUT spills).  Still open: what
+in the new codegen costs multicast 168 registers (the packed epilogue is the suspect); an
+`(occupancy-target 480)` arm (3 workgroups/SM, ~136 registers, likely no spills) is the next probe.
+
 **F-209-7 repeat at 16384 (x3, tight):** tf32 189.3 / 189.0 / 189.0 -> occ320 229.6 / 229.8 / 230.1
 (+21%); bf16 372.2 x3 -> 467-468 (+26%).  The 16384 dip of the occ320 arms is REAL and reproducible
 (4096 / 8192 peak higher: 330 / 666), not noise.
