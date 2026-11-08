@@ -5,10 +5,10 @@
 | device | data captured | source | hardware profile |
 |---|---|---|---|
 | Intel(R) Graphics [0xe20b] | 2026-11-05 | Crisp `1432b489` (docker) | `bmg` (validated) |
-| NVIDIA H100 80GB HBM3 | 2026-11-07 | Crisp `d8f3af62` (runpod) | `h100-80gb-hbm3` (queried*) |
 | NVIDIA H200 | 2026-09-13 | Crisp `66a7911d` (runpod) | `h200` (queried*) |
 | NVIDIA A100-SXM4-80GB | 2026-11-04 | Crisp `da445a6e` (runpod) | `a100-sxm4-80gb` (queried*) |
 | NVIDIA B200 | 2026-11-07 | Crisp `adcd44f9` (runpod) | `b200` (queried*) |
+| NVIDIA H100 80GB HBM3 | 2026-11-08 | Crisp `5c2c90fd` (runpod) | `h100-80gb-hbm3` (queried*) |
 
 > \* **queried / supplied**: the profile's QUERIED keys were read off the device, but its MEASURED keys (`:tile-visit-strip-width` above all) were never swept for this part and are absent, which selects safe defaults rather than tuned ones. Such a row is honest about the hardware it ran on and fair to compare *within* the device; it may understate Crisp against a row whose profile was fully tuned. A **NONE** row was compiled with no profile at all and is not comparable to published figures.
 
@@ -290,16 +290,16 @@ tcgen05 (Blackwell; wgmma needs sm_90a)
 
 **Rollup — Crisp TFLOPS, every chapter × every N.**
 
-| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** | **N=61440** |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 0 | naive loops, no tensor cores | 0.8 | 0.9 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | — | — |
-| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | 0.4 | 1.5 | 5.7 | 5.8 | 5.6 | 5.6 | 5.5 | — |
-| 2 | matrix-multiply-tile-stride | 0.1 | 0.4 | 1.5 | 5.7 | 5.7 | 5.7 | 5.5 | 5.5 | — |
-| 3 | cp.async | 0.7 | 3.4 | 15.3 | 46.3 | 48.2 | 49.1 | 45.1 | 44.1 | — |
-| 4 | TMA descriptor (CUtensorMap) | 1.3 | 6.3 | 26.6 | 74.6 | 79.6 | 80.8 | 70.3 | 57.3 | — |
-| 5 | SMEM ring | 1.4 | 7.2 | 31.0 | 91.2 | 97.3 | 76.5 | 60.4 | 56.5 | — |
-| 6 | warp specialization | 1.9 | 10.6 | 46.4 | 84.6 | 88.6 | 87.4 | 54.7 | 51.9 | — |
-| 7 | wgmma (Hopper; tcgen05 needs sm_100a) | 2.6 | 15.9 | 86.4 | 184.3 | 199.9 | 187.4 | 185.7 | 187.2 | — |
+| # | technique | **N=256** | **N=512** | **N=1024** | **N=2048** | **N=4096** | **N=8192** | **N=16384** | **N=32768** |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | naive loops, no tensor cores | 0.8 | 0.9 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | — |
+| 1 | hand-rolled mma-accumulate-via-tile | 0.1 | 0.4 | 1.5 | 5.7 | 5.8 | 5.6 | 5.6 | 5.5 |
+| 2 | matrix-multiply-tile-stride | 0.1 | 0.4 | 1.5 | 5.7 | 5.7 | 5.7 | 5.5 | 5.5 |
+| 3 | cp.async | 0.7 | 3.4 | 15.3 | 46.3 | 48.2 | 49.1 | 45.1 | 44.1 |
+| 4 | TMA descriptor (CUtensorMap) | 1.3 | 6.3 | 26.6 | 74.6 | 79.6 | 80.8 | 70.3 | 57.3 |
+| 5 | SMEM ring | 1.4 | 7.2 | 31.0 | 91.2 | 97.3 | 76.5 | 60.4 | 56.5 |
+| 6 | warp specialization | 1.9 | 10.6 | 46.4 | 84.6 | 88.6 | 87.4 | 54.7 | 51.9 |
+| 7 | wgmma (Hopper; tcgen05 needs sm_100a) | 2.6 | 15.9 | 86.4 | 184.3 | 199.9 | 187.4 | 185.7 | 187.2 |
 
 <details><summary><b>Per-chapter detail</b></summary>
 
@@ -316,7 +316,6 @@ naive loops, no tensor cores
 | 8192 | 1.0 (1111.580) | 0.9 (1183.622) | 1.06× |
 | 16384 | 1.0 (8883.290) | 0.9 (9460.090) | 1.06× |
 | 32768 | — | — | — |
-| 61440 | — | — | — |
 
 #### Ch 1 — Can we reach the tensor cores?
 hand-rolled mma-accumulate-via-tile
@@ -331,7 +330,6 @@ hand-rolled mma-accumulate-via-tile
 | 8192 | 5.6 (194.637) | 50.6 (21.749) | 0.11× | **5.71×** |
 | 16384 | 5.6 (1568.650) | 51.3 (171.382) | 0.11× | **5.66×** |
 | 32768 | 5.5 (12777.100) | 47.1 (1493.828) | 0.12× | — |
-| 61440 | — | — | — | — |
 
 #### Ch 2 — What does tiling buy?
 matrix-multiply-tile-stride
@@ -346,7 +344,6 @@ matrix-multiply-tile-stride
 | 8192 | 5.7 (193.782) | 5.8 (190.900) | 0.99× | 1.00× |
 | 16384 | 5.5 (1595.710) | 5.8 (1515.438) | 0.95× | 0.98× |
 | 32768 | 5.5 (12771.400) | 5.8 (12120.496) | 0.95× | 1.00× |
-| 61440 | — | — | — | — |
 
 #### Ch 3 — Can the fetch overlap the math?
 cp.async
@@ -361,7 +358,6 @@ cp.async
 | 8192 | 49.1 (22.384) | 4.8 (229.689) | **10.26×** | **8.66×** |
 | 16384 | 45.1 (195.103) | 4.8 (1835.904) | **9.41×** | **8.18×** |
 | 32768 | 44.1 (1597.090) | 4.8 (14684.664) | **9.19×** | **8.00×** |
-| 61440 | — | — | — | — |
 
 #### Ch 4 — Can the fetch itself be cheap?
 TMA descriptor (CUtensorMap)
@@ -376,7 +372,6 @@ TMA descriptor (CUtensorMap)
 | 8192 | 80.8 (13.611) | 4.8 (229.681) | **16.87×** | **1.64×** |
 | 16384 | 70.3 (125.178) | 4.8 (1835.903) | **14.67×** | **1.56×** |
 | 32768 | 57.3 (1227.600) | 4.8 (14684.661) | **11.96×** | 1.30× |
-| 61440 | — | — | — | — |
 
 #### Ch 5 — Can several fetches be in flight?
 SMEM ring
@@ -391,7 +386,6 @@ SMEM ring
 | 8192 | 76.5 (14.382) | 4.2 (262.043) | **18.22×** | 0.95× |
 | 16384 | 60.4 (145.683) | 4.2 (2095.466) | **14.38×** | 0.86× |
 | 32768 | 56.5 (1245.110) | 4.2 (16760.383) | **13.46×** | 0.99× |
-| 61440 | — | — | — | — |
 
 #### Ch 6 — Can the math stop waiting on bookkeeping?
 warp specialization
@@ -406,7 +400,6 @@ warp specialization
 | 8192 | 87.4 (12.576) | — | — | 1.14× |
 | 16384 | 54.7 (160.781) | — | — | 0.91× |
 | 32768 | 51.9 (1355.220) | — | — | 0.92× |
-| 61440 | — | — | — | — |
 
 #### Ch 7 — Can one instruction do more math?
 wgmma (Hopper; tcgen05 needs sm_100a)
@@ -421,7 +414,6 @@ wgmma (Hopper; tcgen05 needs sm_100a)
 | 8192 | 187.4 (5.868) | — | — | **2.14×** |
 | 16384 | 185.7 (47.355) | — | — | **3.40×** |
 | 32768 | 187.2 (375.938) | — | — | **3.60×** |
-| 61440 | — | — | — | — |
 
 </details>
 
@@ -1893,12 +1885,12 @@ Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's 
 
 *Same 64×128 cluster kernel with and without TMA multicast. Cells are TFLOPS; the last row is `(multicast / cluster − 1)`, so positive means multicast won.*
 
-| contender | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 | N=61440 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Crisp cluster 64×128 | 3.8 | 23.6 | 115.9 | 163.5 | 191.4 | 188.8 | 171.2 | 151.6 | 129.5 |
-| Crisp + TMA multicast | 3.5 | 21.5 | 107.4 | 199.0 | 220.8 | 235.1 | 172.9 | 156.9 | 140.8 |
-| cuBLAS (Ceiling) | 5.9 | 34.6 | 143.6 | 362.6 | 431.7 | 457.4 | 385.8 | 444.5 | — |
-| multicast vs cluster | -7.3% | -8.9% | -7.3% | +21.7% | +15.3% | +24.5% | +1.0% | +3.5% | +8.7% |
+| contender | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Crisp cluster 64×128 | 2.5 | 16.4 | 95.4 | 200.6 | 232.3 | 225.1 | 169.3 | 169.1 |
+| Crisp + TMA multicast | 2.4 | 15.8 | 87.1 | 185.9 | 208.1 | 213.4 | 165.1 | 164.1 |
+| cuBLAS (Ceiling) | 5.9 | 33.8 | 139.4 | 360.3 | 428.8 | 453.7 | 395.2 | 444.4 |
+| multicast vs cluster | -5.1% | -3.7% | -8.7% | -7.3% | -10.5% | -5.2% | -2.5% | -2.9% |
 
 ### TMA Multicast · NVIDIA H200
 

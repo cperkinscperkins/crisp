@@ -24,6 +24,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 7 | B200 smoke + tuning rental (`_b200_tune` + every B200 lane, small/mid sizes, --scratch) | done (round 1 2026-11-06; round 2 after BUG 157 2026-11-07, D-209-8) |
 | 8 | B200 full sweep | done 2026-11-07 (87 min, ~$11.60, 83 result files; F-209-4, F-209-5) |
 | 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B; F-209-4 A/B; tf32 re-measured) | done 2026-11-07 (47 min, ~$3.10): F-209-1 measured; F-209-4 narrowed; F-209-6, F-209-7 found |
+| 9b | H100: F-209-7 occupancy A/B; F-209-4 diagnostics; sec3 through the fixed fixture | done 2026-11-07 (re-run 11 min, ~$0.75, after an 85-min apt.llvm.org stall, ~$5.65): occ320 +19..83%; F-209-4 = race on A; F-209-6 fixed; F-209-8 found |
 | 10 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerate after 8) |
 
 ## What was built (2026-11-06)
@@ -249,6 +250,62 @@ base vs occ320).
 memory (F-209-6); `CRISP_BENCH_VERIFY_DIAG=1` makes fill_verify.h check EVERY element, keep going,
 and print the mismatch count and the first 32 positions; put_temp_files_here/209/f2094_diag.py runs
 that x3 plus compute-sanitizer racecheck / synccheck on the F-209-4 arms on the pod.
+
+## Step 9b results — H100, 2026-11-07 (pod confirmed gone both times)
+
+**First rental wasted (85 min, ~$5.65):** bench-on-pod's dependency step hung between
+`Setting up gnupg` and `apt-get install llvm-21` -- the apt.llvm.org key `wget` or the
+`apt-get update` against apt.llvm.org, neither with a timeout.  Fixed in scripts/bench-on-pod.sh:
+apt `Acquire::*::Timeout 30` / `Retries 3`, `wget --timeout=30 --tries=3`, curl `--max-time`, and the
+whole dependency step under `timeout 1200`.  step9b-on-pod.sh now aborts if the pod has no toolchain
+after the first run.  **Re-run: 11 min, ~$0.75**, all three parts rc=0.
+
+**F-209-7 -- occupancy WINS, and big** (scratch, every point verified):
+
+| TFLOPS | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---:|---:|---:|---:|---:|
+| chap7 tf32 as-is (252 regs, 1 WG/SM) | 182.1 | 201.0 | 189.2 | 188.5 | 188.5 |
+| chap7 tf32 `(occupancy-target 320)` (168 regs + spills, 2 WG/SM) | 281.9 | 330.1 | 286.7 | 230.2 | 258.8 |
+| chap7 bf16 as-is | 325.8 | 375.4 | 364.8 | 371.7 | 366.7 |
+| chap7 bf16 `(occupancy-target 320)` | 460.4 | 604.8 | 666.3 | 469.3 | 442.6 |
+
++22..75% (tf32), +19..83% (bf16).  Two spilled workgroups per SM beat one clean one by a lot -- the
+same lesson as the B200 dense lanes (D-209-8: ring 2, two workgroups/SM).  The 16384 dip on the
+occ320 arms is unexplained (one rep each; worth a repeat before quoting the peak).
+
+**F-209-4 -- a race, in all three arms, invisible to compute-sanitizer** (put_temp_files_here/209/step9b-diag.txt):
+
+| arm | N=1024 wrong (x3 reps) | N=2048 wrong (x3 reps) | racecheck / synccheck N=256 |
+|---|---|---|---|
+| ws_flat (`:set-to 96`, flat walk) | 1586 / 2636 / 2596 | 8077 / 6706 / 9898 | 0 hazards / 0 errors |
+| ws_linear (flat + `linear` visit) | **0** / 149 / 296 | 4019 / 3061 / 2521 | 0 / 0 |
+| chapter 6 f64 as declared (64x32 grid) | 1742 / 1516 / 1042 | 7474 / 7042 / 6735 | 0 / 0 |
+
+- Counts change run to run (ws_linear passed once): nondeterministic, so a race, not a layout bug.
+  0.1-0.25% of elements; |err| 3..18 against sums ~2048 (one operand value wrong in a few k-terms).
+- **Shape of a bad spot: one ROW, a run of up to 32 consecutive columns** (e.g. C[2][960..991],
+  C[65][480..]) -- one row across a whole 32-wide tile.  In m8n8k4 f64 every lane holds ONE A element
+  (row = lane/4, k = lane%4), and one A element feeds every column of its row.  So a few lanes got a
+  wrong A value for some k-step; B is not implicated (a wrong B value would spoil a column).
+- **Ruled out locally:** (a) ring overlap -- the fixture lays out B ring at 0 (2x16x32x8 = 8192 B), A
+  ring at 8192 (16384 B), the PTX slot strides are 8192 (A) / 4096 (B), expect_tx 8192 + 4096: all
+  correct for doubles.  (b) ptxas reordering -- SASS (put_temp_files_here/209/f2094_sass/) is TRYWAIT,
+  all 32 LDS, 64 DMMA, then the one-lane-per-warp `SYNCS.ARRIVE` release; the barrier counts (2 / 2)
+  match 2 producer `arrive.expect_tx` and 2 consumer warps.
+- racecheck does not model the async proxy (TMA writes, mbarrier complete_tx), and N=256 is only 16
+  k-steps, so "0 hazards" does not clear a TMA-vs-LDS race.
+
+**F-209-6 -- FIXED.**  sec3 cluster kernels launch through the fixture with the opt-in, every point
+verified (H100, canonical sizes):
+
+| TFLOPS | 256 | 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Crisp cluster 64x128 | 2.5 | 16.4 | 95.4 | 200.6 | 232.3 | 225.1 | 169.3 | 169.1 |
+| Crisp + TMA multicast | 2.4 | 15.8 | 87.1 | 185.9 | 208.1 | 213.4 | 165.1 | 164.1 |
+
+**F-209-8 (new) -- multicast now LOSES to plain cluster** at every size (-2.5..-10.5%); the previous
+report (old hoisted harness, 1789260xxx results) had it +15..25% at 2048..8192.  Same confound as
+F-209-7 had: old harness vs fixture, and a different compiler.  Unattributed.
 
 ## Findings
 
