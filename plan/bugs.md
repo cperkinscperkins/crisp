@@ -4636,3 +4636,22 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         only the 13 warp-specialized ring kernels moved).  On a B200: spec 16 back on 3 slots (now its
         regression), spec 04 on 3 slots, and the three faulting probes are all MMA_CORRECT.  The H100
         wgmma kernels share the await and are checked in the benchmarking pass.
+
+[x] 157 FIXED in overlay (endeavour 209, 2026-11-06) -- A PERSISTENT 1-D GRID LEAVES MOST WORKGROUPS IDLE UNDER A RANK-2 TILE-STRIDE.
+        tile-stride's default lowering strides each tile dimension by that dimension's own group count
+        (START_i = GID_i, STRIDE_i = NG_i; control.lisp %expand-workgroup-strided-outer-loop-with-ts-syms).
+        A kernel declaring (global-size :set-to N) is launched as ONE row of workgroups, so NG_1 = 1 and only
+        the workgroups whose x id is below the number of tile ROWS own any tile.  Results are correct, so
+        nothing caught it.
+        OBSERVED (endeavour 209, B200, 2026-11-06): the persistent tcgen05 kernels (148 workgroups, 128 x 256
+        tiles) ran 3.8x slower than a one-workgroup-per-tile launch at 4096 and 2.3x at 8192 -- exactly
+        148/32 and 148/64 with overlap gains.  208's specs never showed it (2 workgroups, 2 tile rows).
+        FIX (overlay, appended): %ts-persistent-grid-p reads the declaration; a rank-2 compile-time
+        tile-stride in such a kernel takes endeavour 144's flat column-strip walk
+        (%expand-tile-stride-swizzled), at the profile's measured strip width or 1.  It flattens the
+        workgroup id over every grid dimension, so coverage is exact for any launch shape.  Rank 3 there
+        warns.  Specs: 209/01 (a 2 x 2 tile grid over 4 workgroups records which workgroup computed
+        each tile: 0 2 1 3 pattern; fails with CRISP_TILE_VISIT=linear) and 209/02 (positive control:
+        a declared tile grid keeps the per-axis walk).  IR corpus: only kernels with a fixed global size
+        and a rank-2 tile-stride (incl. matrix-multiply-tile-stride) moved -- 208's tcgen05 specs among
+        them, so they are re-verified on a B200.  Suites green.

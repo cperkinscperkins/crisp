@@ -1,0 +1,57 @@
+;; F-209-1 A/B (endeavour 209, fenced: runs only when named in --chapters, results to scratch).
+;; UNDECLARED copy of sec2_top_int8/matmul_int8.crisp: NO global-size, so the fixture launches its default 32 x 64 grid.
+;; Same PTX in both arms (checked locally); only the launch grid differs.
+
+;; Section 2 top MMA kernel -- NVIDIA H100 (sm_90), int8 (Endeavour 207).
+;;
+;; C (s32) = A (s8) . B (s8) through wgmma.  A port of sec2_top_fp16/matmul_2wg_deep.crisp: two
+;; consumer warpgroups (128x256 output per CTA) + one producer warp, a 4-deep TMA ring, 128-byte
+;; swizzle.  A 128-byte swizzle row is 128 int8 K elements (64 at fp16), so K is walked 128 at a time
+;; -- four k32 wgmma slices per stage -- and the shared-memory bytes per stage are unchanged (48 KB).
+;; B is :col-major because wgmma reads its tile as N x K (wgmma-b-is-col-major).
+;;
+(def-type a-mat (matrix char :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix char :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix int :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 288))          ; 2 consumer warpgroups (8 warps) + 1 producer warp
+  (let ((A0-ring (make-scratch-matrix-ring char (64 128)  :ring-count 4))
+        (A1-ring (make-scratch-matrix-ring char (64 128)  :ring-count 4))
+        (B-ring  (make-scratch-matrix-ring char (256 128) :ring-count 4))
+        (D0      (make-wgmma-accumulator int (64 256) 0))
+        (D1      (make-wgmma-accumulator int (64 256) 0))
+        (K       (inner-dimension A B))
+        (empty   (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 8 :initial-state :signaled))
+        (full    (make-async-barrier-ring :ring-count 4 :mode :block :arrivals 3 :initial-state :waiting)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:consumer0 4 :consumer1 4 :producer 1)
+        (:consumer0
+          (set! D0 (make-wgmma-accumulator int (64 256) 0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 128) D0 (ring-get A0-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at D0 C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong 256)))))
+        (:consumer1
+          (set! D1 (make-wgmma-accumulator int (64 256) 0))
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get full slot))
+              (wgmma-accumulate-via-tile (64 256 128) D1 (ring-get A1-ring slot) (ring-get B-ring slot)
+                                         :swizzle :128b)
+              (signal (ring-get empty slot))))
+          (store-tile-at D1 C ((+ (* grid-y (to-ulong 128)) (to-ulong 64)) (* grid-x (to-ulong 256)))))
+        (:producer
+          (dotimes (grid-k (/ (to-ulong K) (to-ulong 128)))
+            (let ((slot (mod grid-k (to-ulong 4))))
+              (await (ring-get empty slot))
+              (load-tile A (ring-get A0-ring slot) ((* grid-y (to-ulong 2)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile A (ring-get A1-ring slot) ((+ (* grid-y (to-ulong 2)) (to-ulong 1)) grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b)
+              (load-tile B (ring-get B-ring slot) (grid-x grid-k)
+                         :barrier (ring-get full slot) :swizzle :128b))))))))

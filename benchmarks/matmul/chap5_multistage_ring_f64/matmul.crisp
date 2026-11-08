@@ -28,6 +28,7 @@
 
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
            (local-size :set-to 32))          ; one warp / tile
   (let ((A-ring (make-scratch-matrix-ring double (64 16) :ring-count 2))  ; SLM: 2 x (64 x k-step)
         (B-ring (make-scratch-matrix-ring double (16 32) :ring-count 2))  ; SLM: 2 x (k-step x 32)

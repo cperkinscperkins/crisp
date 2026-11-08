@@ -1,0 +1,27 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-11-07T19:16:23.938308Z",
+    "hardware": {
+      "gpu_model": "NVIDIA B200",
+      "arch_target": "sm_100a",
+      "environment": "runpod",
+      "vram_bytes": 192265846784,
+      "sm_count": null,
+      "hardware_profile": "b200",
+      "profile_matched": false,
+      "profile_provenance": "auto",
+      "profile_source": "/root/crisp/benchmarks/profiles/b200.crisp"
+    },
+    "crisp_commit": "adcd44f9",
+    "cuda_version": null,
+    "driver_version": null
+  },
+  "benchmark_suite": "matmul",
+  "chapter": "sec2_top_mxfp4",
+  "competitor": "CUBLASLt_MXFP4",
+  "precision": "fast",
+  "denormal_handling": "ftz",
+  "results": [],
+  "is_canonical": true,
+  "contender_class": null
+}

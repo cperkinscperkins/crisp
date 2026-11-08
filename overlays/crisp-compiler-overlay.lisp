@@ -5,6 +5,14 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-11-08 -- endeavour 209 (B200 MMA bench: BUG 157 / F-209-3 persistent flat walk;
+;;;; F-209-4 / D-209-13 signal fence) folded into src/ by script (put_temp_files_here/209-fold/fold.py:
+;;;; LIVE copies by offset; no capture wrappers):
+;;;;   * new     -> %ts-persistent-grid-p (src/analysis/control.lisp), %gen-nvvm-fence-acq-rel (src/codegen.lisp)
+;;;;   * replaced -> %expand-tile-stride-form (control), generate-node-ir semantic-signal (codegen)
+;;;;   * then D-209-14 (F-209-9: the signal fence is always fence.acq_rel.cta) -> generate-node-ir
+;;;;     semantic-signal replaced again in src/codegen.lisp (put_temp_files_here/209-fold2/fold.py)
+;;;;
 ;;;; EMPTY as of 2026-11-06 -- endeavour 208 (tcgen05 on the B200: phases 1-4, D-208-17 mmts, BUG 156
 ;;;; per-slot ring phase bits) folded into src/ by script (put_temp_files_here/208-fold/fold.py: LIVE
 ;;;; copies by offset; capture wrappers split base + wrapper):
@@ -196,6 +204,8 @@
 ;;;;                                  %apply-cluster-dims-attribute (src/codegen.lisp)
 ;;;;   * spec validators          -> %ptx-minnctapersm, validate-ptx-minnctapersm-4/-2, validate-ptx-no-minnctapersm
 ;;;;                                  (src/mma.lisp)
+
+
 
 
 (in-package :crisp.compiler)

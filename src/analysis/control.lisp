@@ -3973,6 +3973,18 @@
                                                           (list col-sym (list plus-sym fc (list rem-sym idg gc))))
                                                     inner-body))))))))))
 
+(defun %ts-persistent-grid-p ()
+  "Endeavour 209 (F-209-3): true when the kernel being compiled declares a FIXED 1-D global
+   size, (global-size :set-to N) with N an integer -- the persistent shape, launched as one
+   row of workgroups.  Read from *kernel-dispatch-declarations*, as %ts-maybe-infer-tile-shape
+   reads it."
+  (let* ((ctx  *compiler-context*)
+         (fn   (and ctx (compiler-context-current-compiling-function ctx)))
+         (disp (and fn (gethash fn *kernel-dispatch-declarations*)))
+         (decl (and disp (getf disp :global-size))))
+    (and (consp decl)
+         (integerp (getf (cdr decl) :set-to)))))
+
 (defun %expand-tile-stride-form (expr ct location)
   "Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).
    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the
@@ -3982,7 +3994,13 @@
    Endeavor 144 Phase 1: when the visit order should be GROUPED (rank 2, compile-time tile
    size-list, an active profile with :l2-cache-size — see %tile-visit-strip-width), emit the
    L2-aware column-strip walk instead.  Everything else takes the original linear expansion
-   completely unchanged."
+   completely unchanged.
+
+   Endeavour 209 (F-209-3): a rank-2 compile-time tile-stride in a kernel that declares a FIXED
+   1-D global size (%ts-persistent-grid-p) also takes the column-strip walk -- at the measured
+   strip width when the profile has one, else 1 (one tile column at a time) -- because the
+   per-axis walk hands every tile column to the single y group.  A rank-3 tile-stride there
+   keeps the per-axis walk and is warned about."
   (declare (ignore ct))
   (multiple-value-bind (strict-p layout-tag tile-spec tile-spec-kind bindings body-forms tensor-form)
       (%tile-stride-parse expr)
@@ -4012,12 +4030,24 @@
            (strip-width (%tile-visit-log-decision
                          n tile-spec-kind tile-spec
                          (%tile-visit-strip-width
-                          n (when (eq tile-spec-kind :size-list) tile-spec)))))
-      (if (> strip-width 1)
-          (%expand-tile-stride-swizzled tensor-form bindings body-forms ts-syms
-                                        tile-size-expr-fn strip-width location)
-          (%expand-workgroup-strided-outer-loop-with-ts-syms
-           tensor-form n bindings body-forms ts-syms tile-size-expr-fn location)))))
+                          n (when (eq tile-spec-kind :size-list) tile-spec))))
+           (persistent (%ts-persistent-grid-p))
+           (flat-ok (and (= n 2) (eq tile-spec-kind :size-list)
+                         (not (eq (%tile-visit-override) :linear)))))
+      (when (and persistent (> n 1) (not flat-ok))
+        (log:warn "tile-stride rank ~a (~a) in a kernel with a fixed 1-D global size keeps the per-axis walk: only the workgroups with x id below the tile count of axis 0 will own tiles (F-209-3)."
+                  n tile-spec-kind))
+      (cond
+        ((> strip-width 1)
+         (%expand-tile-stride-swizzled tensor-form bindings body-forms ts-syms
+                                       tile-size-expr-fn strip-width location))
+        ((and persistent flat-ok)
+         (log:info "tile-visit: fixed 1-D global size -> flat walk, strip-width 1 (F-209-3)")
+         (%expand-tile-stride-swizzled tensor-form bindings body-forms ts-syms
+                                       tile-size-expr-fn 1 location))
+        (t
+         (%expand-workgroup-strided-outer-loop-with-ts-syms
+          tensor-form n bindings body-forms ts-syms tile-size-expr-fn location))))))
 
 ;; src/analysis/control.lisp
 ;; Endeavor 144 Phase 1 — visibility on the visit-order decision.  Logged (log4cl, so it

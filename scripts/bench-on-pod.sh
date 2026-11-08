@@ -110,8 +110,18 @@ echo ""
 
 # --- 2. Ensure dependencies ---
 echo "--- Step 2: Ensure dependencies ---"
-pod_run "bash -s" <<'DEPS'
+# The whole step is capped: on 2026-11-07 a stall fetching from apt.llvm.org (no timeouts anywhere)
+# ate an entire 84-minute rental.  Every network call below now has a timeout, and `timeout 1200`
+# turns any remaining hang into a clear failure instead of a silent drain on the pod budget.
+pod_run "timeout 1200 bash -s" <<'DEPS' || { echo "ERROR: dependency step failed or exceeded 1200s (network stall?)"; exit 1; }
 set -e
+
+# apt: fail fast on a stalled mirror instead of waiting indefinitely (applies to every apt-get below)
+cat > /etc/apt/apt.conf.d/99crisp-timeouts <<'APTCONF'
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+Acquire::Retries "3";
+APTCONF
 
 # SBCL
 SBCL_INSTALL_VERSION="2.5.5"
@@ -124,7 +134,7 @@ if command -v sbcl &>/dev/null; then
     else
         echo "SBCL too old, upgrading..."
         cd /tmp
-        wget -q "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
+        wget -q --timeout=30 --tries=3 "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
         tar xjf "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
         cd "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux"
         INSTALL_ROOT=/usr/local sh install.sh
@@ -134,7 +144,7 @@ else
     echo "Installing SBCL ${SBCL_INSTALL_VERSION}..."
     apt-get update -qq && apt-get install -y -qq wget bzip2 curl
     cd /tmp
-    wget -q "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
+    wget -q --timeout=30 --tries=3 "https://prdownloads.sourceforge.net/sbcl/sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
     tar xjf "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux-binary.tar.bz2"
     cd "sbcl-${SBCL_INSTALL_VERSION}-x86-64-linux"
     INSTALL_ROOT=/usr/local sh install.sh
@@ -147,7 +157,7 @@ if command -v llc-21 &>/dev/null; then
 else
     echo "Installing LLVM 21..."
     apt-get update -qq && apt-get install -y -qq gpg-agent software-properties-common lsb-release
-    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg 2>/dev/null || true
+    wget -qO- --timeout=30 --tries=3 https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg 2>/dev/null || true
     CODENAME=$(lsb_release -cs 2>/dev/null || echo "jammy")
     echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-21 main" > /etc/apt/sources.list.d/llvm-21.list
     apt-get update -qq && apt-get install -y -qq llvm-21
@@ -160,7 +170,7 @@ if [ -f ~/quicklisp/setup.lisp ]; then
     echo "Quicklisp OK"
 else
     echo "Installing Quicklisp..."
-    curl -sO https://beta.quicklisp.org/quicklisp.lisp
+    curl -sO --max-time 120 https://beta.quicklisp.org/quicklisp.lisp
     echo "" | sbcl --non-interactive \
         --load quicklisp.lisp \
         --eval '(quicklisp-quickstart:install)' \

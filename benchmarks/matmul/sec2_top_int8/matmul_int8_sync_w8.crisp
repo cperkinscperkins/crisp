@@ -14,6 +14,7 @@
 
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
            (local-size :set-to 256))
   (let ((A-ring (make-scratch-matrix-ring char (128 32) :ring-count 2))
         (B-ring (make-scratch-matrix-ring char (32 128) :ring-count 2))

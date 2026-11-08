@@ -1,0 +1,33 @@
+;; Endeavour 209, F-209-3 -- a PERSISTENT (fixed 1-D) grid must spread a rank-2 tile-stride over
+;; EVERY workgroup.
+;;
+;; C is the hoist's default 4 x 4; 2 x 2 tiles make a 2 x 2 TILE grid.  The kernel declares 4
+;; workgroups in ONE row (global-size :set-to 4, local-size 1), and every element of a tile records
+;; the workgroup that computed it.  The point is FEWER tile rows (2) than workgroups (4).
+;;
+;; The per-axis walk strides axis 0 by NG_0 = 4 and axis 1 by NG_1 = 1: workgroup 0 takes BOTH tiles
+;; of tile-row 0, workgroup 1 both of tile-row 1, and workgroups 2 and 3 never own a tile:
+;;   C = 0 0 0 0 / 0 0 0 0 / 1 1 1 1 / 1 1 1 1.
+;; Correct values, half the machine idle -- the B200 persistent kernels lost 116 of 148 workgroups at
+;; 4096 this way.  The flat walk (endeavour 144's column-strip expansion, strip width 1) hands flat tile
+;; t to workgroup t, tile (row, col) = (t mod 2, t / 2):
+;;   C = 0 0 2 2 / 0 0 2 2 / 1 1 3 3 / 1 1 3 3.
+;;
+;; Its positive control is 02 (a declared TILE grid keeps the per-axis walk).
+;;
+;; SKIP-WITH[--differentiate]: "work-distribution check; stores a ulong workgroup id"
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER c: 0 0 2 2 0 0 2 2 1 1 3 3 1 1 3 3
+
+(def-type m-t (matrix ulong :address-space :global :align :compact))
+
+(def-kernel persistent_flat_walk (&out C)
+  (declare #'(&out m-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 1))
+  (tile-stride C (2 2) (gy gx)
+    (dotimes (i 2)
+      (dotimes (j 2)
+        (set! (~ C (+ (* gy (to-ulong 2)) (to-ulong i)) (+ (* gx (to-ulong 2)) (to-ulong j)))
+              (get-workgroup-id 0))))))

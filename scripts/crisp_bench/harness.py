@@ -191,6 +191,11 @@ MATMUL_ELEM_BYTES = (
     ("_bf16",  8),   # A, B at 2 bytes; C ACCUMULATES in fp32, so 2 + 2 + 4
     ("_fp16",  8),
     ("_int8",  6),   # A, B at 1 byte; C ACCUMULATES in s32, so 1 + 1 + 4  (Endeavour 207)
+    # Endeavour 209, block-scaled: C is fp32; the codes are half a byte (fp4) or one (fp8), and the
+    # scales (1/16 or 1/32 of a byte per element) round up into the integer.
+    ("_nvfp4", 6),   # 0.5 + 0.5 + 4 + 2/16 of scales, rounded UP
+    ("_mxfp4", 6),   # 0.5 + 0.5 + 4 + 2/32, rounded UP
+    ("_mxfp8", 6),   # 1 + 1 + 4 (+ 2/32)
 )
 
 def matmul_elem_bytes(chapter: str) -> int:

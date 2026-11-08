@@ -23,6 +23,7 @@
 
 (def-kernel matmul (A B &out C)
   (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
            (local-size :set-to 32))
   (let ((A-tile (make-scratch-matrix double (64 16)))
         (B-tile (make-scratch-matrix double (16 32)))
