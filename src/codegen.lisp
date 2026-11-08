@@ -6446,29 +6446,33 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
 
 (defmethod generate-node-ir ((node semantic-signal) builder module var-env
                               di-builder di-scope location-map)
-  "Endeavor 139 — (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on the slot's
+  "Endeavor 139 -- (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on the slot's
    mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the arrival
    count matches :arrivals.
 
-   Endeavor 152 — when the barrier is :mode :cluster the arrive is REMOTE and ALL-TO-ALL: this
+   Endeavor 152 -- when the barrier is :mode :cluster the arrive is REMOTE and ALL-TO-ALL: this
    workgroup arrives on EVERY workgroup's copy of the barrier, its own included, via mapa.  That
    mirrors CUTLASS, and it is why the init count is scaled by the group extent: with N peers each
    contributing A arrivals, the barrier must expect N*A.
 
-   Endeavour 209 (F-209-4) — every lane first executes fence.acq_rel (cta scope; cluster scope
-   for a :cluster barrier, whose arrive is remote).  The leader's arrive is a release of the
-   LEADER's accesses only; the fence orders the whole warp's reads of the slot before it, so the
-   producer cannot refill a slot that 31 lanes are still reading."
+   Endeavour 209 (F-209-4) -- every lane first executes fence.acq_rel.cta.  The leader's arrive is a
+   release of the LEADER's accesses only; the fence orders the whole warp's reads of the slot before
+   it, so the producer cannot refill a slot that 31 lanes are still reading.
+
+   F-209-9 -- the scope is cta even for a :cluster barrier.  The reads being ordered are all of this
+   workgroup's OWN shared memory (a multicast fill writes each peer's local copy), so cta scope covers
+   them; the cross-workgroup hand-off is the remote arrive itself, the same
+   mbarrier.arrive.shared::cluster CUTLASS's ClusterBarrier::arrive uses (with no fence at all).
+   fence.acq_rel.cluster bought nothing measurable and cost sec3 multicast 39-45% on H100."
   (let* ((i32-type  (llvm-int32-type))
          (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
          (barrier-i (generate-node-ir (semantic-signal-barrier-node node) builder module var-env
                                       di-builder di-scope location-map))
          (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "sig_mbar"))
-         (extent    (gethash node *signal-cluster-extent*))
-         (scope     (if (and extent (> extent 1)) "cluster" "cta")))
-    (log:debug "signal: fence.acq_rel.~A on all lanes before the lane-0 arrive (cluster extent ~A)"
-               scope extent)
-    (%gen-nvvm-fence-acq-rel builder scope)
+         (extent    (gethash node *signal-cluster-extent*)))
+    (log:debug "signal: fence.acq_rel.cta on all lanes before the lane-0 arrive (cluster extent ~A)"
+               extent)
+    (%gen-nvvm-fence-acq-rel builder "cta")
     (let* ((lane      (%ptx-read-warp-sreg builder module "laneid"))
            (is-leader (llvm-build-icmp builder +llvm-int-eq+ lane (llvm-const-int i32-type 0 nil) "sig_leader"))
            (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))

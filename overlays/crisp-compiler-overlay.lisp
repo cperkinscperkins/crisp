@@ -10,6 +10,8 @@
 ;;;; LIVE copies by offset; no capture wrappers):
 ;;;;   * new     -> %ts-persistent-grid-p (src/analysis/control.lisp), %gen-nvvm-fence-acq-rel (src/codegen.lisp)
 ;;;;   * replaced -> %expand-tile-stride-form (control), generate-node-ir semantic-signal (codegen)
+;;;;   * then D-209-14 (F-209-9: the signal fence is always fence.acq_rel.cta) -> generate-node-ir
+;;;;     semantic-signal replaced again in src/codegen.lisp (put_temp_files_here/209-fold2/fold.py)
 ;;;;
 ;;;; EMPTY as of 2026-11-06 -- endeavour 208 (tcgen05 on the B200: phases 1-4, D-208-17 mmts, BUG 156
 ;;;; per-slot ring phase bits) folded into src/ by script (put_temp_files_here/208-fold/fold.py: LIVE
@@ -207,61 +209,3 @@
 
 
 (in-package :crisp.compiler)
-
-
-;;;; ---------------------------------------------------------------------------------------------
-;;;; Endeavour 209, F-209-9 (2026-11-08): the signal fence is ALWAYS fence.acq_rel.cta.
-;;;; fence.acq_rel.cluster cost sec3 multicast 39-45% on H100 metal (127/118 vs 208/214 TFLOPS at
-;;;; 4096/8192); the same PTX with the one word changed to .cta measured 187.7/207.8/214.3 at
-;;;; 2048/4096/8192, the no-fence speed, every run verified (step 11b).
-;;;; ---------------------------------------------------------------------------------------------
-
-;; src/codegen.lisp
-(defmethod generate-node-ir ((node semantic-signal) builder module var-env
-                              di-builder di-scope location-map)
-  "Endeavor 139 -- (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on the slot's
-   mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the arrival
-   count matches :arrivals.
-
-   Endeavor 152 -- when the barrier is :mode :cluster the arrive is REMOTE and ALL-TO-ALL: this
-   workgroup arrives on EVERY workgroup's copy of the barrier, its own included, via mapa.  That
-   mirrors CUTLASS, and it is why the init count is scaled by the group extent: with N peers each
-   contributing A arrivals, the barrier must expect N*A.
-
-   Endeavour 209 (F-209-4) -- every lane first executes fence.acq_rel.cta.  The leader's arrive is a
-   release of the LEADER's accesses only; the fence orders the whole warp's reads of the slot before
-   it, so the producer cannot refill a slot that 31 lanes are still reading.
-
-   F-209-9 -- the scope is cta even for a :cluster barrier.  The reads being ordered are all of this
-   workgroup's OWN shared memory (a multicast fill writes each peer's local copy), so cta scope covers
-   them; the cross-workgroup hand-off is the remote arrive itself, the same
-   mbarrier.arrive.shared::cluster CUTLASS's ClusterBarrier::arrive uses (with no fence at all).
-   fence.acq_rel.cluster bought nothing measurable and cost sec3 multicast 39-45% on H100."
-  (let* ((i32-type  (llvm-int32-type))
-         (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
-         (barrier-i (generate-node-ir (semantic-signal-barrier-node node) builder module var-env
-                                      di-builder di-scope location-map))
-         (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "sig_mbar"))
-         (extent    (gethash node *signal-cluster-extent*)))
-    (log:debug "signal: fence.acq_rel.cta on all lanes before the lane-0 arrive (cluster extent ~A)"
-               extent)
-    (%gen-nvvm-fence-acq-rel builder "cta")
-    (let* ((lane      (%ptx-read-warp-sreg builder module "laneid"))
-           (is-leader (llvm-build-icmp builder +llvm-int-eq+ lane (llvm-const-int i32-type 0 nil) "sig_leader"))
-           (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
-           (arrive-bb (llvm-append-basic-block parent "sig_arrive"))
-           (cont-bb   (llvm-append-basic-block parent "sig_cont")))
-      (llvm-build-cond-br builder is-leader arrive-bb cont-bb)
-      (llvm-position-builder-at-end builder arrive-bb)
-      (cond
-        ((and extent (> extent 1))
-         (let ((addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "sig_mbar_addr")))
-           (dotimes (r extent)
-             (let* ((rank (llvm-const-int i32-type r nil))
-                    (peer (%gen-nvvm-mapa-shared-cluster builder addr rank)))
-               (%gen-nvvm-mbarrier-arrive-cluster builder peer)))))
-        (t
-         (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)))
-      (llvm-build-br builder cont-bb)
-      (llvm-position-builder-at-end builder cont-bb)
-      (values (llvm-const-int (llvm-int64-type) 0 nil) nil))))

@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-11-06T23:31:05.455938Z
+Generated on 2026-11-08T18:31:23.158485Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -978,10 +978,16 @@ Generated on 2026-11-06T23:31:05.455938Z
 
 
 ---
+### DEFUN `%TS-PERSISTENT-GRID-P`
+
+  > Endeavour 209 (F-209-3): true when the kernel being compiled declares a FIXED 1-D global  >    size, (global-size :set-to N) with N an integer -- the persistent shape, launched as one  >    row of workgroups.  Read from *kernel-dispatch-declarations*, as %ts-maybe-infer-tile-shape  >    reads it.
+
+
+---
 ### DEFUN `%EXPAND-TILE-STRIDE-FORM`
 - **Args**: `(EXPR CT LOCATION)`
 
-  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the  >    body to rewrite bare load-tile / store-tile into their -coords forms using  >    the tile-stride's binding syms as the origin.  >   >    Endeavor 144 Phase 1: when the visit order should be GROUPED (rank 2, compile-time tile  >    size-list, an active profile with :l2-cache-size — see %tile-visit-strip-width), emit the  >    L2-aware column-strip walk instead.  Everything else takes the original linear expansion  >    completely unchanged.
+  > Pure expansion of (tile-stride T [LAYOUT-TAG] <TILE-SPEC> (BINDINGS) BODY...).  >    Outer loop over tile origins, workgroup-strided.  Phase 1b: pre-walks the  >    body to rewrite bare load-tile / store-tile into their -coords forms using  >    the tile-stride's binding syms as the origin.  >   >    Endeavor 144 Phase 1: when the visit order should be GROUPED (rank 2, compile-time tile  >    size-list, an active profile with :l2-cache-size — see %tile-visit-strip-width), emit the  >    L2-aware column-strip walk instead.  Everything else takes the original linear expansion  >    completely unchanged.  >   >    Endeavour 209 (F-209-3): a rank-2 compile-time tile-stride in a kernel that declares a FIXED  >    1-D global size (%ts-persistent-grid-p) also takes the column-strip walk -- at the measured  >    strip width when the profile has one, else 1 (one tile column at a time) -- because the  >    per-axis walk hands every tile column to the single y group.  A rank-3 tile-stride there  >    keeps the per-axis walk and is warned about.
 
 
 ---
@@ -7404,6 +7410,13 @@ Generated on 2026-11-06T23:31:05.455938Z
 - **Args**: `(BUILDER)`
 
   > Inline PTX: fence.proxy.async.shared::cta;  Makes the mbarrier.init visible to the async  >    (TMA) proxy before the bulk copy is issued.  Emitted by the leader thread after init.
+
+
+---
+### DEFUN `%GEN-NVVM-FENCE-ACQ-REL`
+- **Args**: `(BUILDER SCOPE)`
+
+  > Inline PTX: fence.acq_rel.<SCOPE>;  SCOPE is "cta" or "cluster".  Endeavour 209 (F-209-4):  >    emitted by EVERY lane before a leader-only mbarrier.arrive, so that all the lanes' prior  >    shared-memory reads are ordered before the release.  A one-lane arrive releases only that lane's  >    own accesses; without this the producer's next TMA could land under the other 31 lanes' loads  >    (H100 metal, chapter 6 f64: 0.1-0.25% of C wrong; fixed by exactly this fence, -4% speed).  >    The ~{memory} clobber keeps LLVM from moving loads or stores across it.
 
 
 ---

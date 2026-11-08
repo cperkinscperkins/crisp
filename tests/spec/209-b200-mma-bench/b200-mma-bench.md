@@ -762,7 +762,9 @@ three places.
   multicast PTX is byte-identical to Step 11b's metal-verified `ctafence` arm (one `fence.acq_rel.cta`,
   zero `.cluster`, two remote arrives); `validate-ptx-signal-fence` already accepts either scope.  No
   rental: that PTX already ran on the H100.  The async-proxy refinement (no fence for wgmma / tcgen05
-  consumers) stays not done: -1% / 0% once the scope is `.cta`.
+  consumers) stays not done: -1% / 0% once the scope is `.cta`.  Folded into src/codegen.lisp the
+  same day (put_temp_files_here/209-fold2/fold.py); the overlay is empty again, the PTX is still
+  byte-identical, and unit 392/392, E2E 1808/1808, negative 492/492 pass.
 - **D-209-7.** The B200's int8 lane gets a CUTLASS SM100 peer (the builder takes `int8_t`); the
   Hopper int8 lane still has none.  The report shows a Peer column only where one was measured.
 

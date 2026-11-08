@@ -1035,6 +1035,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%193-LOAD-DIE-SITE-RELAXED BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%193-DIE-RECORD-GLOBAL MODULE)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%193-BUILD-BAIL-RETURN BUILDER)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-FENCE-ACQ-REL BUILDER SCOPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MAPA-SHARED-CLUSTER BUILDER ADDR-I32 RANK-I32)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%BUILD-INLINE-ASM-CALL BUILDER RET-TYPE PARAM-TYPES ARG-VALS ASM-STR CONSTRAINTS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-ARRIVE-CLUSTER BUILDER PEER-ADDR-I32)  codegen.lisp
@@ -2391,6 +2393,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - (%TILE-VISIT-STRIP-WIDTH N TILE-SIZES)  compiler.lisp
 - - - - - - - - (%TILE-VISIT-OVERRIDE)  compiler.lisp
 - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - (%TS-PERSISTENT-GRID-P)  analysis/control.lisp
+- - - - - - - (%TILE-VISIT-OVERRIDE)  compiler.lisp [See above]
 - - - - - - - (%EXPAND-TILE-STRIDE-SWIZZLED TENSOR-FORM BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN STRIP-WIDTH LOCATION)  analysis/control.lisp
 - - - - - - - - (%BUILD-EXACT-ITER-COUNT-FORM START-SYM STRIDE-SYM LEN-SYM CL-PKG)  analysis/control.lisp [See above]
 - - - - - - - (%EXPAND-WORKGROUP-STRIDED-OUTER-LOOP-WITH-TS-SYMS TENSOR-FORM N BINDINGS BODY-FORMS TS-SYMS TILE-SIZE-EXPR-FN LOCATION)  analysis/control.lisp
