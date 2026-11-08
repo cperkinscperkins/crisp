@@ -28,7 +28,7 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 9c | H100: k-step fill decode of F-209-4; tf32 control; occ repeat; F-209-8 HEAD vs cc116e8c PTX | done 2026-11-07 (6 min, ~$0.40): F-209-4 = producer overwrites an unread slot; F-209-8 = compiler (registers) |
 | 9d | H100: fence probes p0-p4 on chapter 6 f64 | done 2026-11-07: fence.acq_rel.cta on all lanes fixes, -4% (D-209-13) |
 | 10 | B200: F-209-4 fix gate + re-sweep of the signal chapters | done 2026-11-07 (65 min, ~$8.65): gate PASS (0 wrong x18); 61 files all verified; tcgen05 fence cost ~0, chapter 6 -4..-6% |
-| 11 | H100, Chris away: fold, occupancy-target 320 (7 kernels), spec 209/03, fence A/B, occ480 (11, 11b, 11c) | done 2026-11-08 (50 min, ~$3.40): all green; F-209-9 found (cluster-scope fence -45% on multicast; `.cta` recovers it, proposed) |
+| 11 | H100, Chris away: fold, occupancy-target 320 (7 kernels), spec 209/03, fence A/B, occ480 (11, 11b, 11c) | done 2026-11-08 (50 min, ~$3.40): all green; F-209-9 found (cluster-scope fence -45% on multicast; `.cta` recovers it) -- fixed the same day (D-209-14) |
 | 12 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerated after 11c) |
 
 ## What was built (2026-11-06)
@@ -588,7 +588,7 @@ multicast lands in this workgroup's shared memory.  So `.cta` is arguably the ri
 `:mode :cluster` barrier: it orders the reads exactly as it does for the plain barrier, while lane 0's
 remote `mbarrier.arrive` carries the cluster-scope release.
 
-**Proposed for Chris (NOT applied):** in the semantic-signal method, always emit `fence.acq_rel.cta`
+**Proposed for Chris (applied 2026-11-08 as D-209-14):** in the semantic-signal method, always emit `fence.acq_rel.cta`
 (drop the `(if (> extent 1) "cluster" "cta")`).  A further option skips the fence for consumers whose
 reads are all async-proxy (wgmma / tcgen05).  It measured -1% on chap7 and 0% on sec3 cluster, so it
 buys little once the scope is `.cta`.
@@ -628,7 +628,7 @@ with the folded compiler.
 
 | item | state |
 |---|---|
-| 1. H100 re-measure after the fix | done: every point verified; the fence costs 0..-1% on wgmma CTA-scope kernels and -3..-7% on chapter 6; **-39..-45% on multicast (F-209-9, fix proposed, not applied)** |
+| 1. H100 re-measure after the fix | done: every point verified; the fence costs 0..-1% on wgmma CTA-scope kernels and -3..-7% on chapter 6; **-39..-45% on multicast (F-209-9; fixed afterwards, D-209-14)** |
 | 2. occupancy-target on chap7 | done (R-2, R-6): seven kernels, +22..80% at 2048-8192 |
 | 3. occ480 probe | done: not a win; no occupancy-target on sec3 |
 | 4. multi-warp metal regression spec | done: 209/03 + `validate-ptx-signal-fence`, positive-controlled locally (8 kernels fenced / fence-less) and on metal (MMA_WRONG without the fence) |
@@ -638,11 +638,12 @@ Three H100 rentals, 50 min, ~$3.40 in all, every pod confirmed gone.
 
 ## Findings
 
-**F-209-9 — D-209-13's CLUSTER-scope fence costs sec3 multicast 39-45% (OPEN, needs Chris).**
+**F-209-9 — D-209-13's CLUSTER-scope fence costs sec3 multicast 39-45% (FIXED 2026-11-08, D-209-14).**
 `fence.acq_rel.cluster` is emitted on every lane, every k-step, for a `:mode :cluster` barrier.  A
 `.cta` fence measures the same as no fence (Step 11b), and the reads it orders are of the workgroup's
-own shared memory.  Proposed: always `.cta`.  Not applied while Chris was away; the reports
-regenerated after step 11 show the fenced multicast row (118-127 TFLOPS at 4096-8192).
+own shared memory.  Fixed by always emitting `.cta` (D-209-14).  The reports regenerated after step 11
+still show the old fenced multicast row (118-127 TFLOPS at 4096-8192) until the next H100 sweep; the
+fixed kernel measured 187.7 / 207.8 / 214.3 at 2048 / 4096 / 8192 (Step 11b, `.cta` arm).
 
 **F-209-1 — kernels with no declared global-size are launched on a 32 x 64 tile grid.**  The fixture
 takes its grid from the metacrisp's `:tile-shape`, which exists only when the kernel declares
@@ -752,6 +753,16 @@ three places.
   accumulator release).  Their consumers read through the async proxy and may never have needed it,
   so step 10 (B200) re-measures every signal chapter against step 8 to price the fence; refine (skip
   it for async-proxy-only consumers) only if a cost shows.
+- **D-209-14.** (2026-11-08, F-209-9, Chris: "fix it") `signal`'s fence is ALWAYS
+  `fence.acq_rel.cta`, `:mode :cluster` included.  The reads it orders are the warp's own reads of its
+  own workgroup's shared memory; the cross-workgroup hand-off is the remote
+  `mbarrier.arrive.shared::cluster` itself, the same instruction CUTLASS's `ClusterBarrier::arrive`
+  issues with no fence at all.  Overlay append (the semantic-signal `generate-node-ir` method,
+  src/codegen.lisp); the overlay was empty after the step 11 fold.  Proof: the fixed compiler's sec3
+  multicast PTX is byte-identical to Step 11b's metal-verified `ctafence` arm (one `fence.acq_rel.cta`,
+  zero `.cluster`, two remote arrives); `validate-ptx-signal-fence` already accepts either scope.  No
+  rental: that PTX already ran on the H100.  The async-proxy refinement (no fence for wgmma / tcgen05
+  consumers) stays not done: -1% / 0% once the scope is `.cta`.
 - **D-209-7.** The B200's int8 lane gets a CUTLASS SM100 peer (the builder takes `int8_t`); the
   Hopper int8 lane still has none.  The report shows a Peer column only where one was measured.
 
