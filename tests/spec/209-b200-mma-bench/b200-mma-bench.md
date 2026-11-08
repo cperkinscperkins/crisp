@@ -513,6 +513,17 @@ three places.
   chapter 6 f64 exactly as step 8 ran it (`ws_flat`) and the same kernel with
   `;; BENCH-TILE-VISIT: linear` (`ws_linear`, different PTX).  Both launch on the 32 x 64 default
   grid, as in step 8.  The declared chapter 6 f64 (D-209-9) is the third arm, in the full sweep.
+- **D-209-13.** (2026-11-07, F-209-4, Chris chose option (a)) `signal` emits `fence.acq_rel.cta`
+  (`.cluster` for a `:mode :cluster` barrier) on EVERY lane before the lane-0 arrive, for every
+  kernel; `:arrivals` keeps meaning warps.  Overlay append to crisp-compiler-overlay.lisp
+  (`%gen-nvvm-fence-acq-rel` + the semantic-signal `generate-node-ir` method; both src/codegen.lisp).
+  The compiled chapter 6 f64 PTX is byte-identical (comments aside) to metal-proven probe p4.  Unit
+  392/392, E2E 1807/1807 (x2; the first run alone ended in an SBCL memory fault AFTER the summary, the
+  second was clean), negative 492/492.  28 non-fenced benchmark kernels use `signal` -- every wgmma and
+  tcgen05 kernel too (wgmma: one fence per k-step after `wgmma.wait_group 0`; tcgen05: one at the
+  accumulator release).  Their consumers read through the async proxy and may never have needed it,
+  so step 10 (B200) re-measures every signal chapter against step 8 to price the fence; refine (skip
+  it for async-proxy-only consumers) only if a cost shows.
 - **D-209-7.** The B200's int8 lane gets a CUTLASS SM100 peer (the builder takes `int8_t`); the
   Hopper int8 lane still has none.  The report shows a Peer column only where one was measured.
 

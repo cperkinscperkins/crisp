@@ -292,3 +292,63 @@
         (t
          (%expand-workgroup-strided-outer-loop-with-ts-syms
           tensor-form n bindings body-forms ts-syms tile-size-expr-fn location))))))
+
+;; ---------------------------------------------------------------------------------------------
+;; Endeavour 209, F-209-4 -- the elected-lane release needs a fence.
+;; src/codegen.lisp  (new helper; put it beside %gen-nvvm-fence-proxy-async-shared)
+(defun %gen-nvvm-fence-acq-rel (builder scope)
+  "Inline PTX: fence.acq_rel.<SCOPE>;  SCOPE is \"cta\" or \"cluster\".  Endeavour 209 (F-209-4):
+   emitted by EVERY lane before a leader-only mbarrier.arrive, so that all the lanes' prior
+   shared-memory reads are ordered before the release.  A one-lane arrive releases only that lane's
+   own accesses; without this the producer's next TMA could land under the other 31 lanes' loads
+   (H100 metal, chapter 6 f64: 0.1-0.25% of C wrong; fixed by exactly this fence, -4% speed).
+   The ~{memory} clobber keeps LLVM from moving loads or stores across it."
+  (%build-inline-asm-call builder (llvm-void-type) nil nil
+                          (concatenate 'string "fence.acq_rel." scope ";")
+                          "~{memory}"))
+
+;; src/codegen.lisp  (replaces the generate-node-ir method for semantic-signal)
+(defmethod generate-node-ir ((node semantic-signal) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavor 139 — (signal (ring-get empty slot)): a leader-guarded mbarrier.arrive on the slot's
+   mbarrier, releasing it to the producer.  One thread per warp (lane 0) arrives, so the arrival
+   count matches :arrivals.
+
+   Endeavor 152 — when the barrier is :mode :cluster the arrive is REMOTE and ALL-TO-ALL: this
+   workgroup arrives on EVERY workgroup's copy of the barrier, its own included, via mapa.  That
+   mirrors CUTLASS, and it is why the init count is scaled by the group extent: with N peers each
+   contributing A arrivals, the barrier must expect N*A.
+
+   Endeavour 209 (F-209-4) — every lane first executes fence.acq_rel (cta scope; cluster scope
+   for a :cluster barrier, whose arrive is remote).  The leader's arrive is a release of the
+   LEADER's accesses only; the fence orders the whole warp's reads of the slot before it, so the
+   producer cannot refill a slot that 31 lanes are still reading."
+  (let* ((i32-type  (llvm-int32-type))
+         (ptr-as3   (llvm-pointer-type (llvm-int8-type) 3))
+         (barrier-i (generate-node-ir (semantic-signal-barrier-node node) builder module var-env
+                                      di-builder di-scope location-map))
+         (mbar-ptr  (llvm-build-int-to-ptr builder barrier-i ptr-as3 "sig_mbar"))
+         (extent    (gethash node *signal-cluster-extent*))
+         (scope     (if (and extent (> extent 1)) "cluster" "cta")))
+    (log:debug "signal: fence.acq_rel.~A on all lanes before the lane-0 arrive (cluster extent ~A)"
+               scope extent)
+    (%gen-nvvm-fence-acq-rel builder scope)
+    (let* ((lane      (%ptx-read-warp-sreg builder module "laneid"))
+           (is-leader (llvm-build-icmp builder +llvm-int-eq+ lane (llvm-const-int i32-type 0 nil) "sig_leader"))
+           (parent    (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+           (arrive-bb (llvm-append-basic-block parent "sig_arrive"))
+           (cont-bb   (llvm-append-basic-block parent "sig_cont")))
+      (llvm-build-cond-br builder is-leader arrive-bb cont-bb)
+      (llvm-position-builder-at-end builder arrive-bb)
+      (cond
+        ((and extent (> extent 1))
+         (let ((addr (llvm-build-ptr-to-int builder mbar-ptr i32-type "sig_mbar_addr")))
+           (dotimes (r extent)
+             (let* ((rank (llvm-const-int i32-type r nil))
+                    (peer (%gen-nvvm-mapa-shared-cluster builder addr rank)))
+               (%gen-nvvm-mbarrier-arrive-cluster builder peer)))))
+        (t
+         (%gen-nvvm-mbarrier-arrive-shared builder module mbar-ptr)))
+      (llvm-build-br builder cont-bb)
+      (llvm-position-builder-at-end builder cont-bb)
+      (values (llvm-const-int (llvm-int64-type) 0 nil) nil))))
