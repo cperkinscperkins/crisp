@@ -26,7 +26,9 @@ Started 2026-11-06, after 208 (tcgen05) was folded.  Agreed with Chris the same 
 | 9 | H100 re-run (BUG 156 await on wgmma rings; F-209-1 A/B; F-209-4 A/B; tf32 re-measured) | done 2026-11-07 (47 min, ~$3.10): F-209-1 measured; F-209-4 narrowed; F-209-6, F-209-7 found |
 | 9b | H100: F-209-7 occupancy A/B; F-209-4 diagnostics; sec3 through the fixed fixture | done 2026-11-07 (re-run 11 min, ~$0.75, after an 85-min apt.llvm.org stall, ~$5.65): occ320 +19..83%; F-209-4 = race on A; F-209-6 fixed; F-209-8 found |
 | 9c | H100: k-step fill decode of F-209-4; tf32 control; occ repeat; F-209-8 HEAD vs cc116e8c PTX | done 2026-11-07 (6 min, ~$0.40): F-209-4 = producer overwrites an unread slot; F-209-8 = compiler (registers) |
-| 10 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerate after 8) |
+| 9d | H100: fence probes p0-p4 on chapter 6 f64 | done 2026-11-07: fence.acq_rel.cta on all lanes fixes, -4% (D-209-13) |
+| 10 | B200: F-209-4 fix gate + re-sweep of the signal chapters | done 2026-11-07 (65 min, ~$8.65): gate PASS (0 wrong x18); 61 files all verified; tcgen05 fence cost ~0, chapter 6 -4..-6% |
+| 11 | report.py: B200 device, per-generation Ch 7, block-scaled sections | done (regenerated after 10) |
 
 ## What was built (2026-11-06)
 
@@ -413,6 +415,45 @@ cc116e8c 96 registers both kernels; HEAD 164 (cluster) / 168 (multicast), 0 spil
 threads, 96 registers allows 4 workgroups/SM by registers, 164-168 allows 2 -- the F-209-7 shape
 again (the packed epilogue is the lead suspect).  Test: `(occupancy-target 640)` on the multicast kernel
 (caps ~102 registers) -- if multicast gets its +26% back, occupancy is the mechanism.
+
+## Step 10 results — B200, the F-209-4 fix, 2026-11-07 (65 min, ~$8.65, pod confirmed gone)
+
+Compiler at 8d41c691 (D-209-13 overlay).  A first rental was started without `--image cu128` (the
+cu124 image cannot target sm_100a) and released within about 30 s, pod confirmed gone.  Its stopped
+pod-session process still logged into step10-session.log until its own SSH timeout (20:06); it
+released only its own (already gone) pod.
+
+**GATE PASS -- F-209-4 is fixed on the B200** (put_temp_files_here/209/step10-gate.txt).  k-step fill,
+every element checked, x3 at N = 1024 / 2048 / 4096: chapter 6 f64 (16:4096) and tf32 (8:0) 0 wrong
+in all 18 runs, `fence.acq_rel` present in both PTX files.  Step 9b had 1042-9898 wrong per run.
+
+**Sweep: 61 result files, every point verified** (step10-summary.txt; ratios against step 8 in
+step10-vs-step8.txt).  Chapter 6 f64 and sec2_top_f64 `Crisp_V_warpspec` verify at every size for the
+first time on the B200 (step 8: 1024..8192 failed).
+
+Fence price, new / step 8:
+
+| kernel | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 | comparison |
+|---|---:|---:|---:|---:|---:|---:|---|
+| chap7_tcgen05 (tf32) | 1.07 | 1.03 | 1.00 | 1.00 | 0.98 | 0.99 | clean (source unchanged) |
+| chap7_tcgen05_bf16 | 1.05 | 1.09 | 1.01 | 1.01 | 0.98 | 0.98 | clean |
+| sec2_top Crisp (tf32) | 0.99 | 1.03 | 1.00 | 1.01 | 1.00 | 0.99 | clean |
+| sec2_top_int8 / nvfp4 Crisp | 0.98 / 1.04 | 1.02 / 1.02 | 1.01 / 1.04 | 1.01 / 1.00 | 1.00 / 1.01 | 0.99 / 1.00 | clean |
+| chap6 tf32 | 1.23 | 1.17 | 1.07 | 1.05 | 1.04 | 1.04 | confounded: D-209-9 grid too |
+| chap6 bf16 | 1.12 | 0.97 | 0.96 | 0.95 | 0.96 | 0.94 | confounded |
+| chap6 f64 | 0.92 | 0.94 | 0.94 | 0.94 | 0.94 | 0.94 | confounded; step 8 unverified at 1024..8192 |
+
+- **tcgen05: no cost.** Within +/-2% at N >= 4096 on every clean row (the same spread as the
+  contenders re-run on the same pod).  The D-209-13 refinement (skip the fence for async-proxy-only
+  consumers) is NOT needed for tcgen05.
+- **Chapter 6 (ld.shared consumers, where the fence is required): -4..-6% at large N** on bf16 and
+  f64, in line with the H100 probe's -4%.  These rows also carry D-209-9's grid declaration (step 9
+  prep, d8f3af62), so the two changes are not separated; tf32 got the grid gain and nets +4..23%.
+- **sec2_top_f64 Crisp (no signal): +67..85% at N <= 2048** -- D-209-9's `global-size` declaration
+  (F-209-1's surplus grid removed), not the fence.
+- wgmma kernels were not priced: sec3 and sec4_fused's Crisp kernels are Hopper-only and have no B200
+  rows (nor in step 8); listing those chapters only re-ran their cuBLAS contenders.  Pricing the
+  fence on wgmma needs the H100 re-measure.
 
 ## Findings
 
