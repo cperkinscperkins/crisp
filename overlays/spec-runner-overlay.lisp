@@ -63,3 +63,17 @@
         (progn (format t "PASS: ~d f32 multiplications by 3.0 (the store's :transformF)~%" n) t)
         (progn (format *error-output* "FAIL: ~d f32 multiplications by 3.0; the store's :transformF did not reach the PTX~%" n)
                nil))))
+
+;; tests/run-specs.lisp  (new, Endeavour 210 item 4, beside validate-ptx-transform-scale3)
+(defun validate-ptx-wgmma-store-pairs-only (file ptx-string)
+  "Endeavour 210 (D-210-7): a wgmma store-tile into a C declared (even-columns C) is the packed arm
+   ALONE -- at least one st.global.v2 and NO scalar st.global (a .b32 / .f32 store without .v2 / .v4),
+   so the 197 alignment fallback is gone.  The undeclared kernel (140/03) has both and fails this."
+  (declare (ignore file))
+  (let* ((lines (uiop:split-string ptx-string :separator '(#\Newline)))
+         (v2 (count-if (lambda (l) (search "st.global.v2" l)) lines))
+         (scalar (count-if (lambda (l) (and (search "st.global." l) (not (search "st.global.v" l)))) lines)))
+    (if (and (plusp v2) (zerop scalar))
+        (progn (format t "PASS: ~d packed st.global.v2, no scalar global store~%" v2) t)
+        (progn (format *error-output* "FAIL: ~d st.global.v2, ~d scalar st.global (want >0 and 0)~%" v2 scalar)
+               nil))))

@@ -759,3 +759,135 @@
                        elem (semantic-node-type lo) (semantic-node-type hi))
             (analyze-expression `(progn (set! ,p0-form ,lo-form) (set! ,p1-form ,hi-form))
                                 env context location))))))
+
+;;; ===================================================================
+;;; Endeavour 210 item 4 (F-209-8, D-210-7) -- (even-columns C): a wgmma store-tile emits the packed
+;;; arm ALONE.  tests/spec/210-tcgen05-misc/08 + errors/05; put_temp_files_here/210/item4/findings.md.
+;;;
+;;; 197's wgmma epilogue is (if (%pair-ok-p first pair) 64-x-%store-pair 128-x-set!).  The two arms
+;;; together keep the accumulator and both arms' addresses live: sec3 164-168 registers, 96 for the
+;;; packed arm alone (4 workgroups/SM instead of 2 at 160 threads; multicast +11..14% measured).  No
+;;; CORRECT fallback stays light (122-128, findings.md), so the fallback is made unnecessary instead:
+;;; the kernel DECLARES C's column count even.  With C :align :compact :contiguous-term :row-major and a
+;;; grid-origin store (column origin = grid-x * N + 2*(lane mod 4), even), every pair is then one aligned
+;;; word.  A false declaration faults loudly (misaligned address), it cannot store wrong values.
+;;; ===================================================================
+
+;; src/mma.lisp
+(defvar *210-pairs-only* nil
+  "Endeavour 210 (D-210-7).  T while a wgmma (store-tile D C (BTY BTX)) whose C is declared
+   (even-columns C) is analyzed (bound by the analyze-store-tile-mma wrapper):
+   %wgmma-store-rewrite-origin then emits only its packed arm.")
+
+;; src/analysis/core.lisp
+(defun %210-even-columns-names (declarations)
+  "Endeavour 210 (D-210-7).  The parameter symbols named by every (even-columns P ...) in DECLARATIONS."
+  (loop for d in declarations
+        when (and (consp d) (symbolp (car d)) (string-equal (symbol-name (car d)) "EVEN-COLUMNS"))
+          append (cdr d)))
+
+;; src/mma.lisp
+(defun %210-pairs-only-dest-p (dest context location)
+  "Endeavour 210 (D-210-7).  T when the store destination DEST is declared (even-columns DEST) in the
+   kernel being compiled.  The declaration is VALIDATED here: DEST must be a kernel matrix parameter of
+   a type declared :align :compact with :contiguous-term :row-major (the default), else an error --
+   only then does an even column count make every (even column, column + 1) pair one aligned word."
+  (let ((names (%210-even-columns-names (compiler-context-declarations context))))
+    (when (and (symbolp dest)
+               (member (symbol-name dest) names :key #'symbol-name :test #'string=))
+      (let* ((kernel   (compiler-context-current-compiling-function context))
+             (decl     (cdr (assoc dest (gethash kernel *kernel-declared-signatures*))))
+             (resolved (or (and decl (symbolp decl) (gethash decl *crisp-type-aliases*)) decl))
+             (align    (and (listp resolved) (second (member :align resolved))))
+             (ct       (%kernel-param-contiguous-term kernel dest)))
+        (log:debug "210 even-columns ~a in ~a: type ~s align ~s contiguous-term ~s" dest kernel resolved align ct)
+        (unless (and decl (eq align :compact) (eq ct :row-major))
+          (error 'crisp-compiler-error
+                 :message (format nil "(even-columns ~(~a~)): ~(~a~) must be a kernel matrix parameter whose type is declared :align :compact :contiguous-term :row-major -- only then does an even number of columns make every (even column, odd column) pair one aligned word.  Its declared type is ~(~s~)."
+                                  dest dest resolved)
+                 :source-location location))
+        t))))
+
+;; src/mma.lisp
+(defvar *210-orig-analyze-store-tile-mma* (fdefinition 'analyze-store-tile-mma)
+  "Endeavour 210.  196's analyze-store-tile-mma, wrapped to bind *210-pairs-only*.")
+
+;; src/mma.lisp  (fold: the binding moves into analyze-store-tile-mma's wgmma clause)
+(defun analyze-store-tile-mma (expr env context location)
+  "store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.
+   See the original (src/mma.lisp).
+   Endeavour 210 (D-210-7): a grid-origin (store-tile D C (BTY BTX)) whose C is declared
+   (even-columns C) is analyzed with *210-pairs-only* bound, so a wgmma D stores with the packed arm
+   alone (no %pair-ok-p fallback)."
+  (let ((*210-pairs-only* (and (= (length expr) 4)
+                               (%210-pairs-only-dest-p (third expr) context location))))
+    (when *210-pairs-only*
+      (log:info "210 store-tile ~a -> ~a: (even-columns ~a), packed stores only" (second expr) (third expr) (third expr)))
+    (funcall *210-orig-analyze-store-tile-mma* expr env context location)))
+
+;; src/mma.lisp  (REPLACES %wgmma-store-rewrite-origin; script-extracted, the final IF made conditional)
+(defun %wgmma-store-rewrite-origin (tile dest row-origin col-origin n &optional convert)
+  "Store the m64xN wgmma accumulator TILE into DEST with its top-left element at
+   (ROW-ORIGIN COL-ORIGIN), both absolute element indices.
+
+   Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows
+   [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8
+   group contributes the standard mma m16n8 C fragment at rows r0 and r0+8.
+
+   Both origins are coerced with TO-INT.  The lane arithmetic is INT throughout (wgw and rlo come
+   from to-int of warp-id / warp-lane), so a ULONG origin -- which is what any tile-stride grid
+   binding produces, e.g. (* grid-y (to-ulong 128)) -- would otherwise fail to type-check with
+   \"Cannot operate on ULONG and INT\".  The grid-index caller has always passed an INT for the same
+   reason; this makes the absolute spelling accept either.
+
+   ENDEAVOUR 154: emission order is ROW-MAJOR.  The natural loop is j-outer, which interleaves r0
+   and r8 and writes the tile column-strip by column-strip -- 32 passes revisiting the same two
+   rows.  Emitting all of row r0 and then all of row r8 lets each WARP lay down a full contiguous
+   row (4 lanes x 2 floats x n8 groups) before moving on.  Pure reordering: same stores, same
+   values, same addresses.  Measured on an H100 NVL, interleaved, 3 reps: +1.5% at 2048, +0.7% at
+   4096, +0.5% at 1024, neutral at 256/512, nothing regressing.
+
+   ENDEAVOUR 196: optional CONVERT (TO-HALF / TO-BFLOAT16 symbol) wraps every element read, for
+   (store-tile (to-half D) C ...) -- an f32 accumulator stored into a 16-bit matrix.
+
+   ENDEAVOUR 197: each thread's elements come in adjacent column PAIRS (c, c+1), so a pair is one
+   (%store-pair ...) -- a single <2 x T> store -- under ONE (%pair-ok-p ...) test of the thread's
+   first pair.  One test covers them all: every other pair is 8k columns and/or 8 rows away, i.e. a
+   multiple of 2 elements on both axes once the first pair is adjacent (unit last stride) and
+   2-element aligned.  When the test fails (an odd column origin, an unaligned base, a strided last
+   dimension) the original scalar stores run.  H100, 4096x5120x4096 fp16: 304 -> 252 us.
+
+   ENDEAVOUR 210 (F-209-8, D-210-7): under *210-pairs-only* (a store-tile whose DEST is declared
+   (even-columns DEST)) only the packed arm is emitted: the two arms together hold the accumulator and
+   both arms' addresses live (sec3: 164-168 registers vs 96 for the packed arm alone)."
+  (let* ((to-int (intern "TO-INT" (find-package :crisp-language)))
+         (if-sym (intern "IF" (find-package :crisp-language)))
+         (n8 (floor n 8)))
+    (flet ((elt-of (i) (%196-wrap-conversion convert `(%extract-struct-member wgv ,i))))
+      (flet ((pairs (row base-offset)
+               (loop for j below n8
+                     for base = (+ (* j 4) base-offset)
+                     collect `(%store-pair (~ ,dest ,row (+ c0 ,(* 8 j)))
+                                           (~ ,dest ,row (+ (+ c0 ,(* 8 j)) 1))
+                                           ,(elt-of base) ,(elt-of (1+ base)))))
+             (scalars (row base-offset)
+               (loop for j below n8
+                     for base = (+ (* j 4) base-offset)
+                     append (list
+                             `(set! (~ ,dest ,row (+ c0 ,(* 8 j)))       ,(elt-of base))
+                             `(set! (~ ,dest ,row (+ (+ c0 ,(* 8 j)) 1)) ,(elt-of (1+ base)))))))
+        `(let ((wgv ,tile))
+           (let ((wgw (rem (,to-int (warp-id)) 4))
+                 (lane (,to-int (warp-lane))))
+             (let ((rlo (/ lane 4)) (col (* (rem lane 4) 2)))
+               (let ((r0 (+ (+ (,to-int ,row-origin) (* wgw 16)) rlo)))
+                 (let ((r8 (+ r0 8))
+                       (c0 (+ (,to-int ,col-origin) col)))
+                   ,(if *210-pairs-only*
+                        ;; Endeavour 210 (D-210-7): DEST is declared (even-columns DEST), :compact
+                        ;; :row-major, and a grid-origin column is even, so every pair is aligned --
+                        ;; the packed arm alone (the two-arm form costs ~70 registers, F-209-8).
+                        `(progn ,@(pairs 'r0 0) ,@(pairs 'r8 2))
+                        `(,if-sym (%pair-ok-p (~ ,dest r0 c0) (~ ,dest r0 (+ c0 1)))
+                           (progn ,@(pairs 'r0 0) ,@(pairs 'r8 2))
+                           (progn ,@(scalars 'r0 0) ,@(scalars 'r8 2)))))))))))))

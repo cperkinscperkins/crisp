@@ -8,7 +8,7 @@
 | NVIDIA H200 | 2026-09-13 | Crisp `66a7911d` (runpod) | `h200` (queried*) |
 | NVIDIA A100-SXM4-80GB | 2026-11-04 | Crisp `da445a6e` (runpod) | `a100-sxm4-80gb` (queried*) |
 | NVIDIA B200 | 2026-11-09 | Crisp `c423bb27` (runpod) | `b200` (queried*) |
-| NVIDIA H100 80GB HBM3 | 2026-11-09 | Crisp `02b25280` (runpod) | `h100-80gb-hbm3` (queried*) |
+| NVIDIA H100 80GB HBM3 | 2026-11-09 | Crisp `55d118c8` (runpod) | `h100-80gb-hbm3` (queried*) |
 
 > \* **queried / supplied**: the profile's QUERIED keys were read off the device, but its MEASURED keys (`:tile-visit-strip-width` above all) were never swept for this part and are absent, which selects safe defaults rather than tuned ones. Such a row is honest about the hardware it ran on and fair to compare *within* the device; it may understate Crisp against a row whose profile was fully tuned. A **NONE** row was compiled with no profile at all and is not comparable to published figures.
 
@@ -1887,10 +1887,10 @@ Crisp is **outside-in**: the user picks the configuration, exactly as CUTLASS's 
 
 | contender | N=256 | N=512 | N=1024 | N=2048 | N=4096 | N=8192 | N=16384 | N=32768 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Crisp cluster 64×128 | 2.4 | 15.9 | 92.9 | 199.3 | 232.1 | 225.3 | 169.2 | 169.2 |
-| Crisp + TMA multicast | 2.3 | 15.2 | 87.5 | 186.0 | 206.5 | 214.2 | 165.0 | 163.2 |
-| cuBLAS (Ceiling) | 5.1 | 33.7 | 141.6 | 361.6 | 428.8 | 453.7 | 395.7 | 444.4 |
-| multicast vs cluster | -2.7% | -4.3% | -5.8% | -6.7% | -11.0% | -4.9% | -2.5% | -3.5% |
+| Crisp cluster 64×128 | 2.5 | 16.8 | 97.6 | 201.9 | 233.0 | 217.6 | 169.8 | 169.2 |
+| Crisp + TMA multicast | 2.3 | 14.4 | 81.0 | 211.3 | 228.1 | 236.1 | 174.0 | 158.0 |
+| cuBLAS (Ceiling) | 5.4 | 34.5 | 140.7 | 361.6 | 428.7 | 453.8 | 393.6 | 444.3 |
+| multicast vs cluster | -9.1% | -14.1% | -17.0% | +4.6% | -2.1% | +8.5% | +2.5% | -6.6% |
 
 ### TMA Multicast · NVIDIA H200
 

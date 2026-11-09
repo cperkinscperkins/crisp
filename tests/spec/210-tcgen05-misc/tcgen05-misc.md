@@ -20,7 +20,7 @@ F-209-1 was already resolved (D-209-9).  The Python wheel and FP8/FP4 are future
 | 1b | Item 6 on an H100: metal specs + exact A/B + canonical sweep of 4 TMA chapters | done 2026-11-08 (9 min, ~$0.62, pod confirmed gone): all green, B = A within 1% |
 | 1c | Item 6 on an H100: VERIFY-AUTODIFF[CUDA] TMA specs (only run under --differentiate) | done 2026-11-08 (3 attempts, ~$0.90 in all, every pod confirmed gone): all 6 PASS [cuda] -- item 6 metal-verified |
 | 2 | Item 2: F-209-2 -> `:transformF` on every accumulator store (F-210-1), A\|D refusal (F-210-2) | done 2026-11-08: local + metal (steps 2b B200, 2c H100); fold pending |
-| 3 | Item 4: F-209-8 | not started |
+| 3 | Item 4: F-209-8 | done 2026-11-08: explained (step 3); fix D-210-7 `(even-columns C)`; metal steps 4 / 4b (H100) |
 | 4 | Rentals: H100 (TMA families, 209/03, sec3 rows) + B200 (208/209 tcgen05 TMA specs, item 2 row) | not started |
 
 ## Item 6 — TMA descriptors by value
@@ -253,6 +253,115 @@ in the pod's clone; SHIP-OK / TREE-OK checked).  Logs in put_temp_files_here/210
 | 199 | 10/10 (wgmma TMA store) |
 | 150 --differentiate | 13/16: the 3 VERIFY-AUTODIFF[CUDA] PTX specs PASS [cuda] through the generate-backward-walk wrapper; 08 / 09 / 10 are BMG VERIFY-AUTODIFF specs (no Level Zero on the pod) |
 
+## Item 4 — F-209-8: sec3 register growth 96 -> 164
+
+(put_temp_files_here/210/item4/: twin.lisp, findings.md, probe/; step3-on-pod.sh.)
+
+### Not the source change
+D-209-9 added `(global-size :derive-from C :strategy :strided)` to the sec3 kernels.  Today's compiler on
+the cc116e8c sources (nowold/) gives the same 164 / 168 as on today's sources (now/).
+
+### The mechanism: the 197 epilogue is TWO complete copies behind one runtime test
+%wgmma-store-rewrite-origin (197) emits
+    (if (%pair-ok-p first-pair) (progn 64 x %store-pair) (progn 128 x set!))
+Twin PTX (twin.lisp: the same compiler with the rewrite reduced to one arm), ptxas sm_90a (docker 12.4):
+
+| kernel | cc116e8c | today (both arms) | scalar arm only | pairs arm only | one test, per-pair if (inter) |
+|---|---|---|---|---|---|
+| sec3 cluster   | 96, 320 B stack | 164 | 128 | **96**, no stack | 122 |
+| sec3 multicast | 96, 320 B stack | 168 | 128 | **96**, no stack | 124 |
+| chap7 wgmma bf16 (occ 320) | - | 168 + **616 B spills** | - | 162, 0 spills | 164, 0 spills |
+| sec2_top Hopper (occ 320)  | - | 168 + **616 B spills** | - | 162, 0 spills | 164, 0 spills |
+
+cc116e8c got 96 by a different route: its epilogue COPIED the 64 accumulator registers to a 256-byte local
+array after the mainloop and read them back one at a time (the 320 B stack = 256 B accumulator + 8 x 8 B
+loop state; 32 st.local.v2 + 34 ld.local), so the accumulator was dead in registers during the stores.
+
+Reading: the two arms share their address arithmetic (a pair's addresses are the scalar arm's even
+elements), LLVM computes it ahead of the branch, and the accumulator + every address stay live across
+both arms.  Either arm alone is cheaper than the union.
+
+At 160 threads (sec3): 96 regs -> 4 workgroups/SM by registers, 122-128 -> 3, 164-168 -> 2.
+
+### Step 3 -- H100 metal, 2026-11-08 (~2 min, ~$0.15, pod confirmed gone)
+put_temp_files_here/210/step3/probe.txt.  TFLOPS, median of 3 (tight), every run verified:
+
+| kernel | arm | regs | 2048 | 4096 | 8192 |
+|---|---|---|---:|---:|---:|
+| sec3 cluster   | now   | 164 | 202.4 | 232.9 | 216.5 |
+|                | pairs |  96 | 203.0 | 215.7 | 195.4 |
+|                | inter | 122 | 182.5 | 235.5 | 190.8 |
+| sec3 multicast | now   | 168 | 187.9 | 207.3 | 212.5 |
+|                | pairs |  96 | 214.7 | 229.6 | 237.8 |
+|                | inter | 124 | 166.2 | 220.2 | 237.6 |
+| chap7 bf16     | now   | 168+616B spill | 457.3 | 607.0 | 664.3 |
+|                | pairs | 162 | 474.0 | 595.1 | 590.5 |
+|                | inter | 164 | 475.1 | 603.7 | 618.2 |
+| sec2_top H     | now   | 168+616B spill | 282.8 | 329.2 | 272.3 |
+|                | pairs | 162 | 286.9 | 316.2 | 265.7 |
+|                | inter | 164 | 289.1 | 324.3 | 285.6 |
+
+- Registers do NOT predict speed.  Fewer registers (more workgroups/SM) help multicast (+14/+11/+12% for
+  pairs; 237.8 at 8192 = cc116e8c's 239.5) and HURT plain cluster (-0/-7/-10%).  Same as 9b's occupancy
+  probe: multicast wants occupancy, cluster does not.
+- chap7 bf16 / sec2_top: removing the never-taken scalar arm (pairs) removes the 616 B of spills and is
+  still SLOWER at 4096/8192 (chap7 -11% at 8192).  Same occupancy (2 WG/SM either way); it is ptxas's
+  schedule, not the spills.  inter is mixed (chap7 -7% at 8192, sec2 +5%).
+- So the 197 two-arm epilogue is the best or tied default for 3 of 4 kernels at the large sizes.  F-209-8 is
+  EXPLAINED: the epilogue's register cost moved sec3 from 4 to 2 workgroups/SM, which suits cluster and
+  costs multicast ~11%.  And with a register-light epilogue multicast BEATS cluster at 8192 (237.8 vs 216.5).
+
+### The fix (D-210-7): `(even-columns C)` -- the packed arm alone, by declaration
+
+Option (b) first tried to keep a CORRECT but register-light fallback (findings.md, "Option (b)
+prototypes"): every one landed at 122-128 registers (3 workgroups/SM), while the packed arm plus a trivial
+fallback stays at 96 -- the cost is a fallback holding the 64 accumulator values alongside its own working
+set.  cc116e8c's 96 came from the accumulator living in local memory; Crisp has no runtime-indexed
+per-thread array to do that on purpose (the `#(...)` private vector literal of ideal_001.md is
+"Unsupported form" in the analyzer -- a doc/compiler gap; `##(...)` is 2-4 wide).  So the fallback is made
+unnecessary instead.
+
+- **`(declare (even-columns C))`** on a kernel: C's column count is even.  With C `:align :compact
+  :contiguous-term :row-major` and a grid-origin `store-tile` (column origin grid-x * N + 2*(lane mod 4),
+  even), every pair is one aligned word.  A false declaration faults (misaligned address); it cannot store
+  wrong values.  Any other C type is refused by name (errors/05).
+- Overlay: `analyze-store-tile-mma` wrapper binds `*210-pairs-only*` (after validating the declaration,
+  `%210-pairs-only-dest-p`); `%wgmma-store-rewrite-origin` (script-extracted copy) then emits the packed arm
+  alone.  `store-tile-at`, register tiles and tcgen05 are untouched.
+- Applied to `sec3_cluster_multicast/matmul_tile128_multicast.crisp` ONLY: plain cluster is faster at 2
+  workgroups/SM (step 3), so it does not declare it.  The declared kernel's PTX is byte-identical to step
+  3's measured "pairs" arm (96 registers, 0 spills).
+- Specs: 210/08 (140/03 + the declaration; `validate-ptx-wgmma-store-pairs-only`: 16 packed, 0 scalar;
+  140/03 is its negative control: 16 + 32 scalar) and errors/05 (a `:col-major` C).
+- Local: 210 13/13 (plain and --differentiate); unit 392/392, E2E 1821/1821, negative 497/497.  Corpus
+  (2397 jobs, against item 2's final build): only the declared multicast kernel moved (plus metacrisp
+  `:source` paths and two Windows temp-file races, 097/04 and 152/14, neither using the declaration).
+- Noticed: an UNKNOWN kernel declaration is accepted silently (a typo'd `(even-colums C)` would do
+  nothing).  Not changed here.
+
+### Steps 4 / 4b results — H100, 2026-11-08 (~4 + ~6.5 min, ~$0.70 in all, both pods confirmed gone)
+
+Step 4 lost its ssh connection mid-bench (a timeout during peer provisioning), so the sweep never ran; the
+connection was back for its spec filters: **210/08 MMA_CORRECT** (the packed-only store on metal), 210
+11/13 (02 / 03 are the sm_100a tcgen05 specs -- JIT fails on Hopper, as in step 2c), 140 7/7, 152 23/23.
+Step 4b re-ran the bench alone (step4b-on-pod.sh).  Result JSONs carry the pod-local commit 55d118c8.
+
+sec3_cluster_multicast, canonical, every point verified (TFLOPS):
+
+| row | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---:|---:|---:|---:|---:|---:|
+| multicast, step 1b (before) | 87.5 | 186.0 | 206.5 | 214.2 | 165.0 | 163.2 |
+| **multicast, `(even-columns C)`** | 81.0 | **211.3** | **228.1** | **236.1** | **174.0** | 158.0 |
+| plain cluster (same pod, undeclared) | 97.6 | 201.9 | 233.0 | 217.6 | 169.8 | 169.2 |
+| cuBLAS (same pod) | 140.7 | 361.6 | 428.7 | 453.8 | 393.6 | 444.3 |
+
+- Multicast +14 / +10 / +10 / +5% at 2048 / 4096 / 8192 / 16384 -- step 3's probe numbers, now through
+  the real kernel and the canonical sweep.  It loses 7% at 1024 and 3% at 32768 (more workgroups per SM
+  is not free everywhere).
+- **Multicast now beats plain cluster** at 2048 (+5%), 8192 (+9%) and 16384 (+2%); cluster still leads at
+  4096 (-2%), 32768 and the small sizes.  The report's sec3 story changes from "multicast loses on Hopper"
+  to "it wins at most large sizes once it can keep 4 workgroups per SM".
+
 ## Decisions (D-210-n)
 
 - **D-210-1.** (2026-11-08, Chris) Option B REPLACES option A; no flag to keep A.  Descriptors modified on
@@ -269,3 +378,7 @@ in the pod's clone; SHIP-OK / TREE-OK checked).  Logs in put_temp_files_here/210
   can come later if a non-store reader appears.
 - **D-210-6.** (2026-11-08, Chris) Under `--differentiate` a floating `:transformF` is refused by name
   (F-210-2, BUG 159); the real backward (f_GRAD on the store's pre-transform values) is separate A|D work.
+- **D-210-7.** (2026-11-08, Chris: option 1) F-209-8's fix is a DECLARATION, `(even-columns C)`, that lets a
+  wgmma `store-tile` emit 197's packed arm alone (96 instead of 164-168 registers on sec3).  A correct
+  register-light fallback was not reachable with existing constructs (122-128).  Only the sec3 multicast
+  kernel declares it; plain cluster prefers today's 2 workgroups/SM.

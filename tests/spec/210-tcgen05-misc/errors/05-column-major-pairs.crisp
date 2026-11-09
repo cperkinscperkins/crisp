@@ -1,0 +1,25 @@
+;; CHECK-FAIL: "must be a kernel matrix parameter whose type is declared :align :compact :contiguous-term :row-major"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_90
+;; Endeavour 210 item 4 (D-210-7) -- the declaration that drops the wgmma store's alignment fallback is
+;; refused when it cannot imply alignment: here C is :col-major, so a store's (column, column + 1) pair is
+;; a full column apart in memory, not one word.  The positive control is ../08 (C :row-major).
+
+(declaim (precision fast))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+
+(def-kernel k (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128)
+           (even-columns C))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (64 32)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+    (store-tile D C (0 0))))
