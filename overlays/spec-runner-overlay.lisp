@@ -47,3 +47,19 @@
       (return-from validate-ptx-tma-grid-constant nil))
     (format t "PASS: ~d TMA descriptor(s) by value, address via cvta.param, no local copy~%" (length names))
     t))
+
+;; tests/run-specs.lisp  (new, Endeavour 210 item 2, beside validate-ptx-tma-grid-constant)
+(defun validate-ptx-transform-scale3 (file ptx-string)
+  "Endeavour 210 item 2: the store's :transformF #'triple (x * 3.0) reached the PTX.  Counts the f32
+   multiplications by the immediate 3.0 (0f40400000) -- mul.f32 / mul.rn.f32 / mul.ftz.f32 -- and
+   requires at least 4 (the smallest accumulator in the 210 specs, an m16n8 fragment, holds 4 per
+   thread; a tcgen05 128 x 128 store holds 128).  Before 210 the option was dropped and the count
+   was 0."
+  (declare (ignore file))
+  (let* ((lines (uiop:split-string ptx-string :separator '(#\Newline)))
+         (n (count-if (lambda (l) (and (search "mul" l) (search ".f32" l) (search "0f40400000" l)))
+                      lines)))
+    (if (>= n 4)
+        (progn (format t "PASS: ~d f32 multiplications by 3.0 (the store's :transformF)~%" n) t)
+        (progn (format *error-output* "FAIL: ~d f32 multiplications by 3.0; the store's :transformF did not reach the PTX~%" n)
+               nil))))

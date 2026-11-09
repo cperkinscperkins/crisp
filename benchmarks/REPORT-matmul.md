@@ -7,7 +7,7 @@
 | Intel(R) Graphics [0xe20b] | 2026-11-05 | Crisp `1432b489` (docker) | `bmg` (validated) |
 | NVIDIA H200 | 2026-09-13 | Crisp `66a7911d` (runpod) | `h200` (queried*) |
 | NVIDIA A100-SXM4-80GB | 2026-11-04 | Crisp `da445a6e` (runpod) | `a100-sxm4-80gb` (queried*) |
-| NVIDIA B200 | 2026-11-08 | Crisp `8d41c691` (runpod) | `b200` (queried*) |
+| NVIDIA B200 | 2026-11-09 | Crisp `c423bb27` (runpod) | `b200` (queried*) |
 | NVIDIA H100 80GB HBM3 | 2026-11-09 | Crisp `02b25280` (runpod) | `h100-80gb-hbm3` (queried*) |
 
 > \* **queried / supplied**: the profile's QUERIED keys were read off the device, but its MEASURED keys (`:tile-visit-strip-width` above all) were never swept for this part and are absent, which selects safe defaults rather than tuned ones. Such a row is honest about the hardware it ran on and fair to compare *within* the device; it may understate Crisp against a row whose profile was fully tuned. A **NONE** row was compiled with no profile at all and is not comparable to published figures.
@@ -1281,22 +1281,22 @@ Crisp is **outside-in**: the user picks the configuration, exactly as a template
 
 | N | Crisp | Control<br>CUDA_Apples | **Peer**<br>CUTLASS | Ceiling<br>cuBLAS | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 256 | 1.8 (0.019) `chap6_warp_specialization` | — | 3.1 (0.011) | 5.3 (0.006) | 0.57× | 33% |
-| 512 | 10.0 (0.027) `chap6_warp_specialization` | — | 20.9 (0.013) | 25.8 (0.010) | 0.48× | 39% |
-| 1024 | 63.8 (0.034) `chap7_tcgen05` | — | 146.8 (0.015) | 210.3 (0.010) | 0.43× | 30% |
-| 2048 | 356.0 (0.048) `chap7_tcgen05` | — | 584.8 (0.029) | 678.4 (0.025) | 0.61× | 52% |
-| 4096 | 588.8 (0.233) `sec2_top` | 5.5 (25.034) | 815.8 (0.168) | 871.4 (0.158) | 0.72× | 68% |
-| 8192 | 777.3 (1.415) `sec2_top` | 5.5 (199.737) | 966.4 (1.138) | 1016.6 (1.082) | 0.80× | 76% |
-| 16384 | 764.7 (11.502) `chap7_tcgen05` | — | 717.6 (12.257) | 989.7 (8.887) | 1.07× | 77% |
-| 32768 | 621.2 (113.281) `chap7_tcgen05` | — | 666.3 (105.617) | 875.6 (80.362) | 0.93× | 71% |
+| 256 | 1.8 (0.019) `chap6_warp_specialization` | — | 3.0 (0.011) | 6.1 (0.006) | 0.59× | 29% |
+| 512 | 10.0 (0.027) `chap6_warp_specialization` | — | 22.0 (0.012) | 38.2 (0.007) | 0.45× | 26% |
+| 1024 | 63.8 (0.034) `chap7_tcgen05` | — | 141.0 (0.015) | 259.3 (0.008) | 0.45× | 25% |
+| 2048 | 356.0 (0.048) `chap7_tcgen05` | — | 566.9 (0.030) | 676.6 (0.025) | 0.63× | 53% |
+| 4096 | 587.5 (0.234) `chap7_tcgen05` | — | 808.7 (0.170) | 856.8 (0.160) | 0.73× | 69% |
+| 8192 | 769.8 (1.428) `sec2_top` | 5.5 (199.771) | 967.0 (1.137) | 1013.0 (1.085) | 0.80× | 76% |
+| 16384 | 764.7 (11.502) `chap7_tcgen05` | — | 715.5 (12.293) | 989.4 (8.890) | 1.07× | 77% |
+| 32768 | 621.2 (113.281) `chap7_tcgen05` | — | 657.7 (106.999) | 866.0 (81.260) | 0.94× | 72% |
 
 <details><summary><b>Compilation & Build Overhead</b></summary>
 
 | contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
 |---|---|---:|---:|---:|
 | **Crisp** | Crisp | 818 ms | 819 ms | 1.00× |
-| **CUTLASS** | Peer | 22.49 s | 62.67 s | **27.5× slower** |
-| **cuBLAS** | Ceiling | *precompiled* | 4.73 s | — |
+| **CUTLASS** | Peer | 16.37 s | 43.27 s | **20.0× slower** |
+| **cuBLAS** | Ceiling | *precompiled* | 2.91 s | — |
 
 </details>
 
@@ -1980,14 +1980,23 @@ Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowerin
 
 | N | Crisp Fused | **Peer**<br>CUTLASS Fused | **Ceiling**<br>cuBLASLt Fused | Baseline+2nd Kernel<br>cuBLAS + ReLU | vs Peer | vs Ceiling |
 |---:|---:|---:|---:|---:|---:|---:|
-| 256 | — | — | 2.6 (0.013) | 1.6 (0.021) | — | — |
-| 512 | — | — | 15.8 (0.017) | 9.8 (0.027) | — | — |
-| 1024 | — | — | 113.4 (0.019) | 76.1 (0.028) | — | — |
-| 2048 | — | — | 457.3 (0.038) | 319.9 (0.054) | — | — |
-| 4096 | — | — | 817.2 (0.168) | 635.6 (0.216) | — | — |
-| 8192 | — | — | 1009.8 (1.089) | 861.1 (1.277) | — | — |
-| 16384 | — | — | 1003.2 (8.768) | 926.8 (9.491) | — | — |
-| 32768 | — | — | 887.1 (79.327) | 864.5 (81.394) | — | — |
+| 256 | 1.4 (0.024) | — | 3.0 (0.011) | 1.8 (0.019) | — | 46% |
+| 512 | 9.8 (0.027) | — | 18.0 (0.015) | 11.8 (0.023) | — | 55% |
+| 1024 | 63.6 (0.034) | — | 128.3 (0.017) | 81.1 (0.026) | — | 50% |
+| 2048 | 349.9 (0.049) | — | 485.4 (0.035) | 340.2 (0.051) | — | 72% |
+| 4096 | 583.2 (0.236) | — | 820.3 (0.168) | 623.4 (0.220) | — | 71% |
+| 8192 | 768.8 (1.430) | — | 1009.0 (1.090) | 853.3 (1.289) | — | 76% |
+| 16384 | 763.4 (11.522) | — | 999.6 (8.799) | 900.6 (9.767) | — | 76% |
+| 32768 | 616.5 (114.144) | — | 878.6 (80.094) | 843.1 (83.463) | — | 70% |
+
+<details><summary><b>Compilation & Build Overhead (Fused ReLU)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp Fused** | Crisp | 463 ms | 687 ms | 1.00× |
+| **cuBLASLt Fused** | Ceiling | *precompiled* | 3.06 s | — |
+
+</details>
 
 #### Ch 2 — Custom Epilogue (Arbitrary User Function)
 
@@ -1995,14 +2004,23 @@ Positive means `:xe-native` is faster. It wins bare and loses tuned: the lowerin
 
 | N | Crisp Fused | **Peer**<br>CUTLASS Fused | Ceiling (2nd Kernel)<br>cuBLASLt + Custom | vs Peer | **vs Ceiling (2nd Kernel)** |
 |---:|---:|---:|---:|---:|---:|
-| 256 | — | — | 2.5 (0.014) | — | — |
-| 512 | — | — | 13.6 (0.020) | — | — |
-| 1024 | — | — | 78.1 (0.027) | — | — |
-| 2048 | — | — | 369.0 (0.047) | — | — |
-| 4096 | — | — | 647.9 (0.212) | — | — |
-| 8192 | — | — | 863.9 (1.273) | — | — |
-| 16384 | — | — | 915.9 (9.604) | — | — |
-| 32768 | — | — | 855.1 (82.289) | — | — |
+| 256 | 1.4 (0.024) | — | 2.5 (0.013) | — | **55%** |
+| 512 | 9.8 (0.027) | — | 15.9 (0.017) | — | **62%** |
+| 1024 | 63.5 (0.034) | — | 101.2 (0.021) | — | **63%** |
+| 2048 | 349.8 (0.049) | — | 377.0 (0.046) | — | **93%** |
+| 4096 | 584.3 (0.235) | — | 639.0 (0.215) | — | **91%** |
+| 8192 | 762.4 (1.442) | — | 855.6 (1.285) | — | **89%** |
+| 16384 | 753.0 (11.682) | — | 897.5 (9.801) | — | **84%** |
+| 32768 | 615.5 (114.335) | — | 852.3 (82.564) | — | **72%** |
+
+<details><summary><b>Compilation & Build Overhead (Fused Custom)</b></summary>
+
+| contender | class | device codegen (PTX) | total build | **vs Crisp codegen** |
+|---|---|---:|---:|---:|
+| **Crisp Fused** | Crisp | 472 ms | 804 ms | 1.00× |
+| **cuBLASLt + Custom** | Ceiling | *precompiled* | 3.00 s | — |
+
+</details>
 
 ### NVIDIA H100 80GB HBM3 · tf32 · `fast`
 

@@ -411,3 +411,351 @@
             (llvm-add-named-metadata-operand
              module "nvvm.annotations"
              (crisp.llvm-bindings::llvm-metadata-as-value ctx (llvm-md-node-in-context2 ctx entry 3)))))))))
+
+;;; ===================================================================
+;;; Endeavour 210 item 2 (F-209-2, F-210-1, F-210-2) -- a store's :transformF on ACCUMULATORS.
+;;; tests/spec/210-tcgen05-misc/ (02-07, errors/01-04); put_temp_files_here/210/item2/findings.md.
+;;;
+;;; ideal_001.md names `store-tile ... :transformF #'f` as the third fused-epilogue site, but only
+;;; the generic tile store implemented it: the accumulator store analyzers never read their options,
+;;; so on a tcgen05 / wgmma accumulator :transformF was SILENTLY DROPPED (byte-identical PTX), and on
+;;; an exploded register tile it died as "Unknown variable C-TILE".  Now:
+;;;   tcgen05          the function is applied per element as it leaves tensor memory
+;;;                    (%tcgen05-store-rewrite-origin, via *210-store-transform*); refused on the
+;;;                    :via :tma store, which converts inside one codegen node.
+;;;   wgmma / fragment (let ((tmp SRC)) (map-elements! tmp F) (store.. tmp ..)) -- the existing
+;;;                    map-elements! lowering, on a copy, so the accumulator is not mutated.
+;;;   register tile    the same per fragment, in the tile explosion.
+;;;   any other option on an accumulator store is refused instead of ignored.
+;;;   map-elements! on a tcgen05 accumulator is refused, pointing at :transformF (D-210-5).
+;;;   --differentiate refuses a floating :transformF by name (F-210-2: the backward ignored it).
+;;; ===================================================================
+
+;; src/mma.lisp
+(defvar *210-store-transform* nil
+  "Endeavour 210 (F-210-1).  The #'F of a tcgen05 accumulator store's :transformF while that store is
+   analyzed (bound by %210-store-front), else NIL.  %tcgen05-store-rewrite-origin applies it to each
+   element read from tensor memory, before any narrowing conversion.")
+
+;; src/mma.lisp
+(defun %210-split-transformF (keys)
+  "Endeavour 210.  (values FN-FORM OTHER-KEYS) for a store's keyword tail KEYS: FN-FORM is the value of
+   :transformF (NIL when absent) and OTHER-KEYS the remaining key/value pairs, in order.  A KEYS of odd
+   length is returned whole with FN-FORM NIL, for the analyzer to report."
+  (if (oddp (length keys))
+      (values nil keys)
+      (let ((fn nil) (other '()))
+        (loop for (k v) on keys by #'cddr
+              do (if (eq k :transformF)
+                     (setf fn v)
+                     (progn (push k other) (push v other))))
+        (values fn (nreverse other)))))
+
+;; src/mma.lisp
+(defun %210-accumulator-kind (src env context location)
+  "Endeavour 210.  What kind of MMA accumulator the (conversion-peeled) store source SRC is:
+   :tcgen05, :wgmma, :register-tile (an un-exploded tile), :fragment (a PTX fragment record or a SPIR-V
+   cooperative matrix), or NIL for anything else (a scratch tile, a global tensor ...)."
+  (let ((ty (%208-source-type src env context location)))
+    (cond ((null ty) nil)
+          ((%tcgen05-acc-type-p ty) :tcgen05)
+          ((%wgmma-acc-type-p ty) :wgmma)
+          ((%register-tile-type-p ty) :register-tile)
+          ((or (%map-elements-fragment-fields ty) (%map-elements-coop-dims ty)) :fragment)
+          (t nil))))
+
+;; src/mma.lisp
+(defun %210-replace-store-source (src-form new)
+  "Endeavour 210.  SRC-FORM (a store's source: X, or a peelable conversion (to-half X) / (to-q8 X M))
+   with its accumulator X replaced by NEW, so the rewritten store peels exactly as the original."
+  (if (consp src-form)
+      (list* (first src-form) new (cddr src-form))
+      new))
+
+;; src/mma.lisp
+(defun %210-store-front (expr env context location base at-p)
+  "Endeavour 210 (F-210-1).  Front end of the store-tile (AT-P NIL) / store-tile-at (AT-P T) analyzers
+   for an MMA ACCUMULATOR source; BASE is the analyzer it fronts (208's).  Non-accumulator sources go
+   to BASE untouched -- the generic tile store implements its own options, :transformF included.
+   For an accumulator:
+     * an option it does not support is refused (it used to be ignored): store-tile takes only
+       :transformF, store-tile-at also :via;
+     * :transformF #'F on tcgen05 binds *210-store-transform* around BASE (refused with :via :tma);
+     * :transformF #'F on wgmma / a fragment / an un-exploded register tile becomes
+         (let ((tmp SRC)) (map-elements! tmp #'F) (store.. CONV(tmp) DEST COORDS OTHER-KEYS..))
+       -- map-elements!'s own lowering, on a copy, so the accumulator itself is not changed."
+  (multiple-value-bind (fn other) (%210-split-transformF (nthcdr 4 expr))
+    (multiple-value-bind (src convert) (%196-peel-store-conversion (second expr))
+      (declare (ignore convert))
+      (let ((kind (%210-accumulator-kind src env context location)))
+        (log:debug "210 store front: ~a src=~a kind=~a transformF=~a other=~s"
+                   (if at-p "store-tile-at" "store-tile") src kind fn other)
+        (if (null kind)
+            (funcall base expr env context location)
+            (let* ((allowed (if at-p '(:via) '()))
+                   (bad     (loop for (k nil) on other by #'cddr
+                                  unless (member k allowed) collect k))
+                   (stripped (append (subseq expr 0 4) other)))
+              (when (or bad (oddp (length other)))
+                (error 'crisp-compiler-error
+                       :message (format nil "~(~a~): option~a ~{~(~s~)~^, ~} ~a not supported on an accumulator store (~(~a~) is ~a).  ~a"
+                                        (first expr) (if (cdr bad) "s" "") bad (if (cdr bad) "are" "is") src
+                                        (ecase kind
+                                          (:tcgen05 "a tcgen05 tensor-memory accumulator")
+                                          (:wgmma "a wgmma accumulator")
+                                          ((:register-tile :fragment) "an MMA register accumulator"))
+                                        (if at-p
+                                            "An accumulator store takes :transformF #'f and, for store-tile-at, :via :tma."
+                                            "An accumulator store takes :transformF #'f."))
+                       :source-location location))
+              (cond
+                ((null fn)
+                 (funcall base stripped env context location))
+                ((eq kind :tcgen05)
+                 (%map-elements-check-unary fn location)
+                 (when (and at-p (%199-via-tma-p other))
+                   (error 'crisp-compiler-error
+                          :message (format nil "store-tile-at ~(~a~) :via :tma: :transformF is not supported yet on the TMA store of a tcgen05 accumulator (it converts and stages the accumulator in one step, with no per-element hook).  Store with store-tile / store-tile-at without :via, which apply :transformF as each element leaves tensor memory."
+                                           src)
+                          :source-location location))
+                 (let ((*210-store-transform* fn))
+                   (funcall base stripped env context location)))
+                (t
+                 (%map-elements-check-unary fn location)
+                 (let ((tmp (intern (format nil "XFORM-~a" (symbol-name (gensym "ACC")))
+                                    (find-package :crisp.compiler))))
+                   (log:debug "210 store front: ~a :transformF ~a -> copy ~a + map-elements!" src fn tmp)
+                   (analyze-expression
+                    `(let ((,tmp ,src))
+                       (map-elements! ,tmp ,fn)
+                       (,(first expr) ,(%210-replace-store-source (second expr) tmp)
+                        ,(third expr) ,(fourth expr) ,@other))
+                    env context location))))))))))
+
+;; src/mma.lisp
+(defvar *210-orig-208-analyze-store-tile* (fdefinition '%208-analyze-store-tile)
+  "Endeavour 210.  208's store-tile analyzer, fronted by %210-store-front.")
+
+;; src/mma.lisp  (fold: the front becomes the body of %208-analyze-store-tile)
+(defun %208-analyze-store-tile (expr env context location)
+  "Endeavour 208.  store-tile: a tcgen05 accumulator source is stored by %tcgen05-store-rewrite-origin
+   at the tile-grid origin (BTY*M, BTX*N); anything else goes to analyze-store-tile-mma unchanged.
+   Endeavour 210: fronted by %210-store-front (options on an accumulator store, :transformF)."
+  (%210-store-front expr env context location *210-orig-208-analyze-store-tile* nil))
+
+;; src/mma.lisp
+(defvar *210-orig-208-analyze-store-tile-at* (fdefinition '%208-analyze-store-tile-at)
+  "Endeavour 210.  208's store-tile-at analyzer, fronted by %210-store-front.")
+
+;; src/mma.lisp  (fold: the front becomes the body of %208-analyze-store-tile-at)
+(defun %208-analyze-store-tile-at (expr env context location)
+  "Endeavour 208.  store-tile-at: a tcgen05 accumulator source is stored at the absolute (ROW COL)
+   origin, directly or with :via :tma; anything else goes to analyze-store-tile-at-mma.
+   Endeavour 210: fronted by %210-store-front (options on an accumulator store, :transformF)."
+  (%210-store-front expr env context location *210-orig-208-analyze-store-tile-at* t))
+
+;; src/mma.lisp
+(defun %210-map-store-fragment-sources (form fn-form)
+  "Endeavour 210.  FORM (a per-fragment store expansion) with every (store-fragment FRAG . REST) made
+   (let ((tmp FRAG)) (map-elements! tmp FN-FORM) (store-fragment tmp . REST)): each fragment is copied,
+   mapped and stored, and the tile itself is not changed.  Mirrors %196-convert-store-fragment-sources,
+   which then wraps the copies in the conversion."
+  (cond
+    ((not (consp form)) form)
+    ((and (symbolp (first form)) (string= (symbol-name (first form)) "STORE-FRAGMENT"))
+     (let ((tmp (intern (format nil "XFRAG-~a" (symbol-name (gensym "F"))) (find-package :crisp.compiler))))
+       `(let ((,tmp ,(second form)))
+          (map-elements! ,tmp ,fn-form)
+          (,(first form) ,tmp ,@(cddr form)))))
+    (t (mapcar (lambda (f) (%210-map-store-fragment-sources f fn-form)) form))))
+
+;; src/mma.lisp
+(defvar *210-orig-explode-rewrite-body-form* (fdefinition '%explode-rewrite-body-form)
+  "Endeavour 210.  196's %explode-rewrite-body-form, wrapped for a store-tile with options.")
+
+;; src/mma.lisp  (fold: a clause at the top of 196's %explode-rewrite-body-form)
+(defun %explode-rewrite-body-form (form tiles)
+  "Endeavour 196 wrapper: (store-tile (to-half V) DEST (BTY BTX)) on an exploded register tile V
+   expands exactly as (store-tile V DEST ...) does, with every emitted store-fragment's FRAG wrapped
+   in the conversion.  Every other form goes to the original, which recurses back through this
+   name.
+   Endeavour 210 (F-210-1): (store-tile [CONV] V DEST (BTY BTX) :transformF #'F) on an exploded tile
+   expands the same way with each fragment copied and mapped first (%210-map-store-fragment-sources);
+   any other option on it is refused (it used to surface as \"Unknown variable V\")."
+  (if (and (consp form) (symbolp (first form)) (%head-name-eq (first form) "STORE-TILE")
+           (> (length form) 4))
+      (multiple-value-bind (v convert) (%196-peel-store-conversion (second form))
+        (let ((entry (and (symbolp v) (assoc v tiles))))
+          (if (null entry)
+              (funcall *210-orig-explode-rewrite-body-form* form tiles)
+              (multiple-value-bind (fn other) (%210-split-transformF (nthcdr 4 form))
+                (when (or other (null fn))
+                  (error 'crisp-compiler-error
+                         :message (format nil "store-tile: option ~{~(~s~)~^, ~} is not supported on an accumulator store (~(~a~) is an MMA register tile).  An accumulator store takes :transformF #'f."
+                                          (or (loop for (k nil) on other by #'cddr collect k) (list :transformF))
+                                          v)))
+                (%map-elements-check-unary fn nil)
+                (log:debug "210 explode: store-tile ~a :transformF ~a convert ~a -> per-fragment copy + map" v fn convert)
+                (%196-convert-store-fragment-sources
+                 (%210-map-store-fragment-sources
+                  (%emit-per-frag-store (third form) (fourth form) entry)
+                  fn)
+                 convert)))))
+      (funcall *210-orig-explode-rewrite-body-form* form tiles)))
+
+;; src/analysis/control.lisp
+(defvar *210-orig-analyze-map-elements* (fdefinition 'analyze-map-elements)
+  "Endeavour 210.  The map-elements! analyzer, wrapped to refuse a tcgen05 target by name.")
+
+;; src/analysis/control.lisp  (fold: a clause before the PTX branch of analyze-map-elements)
+(defun analyze-map-elements (expr env context location)
+  "(map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.
+   See the original (src/analysis/control.lisp) for the PTX / SPV lowerings.
+   Endeavour 210 (D-210-5): a tcgen05 accumulator TARGET is refused with the spelling that works --
+   it lives in tensor memory, not registers, and its only readers are the stores, which take
+   :transformF."
+  (let* ((target (second expr))
+         (ty (and (= (length (cdr expr)) 2)
+                  (%208-source-type target env context location))))
+    (when (and ty (%tcgen05-acc-type-p ty))
+      (error 'crisp-compiler-error
+             :message (format nil "map-elements!: ~(~a~) is a tcgen05 accumulator, which lives in tensor memory, not in registers.  Apply the function as it is stored instead: (store-tile ~(~a~) DEST (..) :transformF ~(~s~)) or (store-tile-at ~(~a~) DEST (ROW COL) :transformF ~(~s~))."
+                              target target (third expr) target (third expr))
+             :source-location location))
+    (funcall *210-orig-analyze-map-elements* expr env context location)))
+
+;; src/mma.lisp  (REPLACES %tcgen05-store-rewrite-origin; script-extracted, one binding changed)
+(defun %tcgen05-store-rewrite-origin (tile dest row-origin col-origin n &optional convert elem)
+  "Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at
+   (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row
+   m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the
+   row's 32 elements -- as 16 packed pairs (endeavour 197) when the first pair is adjacent and
+   aligned, else as scalars.  A fence::after_thread_sync opens the store (the accumulator was
+   completed by another thread's MMA) and a fence::before_thread_sync closes it (the next MMA into
+   these columns must not overtake the reads).  CONVERT as in %wgmma-store-rewrite-origin.
+   Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED
+   integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32
+   row record holds plain int, and the destination element holds exactly its own type.
+   Endeavour 210 (F-210-1): when *210-store-transform* is bound (a store's :transformF), each element
+   read from tensor memory is passed through that function first."
+  (let* ((to-int (intern "TO-INT" (find-package :crisp-language)))
+         (if-sym (intern "IF" (find-package :crisp-language)))
+         (chunks (floor n 32)))
+    (flet ((elt-of (ch j)
+             (let ((x (let ((raw `(%extract-struct-member ,ch ,j)))
+                        ;; Endeavour 210 (F-210-1): the store's :transformF, applied to the raw
+                        ;; element BEFORE any conversion or derived-integer cast.
+                        (if *210-store-transform* (%map-elements-call *210-store-transform* raw) raw))))
+               (if convert (%196-wrap-conversion convert x) (%store-frag-elem-cast elem x)))))
+      `(let ((tcv ,tile))
+         (let ((r0 (+ (,to-int ,row-origin) (+ (* (rem (,to-int (warp-id)) 4) 32) (,to-int (warp-lane)))))
+               (c0 (,to-int ,col-origin)))
+           (%tcgen05-fence-after)
+           ,@(loop for c below chunks
+                   for ch = (intern (format nil "TCROW~d" c) (find-package :crisp.compiler))
+                   for base = (* 32 c)
+                   collect `(let ((,ch (%tcgen05-ld tcv ,c)))
+                              (,if-sym (%pair-ok-p (~ ,dest r0 (+ c0 ,base)) (~ ,dest r0 (+ c0 ,(1+ base))))
+                                (progn ,@(loop for j below 32 by 2
+                                               collect `(%store-pair (~ ,dest r0 (+ c0 ,(+ base j)))
+                                                                     (~ ,dest r0 (+ c0 ,(+ base j 1)))
+                                                                     ,(elt-of ch j) ,(elt-of ch (1+ j)))))
+                                (progn ,@(loop for j below 32
+                                               collect `(set! (~ ,dest r0 (+ c0 ,(+ base j))) ,(elt-of ch j)))))))
+           (%tcgen05-fence-before))))))
+
+;; src/autodiff.lisp
+(defun %210-floating-transform-p (fn-form)
+  "Endeavour 210 (F-210-2).  T when FN-FORM (a store's :transformF) can carry a gradient: a #'NAME
+   whose registered signature returns a floating type, or anything whose signature is unknown (refused
+   rather than silently mis-differentiated).  An integer function (111/08's ulong double-val) carries
+   no gradient, so its store differentiates as before."
+  (let* ((name (%map-elements-fn-name fn-form))
+         (sigs (and name (gethash name *function-table*))))
+    (log:debug "210 floating-transform-p ~a: ~d signature(s), returns ~s"
+               fn-form (length sigs) (mapcar #'function-signature-return-types sigs))
+    (or (null sigs)
+        (some (lambda (s) (some #'%crisp-float-type-p (function-signature-return-types s))) sigs))))
+
+;; src/autodiff.lisp
+(defun %210-find-store-transform (form)
+  "Endeavour 210 (F-210-2).  The first (store-tile ..) / (store-tile-at ..) form inside FORM whose
+   options carry a floating :transformF (%210-floating-transform-p), or NIL."
+  (cond ((atom form) nil)
+        ((and (symbolp (first form))
+              (member (symbol-name (first form)) '("STORE-TILE" "STORE-TILE-AT") :test #'string=)
+              (> (length form) 4)
+              (let ((fn (%210-split-transformF (nthcdr 4 form))))
+                (and fn (%210-floating-transform-p fn))))
+         form)
+        (t (loop for x on form
+                 thereis (and (consp x) (%210-find-store-transform (car x)))))))
+
+;; src/autodiff.lisp
+(defvar *210-orig-generate-backward-walk* (fdefinition 'generate-backward-walk)
+  "Endeavour 210.  The backward walk, wrapped to refuse a store's :transformF (F-210-2).")
+
+;; src/autodiff.lisp  (fold: a check at the top of generate-backward-walk)
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types &key kernel-pkg)
+  "Walks an ANF body backwards to accumulate adjoints.  See the original (src/autodiff.lisp).
+   Endeavour 210 (F-210-2): a store with a floating :transformF is REFUSED first.  The store-tile(-at)
+   backward never read its options, so the gradient silently ignored the function (dX = dOUT for
+   :transformF #'sq, where 2 X dOUT is right).  The message points at map-elements! before the
+   store, which differentiates."
+  (let ((st (%210-find-store-transform flat-anf)))
+    (when st
+      (error 'crisp-compiler-error
+             :message (format nil "--differentiate: (~(~a~) ~(~a~) ~(~a~) ..) with :transformF ~(~s~): a store's :transformF has no backward yet (F-210-2) -- the gradient would ignore the function.  Apply it before the store, (map-elements! ~(~a~) ~(~s~)), which differentiates; or compile this kernel without --differentiate."
+                              (first st) (second st) (third st)
+                              (%210-split-transformF (nthcdr 4 st))
+                              (second st) (%210-split-transformF (nthcdr 4 st)))
+             :source-location nil)))
+  (funcall *210-orig-generate-backward-walk* flat-anf inputs outputs input-types output-types
+           :kernel-pkg kernel-pkg))
+
+;; src/autodiff.lisp  (fold: a check at the top of generate-backward-walk)
+;; SECOND COPY (only this one is live): the message names the PEELED source, not (to-bfloat16 D).
+(defun generate-backward-walk (flat-anf inputs outputs input-types output-types &key kernel-pkg)
+  "Walks an ANF body backwards to accumulate adjoints.  See the original (src/autodiff.lisp).
+   Endeavour 210 (F-210-2): a store with a floating :transformF is REFUSED first.  The store-tile(-at)
+   backward never read its options, so the gradient silently ignored the function (dX = dOUT for
+   :transformF #'sq, where 2 X dOUT is right).  The message points at map-elements! before the
+   store, which differentiates."
+  (let ((st (%210-find-store-transform flat-anf)))
+    (when st
+      (error 'crisp-compiler-error
+             :message (format nil "--differentiate: (~(~a~) ~(~a~) ~(~a~) ..) with :transformF ~(~s~): a store's :transformF has no backward yet (F-210-2) -- the gradient would ignore the function.  Apply it before the store, (map-elements! ~(~a~) ~(~s~)), which differentiates; or compile this kernel without --differentiate."
+                              (first st) (second st) (third st)
+                              (%210-split-transformF (nthcdr 4 st))
+                              (%196-peel-store-conversion (second st)) (%210-split-transformF (nthcdr 4 st)))
+             :source-location nil)))
+  (funcall *210-orig-generate-backward-walk* flat-anf inputs outputs input-types output-types
+           :kernel-pkg kernel-pkg))
+
+;; src/analysis/control.lisp  (REPLACES analyze-%store-pair-expression; one comparison changed)
+(defun analyze-%store-pair-expression (expr env context location)
+  "Analyzer for (%store-pair P0 P1 LO HI): one <2 x T> store when LO and HI already have P0's element
+   type and that type packs; otherwise exactly (progn (set! P0 LO) (set! P1 HI)), so conversions
+   and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1).
+   Endeavour 210: LO / HI are compared by their SINGLE-VALUE type.  A function call's node type is the
+   list of its return types -- (FLOAT) -- so an element passed through a store's :transformF never
+   matched FLOAT and every pair fell back to two scalar stores (a B200 tcgen05 store lost all 128 of
+   its st.global.v2)."
+  (unless (= (length expr) 5)
+    (error 'crisp-compiler-error :message "%store-pair: expects (%store-pair P0 P1 LO HI)"
+           :source-location location))
+  (destructuring-bind (p0-form p1-form lo-form hi-form) (rest expr)
+    (let* ((p0 (analyze-expression p0-form env context (append location '(1))))
+           (elem (semantic-node-type p0))
+           (bytes (%197-pair-elem-bytes elem))
+           (lo (analyze-expression lo-form env context (append location '(3))))
+           (hi (analyze-expression hi-form env context (append location '(4)))))
+      (if (and bytes (semantic-aref-p p0)
+               (equal (get-single-value-type lo) elem) (equal (get-single-value-type hi) elem))
+          (make-semantic-store-pair :place-node p0 :lo-node lo :hi-node hi :elem-bytes bytes
+                                    :type 'nil :source-location location)
+          (progn
+            (log:debug "197 %store-pair: falling back to two set!s (elem ~a, lo ~a, hi ~a)"
+                       elem (semantic-node-type lo) (semantic-node-type hi))
+            (analyze-expression `(progn (set! ,p0-form ,lo-form) (set! ,p1-form ,hi-form))
+                                env context location))))))

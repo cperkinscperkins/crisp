@@ -1976,6 +1976,10 @@ def main():
             # §4 Activation Ch 1 — Fused ReLU
             run_target("sec4_fused_relu", "matmul_wgmma_ws_relu.crisp", "matmul_wgmma_ws_relu.ptx",
                        "Crisp_Fused_Relu", [], is_crisp=True, use_fixture=True)
+            # Endeavour 210 (F-209-2): the B200's Crisp row -- the tf32 tcgen05 lane, its store fusing the
+            # activation (:transformF).  The gate runs exactly one of these two rows per device.
+            run_target("sec4_fused_relu", "matmul_b200_relu.crisp", "matmul_b200_relu.ptx",
+                       "Crisp_Fused_Relu", [], is_crisp=True, use_fixture=True)
             run_target("sec4_fused_relu", "cublaslt_relu.cu", "cublaslt_relu",
                        "CUBLASLt_Fused_Relu", cublas_flags + ["-lcublasLt"], is_cublas=True)
             run_target("sec4_fused_relu", "cublas_optimal.cu", "cublas_optimal",
@@ -1983,6 +1987,8 @@ def main():
 
             # §4 Activation Ch 2 — Fused Custom
             run_target("sec4_fused_custom", "matmul_wgmma_ws_custom.crisp", "matmul_wgmma_ws_custom.ptx",
+                       "Crisp_Fused_Custom", [], is_crisp=True, use_fixture=True)
+            run_target("sec4_fused_custom", "matmul_b200_custom.crisp", "matmul_b200_custom.ptx",
                        "Crisp_Fused_Custom", [], is_crisp=True, use_fixture=True)
             run_target("sec4_fused_custom", "cublaslt_optimal.cu", "cublaslt_optimal",
                        "CUBLASLt_Plus_Custom", cublas_flags + ["-lcublasLt"], is_cublas=True)
