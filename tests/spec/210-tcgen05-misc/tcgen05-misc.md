@@ -17,6 +17,8 @@ F-209-1 was already resolved (D-209-9).  The Python wheel and FP8/FP4 are future
 | Step | What | State |
 |---|---|---|
 | 1 | Item 6: by-value descriptor ABI, local | done 2026-11-08: suites green, PTX + ptxas + nvcc checked; metal pending (step 4) |
+| 1b | Item 6 on an H100: metal specs + exact A/B + canonical sweep of 4 TMA chapters | done 2026-11-08 (9 min, ~$0.62, pod confirmed gone): all green, B = A within 1% |
+| 1c | Item 6 on an H100: VERIFY-AUTODIFF[CUDA] TMA specs (only run under --differentiate) | done 2026-11-08 (3 attempts, ~$0.90 in all, every pod confirmed gone): all 6 PASS [cuda] -- item 6 metal-verified |
 | 2 | Item 2: F-209-2 | not started |
 | 3 | Item 4: F-209-8 | not started |
 | 4 | Rentals: H100 (TMA families, 209/03, sec3 rows) + B200 (208/209 tcgen05 TMA specs, item 2 row) | not started |
@@ -74,8 +76,66 @@ cache.  JAX moved its descriptors to `__grid_constant__` parameters for concurre
 - Docker (nvidia/cuda 12.4.1): ptxas sm_90a accepts the PTX; nvcc compiles the generated launcher and
   the bench fixture.
 
-**Not yet verified:** metal.  Step 4 runs the CUDA TMA spec families on an H100 and the tcgen05 ones on
-a B200, and a before/after benchmark of chap7 / sec3 (small and large N).
+### Step 1b results — H100, 2026-11-08 (9 min, ~$0.62, pod confirmed gone)
+
+Script: put_temp_files_here/210/step1b-on-pod.sh (the branch was pushed, so only the A/B apparatus was
+shipped).  Outputs in put_temp_files_here/210/step1b/.
+
+**Metal specs (hoisted CUDA, real launches): all pass.**  210 1/1, 137 5/5, 138 11/11, 140 7/7, 147 9/9,
+209 3/3 (incl. 209/03 MMA_CORRECT), 139 12/12, 152 23/23 (the multicast ring and cluster launches ran on
+CUDA), 154 3/3, 204 15/15; MMA_CORRECT reported by 137, 138, 139 (2), 140 (3), 154 (3), 204 (3), 209.
+**Gap:** VERIFY-AUTODIFF runs only under `--differentiate`, so the spec runner's in-process descriptor
+binding (tests/verify-autodiff-runner.lisp) was NOT exercised -> step 1c.
+
+**Exact A/B** (put_temp_files_here/210/ab/; ab_probe.py).  A = option A: the same compiler with the four
+item-6 overrides undone (twinA.lisp; its sec3 multicast PTX is byte-identical to step 11b's metal-verified
+PTX), under the pre-210 fixture (815d8ac9).  B = option B under today's fixture.  TFLOPS, mean of 3,
+every run verified:
+
+| kernel | arm | 512 | 1024 | 2048 | 4096 | 8192 |
+|---|---|---:|---:|---:|---:|---:|
+| chap4 (1 TMA map pair) | A | 6.1 | 26.2 | 73.8 | 80.6 | 81.7 |
+|  | B | 6.2 | 26.2 | 73.7 | 80.3 | 81.5 |
+| chap6 tf32 | A | 10.8 | 45.9 | 78.7 | 82.6 | 82.3 |
+|  | B | 10.9 | 45.6 | 79.3 | 82.7 | 82.2 |
+| chap7 wgmma bf16 | A | 18.0 | 117.7 | 452.9 | 605.7 | 663.4 |
+|  | B | 17.9 | 120.1 | 450.8 | 605.0 | 663.9 |
+| sec3 multicast | A | 15.2 | 87.3 | 185.9 | 207.6 | 214.5 |
+|  | B | 15.2 | 87.6 | 185.8 | 206.7 | 212.8 |
+
+B = A within run-to-run noise everywhere except sec3 multicast at 4096 / 8192: -0.4% / -0.8%, tight
+across its 3 runs (212.6-212.9 vs 214.4-214.5), so probably real but small.  Unexplained; candidates are
+the descriptor fetch from param space vs global, or the PTX's register renumbering.  Not chased: well
+under the per-pod spread, and option B is chosen for correctness (D-210-1), not speed.
+
+**Canonical sweep** (fast precision, all verified), crisp_commit 02b25280: chap4 80 @ 8192, chap6 81,
+chap7 bf16 642, sec3 cluster 225 / multicast 214 @ 8192 (206 @ 4096) -- the multicast row is now the
+`.cta`-fence number (item 3 done).  Reports regenerated.
+
+### Step 1c results — H100, 2026-11-08 (pod confirmed gone each time)
+
+Script: put_temp_files_here/210/step1c-on-pod.sh (run-on-pod.sh with a filter for setup, then
+`--differentiate` on 147 / 137 / 138).  Attempt 1: H100 SXM out of stock, no pod.  Attempt 2: a host that
+took 10 min to boot and had no runpodctl, so the dead-man could not be armed and pod-session.sh refused
+to run (released, confirmed gone; ~$0.70 of boot).  Attempt 3: ran (~3 min).
+
+Every VERIFY-AUTODIFF[CUDA] spec with a TMA descriptor passes on CUDA, through the by-value binding in
+tests/verify-autodiff-runner.lisp:
+
+| spec | analytical | numerical |
+|---|---:|---:|
+| 137/03 tma-codegen-ptx | 1.0 | 1.0 |
+| 137/05 block-mma-matmul | 0.28 | 0.27979 |
+| 138/04 pipelined-block-matmul | 0.28 | 0.28027 |
+| 138/05 linear-ring-pipeline | 0.28 | 0.28027 |
+| 147/07 cuda-tma-tile | 1.0 | 1.0 |
+| 147/08 cuda-ring-adjoint | 1.0 | 1.0 |
+
+147: 8/9 -- the one failure, 06b-multi-workgroup-spirv, is a SPIR-V spec whose forward compile needs
+`llvm-spirv`, which the pod does not have (exit 127).  No descriptor; unrelated.  137 5/5, 138 11/11.
+
+**Item 6 is metal-verified on Hopper.**  The tcgen05 descriptor path (same code) is checked on the B200
+with item 2.
 
 **Fold-time notes** (comments only, no behaviour): src/api.lisp's `%api-param` ("one slot: a descriptor
 pointer"), src/hoist/source-mode.lisp's `%hk-param-roles` (one VALUE slot -- now 128 bytes), the
