@@ -949,13 +949,13 @@ Extended to also accept raw (function ...) forms from the Crisp reader
                  (as-val (encode-address-space as-key)))
          (llvm-pointer-type (llvm-int8-type) as-val)))
 
-      ;; Endeavor 137 (Chapter 1.5): CUtensorMap descriptor implicit arg (option A =
-      ;; pointer-to-global).  (tensor-map SRC ...) -> a global i8 pointer to the 128-byte
-      ;; host-encoded descriptor.  Codegen addrspace-casts it to generic for the bulk-copy
-      ;; intrinsic's tensormap operand.
+      ;; Endeavor 137 (Chapter 1.5): CUtensorMap descriptor implicit arg.  Endeavour 210: a GENERIC
+      ;; i8 pointer (addrspace 0) to the 128-byte CUtensorMap.  In a kernel it is the address of the
+      ;; by-value __grid_constant__ parameter (%210-mark-grid-constant-tensor-maps); helper functions
+      ;; receive that same pointer.  (137's option A was a global pointer to a device copy.)
       ((and (consp type-spec) (symbolp (first type-spec))
             (string-equal (symbol-name (first type-spec)) "TENSOR-MAP"))
-       (llvm-pointer-type (llvm-int8-type) 1))
+       (llvm-pointer-type (llvm-int8-type) 0))
 
       ;; Endeavor 133 (MMA on SPV): opaque cooperative-matrix type
       ;; (coop-matrix ELEM ROWS COLS USE) -> target("spirv.CooperativeMatrixKHR", …).

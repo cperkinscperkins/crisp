@@ -1,0 +1,28 @@
+;; Endeavour 210 item 2 (F-210-1) -- (store-tile-at (to-half D) C (0 0) :via :tma :transformF
+;; #'triple) on a wgmma accumulator: 199/01's kernel.  The copy is mapped in registers, then the
+;; TMA store converts it, stages it with stmatrix and writes it with one bulk tensor copy -- so the
+;; validator finds the multiplications by 3.0 and 199's store path both.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-transform-scale3
+;; SKIP-WITH[--differentiate]: "GAP F-210-2: a store's :transformF has no backward yet -- --differentiate refuses it by name"
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function triple (x)
+  (declare #'(float => float))
+  (* x 3.0))
+
+(def-kernel wgmma_tma_store_xform (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (64 64)))
+        (B-tile (make-scratch-matrix half (128 64)))
+        (D      (make-wgmma-accumulator float (64 128) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 128 64) D A-tile B-tile :swizzle :128b)
+    (store-tile-at (to-half D) C (0 0) :via :tma :transformF #'triple)))

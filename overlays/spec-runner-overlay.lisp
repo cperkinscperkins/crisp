@@ -1,5 +1,7 @@
 ;; overlays/spec-runner-overlay.lisp
 (in-package :crisp.spec-runner)
+;; EMPTY as of 2026-11-09 -- endeavour 210's validators (validate-ptx-tma-grid-constant,
+;; validate-ptx-transform-scale3, validate-ptx-wgmma-store-pairs-only) folded into tests/run-specs.lisp.
 ;; EMPTY as of 2026-11-06 -- endeavour 208's tcgen05 validators folded into tests/run-specs.lisp.
 ;; EMPTY as of 2026-11-04 -- endeavour 207's sync int8 validators folded into tests/run-specs.lisp.
 ;; EMPTY as of 2026-11-02 -- BUG 135's validators folded into tests/run-specs.lisp.

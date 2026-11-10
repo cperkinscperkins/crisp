@@ -294,6 +294,14 @@ SOURCE: `(store-tile (to-half C-tile) C (grid-y grid-x))`, `(store-tile-at (to-h
 element is converted (round-to-nearest-even) as it is stored -- no half copy of the tile is made -- and
 `(to-half X)` is legal there only when X is an MMA accumulator.
 
+**Fused activation: `:transformF` on the store.**  `(store-tile C-tile C (grid-y grid-x) :transformF
+#'relu)` applies your function to each element as it is stored.  It works on every accumulator: register
+tiles (PTX and SPIR-V), wgmma and tcgen05 (endeavour 210).  It runs before the conversion:
+`(store-tile-at (to-half D) C (row col) :transformF #'relu)` is relu, then round.  `map-elements!` on
+the accumulator does the same in registers.  An accumulator store takes no other option, so
+`:transpose` / `:barrier` on one is refused.  A floating-point `:transformF` is refused under
+`--differentiate` (its backward is not built yet).
+
 **Async loads without TMA (A100 / L4).**  `load-tile ... :barrier bar` with a plain `(make-async-barrier)`
 lowers to `cp.async`.  It copies the tile's last dimension in 16-byte chunks (8 halves, 4 floats) when a
 run-time check finds the layout contiguous and chunk-aligned, else element by element -- so 16-bit tiles
@@ -306,7 +314,12 @@ the plain `a @ b` layout -- B `(K N)`, N-contiguous -- stage a `(K N)` tile and 
 
 **Accumulator stores are packed.**  `store-tile` / `store-tile-at` of a register tile or wgmma
 accumulator writes each thread's adjacent column pair as one store when a run-time check finds the pair
-contiguous and aligned (the normal case), else element by element (endeavour 197).
+contiguous and aligned (the normal case), else element by element (endeavour 197).  Carrying both
+versions costs a wgmma kernel registers (164-168 against 96 on the H100 sec3 kernels).  If C has an even
+number of columns and is declared `:align :compact :contiguous-term :row-major`, `(declare (even-columns
+C))` on the kernel drops the fallback for `store-tile` (endeavour 210).  If C's column count is in fact
+odd, the kernel faults; it does not write wrong values.  Measure it: fewer registers let more workgroups
+share an SM, which helped the multicast matmul 10-14% and slowed the plain cluster one.
 
 **Store a wgmma accumulator through the TMA (H100).**  Add `:via :tma`:
 `(store-tile-at (to-half D) C (row col) :via :tma)`.  Each warp stages its rows in shared memory with
@@ -338,6 +351,8 @@ under the 227 KB limit.
   must run on exactly 4 warps, so the storing role is 4 warps, or the kernel is 128 threads.
   `(store-tile-at (to-q-out D 1.0) C (row col))` requantizes an int accumulator as it stores it (direct
   stores only, not `:via :tma`).
+  - A fused activation is `:transformF` on the store, not `map-elements!`.  The accumulator is in tensor
+    memory, so `map-elements!` on it is refused.  Direct stores only, not `:via :tma` (endeavour 210).
 - **Block-scaled microfloats:** a matrix of a `def-microfloat-block` holds its packed codes, `(M K)`
   in elements.  Its scales are a vector of `(scale BLOCK)`.
   - Declare their layout: `(scale-layout SA :of A :blocked-128x4)`.
@@ -450,7 +465,8 @@ two handles, packed codes and one scale per block:
 the inputs.  Most of the language is differentiable (including `sqrt`, `abs`, `clamp`, the
 transcendentals, reductions with a declared VJP, matmul).  A kernel needs inputs and at least one `&out`.
 Integer results (`floor`, bit ops) carry zero gradient, but quantized conversions are straight-through
-(§11).  See chapter 48.
+(§11).  A store with a floating-point `:transformF` is refused by name (no backward yet, BUG 159); apply
+the function with `map-elements!` before the store, which differentiates.  See chapter 48.
 
 ---
 

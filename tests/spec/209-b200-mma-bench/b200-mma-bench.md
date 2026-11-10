@@ -645,7 +645,7 @@ own shared memory.  Fixed by always emitting `.cta` (D-209-14).  The reports reg
 still show the old fenced multicast row (118-127 TFLOPS at 4096-8192) until the next H100 sweep; the
 fixed kernel measured 187.7 / 207.8 / 214.3 at 2048 / 4096 / 8192 (Step 11b, `.cta` arm).
 
-**F-209-1 — kernels with no declared global-size are launched on a 32 x 64 tile grid.**  The fixture
+**F-209-1 — kernels with no declared global-size are launched on a 32 x 64 tile grid (RESOLVED by D-209-9; measured up to +29% in step 9).**  The fixture
 takes its grid from the metacrisp's `:tile-shape`, which exists only when the kernel declares
 `(global-size :derive-from C :strategy :strided)` (then it is inferred from tile-stride, endeavour
 143).  27 NVIDIA benchmark kernels declare no global-size, so the fixture uses its default

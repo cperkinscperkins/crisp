@@ -1,0 +1,24 @@
+;; TEST-EXPECT: PASS
+;; FAIL-WITH[--differentiate]: "has no backward yet (F-210-2)"
+;; CHECK-FAIL: "has no backward yet (F-210-2)"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --differentiate
+;; Endeavour 210 item 2 (D-210-6) -- under --differentiate a store's :transformF is refused by name.
+;; Before 210 the backward ignored it: this kernel's gradient kernel was byte-identical to the same
+;; kernel's without the transform, so dX came out as dOUT instead of 2 X dOUT -- silently wrong.
+;; The forward compile of the same kernel is fine (no --differentiate); the message points at
+;; map-elements! before the store, which differentiates.
+
+(def-type vec-t  (vector float :address-space :global :align :compact))
+
+(def-function sq (x)
+  (declare #'(float => float))
+  (* x x))
+
+(def-kernel k (X &out OUT)
+  (declare #'(vec-t &out vec-t => nil)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-vector float 4)))
+    (workgroup-stride tile (lx)
+      (set! (~ tile lx) (~ X lx)))
+    (store-tile-at tile OUT (0) :transformF #'sq)))

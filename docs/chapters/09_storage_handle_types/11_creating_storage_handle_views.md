@@ -19,7 +19,11 @@ introduce [def-const-vec](#def-const-vec) and [Side Channels](#side-channel-stor
 
 
 
-#### vector literals `#(val0 val1 val2 ... valN)` ✅ 
+#### vector literals `#(val0 val1 val2 ... valN)` 📝
+
+> **Not implemented** (found in endeavour 210, 2026-11-08).  This section was marked ✅, but the
+> analyzer rejects a `#(...)` literal as "Unsupported form", no spec uses one, and `literal-vector`
+> does not exist.  The `##(...)` device-vector literal (2–4 elements) is a different construct and works.
 
 A `vector` can be literally declared using the Lisp `#(...)` syntax.
 

@@ -1,0 +1,37 @@
+;; Endeavour 210 item 2 (F-210-1) -- (store-tile D C (0 0) :transformF #'triple) on a Hopper wgmma
+;; accumulator: 140/03's kernel.  Lowered as "copy D, map-elements! the copy, store it", which is the
+;; same register code a hand-written (map-elements! D #'triple) gives, without mutating D.
+;;
+;; Before 210 the option was silently dropped (byte-identical PTX to the plain store).
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-transform-scale3
+;; SKIP-WITH[--differentiate]: "GAP F-210-2: a store's :transformF has no backward yet -- --differentiate refuses it by name"
+;;
+;; MMA-DIMS: 64 64 32
+;; MMA-SCALE: 3
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+(declaim (precision fast))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function triple (x)
+  (declare #'(float => float))
+  (* x 3.0))
+
+(def-kernel wgmma_store_xform (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (64 32)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+    (store-tile D C (0 0) :transformF #'triple)))

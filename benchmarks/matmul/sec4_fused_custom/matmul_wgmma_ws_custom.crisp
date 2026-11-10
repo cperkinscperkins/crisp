@@ -1,9 +1,14 @@
 ;; Chapter 6 (Endeavor 150) — FUSED CUSTOM ACTIVATION on Crisp's MOST COMPETITIVE NVIDIA kernel.
 ;;
 ;; This is crisp/matmul_wgmma_ws_n256.crisp — Hopper WGMMA + TMA + WARP SPECIALIZATION
-;; (endeavour 140 Step 6, m64n256 consumer) — with ONE LINE ADDED in the consumer role:
+;; (endeavour 140 Step 6, m64n256 consumer) — with ONE CHANGE in the consumer role, its store:
 ;;
-;;     (map-elements! D #'custom-act)
+;;     (store-tile D C (grid-y grid-x) :transformF #'custom-act)
+;;
+;; Endeavour 210: until then the line was (map-elements! D #'custom-act) before a plain store.  The store's
+;; :transformF now works on every accumulator (it used to be silently dropped), so this kernel and
+;; its B200 twin (matmul_b200_custom.crisp, tcgen05) spell the fused activation the same way.  The
+;; lowering is the same register code: the store maps a copy of D, element by element.
 ;;
 ;; THE ACTIVATION IS DELIBERATELY OFF EVERY MENU: x > 0.5 ? x : x*x * 0.01.  A quadratic tail is
 ;; not one of cuBLASLt's fixed epilogue enums, so cuBLASLt — which CAN fuse relu (chapter 5) —
@@ -71,8 +76,7 @@
               (wgmma-accumulate-via-tile (64 256 32) D (ring-get A-ring slot) (ring-get B-ring slot)
                                          :swizzle :128b)
               (signal (ring-get empty slot))))
-          (map-elements! D #'custom-act)
-          (store-tile D C (grid-y grid-x)))
+          (store-tile D C (grid-y grid-x) :transformF #'custom-act))
         (:producer
           (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
             (let ((slot (mod grid-k (to-ulong 2))))

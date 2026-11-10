@@ -661,7 +661,9 @@
   "Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap
    descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.
    Endeavour 207: a scratch entry's :type goes through %host-visible-type, as the declared
-   signature's does, so a def-qint ring is sized and declared at its primitive's width."
+   signature's does, so a def-qint ring is sized and declared at its primitive's width.
+   Endeavour 210: a :kind :tensor-map entry says how it is passed -- :address-space :param,
+   :passing :by-value, :bytes 128, :align 64."
   (declare (ignore declared-params))
   (let ((implicit-args nil)
         (phys-index 0)
@@ -676,7 +678,13 @@
         (cond
           ((and type-head (string-equal type-head "TENSOR-MAP"))
            (let ((info (gethash (cons (function-signature-name sig) name) *tma-resolved*)))
-             (push (list :name (string-downcase (symbol-name name))
+             ;; Endeavour 210: passed BY VALUE -- a host binds the 128-byte CUtensorMap itself
+             ;; (kernelParams[i] = &map), not a device pointer to a copy.  (Key order kept from the
+             ;; 210 overlay, which pushed these four onto the front.)
+             (push (list :align +210-tensor-map-align+
+                         :bytes +210-tensor-map-bytes+
+                         :passing :by-value
+                         :name (string-downcase (symbol-name name))
                          :kind :tensor-map
                          :describes (and (getf info :describes)
                                          (string-downcase (symbol-name (getf info :describes))))
@@ -685,7 +693,7 @@
                          :box-dims (getf info :box-dims)
                          :layout (or (getf info :layout) :row-major)
                          :swizzle (or (getf info :swizzle) :none)
-                         :address-space :global
+                         :address-space :param
                          :range (list start end))
                    implicit-args)))
           (t

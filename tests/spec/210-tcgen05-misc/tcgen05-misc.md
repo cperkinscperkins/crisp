@@ -1,0 +1,417 @@
+# Endeavour 210 — tcgen05 / benchmark follow-ups (branch `tcgen05-misc`)
+
+Started 2026-11-08 after endeavour 209 closed.  Scope, agreed with Chris:
+
+| # | Item | Source |
+|---|---|---|
+| 6 | CUDA TMA descriptors BY VALUE (`__grid_constant__`, option B) replace option A | reminder from 137 (2026-07-14) |
+| 2 | `map-elements!` on a tcgen05 accumulator, so section 4 fused has a B200 Crisp row | F-209-2 |
+| 4 | sec3's register growth (96 -> 164) since cc116e8c | F-209-8 |
+| 3 | refresh the stale sec3 multicast report row (fenced `.cluster` numbers) | F-209-9 / D-209-14 |
+| - | one H100 + one B200 rental at the end: metal proof of 6, benchmarks for 6 / 2 / 3 / 4 | |
+
+F-209-1 was already resolved (D-209-9).  The Python wheel and FP8/FP4 are future work, not this branch.
+
+## Steps
+
+| Step | What | State |
+|---|---|---|
+| 1 | Item 6: by-value descriptor ABI, local | done 2026-11-08: suites green, PTX + ptxas + nvcc checked; metal pending (step 4) |
+| 1b | Item 6 on an H100: metal specs + exact A/B + canonical sweep of 4 TMA chapters | done 2026-11-08 (9 min, ~$0.62, pod confirmed gone): all green, B = A within 1% |
+| 1c | Item 6 on an H100: VERIFY-AUTODIFF[CUDA] TMA specs (only run under --differentiate) | done 2026-11-08 (3 attempts, ~$0.90 in all, every pod confirmed gone): all 6 PASS [cuda] -- item 6 metal-verified |
+| 2 | Item 2: F-209-2 -> `:transformF` on every accumulator store (F-210-1), A\|D refusal (F-210-2) | done 2026-11-08: local + metal (steps 2b B200, 2c H100); folded 2026-11-09 |
+| 3 | Item 4: F-209-8 | done 2026-11-08: explained (step 3); fix D-210-7 `(even-columns C)`; metal steps 4 / 4b (H100) |
+| 4 | Rentals: H100 (TMA families, 209/03, sec3 rows) + B200 (208/209 tcgen05 TMA specs, item 2 row) | done inline, per item (steps 1b, 1c, 2b, 2c, 3, 4, 4b), as Chris asked: test on the rental while working each item |
+| 5 | Fold the 210 overlays into src/; docs; definition of done | done 2026-11-09: corpus byte-identical (2399 IR jobs + 258 CUDA hoist jobs); unit 392/392, E2E 1821/1821, negative 497/497 -- see *The fold* |
+
+## Item 6 — TMA descriptors by value
+
+**Why.** The CUDA Programming Guide (Asynchronous Data Copies, TMA section) lists three homes for a
+CUtensorMap: a `const __grid_constant__` kernel parameter ("the recommended approach"), `__constant__`
+memory, or global memory.  For global memory it says the map "requires a fence in each thread block"
+before use -- `fence.proxy.tensormap::generic.acquire`, `.sys` scope when the host wrote it -- and that
+it "may be slower".  Option A (137) put the map in global memory and Crisp emitted no such fence.  That
+is safe while every process is fresh (every spec and fixture run); a long-lived host that frees one
+descriptor and gets a new one at the same address can be served the stale map from the TMA descriptor
+cache.  JAX moved its descriptors to `__grid_constant__` parameters for concurrency reasons.
+
+**Mechanism (LLVM 21.1.5, proven by hand first: put_temp_files_here/210/gc/gc_{attr,anno}.ll).**
+- The kernel parameter is `ptr byval([128 x i8]) align 64`, and the kernel is named in
+  `!nvvm.annotations` as `!{ptr @k, !"grid_constant", !{i32 <1-based positions>}}`.
+- NVPTX then emits `.param .align 64 .b8 k_param_N[128]`, takes the address with
+  `mov.b64 %rdA, k_param_N; cvta.param.u64 %rdB, %rdA;`, and passes that generic pointer to the TMA
+  instruction and to helper functions.  No local copy; ptxas: 0-byte stack frame.
+- **The `"nvvm.grid_constant"` PARAMETER attribute does not work in LLVM 21.1.5**: it is ignored, the
+  byval bytes are copied into `.local` byte by byte, and TMA is handed a local address.  Only the
+  annotation works.
+
+**What changed (overlays; fold at endeavour end).**
+- Compiler (crisp-compiler-overlay.lisp):
+  - `resolve-type-to-llvm` wrapper: `(TENSOR-MAP SRC)` is a GENERIC i8 pointer (was addrspace 1).
+  - `%tma-lookup-descriptor-ptr`: loads the descriptor as addrspace 0 (loading it as addrspace 1 would
+    reinterpret a param-space address); the callers' casts to generic become no-ops.
+  - `%210-mark-grid-constant-tensor-maps`, called from an `ensure-opencl-kernel-metadata` wrapper:
+    byval + align 64 on each descriptor parameter plus the annotation.  It counts LLVM positions the way
+    `%compute-kernel-cache-hints` does and ERRORS if the parameter there is not a pointer.
+  - `generate-implicit-signature` wrapper: the metacrisp entry gains `:address-space :param
+    :passing :by-value :bytes 128 :align 64`.
+- Bindings (crisp-llvm-bindings-overlay.lisp): `LLVMCreateTypeAttribute`.
+- CUDA hoist (hoist-cuda overlay, script-extracted copies): `CUtensorMap <name>;` at the ABI slot,
+  encoded straight into it, `kernelParams[i] = &<name>`; option A's `cuMemAlloc` + `cuMemcpyHtoD` gone.
+- Spec runner's in-process CUDA launcher (tests/verify-autodiff-runner.lisp, edited directly: it loads
+  lazily, AFTER the spec-runner overlay, so an overlay copy would be overwritten): the slot holds the
+  128 bytes.
+- Bench fixture (benchmarks/matmul/crisp/bench_harness.cu): maps kept in a `std::deque`,
+  `params[idx] = &map`; no device copy, no cuMemFree.
+- New: spec 210/01 (137/04's sub-function TMA kernel) + `validate-ptx-tma-grid-constant`
+  (spec-runner overlay).  Controls: passes 137/03, 137/04, sec3 multicast, chap7 tcgen05; FAILS option
+  A's sec3 multicast PTX and the local-copy lowering.  `ci-stop.txt` -> 210.
+
+**Local proof.**
+- Unit 392/392, E2E 1808/1808, negative 492/492; 210/01 passes plain and `--differentiate`;
+  `--differentiate` on 137 (5/5), 138 (11/11), 140 (8/8), 152 (23/23).
+- PTX read by hand: 137/03 (param 0), 137/04 (param 9; helper inlined, the `.func` copy takes a generic
+  pointer), sec3 multicast (two maps; the diff against step 11b's metal-verified PTX is the two
+  parameters plus register renumbering), chap7 tcgen05 for sm_100a (two maps).  None has `__local_depot`.
+- 137/04 hoisted: metacrisp `:range (9 9) :passing :by-value`, `kernelParams[9] = &src_tensormap_from_stage`.
+- Docker (nvidia/cuda 12.4.1): ptxas sm_90a accepts the PTX; nvcc compiles the generated launcher and
+  the bench fixture.
+
+### Step 1b results — H100, 2026-11-08 (9 min, ~$0.62, pod confirmed gone)
+
+Script: put_temp_files_here/210/step1b-on-pod.sh (the branch was pushed, so only the A/B apparatus was
+shipped).  Outputs in put_temp_files_here/210/step1b/.
+
+**Metal specs (hoisted CUDA, real launches): all pass.**  210 1/1, 137 5/5, 138 11/11, 140 7/7, 147 9/9,
+209 3/3 (incl. 209/03 MMA_CORRECT), 139 12/12, 152 23/23 (the multicast ring and cluster launches ran on
+CUDA), 154 3/3, 204 15/15; MMA_CORRECT reported by 137, 138, 139 (2), 140 (3), 154 (3), 204 (3), 209.
+**Gap:** VERIFY-AUTODIFF runs only under `--differentiate`, so the spec runner's in-process descriptor
+binding (tests/verify-autodiff-runner.lisp) was NOT exercised -> step 1c.
+
+**Exact A/B** (put_temp_files_here/210/ab/; ab_probe.py).  A = option A: the same compiler with the four
+item-6 overrides undone (twinA.lisp; its sec3 multicast PTX is byte-identical to step 11b's metal-verified
+PTX), under the pre-210 fixture (815d8ac9).  B = option B under today's fixture.  TFLOPS, mean of 3,
+every run verified:
+
+| kernel | arm | 512 | 1024 | 2048 | 4096 | 8192 |
+|---|---|---:|---:|---:|---:|---:|
+| chap4 (1 TMA map pair) | A | 6.1 | 26.2 | 73.8 | 80.6 | 81.7 |
+|  | B | 6.2 | 26.2 | 73.7 | 80.3 | 81.5 |
+| chap6 tf32 | A | 10.8 | 45.9 | 78.7 | 82.6 | 82.3 |
+|  | B | 10.9 | 45.6 | 79.3 | 82.7 | 82.2 |
+| chap7 wgmma bf16 | A | 18.0 | 117.7 | 452.9 | 605.7 | 663.4 |
+|  | B | 17.9 | 120.1 | 450.8 | 605.0 | 663.9 |
+| sec3 multicast | A | 15.2 | 87.3 | 185.9 | 207.6 | 214.5 |
+|  | B | 15.2 | 87.6 | 185.8 | 206.7 | 212.8 |
+
+B = A within run-to-run noise everywhere except sec3 multicast at 4096 / 8192: -0.4% / -0.8%, tight
+across its 3 runs (212.6-212.9 vs 214.4-214.5), so probably real but small.  Unexplained; candidates are
+the descriptor fetch from param space vs global, or the PTX's register renumbering.  Not chased: well
+under the per-pod spread, and option B is chosen for correctness (D-210-1), not speed.
+
+**Canonical sweep** (fast precision, all verified), crisp_commit 02b25280: chap4 80 @ 8192, chap6 81,
+chap7 bf16 642, sec3 cluster 225 / multicast 214 @ 8192 (206 @ 4096) -- the multicast row is now the
+`.cta`-fence number (item 3 done).  Reports regenerated.
+
+### Step 1c results — H100, 2026-11-08 (pod confirmed gone each time)
+
+Script: put_temp_files_here/210/step1c-on-pod.sh (run-on-pod.sh with a filter for setup, then
+`--differentiate` on 147 / 137 / 138).  Attempt 1: H100 SXM out of stock, no pod.  Attempt 2: a host that
+took 10 min to boot and had no runpodctl, so the dead-man could not be armed and pod-session.sh refused
+to run (released, confirmed gone; ~$0.70 of boot).  Attempt 3: ran (~3 min).
+
+Every VERIFY-AUTODIFF[CUDA] spec with a TMA descriptor passes on CUDA, through the by-value binding in
+tests/verify-autodiff-runner.lisp:
+
+| spec | analytical | numerical |
+|---|---:|---:|
+| 137/03 tma-codegen-ptx | 1.0 | 1.0 |
+| 137/05 block-mma-matmul | 0.28 | 0.27979 |
+| 138/04 pipelined-block-matmul | 0.28 | 0.28027 |
+| 138/05 linear-ring-pipeline | 0.28 | 0.28027 |
+| 147/07 cuda-tma-tile | 1.0 | 1.0 |
+| 147/08 cuda-ring-adjoint | 1.0 | 1.0 |
+
+147: 8/9 -- the one failure, 06b-multi-workgroup-spirv, is a SPIR-V spec whose forward compile needs
+`llvm-spirv`, which the pod does not have (exit 127).  No descriptor; unrelated.  137 5/5, 138 11/11.
+
+**Item 6 is metal-verified on Hopper.**  The tcgen05 descriptor path (same code) is checked on the B200
+with item 2.
+
+**Fold-time notes** (comments only, no behaviour): src/api.lisp's `%api-param` ("one slot: a descriptor
+pointer"), src/hoist/source-mode.lisp's `%hk-param-roles` (one VALUE slot -- now 128 bytes), the
+`validate-ptx-tma-grid-constant` docstring's last bullet (garbled), docs/ideal_001.md's compile-API note
+on TENSOR_MAP.  The compile API still reports descriptors without supporting them, as before.
+
+## Item 2 — F-209-2: a fused activation on a tcgen05 accumulator
+
+**What F-209-2 was.**  `map-elements!` has two lowerings, both over REGISTERS (PTX fragment records unrolled;
+SPIR-V cooperative matrices looped).  A tcgen05 accumulator lives in TENSOR MEMORY, and its only readers
+are the stores (`store-tile`, `store-tile-at`, the `:via :tma` store), all through
+`%tcgen05-store-rewrite-origin`: per 32-column chunk, `tcgen05.ld`, then each element (already the hook for
+`to-bfloat16` / `to-q`), then `st.global`.
+
+**F-210-1 (found scoping it; BUG 158).  A store's `:transformF` was silently dropped on every
+accumulator.**  ideal_001.md names `store-tile ... :transformF #'f` as the third fused-epilogue site, but
+only the generic tile store implemented it; the accumulator store analyzers never read their options.
+tcgen05 and wgmma with `:transformF #'relu`: PTX byte-identical to the plain store.  Exploded register
+tiles: "Unknown variable C-TILE".  (put_temp_files_here/210/item2/findings.md.)
+
+**F-210-2 (BUG 159).  The backward ignores `:transformF`** (generic store, pre-existing): the `_GRAD`
+kernel of `store-tile-at tile OUT (0) :transformF #'sq` is byte-identical to the transform-free one, so
+dX = dOUT instead of 2 X dOUT.
+
+**F-210-3 (noted, not changed).**  Section 4's CUDA fixture verifies against plain A.B: both
+activations are the identity on the fill's non-negative integers (by design -- cublaslt_relu.cu's header
+says so).  The section-4 rows price the epilogue; they cannot see a dropped activation.  The 210 specs
+and the PTX check are what prove it is applied.
+
+**What changed (overlays; fold at endeavour end).**
+- `%210-store-front` fronts 208's `store-tile` / `store-tile-at` analyzers (registered from
+  `initialize-compiler`, so the redefinitions are live).  For an accumulator source:
+  - tcgen05: `*210-store-transform*` is bound around the store; `%tcgen05-store-rewrite-origin`
+    (script-extracted copy, one binding changed) applies the function to the raw element, before any
+    conversion or derived-integer cast.  Refused on `:via :tma` (one codegen node, no per-element hook).
+  - wgmma / fragment / un-exploded register tile: `(let ((tmp SRC)) (map-elements! tmp #'F) (store.. tmp ..))`
+    -- map-elements!'s own lowering, on a copy.
+  - any other option on an accumulator store is refused (store-tile takes `:transformF`; store-tile-at
+    also `:via`).
+- `%explode-rewrite-body-form`: an exploded register tile's `store-tile ... :transformF` expands per
+  fragment with each fragment copied and mapped (`%210-map-store-fragment-sources`), then converted.
+- `analyze-map-elements`: a tcgen05 target is refused, naming `:transformF` (D-210-5).
+- `generate-backward-walk`: a store with a FLOATING `:transformF` is refused by name (D-210-6); an
+  integer function (111/08) carries no gradient and is untouched.
+- Bench: `gen_b200.py` lanes `relu` / `custom` (the tf32 lane + the Hopper kernels' own activation
+  functions + `:transformF`) -> `sec4_fused_relu/matmul_b200_relu.crisp`,
+  `sec4_fused_custom/matmul_b200_custom.crisp`; `matmul.py` runs them beside the wgmma rows (the gate
+  runs one per device).  The Hopper kernels now spell it `:transformF` too: PTX instruction-identical
+  to the `map-elements!` version (only block-label comments renumbered).
+
+**Local proof so far.**
+- 210 specs 11/11, plain and `--differentiate`; 06 on the local BMG: `BUFFER c: 0 6 0` (150/04's value).
+- validate-ptx-transform-scale3: 02 129, 03 257, 04 33, 07 65 multiplications by 3.0 (= elements per
+  thread + 1 for the out-of-line `.func`; 03's two store arms each apply it); 07 keeps 199's 8 stmatrix.
+- 05: 4 relu selects per thread (+1).  06's SPIR-V matches 150/04's (2 `CooperativeMatrixLengthKHR`
+  loops, the same calls, 2 stores, 12 lines of copies).
+- Option-free kernels (chap7 tcgen05, sec4 wgmma before the switch, 150/21) are byte-identical.
+- B200 kernels: 256 relu selects per thread (relu), 512 muls (custom).  **But** every packed
+  `st.global.v2` was lost (0 vs 128): `%store-pair` compares node types with `equal`, and a function
+  call's type is the list `(FLOAT)`.  FIXED: `analyze-%store-pair-expression` (script copy) compares
+  `get-single-value-type`.  The B200 kernels are back to the plain lane's 128 `st.global.v2` + 256 scalar.
+- Corpus byte compare across that fix (put_temp_files_here/210/item2/{corpus,compare}.py: every
+  non-error spec, with --differentiate where not skipped, + every NVIDIA benchmark kernel; 2397 jobs):
+  exactly 3 outputs moved -- 210/02 and the two B200 section-4 kernels (the tcgen05 stores with a
+  transform and no conversion).  The rest: metacrisp `:source` paths (before/ vs after/) and two
+  Windows temp-file races (097/04 re-run identical; 182/14 has no accumulator store).
+- Suites (before the %store-pair fix, which the corpus then showed inert elsewhere): unit 392/392,
+  E2E 1819/1819, negative 496/496.  After it: 210 11/11 (plain and --differentiate), 197 5/5.
+
+### Step 2b results — B200, 2026-11-08 (18 min, ~$2.45, pod confirmed gone)
+
+Script: put_temp_files_here/210/step2b-on-pod.sh (`--image cu128`; the tree shipped by ship-tree.sh).
+Logs in put_temp_files_here/210/step2b/.  The result JSONs carry `crisp_commit: c423bb27`, the pod-local
+commit of the shipped tree (never pushed; the tree is this branch's working tree as of the run).
+
+**Metal specs.**
+- 210: 10/11 -- **02 and 03 MMA_CORRECT** (tcgen05 `store-tile` / `store-tile-at (to-bfloat16 ..)` with
+  `:transformF #'triple`, MMA-SCALE 3: every element of the 128 x 128 tile); 05 `BUFFER c: 4 0 3`; 04 is
+  the wgmma spec (sm_90 PTX does not JIT on a B200 -- run on the H100 in 2c).
+- 208: **39/39, MMA_CORRECT x17** -- every tcgen05 spec, including the TMA-loaded ones: item 6's by-value
+  descriptors on tcgen05 are metal-verified.
+- 209: 2/3 -- 03 is the Hopper fence spec (`HOIST-ARCH: sm_90`, "PTX JIT compilation failed" on a B200).
+
+**Bench** (TFLOPS, canonical, every point verified; `sec2_top` Crisp is the same tcgen05 tf32 kernel with
+no activation):
+
+| row | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---:|---:|---:|---:|---:|
+| sec2_top Crisp (no activation) | 347.8 | 581.6 | 769.8 | 753.6 | 616.8 |
+| **sec4 relu: Crisp_Fused_Relu** | 349.9 | 583.2 | 768.8 | 763.4 | 616.5 |
+| sec4 relu: CUBLASLt_Fused_Relu | 485.4 | 820.3 | 1009.0 | 999.6 | 878.6 |
+| sec4 relu: CUBLAS_Plus_Relu | 340.2 | 623.4 | 853.3 | 900.6 | 843.1 |
+| **sec4 custom: Crisp_Fused_Custom** | 349.8 | 584.3 | 762.4 | 753.0 | 615.5 |
+| sec4 custom: CUBLASLt_Plus_Custom | 377.0 | 639.0 | 855.6 | 897.5 | 852.3 |
+| sec4 custom: CUBLAS_Plus_Custom | 336.0 | 625.1 | 853.0 | 901.1 | 853.9 |
+| sec2_top CUBLAS_Optimal | 676.6 | 856.8 | 1013.0 | 989.4 | 866.0 |
+
+- **The fused activation costs Crisp nothing on a B200**: relu -0.1%, custom -1.0% at 8192 against the
+  unfused kernel (within run noise elsewhere).  A second kernel costs cuBLAS 16% (1013 -> 853).
+- cuBLASLt fuses relu itself (1009); it cannot fuse the custom tail and falls to 856.  Crisp is 89% of
+  that at 8192 (762 / 856), 76% of cuBLAS's plain tf32 -- the gap is the matmul (F-209-x territory), not
+  the epilogue.
+
+### Step 2c results — H100, 2026-11-08 (~6 min, ~$0.40, pod confirmed gone)
+
+Script: put_temp_files_here/210/step2c-on-pod.sh (ship-tree.sh ships the uncommitted tree and commits it
+in the pod's clone; SHIP-OK / TREE-OK checked).  Logs in put_temp_files_here/210/step2c/.
+
+| filter | result |
+|---|---|
+| 210 | 9/11: **04 MMA_CORRECT** (wgmma, `:transformF #'triple`, MMA-SCALE 3); **05 `BUFFER c: 4 0 3`** (register tile, shifted relu -- 150/21's value); 02 / 03 are sm_100a tcgen05 kernels: "PTX JIT compilation failed" on Hopper, as expected (step 2b runs them) |
+| 150 | 16/16 (MMA_CORRECT x2) -- map-elements! and the explosion wrapper unchanged on metal |
+| 140 | 7/7 (MMA_CORRECT x3) |
+| 197 | 5/5 (%store-pair) |
+| 199 | 10/10 (wgmma TMA store) |
+| 150 --differentiate | 13/16: the 3 VERIFY-AUTODIFF[CUDA] PTX specs PASS [cuda] through the generate-backward-walk wrapper; 08 / 09 / 10 are BMG VERIFY-AUTODIFF specs (no Level Zero on the pod) |
+
+## Item 4 — F-209-8: sec3 register growth 96 -> 164
+
+(put_temp_files_here/210/item4/: twin.lisp, findings.md, probe/; step3-on-pod.sh.)
+
+### Not the source change
+D-209-9 added `(global-size :derive-from C :strategy :strided)` to the sec3 kernels.  Today's compiler on
+the cc116e8c sources (nowold/) gives the same 164 / 168 as on today's sources (now/).
+
+### The mechanism: the 197 epilogue is TWO complete copies behind one runtime test
+%wgmma-store-rewrite-origin (197) emits
+    (if (%pair-ok-p first-pair) (progn 64 x %store-pair) (progn 128 x set!))
+Twin PTX (twin.lisp: the same compiler with the rewrite reduced to one arm), ptxas sm_90a (docker 12.4):
+
+| kernel | cc116e8c | today (both arms) | scalar arm only | pairs arm only | one test, per-pair if (inter) |
+|---|---|---|---|---|---|
+| sec3 cluster   | 96, 320 B stack | 164 | 128 | **96**, no stack | 122 |
+| sec3 multicast | 96, 320 B stack | 168 | 128 | **96**, no stack | 124 |
+| chap7 wgmma bf16 (occ 320) | - | 168 + **616 B spills** | - | 162, 0 spills | 164, 0 spills |
+| sec2_top Hopper (occ 320)  | - | 168 + **616 B spills** | - | 162, 0 spills | 164, 0 spills |
+
+cc116e8c got 96 by a different route: its epilogue COPIED the 64 accumulator registers to a 256-byte local
+array after the mainloop and read them back one at a time (the 320 B stack = 256 B accumulator + 8 x 8 B
+loop state; 32 st.local.v2 + 34 ld.local), so the accumulator was dead in registers during the stores.
+
+Reading: the two arms share their address arithmetic (a pair's addresses are the scalar arm's even
+elements), LLVM computes it ahead of the branch, and the accumulator + every address stay live across
+both arms.  Either arm alone is cheaper than the union.
+
+At 160 threads (sec3): 96 regs -> 4 workgroups/SM by registers, 122-128 -> 3, 164-168 -> 2.
+
+### Step 3 -- H100 metal, 2026-11-08 (~2 min, ~$0.15, pod confirmed gone)
+put_temp_files_here/210/step3/probe.txt.  TFLOPS, median of 3 (tight), every run verified:
+
+| kernel | arm | regs | 2048 | 4096 | 8192 |
+|---|---|---|---:|---:|---:|
+| sec3 cluster   | now   | 164 | 202.4 | 232.9 | 216.5 |
+|                | pairs |  96 | 203.0 | 215.7 | 195.4 |
+|                | inter | 122 | 182.5 | 235.5 | 190.8 |
+| sec3 multicast | now   | 168 | 187.9 | 207.3 | 212.5 |
+|                | pairs |  96 | 214.7 | 229.6 | 237.8 |
+|                | inter | 124 | 166.2 | 220.2 | 237.6 |
+| chap7 bf16     | now   | 168+616B spill | 457.3 | 607.0 | 664.3 |
+|                | pairs | 162 | 474.0 | 595.1 | 590.5 |
+|                | inter | 164 | 475.1 | 603.7 | 618.2 |
+| sec2_top H     | now   | 168+616B spill | 282.8 | 329.2 | 272.3 |
+|                | pairs | 162 | 286.9 | 316.2 | 265.7 |
+|                | inter | 164 | 289.1 | 324.3 | 285.6 |
+
+- Registers do NOT predict speed.  Fewer registers (more workgroups/SM) help multicast (+14/+11/+12% for
+  pairs; 237.8 at 8192 = cc116e8c's 239.5) and HURT plain cluster (-0/-7/-10%).  Same as 9b's occupancy
+  probe: multicast wants occupancy, cluster does not.
+- chap7 bf16 / sec2_top: removing the never-taken scalar arm (pairs) removes the 616 B of spills and is
+  still SLOWER at 4096/8192 (chap7 -11% at 8192).  Same occupancy (2 WG/SM either way); it is ptxas's
+  schedule, not the spills.  inter is mixed (chap7 -7% at 8192, sec2 +5%).
+- So the 197 two-arm epilogue is the best or tied default for 3 of 4 kernels at the large sizes.  F-209-8 is
+  EXPLAINED: the epilogue's register cost moved sec3 from 4 to 2 workgroups/SM, which suits cluster and
+  costs multicast ~11%.  And with a register-light epilogue multicast BEATS cluster at 8192 (237.8 vs 216.5).
+
+### The fix (D-210-7): `(even-columns C)` -- the packed arm alone, by declaration
+
+Option (b) first tried to keep a CORRECT but register-light fallback (findings.md, "Option (b)
+prototypes"): every one landed at 122-128 registers (3 workgroups/SM), while the packed arm plus a trivial
+fallback stays at 96 -- the cost is a fallback holding the 64 accumulator values alongside its own working
+set.  cc116e8c's 96 came from the accumulator living in local memory; Crisp has no runtime-indexed
+per-thread array to do that on purpose (the `#(...)` private vector literal of ideal_001.md is
+"Unsupported form" in the analyzer -- a doc/compiler gap; `##(...)` is 2-4 wide).  So the fallback is made
+unnecessary instead.
+
+- **`(declare (even-columns C))`** on a kernel: C's column count is even.  With C `:align :compact
+  :contiguous-term :row-major` and a grid-origin `store-tile` (column origin grid-x * N + 2*(lane mod 4),
+  even), every pair is one aligned word.  A false declaration faults (misaligned address); it cannot store
+  wrong values.  Any other C type is refused by name (errors/05).
+- Overlay: `analyze-store-tile-mma` wrapper binds `*210-pairs-only*` (after validating the declaration,
+  `%210-pairs-only-dest-p`); `%wgmma-store-rewrite-origin` (script-extracted copy) then emits the packed arm
+  alone.  `store-tile-at`, register tiles and tcgen05 are untouched.
+- Applied to `sec3_cluster_multicast/matmul_tile128_multicast.crisp` ONLY: plain cluster is faster at 2
+  workgroups/SM (step 3), so it does not declare it.  The declared kernel's PTX is byte-identical to step
+  3's measured "pairs" arm (96 registers, 0 spills).
+- Specs: 210/08 (140/03 + the declaration; `validate-ptx-wgmma-store-pairs-only`: 16 packed, 0 scalar;
+  140/03 is its negative control: 16 + 32 scalar) and errors/05 (a `:col-major` C).
+- Local: 210 13/13 (plain and --differentiate); unit 392/392, E2E 1821/1821, negative 497/497.  Corpus
+  (2397 jobs, against item 2's final build): only the declared multicast kernel moved (plus metacrisp
+  `:source` paths and two Windows temp-file races, 097/04 and 152/14, neither using the declaration).
+- Noticed: an UNKNOWN kernel declaration is accepted silently (a typo'd `(even-colums C)` would do
+  nothing).  Not changed here.
+
+### Steps 4 / 4b results — H100, 2026-11-08 (~4 + ~6.5 min, ~$0.70 in all, both pods confirmed gone)
+
+Step 4 lost its ssh connection mid-bench (a timeout during peer provisioning), so the sweep never ran; the
+connection was back for its spec filters: **210/08 MMA_CORRECT** (the packed-only store on metal), 210
+11/13 (02 / 03 are the sm_100a tcgen05 specs -- JIT fails on Hopper, as in step 2c), 140 7/7, 152 23/23.
+Step 4b re-ran the bench alone (step4b-on-pod.sh).  Result JSONs carry the pod-local commit 55d118c8.
+
+sec3_cluster_multicast, canonical, every point verified (TFLOPS):
+
+| row | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---:|---:|---:|---:|---:|---:|
+| multicast, step 1b (before) | 87.5 | 186.0 | 206.5 | 214.2 | 165.0 | 163.2 |
+| **multicast, `(even-columns C)`** | 81.0 | **211.3** | **228.1** | **236.1** | **174.0** | 158.0 |
+| plain cluster (same pod, undeclared) | 97.6 | 201.9 | 233.0 | 217.6 | 169.8 | 169.2 |
+| cuBLAS (same pod) | 140.7 | 361.6 | 428.7 | 453.8 | 393.6 | 444.3 |
+
+- Multicast +14 / +10 / +10 / +5% at 2048 / 4096 / 8192 / 16384 -- step 3's probe numbers, now through
+  the real kernel and the canonical sweep.  It loses 7% at 1024 and 3% at 32768 (more workgroups per SM
+  is not free everywhere).
+- **Multicast now beats plain cluster** at 2048 (+5%), 8192 (+9%) and 16384 (+2%); cluster still leads at
+  4096 (-2%), 32768 and the small sizes.  The report's sec3 story changes from "multicast loses on Hopper"
+  to "it wins at most large sizes once it can keep 4 workgroups per SM".
+
+## The fold (2026-11-09)
+
+All four overlays emptied into src/ by script (put_temp_files_here/210-fold/fold.py: LIVE copies by offset,
+never retyped; the dead first copies of %210-mark-grid-constant-tensor-maps and generate-backward-walk and
+every `*210-orig-*` capture dropped).  Shapes:
+- **new** -- the `%210-` helpers, `*210-store-transform*`, `*210-pairs-only*`, the two `+210-tensor-map-`
+  constants (codegen / mma / autodiff); `LLVMCreateTypeAttribute` (src/llvm-bindings.lisp); the three
+  validators (tests/run-specs.lisp, after validate-ptx-tma; the garbled docstring bullet rewritten).
+- **replaced** -- %tma-lookup-descriptor-ptr, %tcgen05-store-rewrite-origin, %wgmma-store-rewrite-origin,
+  analyze-%store-pair-expression, the hoist's %cuda-emit-tensor-map-encode-base and %emit-kernel-args-base.
+- **clauses** -- resolve-type-to-llvm's existing TENSOR-MAP clause now returns addrspace 0;
+  generate-implicit-signature's TENSOR-MAP entry carries the by-value keys, in the order the overlay's
+  `setf getf` produced, so the metacrisp is byte-identical.
+- **prepended** -- analyze-map-elements (the tcgen05 refusal), generate-backward-walk (the :transformF refusal).
+- **base + wrapper** -- ensure-opencl-kernel-metadata, %208-analyze-store-tile(-at), analyze-store-tile-mma.
+- **merged** -- %explode-rewrite-body-form: 196's wrapper body became the 210 wrapper's else arm (no new
+  layer over the existing -base).
+
+Proof: built with the overlays still loading (0 warnings), then emptied them, re-ran gen-specials (+2:
+`*210-pairs-only*`, `*210-store-transform*`), rebuilt (0 warnings).  Corpus against the pre-fold build:
+2399 IR jobs (every non-error spec, with --differentiate where not skipped, + every NVIDIA benchmark
+kernel) 0 changed; two Windows tool-invocation flakes (105/12 -ad in the after run, 196/07 in the before
+run), each identical re-run alone.  258 CUDA hoist jobs (every TEST-HOIST[CUDA] spec, `.cu` + metacrisp +
+PTX): 0 changed.  Suites: see the steps table.
+
+Comment-only fold notes done: src/api.lisp (the TENSOR_MAP slot the API reports is pointer-shaped and now
+stale -- left as is, since the API reports descriptors without supporting them), src/hoist/source-mode.lisp.
+Docs: ideal_001.md (store-tile on accumulators, the map-elements! table, wgmma "Packed pairs, and
+`(even-columns C)`", the tcgen05 read-back, the `:block` descriptor note, `declare` even-columns, the compile
+API note, the `#(...)` literal now 📝 -- BUG 160) and writing-crisp.md.  BUG 161 (unknown declarations
+accepted silently) recorded.
+
+## Decisions (D-210-n)
+
+- **D-210-1.** (2026-11-08, Chris) Option B REPLACES option A; no flag to keep A.  Descriptors modified on
+  the device (grouped GEMM, MoE) would be a separate feature with its own release / acquire fences.
+- **D-210-2.** Inside the compiler the descriptor is a generic pointer everywhere; only the kernel
+  parameter is by value.  The implicit-argument propagation through helper functions is untouched.
+- **D-210-3.** The annotation, not the parameter attribute (the attribute is ignored by LLVM 21.1.5).
+- **D-210-4.** (2026-11-08, Chris) A store's `:transformF` works on EVERY accumulator store (tcgen05,
+  wgmma, register tiles on PTX and SPIR-V); an option an accumulator store does not support is refused,
+  never ignored.  The Hopper section-4 kernels switch to it, so one spelling serves both generations.
+- **D-210-5.** (2026-11-08, Chris) `map-elements!` on a tcgen05 accumulator stays refused, now naming
+  `:transformF`: map-elements! is defined on registers, and the stores are a tcgen05 accumulator's only
+  readers.  Deferring the map into the next store, or a tensor-memory round trip (needs `tcgen05.st`),
+  can come later if a non-store reader appears.
+- **D-210-6.** (2026-11-08, Chris) Under `--differentiate` a floating `:transformF` is refused by name
+  (F-210-2, BUG 159); the real backward (f_GRAD on the store's pre-transform values) is separate A|D work.
+- **D-210-7.** (2026-11-08, Chris: option 1) F-209-8's fix is a DECLARATION, `(even-columns C)`, that lets a
+  wgmma `store-tile` emit 197's packed arm alone (96 instead of 164-168 registers on sec3).  A correct
+  register-light fallback was not reachable with existing constructs (122-128).  Only the sec3 multicast
+  kernel declares it; plain cluster prefers today's 2 workgroups/SM.

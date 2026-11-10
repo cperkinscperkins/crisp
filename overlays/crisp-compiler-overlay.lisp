@@ -5,6 +5,25 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-11-09 -- endeavour 210 (tcgen05-misc: item 6 TMA descriptors by value, item 2
+;;;; :transformF on accumulator stores, item 4 (even-columns C)) folded into src/ by script
+;;;; (put_temp_files_here/210-fold/fold.py: LIVE copies by offset):
+;;;;   * new            -> %210-tensor-map-spec-p, +210-tensor-map-bytes/align+,
+;;;;                       %210-mark-grid-constant-tensor-maps (codegen); *210-store-transform*,
+;;;;                       %210-split-transformF, %210-accumulator-kind, %210-replace-store-source,
+;;;;                       %210-store-front, %210-map-store-fragment-sources, *210-pairs-only*,
+;;;;                       %210-even-columns-names, %210-pairs-only-dest-p (mma);
+;;;;                       %210-floating-transform-p, %210-find-store-transform (autodiff)
+;;;;   * replaced       -> %tma-lookup-descriptor-ptr (codegen), %tcgen05-store-rewrite-origin,
+;;;;                       %wgmma-store-rewrite-origin (mma), analyze-%store-pair-expression (control)
+;;;;   * clauses        -> resolve-type-to-llvm's TENSOR-MAP clause (validation, addrspace 0);
+;;;;                       generate-implicit-signature's TENSOR-MAP entry (metadata, by-value keys)
+;;;;   * prepended      -> analyze-map-elements (control), generate-backward-walk (autodiff)
+;;;;   * base + wrapper -> ensure-opencl-kernel-metadata (codegen), %208-analyze-store-tile(-at),
+;;;;                       analyze-store-tile-mma (mma)
+;;;;   * merged         -> %explode-rewrite-body-form: 196's wrapper body is the 210 wrapper's else arm
+;;;;   * dropped        -> every *210-orig-* capture, the dead first copies
+;;;;
 ;;;; EMPTY as of 2026-11-08 -- endeavour 209 (B200 MMA bench: BUG 157 / F-209-3 persistent flat walk;
 ;;;; F-209-4 / D-209-13 signal fence) folded into src/ by script (put_temp_files_here/209-fold/fold.py:
 ;;;; LIVE copies by offset; no capture wrappers):

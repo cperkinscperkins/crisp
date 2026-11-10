@@ -35,4 +35,6 @@
 ;;;; D-208-18 uchar width) folded into src/hoist-cuda/main.lisp: %hoist-elem-type-bytes replaced; the
 ;;;; captured copies of %cuda-emit-tensor-arg / %cuda-emit-mma-reference became the -base functions;
 ;;;; emit-kernel-args, %cuda-emit-tensor-map-encode, emit-structs split base + wrapper; the rest new.
+;;;; EMPTY as of 2026-11-09 -- endeavour 210 item 6 (CUtensorMap by value, __grid_constant__) folded into
+;;;; src/hoist-cuda/main.lisp: %cuda-emit-tensor-map-encode-base and %emit-kernel-args-base replaced.
 (in-package :crisp.hoist.cuda)

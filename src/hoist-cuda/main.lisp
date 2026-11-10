@@ -1393,8 +1393,9 @@ overrides the runtime SM-count query in the grid-size heuristic."
 
 (defun %cuda-emit-tensor-map-encode-base (stream param)
   "Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map
-   descriptor and copy the 128-byte descriptor to device global (option A), leaving the device pointer
-   in <name> (forward-declared earlier at the descriptor's ABI slot).  References the DESCRIBED tensor's
+   descriptor STRAIGHT INTO <name>, the CUtensorMap forward-declared at the descriptor's ABI slot.
+   Endeavour 210 (option B): the kernel takes it BY VALUE as a __grid_constant__ parameter, so
+   kernelParams[i] = &<name> and there is no device copy (option A's cuMemAlloc + cuMemcpyHtoD).  References the DESCRIBED tensor's
    already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).
      - Swizzle from (getf param :swizzle): :128b -> CU_TENSOR_MAP_SWIZZLE_128B (wgmma), else NONE.
      - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents
@@ -1415,7 +1416,6 @@ overrides the runtime SM-count query in the grid-size heuristic."
          (swz       (if swz-p "CU_TENSOR_MAP_SWIZZLE_128B" "CU_TENSOR_MAP_SWIZZLE_NONE")))
     (format stream "~%    // CUtensorMap descriptor for '~a' (box ~a, swizzle ~a, ~a) — Endeavor 137/140~%"
             describes box swz (if col-p "col-major K-contiguous" "row-major"))
-    (format stream "    CUtensorMap ~a_host;~%" name)
     ;; gdim: col-major swizzle -> in-order (K innermost); else reversed (row-major, last dim innermost).
     (format stream "    uint64_t ~a_gdim[~d] = { ~{~a~^, ~} };~%" name rank
             (if col-p
@@ -1435,13 +1435,11 @@ overrides the runtime SM-count query in the grid-size heuristic."
             (loop for k from (1- rank) downto 0 collect (nth k box)))
     (format stream "    uint32_t ~a_elstr[~d] = { ~{~a~^, ~} };~%" name rank
             (make-list rank :initial-element 1))
-    (format stream "    CUDA_CHECK(cuTensorMapEncodeTiled(&~a_host, ~a, ~d,~%" name dtype rank)
+    (format stream "    CUDA_CHECK(cuTensorMapEncodeTiled(&~a, ~a, ~d,~%" name dtype rank)
     (format stream "        (void*)~a_ptr, ~a_gdim, ~a, ~a_box, ~a_elstr,~%"
             describes name (if (> rank 1) (format nil "~a_gstr" name) "nullptr") name name)
     (format stream "        CU_TENSOR_MAP_INTERLEAVE_NONE, ~a,~%" swz)
-    (format stream "        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));~%")
-    (format stream "    CUDA_CHECK(cuMemAlloc(&~a, sizeof(CUtensorMap)));~%" name)
-    (format stream "    CUDA_CHECK(cuMemcpyHtoD(~a, &~a_host, sizeof(CUtensorMap)));~%" name name)))
+    (format stream "        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));~%")))
 
 (defun %cuda-emit-tensor-map-encode (stream param)
   "Endeavour 208 phase 4 wrapper: a descriptor of a block matrix is encoded over BYTES -- UINT8, the
@@ -1495,12 +1493,13 @@ overrides the runtime SM-count query in the grid-size heuristic."
              (is-local    (member param-as '(:local "LOCAL" local) :test #'string-equal)))
 
         (cond
-         ;; Endeavor 137: CUtensorMap descriptor (option A).  Forward-declare its device ptr and
+         ;; Endeavor 137: CUtensorMap descriptor -- Endeavour 210: option B, the descriptor ITSELF
+         ;; (by value, __grid_constant__), not a device pointer.  Forward-declare it and
          ;; reserve its ABI slot now (it sorts first); the encode is emitted AFTER the loop, once
          ;; the DESCRIBED tensor's host vars (<d>_ptr / <d>_ext / <d>_str) have been emitted.
          ((eq (getf param :kind) :tensor-map)
           (let ((nm (substitute #\_ #\- (getf param :name))))
-            (format stream "    CUdeviceptr ~a;  // CUtensorMap descriptor (filled below)~%" nm)
+            (format stream "    CUtensorMap ~a;  // CUtensorMap descriptor, passed BY VALUE (__grid_constant__), encoded below~%" nm)
             (push nm arg-names)
             (incf arg-index)
             (push param deferred-tensor-maps)))

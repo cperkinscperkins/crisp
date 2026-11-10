@@ -1,9 +1,14 @@
 ;; Chapter 5 (Endeavor 150) — FUSED EPILOGUE on Crisp's MOST COMPETITIVE NVIDIA kernel.
 ;;
 ;; This is crisp/matmul_wgmma_ws_n256.crisp — Hopper WGMMA + TMA + WARP SPECIALIZATION
-;; (endeavour 140 Step 6, m64n256 consumer) — with ONE LINE ADDED in the consumer role:
+;; (endeavour 140 Step 6, m64n256 consumer) — with ONE CHANGE in the consumer role, its store:
 ;;
-;;     (map-elements! D #'relu)
+;;     (store-tile D C (grid-y grid-x) :transformF #'relu)
+;;
+;; Endeavour 210: until then the line was (map-elements! D #'relu) before a plain store.  The store's
+;; :transformF now works on every accumulator (it used to be silently dropped), so this kernel and
+;; its B200 twin (matmul_b200_relu.crisp, tcgen05) spell the fused activation the same way.  The
+;; lowering is the same register code: the store maps a copy of D, element by element.
 ;;
 ;; WHY THIS BASE.  Same reasoning as the Intel twin: fuse onto the kernel someone would
 ;; actually use.  The first cut of this chapter fused onto chap1_async_linear and measured
@@ -60,8 +65,7 @@
               (wgmma-accumulate-via-tile (64 256 32) D (ring-get A-ring slot) (ring-get B-ring slot)
                                          :swizzle :128b)
               (signal (ring-get empty slot))))
-          (map-elements! D #'relu)
-          (store-tile D C (grid-y grid-x)))
+          (store-tile D C (grid-y grid-x) :transformF #'relu))
         (:producer
           (dotimes (grid-k (/ (to-ulong K) (to-ulong 32)))
             (let ((slot (mod grid-k (to-ulong 2))))

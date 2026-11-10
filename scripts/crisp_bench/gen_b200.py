@@ -21,6 +21,22 @@ DENSE = {
     "int8":  ("sec2_top_int8",  "matmul_b200_int8.crisp",  "char",     "int",   "int",   128, "s8 x s8 operands, s32 accumulator and C (kind::i8)"),
     "requant": ("sec4_int8_requant", "matmul_b200_int8_requant.crisp", "char", "(accum q-a)", "q-a", 128,
                 "s8 x s8, s32 accumulator, C REQUANTIZED to s8: sat8(rne(acc * 0.003))"),
+    # Endeavour 210 (F-209-2): section 4's fused activations on the B200 -- the tf32 lane, its store
+    # applying the activation as each element leaves tensor memory (store-tile ... :transformF).
+    "relu":   ("sec4_fused_relu",   "matmul_b200_relu.crisp",   "float", "float", "float", 32,
+               "tf32, fp32 C, FUSED ReLU"),
+    "custom": ("sec4_fused_custom", "matmul_b200_custom.crisp", "float", "float", "float", 32,
+               "tf32, fp32 C, FUSED custom activation"),
+}
+# Endeavour 210: the activation lanes -> (function name, its def-function).  The SAME source as the
+# Hopper kernels (sec4_fused_*/matmul_wgmma_ws_*.crisp), so the two rows fuse the same user code.
+ACT = {
+    "relu":   ("relu",       ["(def-function relu (x)",
+                              "  (declare #'(float => float))",
+                              "  (if (> x 0.0) x 0.0))"]),
+    "custom": ("custom-act", ["(def-function custom-act (x)",
+                              "  (declare #'(float => float))",
+                              "  (if (> x 0.5) x (* (* x x) 0.01)))"]),
 }
 # block lanes: (dir, file, block name, base, scale, vec, K-step in codes)
 BLOCK = {
@@ -42,6 +58,7 @@ def visit_lines(visit):
 def dense_kernel(lane, ring=4, persistent=True, tn=256, visit=1):
     d, f, el, acc, cel, ks, what = DENSE[lane]
     requant = lane == "requant"
+    act = ACT.get(lane)
     hdr = [f";; Section 2, B200 (sm_100a) -- {what}.  Endeavour 209.",
            ";;",
            ";; GENERATED from ONE template by scripts/crisp_bench/gen_b200.py, so a difference between two",
@@ -63,8 +80,15 @@ def dense_kernel(lane, ring=4, persistent=True, tn=256, visit=1):
                 ";; the store's source narrows each accumulator element as it is stored (205).  The harness reads",
                 ";; the multiplier from the line below, so its oracle applies the same rule.",
                 ";; BENCH-REQUANT-MULTIPLIER: 0.003"]
+    if act:
+        hdr += [";;",
+                f";; Section 4: the activation {act[0]} is FUSED into the epilogue's store -- `:transformF #'{act[0]}` applies it",
+                ";; to each element as the 32-column chunk leaves tensor memory, before the st.global (endeavour 210;",
+                ";; a tcgen05 accumulator is not in registers, so map-elements! does not apply to it)."]
     hdr += [";; Requires sm_100a."]
     pre = ["(def-qint q-a :base char :accum int)"] if requant else []
+    if act:
+        pre = act[1] + [""]
     types = [f"(def-type a-mat (matrix {el} :address-space :global :align :compact :contiguous-term :row-major))",
              f"(def-type b-mat (matrix {el} :address-space :global :align :compact :contiguous-term :col-major))",
              f"(def-type c-mat (matrix {cel} :address-space :global :align :compact :contiguous-term :row-major))"]
@@ -80,7 +104,7 @@ def dense_kernel(lane, ring=4, persistent=True, tn=256, visit=1):
     if requant:
         store = (f"(store-tile-at (to-q-a {dsel} 0.003) C ((* grid-y (to-ulong 128)) (* grid-x (to-ulong {tn}))))")
     else:
-        store = f"(store-tile {dsel} C (grid-y grid-x))"
+        store = f"(store-tile {dsel} C (grid-y grid-x)" + (f" :transformF #'{act[0]})" if act else ")")
     na = 2 if persistent else 1
     s = "s" if persistent else "0"
     body = f"""(def-kernel matmul (A B &out C)
@@ -214,6 +238,8 @@ if __name__ == "__main__":
         for old in T.glob("*.crisp"):
             old.unlink()
         for lane in DENSE:
+            if lane in ACT:          # 210: the activation lanes take the tf32 lane's tuning
+                continue
             for ring in (3, 4):
                 for w in (1, 2, 4):
                     write(T / f"{lane}_p_r{ring}_w{w}.crisp", dense_kernel(lane, ring, True, visit=w))

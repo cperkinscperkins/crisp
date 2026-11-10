@@ -1,0 +1,39 @@
+;; Endeavour 210 item 4 (F-209-8, D-210-7) -- (even-columns C): a wgmma store-tile emits ONLY the packed
+;; arm of 197's epilogue.  140/03's kernel plus the declaration.
+;;
+;; WHY.  197's epilogue is two complete copies behind one runtime alignment test (packed pairs, else
+;; scalars).  Together they keep the accumulator and both copies' addresses live: sec3's kernels need
+;; 164-168 registers, the packed arm alone 96 -- 4 workgroups per SM instead of 2 at 160 threads, which
+;; was +11..14% for the multicast kernel on an H100 (findings in the endeavour doc, item 4).  Declaring
+;; C's column count even, with C :compact and :row-major, makes every pair of a grid-origin store one
+;; aligned word, so the fallback is never needed.  A false declaration faults (misaligned address); it
+;; cannot store wrong values.
+;;
+;; THE CHECK.  Locally the validator requires packed f32 stores and NO scalar global store (140/03, the
+;; same kernel undeclared, has both: its negative control).  On metal the stored C must equal A.B.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-wgmma-store-pairs-only
+;; MMA-DIMS: 64 64 32
+;; HOIST-ARCH: sm_90
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: MMA_CORRECT
+(declaim (precision fast))
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel wgmma_even_columns (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128)
+           (even-columns C))
+  (let ((A-tile (make-scratch-matrix float (64 32)))
+        (B-tile (make-scratch-matrix float (64 32)))
+        (D      (make-wgmma-accumulator float (64 64) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (wgmma-accumulate-via-tile (64 64 32) D A-tile B-tile :swizzle :128b)
+    (store-tile D C (0 0))))

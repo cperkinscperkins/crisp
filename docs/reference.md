@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-11-08T18:31:23.158485Z
+Generated on 2026-11-09T16:25:34.658788Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -28,7 +28,7 @@ Generated on 2026-11-08T18:31:23.158485Z
 ### DEFUN `ANALYZE-MAP-ELEMENTS`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > (map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.  >   >    Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:  >   >      PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto  >            %construct-struct / %extract-struct-member, which already exist.  >      SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME  >            value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen  >            turns into a LOOP, rewriting each component through the variable's own alloca via  >            OpAccessChain.  >   >    Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register  >    or component holds, which is why this is portable and why layout-aware epilogues are out of  >    scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which  >    expands it to one of these per fragment.  >   >    Endeavour 159: A/B OPERAND fragments are REFUSED.  See the header above -- this was reachable  >    by accident and silently wrong at 16 bits.
+  > (map-elements! TARGET #'FN) -> apply the unary FN to every element of TARGET, in place.  >   >    Endeavor 150.  TWO LOWERINGS, because the vendors represent a fragment differently:  >   >      PTX   a record of scalar fields, count known at compile time -> UNROLLED fieldwise onto  >            %construct-struct / %extract-struct-member, which already exist.  >      SPV   an opaque cooperative matrix whose per-invocation component count is a RUNTIME  >            value (OpCooperativeMatrixLengthKHR) -> a semantic-coop-op :map node that codegen  >            turns into a LOOP, rewriting each component through the variable's own alloca via  >            OpAccessChain.  >   >    Both are elementwise and layout-agnostic: neither learns which logical (row, col) a register  >    or component holds, which is why this is portable and why layout-aware epilogues are out of  >    scope.  A whole register TILE is handled earlier, in %explode-rewrite-body-form, which  >    expands it to one of these per fragment.  >   >    Endeavour 159: A/B OPERAND fragments are REFUSED.  See the header above -- this was reachable  >    by accident and silently wrong at 16 bits.  >    Endeavour 210 (D-210-5): a tcgen05 accumulator TARGET is refused first, naming :transformF  >    -- it lives in tensor memory, not registers, and its only readers are the stores.
 
 
 ---
@@ -1342,7 +1342,7 @@ Generated on 2026-11-08T18:31:23.158485Z
 ### DEFUN `ANALYZE-%STORE-PAIR-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (%store-pair P0 P1 LO HI): one <2 x T> store when LO and HI already have P0's element  >    type and that type packs; otherwise exactly (progn (set! P0 LO) (set! P1 HI)), so conversions  >    and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1).
+  > Analyzer for (%store-pair P0 P1 LO HI): one <2 x T> store when LO and HI already have P0's element  >    type and that type packs; otherwise exactly (progn (set! P0 LO) (set! P1 HI)), so conversions  >    and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1).  >    Endeavour 210: LO / HI are compared by their SINGLE-VALUE type.  A function call's node type is the  >    list of its return types -- (FLOAT) -- so an element passed through a store's :transformF never  >    matched FLOAT and every pair fell back to two scalar stores (a B200 tcgen05 store lost all 128 of  >    its st.global.v2).
 
 
 ---
@@ -5045,10 +5045,24 @@ Generated on 2026-11-08T18:31:23.158485Z
 
 
 ---
+### DEFUN `%210-FLOATING-TRANSFORM-P`
+- **Args**: `(FN-FORM)`
+
+  > Endeavour 210 (F-210-2).  T when FN-FORM (a store's :transformF) can carry a gradient: a #'NAME  >    whose registered signature returns a floating type, or anything whose signature is unknown (refused  >    rather than silently mis-differentiated).  An integer function (111/08's ulong double-val) carries  >    no gradient, so its store differentiates as before.
+
+
+---
+### DEFUN `%210-FIND-STORE-TRANSFORM`
+- **Args**: `(FORM)`
+
+  > Endeavour 210 (F-210-2).  The first (store-tile ..) / (store-tile-at ..) form inside FORM whose  >    options carry a floating :transformF (%210-floating-transform-p), or NIL.
+
+
+---
 ### DEFUN `GENERATE-BACKWARD-WALK`
 - **Args**: `(FLAT-ANF INPUTS OUTPUTS INPUT-TYPES OUTPUT-TYPES &KEY KERNEL-PKG)`
 
-  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.  >   >    Endeavor 146: FLAT-ANF is normalized before anything reads it, and the assembled  >    backward gets one fixup on the way out.  See %ad-normalize-anf-for-backward for what  >    the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings  >    for the gap the fixup covers (the top-level adjoint collection below does not know the  >    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint).  >    Endeavour 204: refuses an integer MMA first (no gradient through integers).
+  > Walks an ANF body backwards to accumulate adjoints.  >    Phase 1c: adds LOAD-TILE-AT / STORE-TILE-AT clauses to process-form  >    that emit %load-tile-at-bwd / %store-tile-at-bwd with the correct  >    adjoint symbols.  Also extends the LET case to auto-allocate paired  >    <var>_ADJ scratch tensors for make-scratch-* bindings.  >   >    Bug 032 fix: SET! on a local-scratch tile (target neither input nor  >    output) now emits a proper consume + reset pair so the RHS chain rule  >    propagates through tile mutations.  >   >    Endeavor 146: FLAT-ANF is normalized before anything reads it, and the assembled  >    backward gets one fixup on the way out.  See %ad-normalize-anf-for-backward for what  >    the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings  >    for the gap the fixup covers (the top-level adjoint collection below does not know the  >    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint).  >    Endeavour 204: refuses an integer MMA first (no gradient through integers).  >    Endeavour 210 (F-210-2): a store with a floating :transformF is REFUSED first -- the  >    store-tile(-at) backward never read its options, so the gradient would ignore the function.
 
 
 ---
@@ -6337,10 +6351,36 @@ Generated on 2026-11-08T18:31:23.158485Z
 
 
 ---
+### DEFCONSTANT `+210-TENSOR-MAP-BYTES+`
+
+  > Endeavour 210.  sizeof(CUtensorMap): struct { alignas(64) cuuint64_t opaque[16]; }.
+
+
+---
+### DEFCONSTANT `+210-TENSOR-MAP-ALIGN+`
+
+  > Endeavour 210.  alignof(CUtensorMap).
+
+
+---
+### DEFUN `%210-MARK-GRID-CONSTANT-TENSOR-MAPS`
+- **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
+
+  > Endeavour 210.  On PTX, give every TMA descriptor parameter of the kernel FUNC the by-value  >    __grid_constant__ ABI: `byval([128 x i8]) align 64` on the parameter, and one  >    !nvvm.annotations entry !{ptr @k, !"grid_constant", !{i32 i1, i32 i2 ...}} naming them  >    (1-based parameter positions, as clang emits it).  >   >    A parameter's LLVM position is counted the way %compute-kernel-cache-hints counts it -- each  >    semantic parameter is (length (get-expanded-types TYPE MODULE)) LLVM parameters wide -- and the  >    parameter found there must be a pointer, or this ERRORS: a descriptor marked at the wrong  >    position would be a silently wrong launch ABI.  Not an entry point, or not PTX: nothing.
+
+
+---
+### DEFUN `ENSURE-OPENCL-KERNEL-METADATA-BASE`
+- **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
+
+  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records  >    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.  >    Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.  >    Endeavour 192: also records the entry point's cache-hint table (*KERNEL-CACHE-HINT-TABLE*),  >    indexed by LLVM parameter position, for the post-opt pass (%apply-cache-hints-to-ll).  >   >    Endeavour 210: ensure-opencl-kernel-metadata (below) runs this, then gives the kernel's TMA  >    descriptor parameters the by-value __grid_constant__ ABI.
+
+
+---
 ### DEFUN `ENSURE-OPENCL-KERNEL-METADATA`
 - **Args**: `(FUNC SEMANTIC-FUNCTION MODULE)`
 
-  > Marks a function as a SPIR-V/PTX kernel if it's an entry point.  >    Sets the appropriate calling convention (76 for SPIR-V, 71 for PTX).  >    Endeavor 126: also stamps the denormal-fp-math attribute (all functions).  >    Endeavor 152: stamps cluster dimensions on capable PTX entry points, and records  >    the EFFECTIVE extent (warning on degrade) for every entry point on every backend.  >    Endeavour 156: pins the SPIR-V subgroup size to the profile's :simd-width.  >   >    NOTE: Kernel argument metadata (address space, access qualifiers, etc.) is added  >    as text during IR printing for SPIR-V.  >    Endeavour 192: also records the entry point's cache-hint table (*KERNEL-CACHE-HINT-TABLE*),  >    indexed by LLVM parameter position, for the post-opt pass (%apply-cache-hints-to-ll).
+  > Endeavour 210 overlay wrapper: the original, then the by-value __grid_constant__ ABI for the  >    kernel's TMA descriptor parameters (%210-mark-grid-constant-tensor-maps).
 
 
 ---
@@ -7463,10 +7503,17 @@ Generated on 2026-11-08T18:31:23.158485Z
 
 
 ---
+### DEFUN `%210-TENSOR-MAP-SPEC-P`
+- **Args**: `(TYPE-SPEC)`
+
+  > Endeavour 210.  True when TYPE-SPEC is a CUDA TMA descriptor type, (TENSOR-MAP SRC).
+
+
+---
 ### DEFUN `%TMA-LOOKUP-DESCRIPTOR-PTR`
 - **Args**: `(BUILDER VAR-ENV SRC-NAME GLOB-PTR-TYPE)`
 
-  > Endeavor 137 Phase 2b: reconstruct the CUtensorMap descriptor implicit-arg name  >    (SRC_TENSORMAP_FROM_FN — the same deterministic name the scan pass registered) and LOAD the  >    descriptor pointer from its var-env slot (implicit params are alloca'd like every param).  >    Returns the ptr (addrspace 1) or NIL if absent (no src symbol / not registered), so the  >    caller falls back to the Phase-2a stand-in.
+  > Endeavor 137 Phase 2b: reconstruct the CUtensorMap descriptor implicit-arg name  >    (SRC_TENSORMAP_FROM_FN -- the same deterministic name the scan pass registered) and LOAD the  >    descriptor pointer from its var-env slot (implicit params are alloca'd like every param).  >    Returns the ptr or NIL if absent (no src symbol / not registered), so the caller falls back to  >    the Phase-2a stand-in.  >   >    Endeavour 210: the descriptor is a GENERIC pointer (the __grid_constant__ parameter's address),  >    so it is loaded as addrspace 0 whatever GLOB-PTR-TYPE the caller passes -- loading it as  >    addrspace 1 would reinterpret a param-space address as a global one.  The callers' addrspace  >    casts to generic are then no-ops (LLVM returns the value unchanged).  GLOB-PTR-TYPE is kept for  >    the callers and ignored.
 
 
 ---
@@ -9656,7 +9703,7 @@ Generated on 2026-11-08T18:31:23.158485Z
 ### DEFUN `%CUDA-EMIT-TENSOR-MAP-ENCODE-BASE`
 - **Args**: `(STREAM PARAM)`
 
-  > Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map  >    descriptor and copy the 128-byte descriptor to device global (option A), leaving the device pointer  >    in <name> (forward-declared earlier at the descriptor's ABI slot).  References the DESCRIBED tensor's  >    already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  >      - Swizzle from (getf param :swizzle): :128b -> CU_TENSOR_MAP_SWIZZLE_128B (wgmma), else NONE.  >      - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents  >        in-order and gstride = the outer (N) stride.  Otherwise the row-major reversal (extents reversed,  >        gstride = dim-0 stride), matching the nvcc-verified H100 reference.  Gated on :128b so the  >        battle-tested 137/138 :none col-major path (symmetric tiles) is untouched.  >   >    Endeavour 208: %cuda-emit-tensor-map-encode (below) wraps this; a block operand's map uses its byte extents.
+  > Endeavor 137 Phase 2b.3 + 140 Step 3: emit the host cuTensorMapEncodeTiled for a :kind :tensor-map  >    descriptor STRAIGHT INTO <name>, the CUtensorMap forward-declared at the descriptor's ABI slot.  >    Endeavour 210 (option B): the kernel takes it BY VALUE as a __grid_constant__ parameter, so  >    kernelParams[i] = &<name> and there is no device copy (option A's cuMemAlloc + cuMemcpyHtoD).  References the DESCRIBED tensor's  >    already-emitted host variables (<d>_ptr, <d>_ext<k>, <d>_str<k>).  >      - Swizzle from (getf param :swizzle): :128b -> CU_TENSOR_MAP_SWIZZLE_128B (wgmma), else NONE.  >      - Layout: a 128B-swizzle col-major describes (wgmma's B) has K contiguous, so gdim = extents  >        in-order and gstride = the outer (N) stride.  Otherwise the row-major reversal (extents reversed,  >        gstride = dim-0 stride), matching the nvcc-verified H100 reference.  Gated on :128b so the  >        battle-tested 137/138 :none col-major path (symmetric tiles) is untouched.  >   >    Endeavour 208: %cuda-emit-tensor-map-encode (below) wraps this; a block operand's map uses its byte extents.
 
 
 ---
@@ -12850,7 +12897,7 @@ Generated on 2026-11-08T18:31:23.158485Z
 ### DEFUN `GENERATE-IMPLICIT-SIGNATURE`
 - **Args**: `(SIG DECLARED-PARAMS)`
 
-  > Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap  >    descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.  >    Endeavour 207: a scratch entry's :type goes through %host-visible-type, as the declared  >    signature's does, so a def-qint ring is sized and declared at its primitive's width.
+  > Generates the :implicit-params plist for metadata serialization.  Endeavor 140: the CUtensorMap  >    descriptor's :swizzle now comes from *tma-resolved* (:128b for wgmma tiles) instead of hardcoded.  >    Endeavour 207: a scratch entry's :type goes through %host-visible-type, as the declared  >    signature's does, so a def-qint ring is sized and declared at its primitive's width.  >    Endeavour 210: a :kind :tensor-map entry says how it is passed -- :address-space :param,  >    :passing :by-value, :bytes 128, :align 64.
 
 
 ---
@@ -13215,10 +13262,37 @@ Generated on 2026-11-08T18:31:23.158485Z
 
 
 ---
+### DEFVAR `*210-PAIRS-ONLY*`
+
+  > Endeavour 210 (D-210-7).  T while a wgmma (store-tile D C (BTY BTX)) whose C is declared  >    (even-columns C) is analyzed (bound by the analyze-store-tile-mma wrapper):  >    %wgmma-store-rewrite-origin then emits only its packed arm.
+
+
+---
+### DEFUN `%210-EVEN-COLUMNS-NAMES`
+- **Args**: `(DECLARATIONS)`
+
+  > Endeavour 210 (D-210-7).  The parameter symbols named by every (even-columns P ...) in DECLARATIONS.
+
+
+---
+### DEFUN `%210-PAIRS-ONLY-DEST-P`
+- **Args**: `(DEST CONTEXT LOCATION)`
+
+  > Endeavour 210 (D-210-7).  T when the store destination DEST is declared (even-columns DEST) in the  >    kernel being compiled.  The declaration is VALIDATED here: DEST must be a kernel matrix parameter of  >    a type declared :align :compact with :contiguous-term :row-major (the default), else an error --  >    only then does an even column count make every (even column, column + 1) pair one aligned word.
+
+
+---
+### DEFUN `ANALYZE-STORE-TILE-MMA-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.  >    Endeavour 196: the source may be (to-half TILE) / (to-bfloat16 TILE) for either accumulator kind.  >    (An exploded register tile never reaches here -- %explode-rewrite-body-form handles it -- so the  >    register-tile branch below is the un-exploded path.)  >   >    Endeavour 210: analyze-store-tile-mma (below) binds *210-pairs-only* around this.
+
+
+---
 ### DEFUN `ANALYZE-STORE-TILE-MMA`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.  >    Endeavour 196: the source may be (to-half TILE) / (to-bfloat16 TILE) for either accumulator kind.  >    (An exploded register tile never reaches here -- %explode-rewrite-body-form handles it -- so the  >    register-tile branch below is the un-exploded path.)
+  > store-tile overload: register-tile (mma.sync) OR wgmma-accumulator (Endeavor 140) OR delegate.  >    See the original (src/mma.lisp).  >    Endeavour 210 (D-210-7): a grid-origin (store-tile D C (BTY BTX)) whose C is declared  >    (even-columns C) is analyzed with *210-pairs-only* bound, so a wgmma D stores with the packed arm  >    alone (no %pair-ok-p fallback).
 
 
 ---
@@ -13496,10 +13570,17 @@ Generated on 2026-11-08T18:31:23.158485Z
 
 
 ---
+### DEFUN `%210-MAP-STORE-FRAGMENT-SOURCES`
+- **Args**: `(FORM FN-FORM)`
+
+  > Endeavour 210.  FORM (a per-fragment store expansion) with every (store-fragment FRAG . REST) made  >    (let ((tmp FRAG)) (map-elements! tmp FN-FORM) (store-fragment tmp . REST)): each fragment is copied,  >    mapped and stored, and the tile itself is not changed.  Mirrors %196-convert-store-fragment-sources,  >    which then wraps the copies in the conversion.
+
+
+---
 ### DEFUN `%EXPLODE-REWRITE-BODY-FORM`
 - **Args**: `(FORM TILES)`
 
-  > Endeavour 196 wrapper: (store-tile (to-half V) DEST (BTY BTX)) on an exploded register tile V  >    expands exactly as (store-tile V DEST ...) does, with every emitted store-fragment's FRAG wrapped  >    in the conversion.  Every other form goes to the original, which recurses back through this  >    name.
+  > Endeavour 196 wrapper: (store-tile (to-half V) DEST (BTY BTX)) on an exploded register tile V  >    expands exactly as (store-tile V DEST ...) does, with every emitted store-fragment's FRAG wrapped  >    in the conversion.  Every other form goes to %explode-rewrite-body-form-base, which recurses back  >    through this name.  >    Endeavour 210 (F-210-1): (store-tile [CONV] V DEST (BTY BTX) :transformF #'F) on an exploded tile  >    expands the same way with each fragment copied and mapped first (%210-map-store-fragment-sources);  >    any other option on it is refused (it used to surface as "Unknown variable V").
 
 
 ---
@@ -13878,7 +13959,7 @@ Generated on 2026-11-08T18:31:23.158485Z
 ### DEFUN `%WGMMA-STORE-REWRITE-ORIGIN`
 - **Args**: `(TILE DEST ROW-ORIGIN COL-ORIGIN N &OPTIONAL CONVERT)`
 
-  > Store the m64xN wgmma accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN), both absolute element indices.  >   >    Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows  >    [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8  >    group contributes the standard mma m16n8 C fragment at rows r0 and r0+8.  >   >    Both origins are coerced with TO-INT.  The lane arithmetic is INT throughout (wgw and rlo come  >    from to-int of warp-id / warp-lane), so a ULONG origin -- which is what any tile-stride grid  >    binding produces, e.g. (* grid-y (to-ulong 128)) -- would otherwise fail to type-check with  >    "Cannot operate on ULONG and INT".  The grid-index caller has always passed an INT for the same  >    reason; this makes the absolute spelling accept either.  >   >    ENDEAVOUR 154: emission order is ROW-MAJOR.  The natural loop is j-outer, which interleaves r0  >    and r8 and writes the tile column-strip by column-strip -- 32 passes revisiting the same two  >    rows.  Emitting all of row r0 and then all of row r8 lets each WARP lay down a full contiguous  >    row (4 lanes x 2 floats x n8 groups) before moving on.  Pure reordering: same stores, same  >    values, same addresses.  Measured on an H100 NVL, interleaved, 3 reps: +1.5% at 2048, +0.7% at  >    4096, +0.5% at 1024, neutral at 256/512, nothing regressing.  >   >    ENDEAVOUR 196: optional CONVERT (TO-HALF / TO-BFLOAT16 symbol) wraps every element read, for  >    (store-tile (to-half D) C ...) -- an f32 accumulator stored into a 16-bit matrix.  >   >    ENDEAVOUR 197: each thread's elements come in adjacent column PAIRS (c, c+1), so a pair is one  >    (%store-pair ...) -- a single <2 x T> store -- under ONE (%pair-ok-p ...) test of the thread's  >    first pair.  One test covers them all: every other pair is 8k columns and/or 8 rows away, i.e. a  >    multiple of 2 elements on both axes once the first pair is adjacent (unit last stride) and  >    2-element aligned.  When the test fails (an odd column origin, an unaligned base, a strided last  >    dimension) the original scalar stores run.  H100, 4096x5120x4096 fp16: 304 -> 252 us.
+  > Store the m64xN wgmma accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN), both absolute element indices.  >   >    Lane mapping (= wgmma_ref.cu, unchanged): warp w within the warpgroup owns rows  >    [16w, 16w+16); within a warp, lane -> row lane/4 and column pair (lane mod 4)*2; each n8  >    group contributes the standard mma m16n8 C fragment at rows r0 and r0+8.  >   >    Both origins are coerced with TO-INT.  The lane arithmetic is INT throughout (wgw and rlo come  >    from to-int of warp-id / warp-lane), so a ULONG origin -- which is what any tile-stride grid  >    binding produces, e.g. (* grid-y (to-ulong 128)) -- would otherwise fail to type-check with  >    "Cannot operate on ULONG and INT".  The grid-index caller has always passed an INT for the same  >    reason; this makes the absolute spelling accept either.  >   >    ENDEAVOUR 154: emission order is ROW-MAJOR.  The natural loop is j-outer, which interleaves r0  >    and r8 and writes the tile column-strip by column-strip -- 32 passes revisiting the same two  >    rows.  Emitting all of row r0 and then all of row r8 lets each WARP lay down a full contiguous  >    row (4 lanes x 2 floats x n8 groups) before moving on.  Pure reordering: same stores, same  >    values, same addresses.  Measured on an H100 NVL, interleaved, 3 reps: +1.5% at 2048, +0.7% at  >    4096, +0.5% at 1024, neutral at 256/512, nothing regressing.  >   >    ENDEAVOUR 196: optional CONVERT (TO-HALF / TO-BFLOAT16 symbol) wraps every element read, for  >    (store-tile (to-half D) C ...) -- an f32 accumulator stored into a 16-bit matrix.  >   >    ENDEAVOUR 197: each thread's elements come in adjacent column PAIRS (c, c+1), so a pair is one  >    (%store-pair ...) -- a single <2 x T> store -- under ONE (%pair-ok-p ...) test of the thread's  >    first pair.  One test covers them all: every other pair is 8k columns and/or 8 rows away, i.e. a  >    multiple of 2 elements on both axes once the first pair is adjacent (unit last stride) and  >    2-element aligned.  When the test fails (an odd column origin, an unaligned base, a strided last  >    dimension) the original scalar stores run.  H100, 4096x5120x4096 fp16: 304 -> 252 us.  >   >    ENDEAVOUR 210 (F-209-8, D-210-7): under *210-pairs-only* (a store-tile whose DEST is declared  >    (even-columns DEST)) only the packed arm is emitted: the two arms together hold the accumulator and  >    both arms' addresses live (sec3: 164-168 registers vs 96 for the packed arm alone).
 
 
 ---
@@ -14574,24 +14655,72 @@ Generated on 2026-11-08T18:31:23.158485Z
 
 
 ---
+### DEFVAR `*210-STORE-TRANSFORM*`
+
+  > Endeavour 210 (F-210-1).  The #'F of a tcgen05 accumulator store's :transformF while that store is  >    analyzed (bound by %210-store-front), else NIL.  %tcgen05-store-rewrite-origin applies it to each  >    element read from tensor memory, before any narrowing conversion.
+
+
+---
+### DEFUN `%210-SPLIT-TRANSFORMF`
+- **Args**: `(KEYS)`
+
+  > Endeavour 210.  (values FN-FORM OTHER-KEYS) for a store's keyword tail KEYS: FN-FORM is the value of  >    :transformF (NIL when absent) and OTHER-KEYS the remaining key/value pairs, in order.  A KEYS of odd  >    length is returned whole with FN-FORM NIL, for the analyzer to report.
+
+
+---
+### DEFUN `%210-ACCUMULATOR-KIND`
+- **Args**: `(SRC ENV CONTEXT LOCATION)`
+
+  > Endeavour 210.  What kind of MMA accumulator the (conversion-peeled) store source SRC is:  >    :tcgen05, :wgmma, :register-tile (an un-exploded tile), :fragment (a PTX fragment record or a SPIR-V  >    cooperative matrix), or NIL for anything else (a scratch tile, a global tensor ...).
+
+
+---
+### DEFUN `%210-REPLACE-STORE-SOURCE`
+- **Args**: `(SRC-FORM NEW)`
+
+  > Endeavour 210.  SRC-FORM (a store's source: X, or a peelable conversion (to-half X) / (to-q8 X M))  >    with its accumulator X replaced by NEW, so the rewritten store peels exactly as the original.
+
+
+---
+### DEFUN `%210-STORE-FRONT`
+- **Args**: `(EXPR ENV CONTEXT LOCATION BASE AT-P)`
+
+  > Endeavour 210 (F-210-1).  Front end of the store-tile (AT-P NIL) / store-tile-at (AT-P T) analyzers  >    for an MMA ACCUMULATOR source; BASE is the analyzer it fronts (208's).  Non-accumulator sources go  >    to BASE untouched -- the generic tile store implements its own options, :transformF included.  >    For an accumulator:  >      * an option it does not support is refused (it used to be ignored): store-tile takes only  >        :transformF, store-tile-at also :via;  >      * :transformF #'F on tcgen05 binds *210-store-transform* around BASE (refused with :via :tma);  >      * :transformF #'F on wgmma / a fragment / an un-exploded register tile becomes  >          (let ((tmp SRC)) (map-elements! tmp #'F) (store.. CONV(tmp) DEST COORDS OTHER-KEYS..))  >        -- map-elements!'s own lowering, on a copy, so the accumulator itself is not changed.
+
+
+---
 ### DEFUN `%TCGEN05-STORE-REWRITE-ORIGIN`
 - **Args**: `(TILE DEST ROW-ORIGIN COL-ORIGIN N &OPTIONAL CONVERT ELEM)`
 
-  > Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row  >    m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the  >    row's 32 elements -- as 16 packed pairs (endeavour 197) when the first pair is adjacent and  >    aligned, else as scalars.  A fence::after_thread_sync opens the store (the accumulator was  >    completed by another thread's MMA) and a fence::before_thread_sync closes it (the next MMA into  >    these columns must not overtake the reads).  CONVERT as in %wgmma-store-rewrite-origin.  >    Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED  >    integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32  >    row record holds plain int, and the destination element holds exactly its own type.
+  > Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row  >    m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the  >    row's 32 elements -- as 16 packed pairs (endeavour 197) when the first pair is adjacent and  >    aligned, else as scalars.  A fence::after_thread_sync opens the store (the accumulator was  >    completed by another thread's MMA) and a fence::before_thread_sync closes it (the next MMA into  >    these columns must not overtake the reads).  CONVERT as in %wgmma-store-rewrite-origin.  >    Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED  >    integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32  >    row record holds plain int, and the destination element holds exactly its own type.  >    Endeavour 210 (F-210-1): when *210-store-transform* is bound (a store's :transformF), each element  >    read from tensor memory is passed through that function first.
+
+
+---
+### DEFUN `%208-ANALYZE-STORE-TILE-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  store-tile: a tcgen05 accumulator source is stored by %tcgen05-store-rewrite-origin  >    at the tile-grid origin (BTY*M, BTX*N); anything else goes to analyze-store-tile-mma unchanged.  >    Possible cleanup: a clause in analyze-store-tile-mma.  >    Phase 3: passes the accumulator's element, for the derived-integer cast.  >   >    Endeavour 210: %208-analyze-store-tile (below) fronts this with %210-store-front.
 
 
 ---
 ### DEFUN `%208-ANALYZE-STORE-TILE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 208.  store-tile: a tcgen05 accumulator source is stored by %tcgen05-store-rewrite-origin  >    at the tile-grid origin (BTY*M, BTX*N); anything else goes to analyze-store-tile-mma unchanged.  >    Possible cleanup: a clause in analyze-store-tile-mma.  >    Phase 3: passes the accumulator's element, for the derived-integer cast.
+  > Endeavour 208.  store-tile: a tcgen05 accumulator source is stored by %tcgen05-store-rewrite-origin  >    at the tile-grid origin (BTY*M, BTX*N); anything else goes to analyze-store-tile-mma unchanged.  >    Endeavour 210: fronted by %210-store-front (options on an accumulator store, :transformF).
+
+
+---
+### DEFUN `%208-ANALYZE-STORE-TILE-AT-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 208.  store-tile-at: a tcgen05 accumulator source is stored at the absolute (ROW COL)  >    origin, directly or with :via :tma (%208-analyze-tma-store).  Anything else goes to  >    analyze-store-tile-at-mma.  Possible cleanup: a clause in analyze-store-tile-at-mma.  >    Phase 3: passes the accumulator's element, for the derived-integer cast.  >   >    Endeavour 210: %208-analyze-store-tile-at (below) fronts this with %210-store-front.
 
 
 ---
 ### DEFUN `%208-ANALYZE-STORE-TILE-AT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 208.  store-tile-at: a tcgen05 accumulator source is stored at the absolute (ROW COL)  >    origin, directly or with :via :tma (%208-analyze-tma-store).  Anything else goes to  >    analyze-store-tile-at-mma.  Possible cleanup: a clause in analyze-store-tile-at-mma.  >    Phase 3: passes the accumulator's element, for the derived-integer cast.
+  > Endeavour 208.  store-tile-at: a tcgen05 accumulator source is stored at the absolute (ROW COL)  >    origin, directly or with :via :tma; anything else goes to analyze-store-tile-at-mma.  >    Endeavour 210: fronted by %210-store-front (options on an accumulator store, :transformF).
 
 
 ---

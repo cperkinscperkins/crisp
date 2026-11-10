@@ -2741,6 +2741,31 @@
           do (%refuse-integer-mma-backward (car rest))
           while (consp (cdr rest)))))
 
+(defun %210-floating-transform-p (fn-form)
+  "Endeavour 210 (F-210-2).  T when FN-FORM (a store's :transformF) can carry a gradient: a #'NAME
+   whose registered signature returns a floating type, or anything whose signature is unknown (refused
+   rather than silently mis-differentiated).  An integer function (111/08's ulong double-val) carries
+   no gradient, so its store differentiates as before."
+  (let* ((name (%map-elements-fn-name fn-form))
+         (sigs (and name (gethash name *function-table*))))
+    (log:debug "210 floating-transform-p ~a: ~d signature(s), returns ~s"
+               fn-form (length sigs) (mapcar #'function-signature-return-types sigs))
+    (or (null sigs)
+        (some (lambda (s) (some #'%crisp-float-type-p (function-signature-return-types s))) sigs))))
+
+(defun %210-find-store-transform (form)
+  "Endeavour 210 (F-210-2).  The first (store-tile ..) / (store-tile-at ..) form inside FORM whose
+   options carry a floating :transformF (%210-floating-transform-p), or NIL."
+  (cond ((atom form) nil)
+        ((and (symbolp (first form))
+              (member (symbol-name (first form)) '("STORE-TILE" "STORE-TILE-AT") :test #'string=)
+              (> (length form) 4)
+              (let ((fn (%210-split-transformF (nthcdr 4 form))))
+                (and fn (%210-floating-transform-p fn))))
+         form)
+        (t (loop for x on form
+                 thereis (and (consp x) (%210-find-store-transform (car x)))))))
+
 (defun generate-backward-walk (flat-anf inputs outputs input-types output-types
                                         &key kernel-pkg)
   "Walks an ANF body backwards to accumulate adjoints.
@@ -2758,7 +2783,17 @@
    the normalizations are and why their order matters, and %ad-ensure-ring-adj-bindings
    for the gap the fixup covers (the top-level adjoint collection below does not know the
    ring constructors, so a ring bound at kernel top level otherwise gets no adjoint).
-   Endeavour 204: refuses an integer MMA first (no gradient through integers)."
+   Endeavour 204: refuses an integer MMA first (no gradient through integers).
+   Endeavour 210 (F-210-2): a store with a floating :transformF is REFUSED first -- the
+   store-tile(-at) backward never read its options, so the gradient would ignore the function."
+  (let ((st (%210-find-store-transform flat-anf)))
+    (when st
+      (error 'crisp-compiler-error
+             :message (format nil "--differentiate: (~(~a~) ~(~a~) ~(~a~) ..) with :transformF ~(~s~): a store's :transformF has no backward yet (F-210-2) -- the gradient would ignore the function.  Apply it before the store, (map-elements! ~(~a~) ~(~s~)), which differentiates; or compile this kernel without --differentiate."
+                              (first st) (second st) (third st)
+                              (%210-split-transformF (nthcdr 4 st))
+                              (%196-peel-store-conversion (second st)) (%210-split-transformF (nthcdr 4 st)))
+             :source-location nil)))
   (%refuse-integer-mma-backward flat-anf)
   (setf flat-anf (%ad-normalize-anf-for-backward flat-anf))
   ;; Endeavour 170: (S C (op-sincos-approx X)) is a multi-value binding, and the multi-value clause

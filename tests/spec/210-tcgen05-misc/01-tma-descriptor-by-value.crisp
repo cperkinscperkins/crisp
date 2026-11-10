@@ -1,0 +1,38 @@
+;; Endeavour 210, item 6 -- CUDA TMA descriptors pass BY VALUE as __grid_constant__ kernel parameters.
+;;
+;; Option A (endeavour 137) copied each 128-byte CUtensorMap into a device-global allocation and passed
+;; its POINTER.  The CUDA Programming Guide recommends a const __grid_constant__ parameter, and says a
+;; descriptor in global memory "requires a fence in each thread block" (fence.proxy.tensormap acquire,
+;; .sys scope when the host wrote it) and "may be slower".  Crisp emitted no such fence, which is safe
+;; only while every process is fresh; a long-lived host that frees a descriptor and gets a new one at
+;; the same address can be served the stale copy from the TMA descriptor cache.
+;;
+;; Option B: the kernel parameter is `ptr byval([128 x i8]) align 64`, named in !nvvm.annotations as
+;; grid_constant.  NVPTX emits `.param .align 64 .b8 P[128]` and takes its address with cvta.param --
+;; no local copy -- and that generic pointer is what the TMA instructions and helper functions get.
+;; (LLVM 21.1.5 ignores the "nvvm.grid_constant" PARAMETER attribute: it copies the bytes to .local
+;; and hands TMA a local address.  The validator fails on that lowering, and on option A's PTX.)
+;;
+;; The kernel is 137/04's: the descriptor originates in a sub-function and threads up to the kernel,
+;; the case where the pointer crosses a call.  On metal the by-value ABI is exercised by every CUDA
+;; TMA spec (137/05, 138/04, 139, 140, 152, 204, 208, 209/03); this spec guards its PTX shape in CI.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_90] : validate-ptx-tma-grid-constant
+
+(def-type mat-t  (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type tile-t (matrix float :address-space :local  :align :compact :contiguous-term :row-major))
+
+(def-function stage (src tile)
+  (declare #'(mat-t tile-t => ulong))
+  (let ((bar (make-async-barrier :mode :block)))
+    (load-tile src tile (0 0) :barrier bar)   ;; TMA in the sub-function
+    (await bar)))
+
+(def-kernel tma_desc_by_value (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 4)
+           (local-size  :set-to 4))
+  (let ((tile (make-scratch-matrix float (4 4))))
+    (stage A tile)                            ;; descriptor threads up; :describes A resolved here
+    (store-tile tile C (0 0))))

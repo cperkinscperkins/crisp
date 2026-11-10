@@ -1,0 +1,36 @@
+;; Endeavour 210 item 2 (F-210-1) -- (store-tile C-tile C (0 0) :transformF #'shifted-relu) on an
+;; mma.sync REGISTER TILE: 150/21's kernel with the activation moved from map-elements! on the
+;; accumulator binding to the store.  Before 210 this failed with "Unknown variable C-TILE" (the tile
+;; explosion only rewrote an option-less store-tile).  Each fragment's store becomes "copy the
+;; fragment, map-elements! the copy, store it".
+;;
+;; THE EXPECTATION is 150/21's, hand-computed there and measured on an H100: pre-activation row
+;; 16 8 15 repeating, relu(x - 12) -> 4 0 3.  A non-linear function, so the reference's plain A.B is
+;; NOT expected to match (the harness prints its mismatch line; only the BUFFER line is asserted).
+;;
+;; SKIP-DEFAULT-PASS
+;; COMPILE-WITH[--ir-target=ptx]: PASS
+;; TEST-WITH[--ir-target=ptx]
+;; SKIP-WITH[--differentiate]: "GAP F-210-2: a store's :transformF has no backward yet -- --differentiate refuses it by name"
+;;
+;; MMA-DIMS: 16 8 8
+;; TEST-HOIST[CUDA]: validate-cuda-mma-run
+;; HOIST-EXPECT: BUFFER c: 4 0 3
+
+(def-type a-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix float :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-function shifted-relu (x)
+  (declare #'(float => float))
+  (let ((y (- x 12.0)))
+    (if (> y 0.0) y 0.0)))
+
+(def-kernel rt_store_xform_ptx (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))          ; one warp
+  (let ((C-tile (make-register-tile float (16 8) 0.0)))
+    (mma-accumulate-via-tile (16 8 8) C-tile A B (acc)
+      (accum-op))
+    (store-tile C-tile C (0 0) :transformF #'shifted-relu)))

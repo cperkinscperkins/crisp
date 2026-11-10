@@ -4655,3 +4655,44 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         a declared tile grid keeps the per-axis walk).  IR corpus: only kernels with a fixed global size
         and a rank-2 tile-stride (incl. matrix-multiply-tile-stride) moved -- 208's tcgen05 specs among
         them, so they are re-verified on a B200.  Suites green.
+
+[x] 158 FIXED (endeavour 210, 2026-11-08; folded into src/ 2026-11-09) -- A STORE'S :transformF WAS SILENTLY DROPPED ON EVERY MMA ACCUMULATOR (F-210-1).
+        ideal_001.md names `store-tile ... :transformF #'f` as the third fused-epilogue site, but only the
+        generic tile store implemented it.  The accumulator store analyzers (208's tcgen05 store-tile, 196's
+        analyze-store-tile-mma for wgmma / register tiles) read only the tile coordinates and ignored every
+        option.  On a tcgen05 or wgmma accumulator the kernel compiled to PTX BYTE-IDENTICAL to the plain
+        store (relu-less results, no diagnostic); on an exploded register tile it died as "Unknown variable
+        C-TILE".  Found 2026-11-08 while scoping F-209-2 (put_temp_files_here/210/item2/findings.md).
+        FIX (overlay): %210-store-front fronts 208's two store analyzers.  tcgen05: the function is applied
+        to each element read from tensor memory (%tcgen05-store-rewrite-origin, *210-store-transform*),
+        refused on the :via :tma store; wgmma / fragments: copy + map-elements! + store; exploded register
+        tiles: the same per fragment in %explode-rewrite-body-form.  Any other option on an accumulator
+        store is now refused.  Specs 210/02-07 (MMA-SCALE 3 + validate-ptx-transform-scale3; 05 / 06 the
+        150 relu values; 06 verified on the BMG), errors/01, 02, 04.
+
+[ ] 159 THE BACKWARD IGNORES A STORE'S :transformF -- A SILENTLY WRONG GRADIENT (F-210-2).  REFUSED BY NAME, NOT FIXED.
+        `(store-tile-at tile OUT (0) :transformF #'sq)` under --differentiate: the _GRAD kernel is
+        byte-identical to the same kernel's without the transform, so dX = dOUT instead of 2 X dOUT.  The
+        store-tile(-at) backward clauses (generate-backward-walk -> %gfw-tile-at-backward-form, the
+        register-tile store backward) never read the store's options; nothing in autodiff.lisp mentions
+        :transformF.  111/08 never exposed it: its data is ulong, nothing to differentiate.
+        NOW (endeavour 210, D-210-6): generate-backward-walk refuses a store with a FLOATING :transformF
+        by name, pointing at map-elements! before the store (which has a VJP).  Spec 210/errors/03.
+        TO FIX: the backward of y = f(x) on the way out is adj_x[i] = f_GRAD(x[i], adj_y[i]) -- the
+        _GRAD twin map-elements!'s VJP already uses -- which needs the store's pre-transform values (the
+        tile, or the accumulator, at the store) kept for the backward.
+
+[ ] 160 THE `#(...)` PRIVATE VECTOR LITERAL IS NOT IMPLEMENTED, THOUGH ideal_001.md MARKED IT ✅.
+        Found 2026-11-08 (endeavour 210 item 4, trying a register-light store fallback): a `#(a b c d)`
+        in a kernel is "Unsupported form" in the analyzer; no spec uses one; `literal-vector` (the type
+        function the section names) is defined nowhere.  `##(...)` device vectors (2-4 wide) are a
+        different construct and work.  DOC FIXED 2026-11-09: the section is now 📝 with a note.
+        Not needed by anything today; a runtime-indexed per-thread array would have been one way to keep
+        an accumulator in local memory on purpose (F-209-8).
+
+[ ] 161 AN UNKNOWN KERNEL DECLARATION IS ACCEPTED SILENTLY.
+        Found 2026-11-08 (endeavour 210 item 4): `(declare (even-colums C))` -- a typo of D-210-7's
+        `(even-columns C)` -- compiles without a word, so the declaration a kernel's author meant simply
+        does nothing.  Any misspelled declaration behaves the same.  A warning (or error) for a
+        declaration no analyzer reads would catch it; the set of known declarations is spread over the
+        analyzers, so the list has to be gathered first.
