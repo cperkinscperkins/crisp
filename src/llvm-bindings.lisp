@@ -355,6 +355,10 @@
   (name :string) (slen :size))
 (cffi:defcfun ("LLVMCreateEnumAttribute" llvm-create-enum-attribute) :pointer
   (context :pointer) (kind-id :unsigned-int) (val :uint64))
+(cffi:defcfun ("LLVMCreateTypeAttribute" llvm-create-type-attribute) :pointer
+  "Create a type attribute (byval, sret, elementtype, ...) of kind KIND-ID carrying TYPE-REF.
+   Endeavour 210: byval([128 x i8]) on a kernel's TMA descriptor parameter."
+  (context :pointer) (kind-id :unsigned-int) (type-ref :pointer))
 (cffi:defcfun ("LLVMBuildFRem" llvm-build-frem) :pointer
   (builder :pointer) (lhs :pointer) (rhs :pointer) (name :string))
 

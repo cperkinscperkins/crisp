@@ -2219,7 +2219,11 @@ introduce [def-const-vec](#def-const-vec) and [Side Channels](#side-channel-stor
 
 
 
-#### vector literals `#(val0 val1 val2 ... valN)` ✅ 
+#### vector literals `#(val0 val1 val2 ... valN)` 📝
+
+> **Not implemented** (found in endeavour 210, 2026-11-08).  This section was marked ✅, but the
+> analyzer rejects a `#(...)` literal as "Unsupported form", no spec uses one, and `literal-vector`
+> does not exist.  The `##(...)` device-vector literal (2–4 elements) is a different construct and works.
 
 A `vector` can be literally declared using the Lisp `#(...)` syntax.
 
@@ -4029,6 +4033,14 @@ NOTE: should we constrain `use` to ONLY be in def-kernel or def-const-vec ?
 `use` can appear in funciton or `let` contexts, but it is mostly used with `def-kernel` or 
 `def-const-vec`.  It simply declares that some context depends on a constant memory storage item.
 See [def-const-vec](#def-const-vec)
+
+#### even-columns ✅
+`(declare (even-columns C))`
+
+A kernel-level promise that matrix parameter `C` has an even number of columns, which lets a wgmma
+accumulator's `store-tile` into `C` drop its unaligned fallback and use only packed pair stores.  `C`
+must be declared `:align :compact :contiguous-term :row-major`.  A false promise faults; it cannot store
+wrong values.  See *Packed pairs, and `(even-columns C)`* under `wgmma-accumulate-via-tile`.
 
 #### kernel-name 📝
 `(declare (kernel-name "some_name_${T}"))`
@@ -11982,6 +11994,11 @@ The values form a ladder, each rung strictly more capable than the one below it:
   is a compile error (needs sm_90+); **on Intel it is a compile error** — Intel's fast 2D path
   (LSC 2D block loads) loads global→*registers*, not SLM, and is **not** a barrier-governed
   transfer at all (see "Optimizing Intel MMA").
+  The descriptor (a `CUtensorMap`, one per TMA'd tensor) is an implicit kernel argument.  It is
+  passed **by value**, as a 128-byte `__grid_constant__` parameter, which is the CUDA guide's
+  recommended home.  The CUDA hoist encodes it on the host straight into the launch arguments, so
+  no device copy is made and no tensor-map fence is needed (endeavour 210; before that it lived in
+  global memory).
 - `:cluster` ✅ — a real mbarrier that **peer workgroups in the same cluster may arrive on**
   (`mbarrier.arrive.shared::cluster` against a mapped peer address).  **NVIDIA sm_90+ only**,
   and only meaningful when the kernel declares a [cluster-size](#cluster-size).
@@ -12128,6 +12145,18 @@ Initiates a bulk memory transfer from the `src` tensor (usually registers or SLM
 * **`:transformF`:** An optional epilogue function (e.g., `relu`) applied to the data during the store operation.
 * **`:barrier`:** If provided, delegates the write out to the async DMA engine.
 * **Note:** It is strictly illegal to use `:transformF` and `:barrier` simultaneously. A hardware DMA engine cannot apply arbitrary mathematical functions; it only moves raw bytes. If you need epilogue fusion, the warp must perform the math inline before storing.
+
+**On an MMA accumulator** ✅ (endeavour 210).  `:transformF` works when `src` is any accumulator: a
+register tile (PTX fragments or SPIR-V cooperative matrices), a wgmma accumulator, or a tcgen05
+accumulator.  The function is applied to each raw `float` (or `int`) element *before* any conversion
+on the source, so `(store-tile-at (to-bfloat16 D) C (row col) :transformF #'relu)` is relu, then round.
+On a tcgen05 accumulator it is the only fused epilogue: the accumulator lives in tensor memory and the
+store is its only reader, so `map-elements!` on it is refused with a message naming `:transformF`.
+An accumulator store takes no other option (`store-tile-at` also takes `:via`).  Anything else, such as
+`:transpose` or `:barrier`, is refused by name, never ignored.  Two limits: `:via :tma` with a
+`:transformF` is refused on a tcgen05 accumulator (that store has no per-element step yet), and a
+floating-point `:transformF` is refused under `--differentiate`, because its backward is not built
+(BUG 159).  An integer-valued function carries no gradient and is accepted.
 
 ### `store-tile-at` ✅
 
@@ -13013,7 +13042,9 @@ can carry a per-element transform, and which one you want depends on where the d
 | during the write-out | as each element goes to memory | `store-tile … :transformF #'f` |
 
 For a pure elementwise activation, `:transformF` is often the best of the three — it rides a
-store you were already doing, so it costs nothing extra.
+store you were already doing, so it costs nothing extra.  It is also the one site every accumulator
+has: a Blackwell tcgen05 accumulator lives in tensor memory, not registers, so `map-elements!` on it
+is refused and `:transformF` on its store is the way to fuse (endeavour 210).
 
 > **⚠️ Do NOT fuse on `acc` inside a staged K-loop.**  When `matrix-multiply-tile-stride`'s
 > `grid-k` loop calls `mma-accumulate-via-tile` once per K-step, `acc` holds a **partial sum**,
@@ -13425,7 +13456,34 @@ the backward rewrites it to the sync MMA (endeavour 146), so the tile VJP suppli
 `(store-tile-at D C (row col))` places it at an absolute origin (needed when two consumer warpgroups
 split a 128-row tile).  The accumulator is `float`; to write a `half` / `bfloat16` matrix, convert on the
 source — `(store-tile-at (to-half D) C (row col))` — and each element is rounded to nearest-even as it is
-stored (endeavour 196).
+stored (endeavour 196).  A fused activation goes on the store too: `(store-tile D C (gy gx) :transformF
+#'relu)` (endeavour 210; see `store-tile`).
+
+**Packed pairs, and `(even-columns C)`.**  Each thread holds its elements as adjacent column pairs, and
+the direct store writes a pair as one 8-byte (float) or 4-byte (16-bit) store when a run-time check finds
+the pair contiguous and aligned (endeavour 197), else element by element.  Both versions of the epilogue
+are in the kernel, and together they keep the accumulator and both sets of addresses live: on the H100
+sec3 kernels that is 164–168 registers, against 96 for the packed version alone.  When the kernel knows
+the check always passes, it can say so:
+
+```
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat) (local-size :set-to 160)
+           (even-columns C))                    ; C has an even number of columns
+  ...
+  (store-tile D C (grid-y grid-x)))
+```
+
+`(even-columns C)` ✅ promises that C's column count is even.  With C `:align :compact` and `:row-major`,
+every pair a grid-origin `store-tile` writes then starts on an even column of an even-width row, which
+is one aligned word, so the compiler emits the packed stores alone.  It is checked where it can be:
+C must be a kernel matrix parameter whose type is declared `:align :compact :contiguous-term
+:row-major`, or the declaration is refused.  The column count itself is a run-time value; if the promise
+is false the kernel faults with a misaligned-address error, it cannot store wrong values.  It affects
+only a wgmma accumulator's `store-tile` (not `store-tile-at`).  It is a register lever, not a
+free speedup: on the H100 the multicast kernel gained 10–14% (4 workgroups per SM instead of 2), while
+the plain cluster kernel was faster without it (endeavour 210).
 
 **Storing through the TMA: `:via :tma`.**  The direct store writes each thread's column pairs straight to
 global memory, and the whole warpgroup waits on it.  `(store-tile-at (to-half D) C (row col) :via :tma)`
@@ -13528,6 +13586,10 @@ a fresh accumulator.
 - Thread t holds row t.
 - `(to-half D)` / `(to-bfloat16 D)` convert as they store.
 - With `:via :tma` each warp stages its 32 rows in the 128-byte swizzle and sends them as TMA boxes.
+- A fused activation goes on the store: `(store-tile-at (to-bfloat16 D) C (row col) :transformF #'relu)`
+  applies the function to each element as it leaves tensor memory, before the conversion (endeavour
+  210).  It is the only fused epilogue here: `map-elements!` works on registers and the accumulator is
+  in tensor memory, so `map-elements!` on it is refused.  Not yet with `:via :tma`.
 
 ```
 (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
@@ -14257,7 +14319,9 @@ never reads them back.  `crisp_param_zero_before_launch` marks the ones that mus
 EVERY launch: global scratch, where reductions keep counters the kernel leaves non-zero.
 Workgroup-local scratch is bound per runtime -- on Level Zero, its pointer slot gets (size = bytes,
 value = NULL).  CUDA tensor-map descriptors are reported (purpose TENSOR_MAP) but not yet
-supported 📝.  (DEBUG_LOG is never reported: the log is a module-scope global, not a parameter.)
+supported 📝.  Since endeavour 210 the kernel takes each one by value, as a 128-byte `CUtensorMap`
+(`__grid_constant__`), so the pointer-sized slot the API reports for it is stale.  Supporting them
+means reporting that, plus the tensor each one maps.  (DEBUG_LOG is never reported: the log is a module-scope global, not a parameter.)
 
 **Launching** ✅.  A kernel's geometry declarations are often rules over launch-time values -- one
 thread per element of tensor `x`, in groups of 64.  A launch object does that arithmetic: the caller

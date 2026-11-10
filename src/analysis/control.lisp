@@ -88,7 +88,17 @@
    expands it to one of these per fragment.
 
    Endeavour 159: A/B OPERAND fragments are REFUSED.  See the header above -- this was reachable
-   by accident and silently wrong at 16 bits."
+   by accident and silently wrong at 16 bits.
+   Endeavour 210 (D-210-5): a tcgen05 accumulator TARGET is refused first, naming :transformF
+   -- it lives in tensor memory, not registers, and its only readers are the stores."
+  (let* ((target (second expr))
+         (ty (and (= (length (cdr expr)) 2)
+                  (%208-source-type target env context location))))
+    (when (and ty (%tcgen05-acc-type-p ty))
+      (error 'crisp-compiler-error
+             :message (format nil "map-elements!: ~(~a~) is a tcgen05 accumulator, which lives in tensor memory, not in registers.  Apply the function as it is stored instead: (store-tile ~(~a~) DEST (..) :transformF ~(~s~)) or (store-tile-at ~(~a~) DEST (ROW COL) :transformF ~(~s~))."
+                              target target (third expr) target (third expr))
+             :source-location location)))
   (unless (= (length (cdr expr)) 2)
     (error 'crisp-compiler-error
            :message (format nil "map-elements!: expects exactly 2 arguments — (map-elements! <fragment-or-tile> #'<unary-fn>) — got ~a."
@@ -5762,7 +5772,11 @@
 (defun analyze-%store-pair-expression (expr env context location)
   "Analyzer for (%store-pair P0 P1 LO HI): one <2 x T> store when LO and HI already have P0's element
    type and that type packs; otherwise exactly (progn (set! P0 LO) (set! P1 HI)), so conversions
-   and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1)."
+   and type errors are set!'s own.  The caller guards it with (%pair-ok-p P0 P1).
+   Endeavour 210: LO / HI are compared by their SINGLE-VALUE type.  A function call's node type is the
+   list of its return types -- (FLOAT) -- so an element passed through a store's :transformF never
+   matched FLOAT and every pair fell back to two scalar stores (a B200 tcgen05 store lost all 128 of
+   its st.global.v2)."
   (unless (= (length expr) 5)
     (error 'crisp-compiler-error :message "%store-pair: expects (%store-pair P0 P1 LO HI)"
            :source-location location))
@@ -5773,7 +5787,7 @@
            (lo (analyze-expression lo-form env context (append location '(3))))
            (hi (analyze-expression hi-form env context (append location '(4)))))
       (if (and bytes (semantic-aref-p p0)
-               (equal (semantic-node-type lo) elem) (equal (semantic-node-type hi) elem))
+               (equal (get-single-value-type lo) elem) (equal (get-single-value-type hi) elem))
           (make-semantic-store-pair :place-node p0 :lo-node lo :hi-node hi :elem-bytes bytes
                                     :type 'nil :source-location location)
           (progn

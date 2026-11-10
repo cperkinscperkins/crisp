@@ -99,7 +99,8 @@
                                 ((integerp (third type)) (third type))))))))
     (cond
       ;; an implicit TMA descriptor (CUDA): ONE slot, whatever its :rank says -- :rank describes the
-      ;; tensor it maps, not this argument (found on the H100, 2026-10-22)
+      ;; tensor it maps, not this argument (found on the H100, 2026-10-22).  Since endeavour 210 that
+      ;; one VALUE slot is the 128-byte CUtensorMap itself (__grid_constant__), not a pointer to it.
       ((eq (getf param :kind) :tensor-map)
        (list (list first-slot "CRISP_ROLE_VALUE" 0)))
       (rank

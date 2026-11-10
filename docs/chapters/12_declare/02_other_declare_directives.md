@@ -15,6 +15,14 @@ NOTE: should we constrain `use` to ONLY be in def-kernel or def-const-vec ?
 `def-const-vec`.  It simply declares that some context depends on a constant memory storage item.
 See [def-const-vec](#def-const-vec)
 
+#### even-columns ✅
+`(declare (even-columns C))`
+
+A kernel-level promise that matrix parameter `C` has an even number of columns, which lets a wgmma
+accumulator's `store-tile` into `C` drop its unaligned fallback and use only packed pair stores.  `C`
+must be declared `:align :compact :contiguous-term :row-major`.  A false promise faults; it cannot store
+wrong values.  See *Packed pairs, and `(even-columns C)`* under `wgmma-accumulate-via-tile`.
+
 #### kernel-name 📝
 `(declare (kernel-name "some_name_${T}"))`
 Used in `let-kernel` to name a continuation kernel.  See [Continuation Kernels](#continuation-kernels)

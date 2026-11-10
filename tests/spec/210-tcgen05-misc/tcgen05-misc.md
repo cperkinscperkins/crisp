@@ -19,9 +19,10 @@ F-209-1 was already resolved (D-209-9).  The Python wheel and FP8/FP4 are future
 | 1 | Item 6: by-value descriptor ABI, local | done 2026-11-08: suites green, PTX + ptxas + nvcc checked; metal pending (step 4) |
 | 1b | Item 6 on an H100: metal specs + exact A/B + canonical sweep of 4 TMA chapters | done 2026-11-08 (9 min, ~$0.62, pod confirmed gone): all green, B = A within 1% |
 | 1c | Item 6 on an H100: VERIFY-AUTODIFF[CUDA] TMA specs (only run under --differentiate) | done 2026-11-08 (3 attempts, ~$0.90 in all, every pod confirmed gone): all 6 PASS [cuda] -- item 6 metal-verified |
-| 2 | Item 2: F-209-2 -> `:transformF` on every accumulator store (F-210-1), A\|D refusal (F-210-2) | done 2026-11-08: local + metal (steps 2b B200, 2c H100); fold pending |
+| 2 | Item 2: F-209-2 -> `:transformF` on every accumulator store (F-210-1), A\|D refusal (F-210-2) | done 2026-11-08: local + metal (steps 2b B200, 2c H100); folded 2026-11-09 |
 | 3 | Item 4: F-209-8 | done 2026-11-08: explained (step 3); fix D-210-7 `(even-columns C)`; metal steps 4 / 4b (H100) |
-| 4 | Rentals: H100 (TMA families, 209/03, sec3 rows) + B200 (208/209 tcgen05 TMA specs, item 2 row) | not started |
+| 4 | Rentals: H100 (TMA families, 209/03, sec3 rows) + B200 (208/209 tcgen05 TMA specs, item 2 row) | done inline, per item (steps 1b, 1c, 2b, 2c, 3, 4, 4b), as Chris asked: test on the rental while working each item |
+| 5 | Fold the 210 overlays into src/; docs; definition of done | done 2026-11-09: corpus byte-identical (2399 IR jobs + 258 CUDA hoist jobs); unit 392/392, E2E 1821/1821, negative 497/497 -- see *The fold* |
 
 ## Item 6 — TMA descriptors by value
 
@@ -361,6 +362,38 @@ sec3_cluster_multicast, canonical, every point verified (TFLOPS):
 - **Multicast now beats plain cluster** at 2048 (+5%), 8192 (+9%) and 16384 (+2%); cluster still leads at
   4096 (-2%), 32768 and the small sizes.  The report's sec3 story changes from "multicast loses on Hopper"
   to "it wins at most large sizes once it can keep 4 workgroups per SM".
+
+## The fold (2026-11-09)
+
+All four overlays emptied into src/ by script (put_temp_files_here/210-fold/fold.py: LIVE copies by offset,
+never retyped; the dead first copies of %210-mark-grid-constant-tensor-maps and generate-backward-walk and
+every `*210-orig-*` capture dropped).  Shapes:
+- **new** -- the `%210-` helpers, `*210-store-transform*`, `*210-pairs-only*`, the two `+210-tensor-map-`
+  constants (codegen / mma / autodiff); `LLVMCreateTypeAttribute` (src/llvm-bindings.lisp); the three
+  validators (tests/run-specs.lisp, after validate-ptx-tma; the garbled docstring bullet rewritten).
+- **replaced** -- %tma-lookup-descriptor-ptr, %tcgen05-store-rewrite-origin, %wgmma-store-rewrite-origin,
+  analyze-%store-pair-expression, the hoist's %cuda-emit-tensor-map-encode-base and %emit-kernel-args-base.
+- **clauses** -- resolve-type-to-llvm's existing TENSOR-MAP clause now returns addrspace 0;
+  generate-implicit-signature's TENSOR-MAP entry carries the by-value keys, in the order the overlay's
+  `setf getf` produced, so the metacrisp is byte-identical.
+- **prepended** -- analyze-map-elements (the tcgen05 refusal), generate-backward-walk (the :transformF refusal).
+- **base + wrapper** -- ensure-opencl-kernel-metadata, %208-analyze-store-tile(-at), analyze-store-tile-mma.
+- **merged** -- %explode-rewrite-body-form: 196's wrapper body became the 210 wrapper's else arm (no new
+  layer over the existing -base).
+
+Proof: built with the overlays still loading (0 warnings), then emptied them, re-ran gen-specials (+2:
+`*210-pairs-only*`, `*210-store-transform*`), rebuilt (0 warnings).  Corpus against the pre-fold build:
+2399 IR jobs (every non-error spec, with --differentiate where not skipped, + every NVIDIA benchmark
+kernel) 0 changed; two Windows tool-invocation flakes (105/12 -ad in the after run, 196/07 in the before
+run), each identical re-run alone.  258 CUDA hoist jobs (every TEST-HOIST[CUDA] spec, `.cu` + metacrisp +
+PTX): 0 changed.  Suites: see the steps table.
+
+Comment-only fold notes done: src/api.lisp (the TENSOR_MAP slot the API reports is pointer-shaped and now
+stale -- left as is, since the API reports descriptors without supporting them), src/hoist/source-mode.lisp.
+Docs: ideal_001.md (store-tile on accumulators, the map-elements! table, wgmma "Packed pairs, and
+`(even-columns C)`", the tcgen05 read-back, the `:block` descriptor note, `declare` even-columns, the compile
+API note, the `#(...)` literal now 📝 -- BUG 160) and writing-crisp.md.  BUG 161 (unknown declarations
+accepted silently) recorded.
 
 ## Decisions (D-210-n)
 

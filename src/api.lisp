@@ -242,8 +242,10 @@
     (cond
       ((and (consp type) (symbolp (first type)) (string= (symbol-name (first type)) "C-POINTER"))
        (list :type :pointer :size 8 :address-space (%api-kw (third type))))
-      ;; a CUDA TMA descriptor, (TENSOR-MAP <option>): option A passes a pointer to the descriptor
-      ;; in device global memory (see plan/ref.metacrisp)
+      ;; a CUDA TMA descriptor, (TENSOR-MAP <option>).  STALE since endeavour 210: the kernel now takes
+      ;; the 128-byte CUtensorMap BY VALUE (__grid_constant__; metacrisp :passing :by-value :bytes 128),
+      ;; not option A's pointer to a device copy.  Left as is because the API reports TENSOR_MAP
+      ;; parameters without supporting them (docs/ideal_001.md, "Implicit parameters").
       ((and (consp type) (symbolp (first type)) (string= (symbol-name (first type)) "TENSOR-MAP"))
        (list :type :pointer :size 8 :address-space :global))
       ((and (symbolp type) (assoc (%api-kw type) +api-scalar-sizes+))
@@ -309,7 +311,7 @@
                         ((getf decl :debug-logging) :debug-log)
                         (implicit :scratch)
                         (t :declared)))
-         (kind (cond ((eq purpose :tensor-map) :scalar)   ; one slot: a descriptor pointer (CUDA TMA)
+         (kind (cond ((eq purpose :tensor-map) :scalar)   ; one slot: the CUtensorMap, by value since 210 (CUDA TMA)
                      (rank :tensor)
                      ((and head (string-equal head "CELL")) :cell)
                      ;; a record or struct, plain or PARAMETERISED -- (v-point :earnestness 3.0)

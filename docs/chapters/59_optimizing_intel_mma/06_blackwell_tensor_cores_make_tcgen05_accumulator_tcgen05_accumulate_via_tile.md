@@ -59,6 +59,10 @@ a fresh accumulator.
 - Thread t holds row t.
 - `(to-half D)` / `(to-bfloat16 D)` convert as they store.
 - With `:via :tma` each warp stages its 32 rows in the 128-byte swizzle and sends them as TMA boxes.
+- A fused activation goes on the store: `(store-tile-at (to-bfloat16 D) C (row col) :transformF #'relu)`
+  applies the function to each element as it leaves tensor memory, before the conversion (endeavour
+  210).  It is the only fused epilogue here: `map-elements!` works on registers and the accumulator is
+  in tensor memory, so `map-elements!` on it is refused.  Not yet with `:via :tma`.
 
 ```
 (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)

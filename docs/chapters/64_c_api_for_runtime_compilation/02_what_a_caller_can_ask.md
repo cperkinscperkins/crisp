@@ -40,7 +40,9 @@ never reads them back.  `crisp_param_zero_before_launch` marks the ones that mus
 EVERY launch: global scratch, where reductions keep counters the kernel leaves non-zero.
 Workgroup-local scratch is bound per runtime -- on Level Zero, its pointer slot gets (size = bytes,
 value = NULL).  CUDA tensor-map descriptors are reported (purpose TENSOR_MAP) but not yet
-supported 📝.  (DEBUG_LOG is never reported: the log is a module-scope global, not a parameter.)
+supported 📝.  Since endeavour 210 the kernel takes each one by value, as a 128-byte `CUtensorMap`
+(`__grid_constant__`), so the pointer-sized slot the API reports for it is stale.  Supporting them
+means reporting that, plus the tensor each one maps.  (DEBUG_LOG is never reported: the log is a module-scope global, not a parameter.)
 
 **Launching** ✅.  A kernel's geometry declarations are often rules over launch-time values -- one
 thread per element of tensor `x`, in groups of 64.  A launch object does that arithmetic: the caller

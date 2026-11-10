@@ -49,6 +49,11 @@ The values form a ladder, each rung strictly more capable than the one below it:
   is a compile error (needs sm_90+); **on Intel it is a compile error** — Intel's fast 2D path
   (LSC 2D block loads) loads global→*registers*, not SLM, and is **not** a barrier-governed
   transfer at all (see "Optimizing Intel MMA").
+  The descriptor (a `CUtensorMap`, one per TMA'd tensor) is an implicit kernel argument.  It is
+  passed **by value**, as a 128-byte `__grid_constant__` parameter, which is the CUDA guide's
+  recommended home.  The CUDA hoist encodes it on the host straight into the launch arguments, so
+  no device copy is made and no tensor-map fence is needed (endeavour 210; before that it lived in
+  global memory).
 - `:cluster` ✅ — a real mbarrier that **peer workgroups in the same cluster may arrive on**
   (`mbarrier.arrive.shared::cluster` against a mapped peer address).  **NVIDIA sm_90+ only**,
   and only meaningful when the kernel declares a [cluster-size](#cluster-size).

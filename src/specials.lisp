@@ -46,6 +46,8 @@
           *199-STORE-BOX*
           *208-RW-KERNEL*
           *208-SCALE-LAYOUTS*
+          *210-PAIRS-ONLY*
+          *210-STORE-TRANSFORM*
           *ACCUM-BASE-REGISTRY*
           *ACCUM-REGISTRY*
           *AD-ANY-OUTPUT-DOUBLE*

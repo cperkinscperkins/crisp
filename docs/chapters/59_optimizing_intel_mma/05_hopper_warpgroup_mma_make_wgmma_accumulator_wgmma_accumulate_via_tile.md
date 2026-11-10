@@ -62,7 +62,34 @@ the backward rewrites it to the sync MMA (endeavour 146), so the tile VJP suppli
 `(store-tile-at D C (row col))` places it at an absolute origin (needed when two consumer warpgroups
 split a 128-row tile).  The accumulator is `float`; to write a `half` / `bfloat16` matrix, convert on the
 source — `(store-tile-at (to-half D) C (row col))` — and each element is rounded to nearest-even as it is
-stored (endeavour 196).
+stored (endeavour 196).  A fused activation goes on the store too: `(store-tile D C (gy gx) :transformF
+#'relu)` (endeavour 210; see `store-tile`).
+
+**Packed pairs, and `(even-columns C)`.**  Each thread holds its elements as adjacent column pairs, and
+the direct store writes a pair as one 8-byte (float) or 4-byte (16-bit) store when a run-time check finds
+the pair contiguous and aligned (endeavour 197), else element by element.  Both versions of the epilogue
+are in the kernel, and together they keep the accumulator and both sets of addresses live: on the H100
+sec3 kernels that is 164–168 registers, against 96 for the packed version alone.  When the kernel knows
+the check always passes, it can say so:
+
+```
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat) (local-size :set-to 160)
+           (even-columns C))                    ; C has an even number of columns
+  ...
+  (store-tile D C (grid-y grid-x)))
+```
+
+`(even-columns C)` ✅ promises that C's column count is even.  With C `:align :compact` and `:row-major`,
+every pair a grid-origin `store-tile` writes then starts on an even column of an even-width row, which
+is one aligned word, so the compiler emits the packed stores alone.  It is checked where it can be:
+C must be a kernel matrix parameter whose type is declared `:align :compact :contiguous-term
+:row-major`, or the declaration is refused.  The column count itself is a run-time value; if the promise
+is false the kernel faults with a misaligned-address error, it cannot store wrong values.  It affects
+only a wgmma accumulator's `store-tile` (not `store-tile-at`).  It is a register lever, not a
+free speedup: on the H100 the multicast kernel gained 10–14% (4 workgroups per SM instead of 2), while
+the plain cluster kernel was faster without it (endeavour 210).
 
 **Storing through the TMA: `:via :tma`.**  The direct store writes each thread's column pairs straight to
 global memory, and the whole warpgroup waits on it.  `(store-tile-at (to-half D) C (row col) :via :tma)`

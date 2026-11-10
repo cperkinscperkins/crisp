@@ -40,7 +40,9 @@ can carry a per-element transform, and which one you want depends on where the d
 | during the write-out | as each element goes to memory | `store-tile … :transformF #'f` |
 
 For a pure elementwise activation, `:transformF` is often the best of the three — it rides a
-store you were already doing, so it costs nothing extra.
+store you were already doing, so it costs nothing extra.  It is also the one site every accumulator
+has: a Blackwell tcgen05 accumulator lives in tensor memory, not registers, so `map-elements!` on it
+is refused and `:transformF` on its store is the way to fuse (endeavour 210).
 
 > **⚠️ Do NOT fuse on `acc` inside a staged K-loop.**  When `matrix-multiply-tile-stride`'s
 > `grid-k` loop calls `mma-accumulate-via-tile` once per K-step, `acc` holds a **partial sum**,
