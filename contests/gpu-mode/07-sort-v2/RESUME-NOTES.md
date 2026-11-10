@@ -85,3 +85,9 @@ wall 3150 -> 2892 (-8%).  = the ceiling for a run-time rotate builtin (shf.r.wra
 - That H100 is ~30% slower than the diag machines (v1c 4922 vs 3790; v1i 4063 vs 3150): H100 runners
   differ by ~30%, so a single LB score is mostly the node.  The LB keeps the best (v1c 3749, 10-30).
 - Our general radix sort beats torch.sort (CUB) by 24% (v1i) / 30% (rotate probe).
+
+## Same A/B on A100 (970320) and L4 (970323, slimmed: v1c vs v1i, 3 fresh-input reps; the full one timed out)
+- A100 median: v1c 8889, v1i 7565 (-15%), rotate probe 6676, torch.sort 9516.  (First 3 reps of every arm
+  ~20% slow -- clocks ramping; medians used.)
+- L4: v1c 34162, v1i 27648 (-19%).  The 10-30 L4 ranked 25319 was a fast node too.
+=> v1i is faster than v1c on every GPU measured; the ranked regressions were runner variance.
