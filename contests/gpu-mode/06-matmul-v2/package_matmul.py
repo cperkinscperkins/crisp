@@ -61,6 +61,7 @@ class KernelSpec:
     k_step: int               # K must be a multiple of this
     b_layout: str             # "row": the contest's (K N) b as is; "col": a transposed (N K) copy
     profile: str | None = None
+    profile_file: str | None = None           # a def-hardware-profile .crisp (repo-relative) compiled first
     tensor_names: tuple = ("a", "b", "c")     # the hoist's names for the kernel's global tensors
     tensor_setup: list[str] | None = None     # C++ CRISP_TENSOR lines; default: the matmul a / b / c
     # filled in by build_kernel
@@ -81,6 +82,8 @@ def compile_with_hoist(spec: KernelSpec) -> tuple[str, str]:
     cmd = [str(CRISP_COMPILE), "--ir-target=ptx", f"--ir-target-arch={spec.arch}", "--hoist=cuda"]
     if spec.profile:
         cmd.append(f"--hardware-profile={spec.profile}")
+    if spec.profile_file:
+        cmd.append(str(REPO_ROOT / spec.profile_file))
     cmd.append(str(src))
     res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
@@ -110,15 +113,25 @@ def parse_hoist(spec: KernelSpec, hoist: str) -> None:
     for name, val in re.findall(r"uint64_t\s+(\w+)\s*=\s*(\d+)ULL\s*;", hoist):
         if name not in runtime_names:
             spec.literals[name] = val
+    # Two descriptor ABIs.  Before endeavour 210 a descriptor lived in device memory: the hoist encodes
+    # `<name>_host` and copies it to the CUdeviceptr param `<name>`.  Since 210 it is passed BY VALUE
+    # (__grid_constant__): the hoist encodes straight into the CUtensorMap param `<name>`.
     for tm in re.finditer(
-            r"CUtensorMap\s+(\w+)_host;.*?"
-            r"_gdim\[2\]\s*=\s*\{([^}]*)\};.*?_gstr\[1\]\s*=\s*\{([^}]*)\};.*?"
-            r"_box\[2\]\s*=\s*\{([^}]*)\};.*?cuTensorMapEncodeTiled\(&\w+,\s*(CU_TENSOR_MAP_DATA_TYPE_\w+),\s*2,\s*"
+            r"cuTensorMapEncodeTiled\(&(\w+),\s*(CU_TENSOR_MAP_DATA_TYPE_\w+),\s*2,\s*"
             r"\(void\*\)(\w+),.*?(CU_TENSOR_MAP_SWIZZLE_\w+)",
             hoist, flags=re.DOTALL):
+        target = tm.group(1)
+        by_value = not target.endswith("_host")
+        name = target if by_value else target[:-len("_host")]
+        arr = {}
+        for part, n in (("gdim", 2), ("gstr", 1), ("box", 2)):
+            m = re.search(rf"{name}_{part}\[{n}\]\s*=\s*\{{([^}}]*)\}};", hoist)
+            if not m:
+                raise ValueError(f"{spec.crisp}: tensor map {name}: no {part} array in the hoist")
+            arr[part] = m.group(1).strip()
         spec.tensormaps.append({
-            "name": tm.group(1), "gdim": tm.group(2).strip(), "gstr": tm.group(3).strip(),
-            "box": tm.group(4).strip(), "dtype": tm.group(5), "ptr": tm.group(6), "swizzle": tm.group(7)})
+            "name": name, "gdim": arr["gdim"], "gstr": arr["gstr"], "box": arr["box"],
+            "dtype": tm.group(2), "ptr": tm.group(3), "swizzle": tm.group(4), "by_value": by_value})
     m = re.search(r"cuLaunchKernel\(kernel,\s*gridX,\s*gridY,\s*gridZ,\s*(\d+),\s*\d+,\s*\d+,\s*(\d+),", hoist)
     spec.block, spec.smem = int(m.group(1)), int(m.group(2))
     for p in spec.params:
@@ -224,6 +237,28 @@ static uint64_t tensormap(uint64_t ptr, uint64_t g0, uint64_t g1, uint64_t gstr,
     return (uint64_t)d;
 }
 
+// Since endeavour 210 a descriptor is a kernel parameter BY VALUE (128 bytes, __grid_constant__): encode on
+// the host, cached by the same key, and pass its address in kernelParams.  No device copy, no stale cache.
+static std::map<TmKey, CUtensorMap> tm_val_cache;
+
+static CUtensorMap tensormap_val(uint64_t ptr, uint64_t g0, uint64_t g1, uint64_t gstr,
+                                 uint32_t b0, uint32_t b1, CUtensorMapDataType dt, CUtensorMapSwizzle sw) {
+    TmKey key(ptr, g0, g1, gstr, b0, b1, (int)dt, (int)sw);
+    auto it = tm_val_cache.find(key);
+    if (it != tm_val_cache.end()) return it->second;
+    CUtensorMap host;
+    cuuint64_t gdim[2] = {g0, g1};
+    cuuint64_t gs[1] = {gstr};
+    cuuint32_t box[2] = {b0, b1};
+    cuuint32_t el[2] = {1, 1};
+    ck(drv.tensorMapEncodeTiled(&host, dt, 2, (void*)ptr, gdim, gs, box, el,
+                                CU_TENSOR_MAP_INTERLEAVE_NONE, sw,
+                                CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE),
+       "cuTensorMapEncodeTiled");
+    tm_val_cache[key] = host;
+    return host;
+}
+
 // The 9 Crisp parameters of a rank-2 tensor.  ROW: (R C) contiguous in C.  COL: (R C) contiguous in R.
 #define CRISP_TENSOR(t, P, R, C, ROWMAJOR)                                         \
     uint64_t t##_ptr = (uint64_t)(P);                                              \
@@ -275,7 +310,8 @@ def cpp_for_kernel(spec: KernelSpec) -> tuple[str, str]:
         g = [x.strip() for x in tm["gdim"].split(",")]
         b = [x.strip() for x in tm["box"].split(",")]
         gstr = tm["gstr"].replace("sizeof(uint16_t)", "2")
-        lines.append(f"    uint64_t {tm['name']} = tensormap({tm['ptr']}, {g[0]}, {g[1]}, {gstr}, {b[0]}, {b[1]},"
+        decl, fn = ("CUtensorMap", "tensormap_val") if tm.get("by_value") else ("uint64_t", "tensormap")
+        lines.append(f"    {decl} {tm['name']} = {fn}({tm['ptr']}, {g[0]}, {g[1]}, {gstr}, {b[0]}, {b[1]},"
                      f" {tm['dtype']}, {tm['swizzle']});")
     lines.append("    void* kp[] = {" + ", ".join(f"&{p}" for p in spec.params) + "};")
     tm_, tn_ = spec.tile
@@ -410,6 +446,27 @@ TRANSPOSE = dict(key="transpose", crisp="transpose_b.crisp", arch="sm_80", tile=
                                "    CRISP_TENSOR(bt, C.data_ptr(), C.size(0), C.size(1), true)"])
 B200_TMA = dict(key="b200", crisp="matmul_b200_tma_mma.crisp", arch="sm_100", tile=(64, 64), k_step=16,
                 b_layout="row", profile="h100")
+# resume-gpumode (2026-11-09): endeavour 208/209's tcgen05 kernel, fp16 C.  tcgen05 reads B K-major only,
+# so it takes the transposed (N K) copy that transpose_b.crisp writes.
+B200_TC = dict(key="b200tc", crisp="matmul_b200_tcgen05.crisp", arch="sm_100a", tile=(128, 256), k_step=64,
+               b_layout="col", profile="b200", profile_file="benchmarks/profiles/b200.crisp")
+
+# v6: v5's dispatch with the B200 on tcgen05 (transpose b, then the tensor-memory kernel).
+DISPATCH_V6 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
+        _load("h100tma", PTX_H100TMA)
+        _mod.run_h100tma(a, b, c)
+    elif _CAP == (10, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
+        _load("b200tc", PTX_B200TC)
+        _load("transpose", PTX_TRANSPOSE)
+        bt = _bt_buffer(b)
+        _mod.run_transpose(b, b, bt)
+        _mod.run_b200tc(a, bt, c)
+    elif _CAP[0] in (8, 10) and M % 128 == 0 and N % 128 == 0 and K % 16 == 0:
+        _load("ampere4w", PTX_AMPERE4W)
+        _mod.run_ampere4w(a, b, c)
+    else:
+        _load("small", PTX_SMALL)
+        _mod.run_small(a, b, c)"""
 
 # One dispatch for every GPU: the fast kernel when the device and shape fit it, else the small one.
 DISPATCH_ALL = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
@@ -427,14 +484,17 @@ def build_all() -> None:
     print("Building matmul_v2 kernels ...")
     ks = {"small": build_kernel(KernelSpec(**SMALL)),
           "h100tma": build_kernel(KernelSpec(**H100_TMA)),
+          "b200tc": build_kernel(KernelSpec(**B200_TC)),
+          "transpose": build_kernel(KernelSpec(**TRANSPOSE)),
           "ampere4w": build_kernel(KernelSpec(**AMPERE4W))}
-    # v5 (endeavour 199): the H100 kernel stores its accumulators :via :tma (stmatrix + TMA store).
-    # v4 (197 + 198: packed stores, transB) and v3 are kept as submitted.
+    # v6 (resume-gpumode): v5 + the B200 on tcgen05.  Built with today's compiler, so every TMA descriptor
+    # is passed by value (endeavour 210).  v5 (endeavour 199) and earlier are kept as submitted.
     make_submission(
-        "crisp_matmul_v5.py",
-        "matmul_v2 v5: H100 wgmma 2wg_deep, transB, stmatrix + TMA-store epilogue; A100 / L4 / B200 4-warp cp.async + mma.sync",
-        ks, DISPATCH_ALL,
-        ["matmul_h100_2wg_tma.crisp", "matmul_ampere_4w.crisp", "matmul_small_mma.crisp"])
+        "crisp_matmul_v6.py",
+        "matmul_v2 v6: H100 wgmma 2wg_deep, transB, stmatrix + TMA-store epilogue; B200 tcgen05 (tensor memory); A100 / L4 4-warp cp.async + mma.sync",
+        ks, DISPATCH_V6,
+        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05.crisp", "transpose_b.crisp", "matmul_ampere_4w.crisp",
+         "matmul_small_mma.crisp"])
     # The beauty entry: one portable 13-line kernel for every GPU and shape.
     beauty = build_kernel(KernelSpec(key="beauty", crisp="matmul_beauty.crisp", arch="sm_80", tile=(16, 8),
                                      k_step=16, b_layout="row", profile="h100"))
