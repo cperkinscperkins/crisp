@@ -146,6 +146,21 @@
       "per_case_us": null,
       "public_score_us": 742584.18,
       "secret_score_us": 745629.37
+    },
+    {
+      "timestamp": "2026-11-11T20:23:46Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_conv2d_tiled_p",
+      "file_name": "crisp_conv2d_tiled_p.py",
+      "mode": "leaderboard",
+      "submission_id": 970671,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 189378.56,
+      "secret_score_us": 187812.56
     }
   ]
 }
