@@ -141,10 +141,11 @@ def _dims(*v):
     return t
 
 
-# The GPUs whose fp32 cuDNN reference is ONE sequential FMA chain (implicit_convolve_sgemm), measured by
-# diag_conv2d_orders.py: there only cuDNN's own summation order passes.  Everywhere else the reference is
-# an FFT, accurate to ~1e-4, and the accurate kernel is the one that passes.
-_CUDNN_ORDER_CC = {(9, 0)}          # H100
+# The GPUs whose fp32 cuDNN reference is an FFT, accurate to ~1e-4: there the accurate kernel passes.
+# Everywhere else measured (H100 implicit_convolve_sgemm; L4 and B200 precomputed_convolve_sgemm) the
+# reference is ONE sequential FMA chain per output and only its own summation order passes
+# (diag_conv2d_orders.py / diag_conv2d_orders_lite.py, 2026-11-11).
+_FFT_REFERENCE_CC = {(8, 0)}        # A100
 
 
 def custom_kernel(data: input_t) -> output_t:
@@ -154,8 +155,8 @@ def custom_kernel(data: input_t) -> output_t:
     B, C, H, _ = x.shape
     K = w.shape[2]
     n = out.numel()
-    k = ("conv2d_cudnn_order" if torch.cuda.get_device_capability() in _CUDNN_ORDER_CC
-         else "conv2d_accurate")
+    k = ("conv2d_accurate" if torch.cuda.get_device_capability() in _FFT_REFERENCE_CC
+         else "conv2d_cudnn_order")
     P = lambda t: t.data_ptr()
     _launch(k, (n + 255) // 256, {"x": (P(x), x.numel()), "w": (P(w), w.numel()),
                                   "dims": (P(_dims(C, H, K)), 3), "y": (P(out), n)})

@@ -123,10 +123,11 @@ def _dims(*v):
 BEAUTY_KERNELS = ("conv2d_cudnn_order", "conv2d_accurate")
 BEAUTY = r'''
 
-# The GPUs whose fp32 cuDNN reference is ONE sequential FMA chain (implicit_convolve_sgemm), measured by
-# diag_conv2d_orders.py: there only cuDNN's own summation order passes.  Everywhere else the reference is
-# an FFT, accurate to ~1e-4, and the accurate kernel is the one that passes.
-_CUDNN_ORDER_CC = {(9, 0)}          # H100
+# The GPUs whose fp32 cuDNN reference is an FFT, accurate to ~1e-4: there the accurate kernel passes.
+# Everywhere else measured (H100 implicit_convolve_sgemm; L4 and B200 precomputed_convolve_sgemm) the
+# reference is ONE sequential FMA chain per output and only its own summation order passes
+# (diag_conv2d_orders.py / diag_conv2d_orders_lite.py, 2026-11-11).
+_FFT_REFERENCE_CC = {(8, 0)}        # A100
 
 
 def custom_kernel(data: input_t) -> output_t:
@@ -136,8 +137,8 @@ def custom_kernel(data: input_t) -> output_t:
     B, C, H, _ = x.shape
     K = w.shape[2]
     n = out.numel()
-    k = ("conv2d_cudnn_order" if torch.cuda.get_device_capability() in _CUDNN_ORDER_CC
-         else "conv2d_accurate")
+    k = ("conv2d_accurate" if torch.cuda.get_device_capability() in _FFT_REFERENCE_CC
+         else "conv2d_cudnn_order")
     P = lambda t: t.data_ptr()
     _launch(k, (n + 255) // 256, {"x": (P(x), x.numel()), "w": (P(w), w.numel()),
                                   "dims": (P(_dims(C, H, K)), 3), "y": (P(out), n)})
@@ -148,14 +149,25 @@ def custom_kernel(data: input_t) -> output_t:
 # ------------------------------------------------------------------------------------------------
 # Tiled (H100 lane): w_transpose + conv_tiled (conv2d_tiled.crisp)
 # ------------------------------------------------------------------------------------------------
-TILED_KERNELS = ("w_transpose", "conv_tiled")
-TILED = r'''
+TILED_KERNELS = ("w_transpose", "conv_tiled", "conv_tiled8", "conv_tiled_p", "conv_tiled_p32",
+                 "conv_tiled_p32r", "conv_tiled_p32e", "conv_tiled_pe", "conv_edge")
+# kernel -> (patch rows, patch columns): groups = B * ceil(C / 32) * ceil(O / rows) * ceil(O / cols)
+TILED_SHAPES = {"conv_tiled": (8, 32), "conv_tiled8": (8, 64), "conv_tiled_p": (8, 32), "conv_tiled_p32": (8, 32),
+                "conv_tiled_p32r": (8, 32), "conv_tiled_p32e": (8, 32, "edge"),
+                "conv_tiled_pe": (8, 32, "edge")}
+
+
+def tiled_body(kernel: str) -> str:
+    return TILED_COMMON + f"\n_KERNEL = {kernel!r}\n" + TILED_ENTRY
+
+
+TILED_COMMON = r'''
 
 _WT = {}
-def custom_kernel(data: input_t) -> output_t:
-    x, w, out = data
-    if _lib is None:
-        _init()
+_SHAPES = SHAPES_PLACEHOLDER
+
+
+def _conv_tiled(k, x, w, out):
     B, C, H, _ = x.shape
     K = w.shape[2]
     O = H - K + 1
@@ -165,11 +177,72 @@ def custom_kernel(data: input_t) -> output_t:
         wt = _WT[nw] = torch.empty(nw, dtype=torch.float32, device="cuda")
     dims = _dims(C, H, K, B)
     P = lambda t: t.data_ptr()
-    _launch("w_transpose", ((C + 31) // 32) * ((nw // C + 31) // 32), {"w": (P(w), nw), "dims": (P(dims), 4), "wt": (P(wt), nw)})
-    groups = B * ((C + 31) // 32) * ((O + 7) // 8) * ((O + 31) // 32)
-    _launch("conv_tiled", groups, {"x": (P(x), x.numel()), "wt": (P(wt), nw), "dims": (P(dims), 4),
-                                   "y": (P(out), out.numel())})
+    _launch("w_transpose", ((C + 31) // 32) * ((nw // C + 31) // 32),
+            {"w": (P(w), nw), "dims": (P(dims), 4), "wt": (P(wt), nw)})
+    rows, cols, *edge = _SHAPES[k]
+    if not edge:
+        groups = B * ((C + 31) // 32) * ((O + rows - 1) // rows) * ((O + cols - 1) // cols)
+        _launch(k, groups, {"x": (P(x), x.numel()), "wt": (P(wt), nw), "dims": (P(dims), 4), "y": (P(out), out.numel())})
+        return out
+    # the host picks the patch grid: a thin leftover strip (<= 4 columns, <= 1 row) goes to conv_edge
+    nbx = O // cols if O % cols <= 4 else (O + cols - 1) // cols
+    nby = O // rows if O % rows <= 1 else (O + rows - 1) // rows
+    xl, yl = min(nbx * cols, O), min(nby * rows, O)
+    ne = B * C * (yl * (O - xl) + (O - yl) * O)
+    d6 = _dims(C, H, K, B, nbx, nby)
+    if nbx * nby:
+        _launch(k, B * ((C + 31) // 32) * nby * nbx,
+                {"x": (P(x), x.numel()), "wt": (P(wt), nw), "dims": (P(d6), 6), "y": (P(out), out.numel())})
+    if ne:
+        _launch("conv_edge", (ne + 255) // 256,
+                {"x": (P(x), x.numel()), "w": (P(w), nw), "dims": (P(d6), 6), "y": (P(out), out.numel())})
     return out
+'''.replace("SHAPES_PLACEHOLDER", repr(TILED_SHAPES))
+
+TILED_ENTRY = r'''
+
+def custom_kernel(data: input_t) -> output_t:
+    x, w, out = data
+    if _lib is None:
+        _init()
+    return _conv_tiled(_KERNEL, x, w, out)
+'''
+
+# A/B timing on ONE runner (GPU MODE's H100s differ ~30%): eval.py's procedure -- clear_l2_cache, events,
+# mean -- for the cuDNN reference and each tiled kernel on the scored case, plus bit-exactness vs the reference.
+TIMING_DIAG = TILED_COMMON + r'''
+
+def custom_kernel(data):
+    from reference import generate_input, ref_kernel
+    from utils import clear_l2_cache
+    if _lib is None:
+        _init()
+    d = generate_input(size=256, kernelsize=32, channels=128, batch=1, seed=6252)
+    x, w, out = d
+    def tm(f, reps=5):
+        f(); torch.cuda.synchronize()
+        ts = []
+        for _ in range(reps):
+            clear_l2_cache(); torch.cuda.synchronize()
+            a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            a.record(); f(); b.record(); torch.cuda.synchronize()
+            ts.append(a.elapsed_time(b))
+        return sum(ts) / len(ts), min(ts)
+    ref = ref_kernel(d)
+    lines = [f"device {torch.cuda.get_device_name()} cc {torch.cuda.get_device_capability()}"]
+    m, lo = tm(lambda: ref_kernel(d))
+    lines.append(f"cudnn reference: mean {m:.2f} ms, min {lo:.2f} ms")
+    for k in _SHAPES:
+        o = torch.empty_like(out)
+        _conv_tiled(k, x, w, o); torch.cuda.synchronize()
+        exact = (o == ref).double().mean().item()
+        m, lo = tm(lambda: _conv_tiled(k, x, w, o))
+        nb = _C.c_int(); _ck(_lib.cuOccupancyMaxActiveBlocksPerMultiprocessor(_C.byref(nb), _fn[k], 256, ABI[k]["smem"]), "occ")
+        regs = _C.c_int(); _lib.cuFuncGetAttribute(_C.byref(regs), 4, _fn[k])
+        lcl = _C.c_int(); _lib.cuFuncGetAttribute(_C.byref(lcl), 3, _fn[k])
+        lines.append(f"{k}: mean {m:.2f} ms, min {lo:.2f} ms, {1.699e12 / (m * 1e-3) / 1e12:.1f} TFLOPS; bit-exact vs ref "
+                     f"{exact:.6f}; {regs.value} regs, {lcl.value} B local, {nb.value} blocks/SM")
+    raise RuntimeError("DIAG\n" + "\n".join(lines))
 '''
 
 
@@ -246,6 +319,42 @@ def custom_kernel(data):
 '''
 
 
+# Light order diagnostic for slow GPUs (the full one timed out on the L4: a full-size float64 conv2d): the
+# scored case only, the chain kernel only, and the reference's accuracy on a 40 x 40 output crop.
+ORDER_LITE_DIAG = r'''
+
+def custom_kernel(data):
+    import torch.nn.functional as _F
+    from reference import generate_input, ref_kernel
+    if _lib is None:
+        _init()
+    P = lambda t: t.data_ptr()
+    size, ks, ch, b, seed = 256, 32, 128, 1, 6252
+    d = generate_input(size=size, kernelsize=ks, channels=ch, batch=b, seed=seed)
+    x, w, out = d
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
+        ref = ref_kernel(d)
+        torch.cuda.synchronize()
+    names = sorted({e.name[:90] for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA})
+    crop = _F.conv2d(x[:, :, :40 + ks - 1, :40 + ks - 1].double(), w.double())
+    rc = ref[:, :, :40, :40].double()
+    tol = 1e-3 + 1e-3 * ref.abs()
+    lines = [f"device {torch.cuda.get_device_name()} cc {torch.cuda.get_device_capability()}",
+             "cudnn kernels: " + " | ".join(names),
+             f"ref vs f64 on a 40x40 crop: rms {(rc - crop).pow(2).mean().sqrt().item():.2e}, "
+             f"max {(rc - crop).abs().max().item():.2e}"]
+    o = torch.empty_like(out)
+    n = o.numel()
+    _launch("conv_crs", (n + 255) // 256, {"x": (P(x), x.numel()), "w": (P(w), w.numel()),
+                                           "dims": (P(_dims(ch, size, ks)), 3), "y": (P(o), n)})
+    torch.cuda.synchronize()
+    e = (o - ref).abs()
+    lines.append(f"conv_crs vs ref: mismatches {int((e > tol).sum().item())}, max {e.max().item():.2e}, "
+                 f"bit-exact {(o == ref).double().mean().item():.4f}")
+    raise RuntimeError("DIAG\n" + "\n".join(lines))
+'''
+
+
 def make_submission(out_name: str, title: str, crisp: str, body: str, kernels) -> Path:
     ptx, hoists = compile_crisp(crisp, kernels)
     abi = {}
@@ -283,9 +392,20 @@ def build_all() -> None:
     make_submission("crisp_conv2d_tiled.py",
                     "conv2d_v2 v1 (H100 lane): register-tiled direct convolution, 8 channels x 4 pixels per thread, "
                     "staged in shared memory per (ci, ky); cuDNN's (ci, ky, kx) FMA order kept per output",
-                    "conv2d_tiled.crisp", TILED, TILED_KERNELS)
+                    "conv2d_tiled.crisp", tiled_body("conv_tiled"), TILED_KERNELS)
+    make_submission("crisp_conv2d_tiled8.py",
+                    "conv2d_v2 v2 (H100 lane): as v1 with 8 channels x 8 pixels per thread (8 x 64 pixel patches)",
+                    "conv2d_tiled.crisp", tiled_body("conv_tiled8"), TILED_KERNELS)
+    make_submission("crisp_conv2d_tiled_p.py",
+                    "conv2d_v2 v3 (H100 lane): v1 with the (ci, ky) staging pipelined one stage ahead in registers, "
+                    "kx unrolled by 4",
+                    "conv2d_tiled.crisp", tiled_body("conv_tiled_p"), TILED_KERNELS)
+    make_submission("diag_conv2d_timing.py", "conv2d_v2 TIMING DIAGNOSTIC (cuDNN vs tiled kernels, one runner)",
+                    "conv2d_tiled.crisp", TIMING_DIAG, TILED_KERNELS)
     make_submission("diag_conv2d_orders.py", "conv2d_v2 ORDER DIAGNOSTIC (which FMA chain reproduces cuDNN fp32)",
                     "conv2d_orders.crisp", ORDER_DIAG, ORDER_KERNELS)
+    make_submission("diag_conv2d_orders_lite.py", "conv2d_v2 ORDER DIAGNOSTIC, light (scored case, chain only)",
+                    "conv2d_orders.crisp", ORDER_LITE_DIAG, ORDER_KERNELS)
 
 
 # ------------------------------------------------------------------------------------------------

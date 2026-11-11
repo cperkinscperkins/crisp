@@ -13,15 +13,16 @@ The reference's own error decides who passes, and cuDNN's heuristic picks a diff
 |---|---|---|---|
 | H100 | `implicit_convolve_sgemm` -- one sequential fp32 FMA chain per output | 2.35e-3 rms, 4e-2 max | ONLY that chain: (ci, ky, kx) order is BIT-EXACT (0 mismatches); the exact answer mismatches 4837 elements |
 | A100 | FFT: `fft2d_r2c_32x32`, `gcgemm_64x32`, `fft2d_c2r_32x32` | 1.1e-4 rms | anything ACCURATE: the float64 answer passes; the H100 chain fails 4846 |
-| L4 | (pending) | | |
-| B200 | (pending -- the B200 queue has been timing out since 10-28) | | |
+| L4 | `precomputed_convolve_sgemm` -- a chain | 2.34e-3 rms (40x40 crop) | ONLY the chain: (ci, ky, kx) bit-exact |
+| B200 | `precomputed_convolve_sgemm` -- a chain | 2.35e-3 rms (40x40 crop) | ONLY the chain: (ci, ky, kx) bit-exact (and the B200 queue works again) |
 
 Why the H100 reference is so far off: a sequential fp32 sum of 131K terms of std ~1 drifts ~2e-3 rms
 (reproduced in pure Python: put_temp_files_here/.../accum.py), and the checker's floor near zero is 1e-3.
 Blocked sums (row, channel, total) are 25x more accurate -- and fail on the H100 for exactly that reason.
 
 Consequences:
-- No single kernel passes on both H100 and A100.  Every submission picks its kernel per GPU.
+- No single kernel passes on both H100 and A100.  Every submission picks its kernel per GPU: the A100 is the
+  only FFT-reference GPU; H100, L4 and B200 all want the chain.
 - On H100: FFT, TF32 / 3xTF32 tensor cores, split-K and blocked sums are all ruled out.  The ceiling is fp32
   FMA throughput: 0.85e12 FMAs >= ~25 ms.  The leaderboard's 0.6 ms / 6 ms H100 entries cannot pass today's
   reference (they predate it, or their runner's cuDNN chose another algorithm).
@@ -54,6 +55,37 @@ Timing at the scored size (BMG peak fp32 ~13.7 TFLOPS):
 | tiled v1, 128/K32/C64 | 21.7 ms | 3.64 |
 | tiled v1, scored 256/K32/C128 | 312 ms | 5.44 |
 w_transpose was 22 ms (scattered writes); a 32 x 33 shared-memory tile transpose made it 0.76 ms.
+
+## H100 progress (diag_conv2d_timing.py: one runner, eval.py's procedure, scored case; all bit-exact vs ref)
+| kernel | what changed | ms | TFLOPS | regs | blocks/SM |
+|---|---|---:|---:|---:|---:|
+| cuDNN reference | | 74.7 / 75.1 | 22.7 | | |
+| beauty chain (benchmark 970639) | one thread per output | 436 | 3.9 | | |
+| conv_tiled (v1, benchmark 970638) | 8 ch x 4 px per thread | 82.3 | 20.6 | 108 | 2 |
+| conv_tiled8 | 8 ch x 8 px | 111.3 | 15.3 | 158 | 1 |
+| conv_tiled_p | v1 + staging pipelined one stage ahead, kx unroll 4 | **66.9** | 25.4 | 104 | 2 |
+| conv_tiled_p32 | p with 32-bit indices | 73.1 | 23.2 | 86 | 2 |
+| conv_tiled_p32r | p32 held to 80 registers | 73.0 | 23.3 | 80 (8 B spill) | 3 |
+| conv_tiled_p32e | p32 on a host-chosen grid + conv_edge for the thin strips | 79.4 | 21.4 | 96 | 2 |
+| conv_tiled_pe | p on the host-chosen grid + conv_edge | 74.1 | 22.9 | 124 | 2 |
+
+**Chosen: conv_tiled_p** -- bit-exact, 11% under cuDNN's own time on the same runner.  What the arms say:
+- 32-bit indices: -18% on the BMG, +9% on the H100.  SASS: the innermost loop grows 44.5 -> 48 instructions per
+  32 FFMA -- each shared address becomes a LEA instead of folding into an immediate offset.  The BMG is not a
+  proxy for Hopper codegen.
+- A third workgroup per SM (p32r) bought nothing: the H100 is not occupancy-bound here.
+- The edge kernel (one thread per output, a 131K-long dependent chain each, ~57K threads) is latency-bound and
+  costs more than the 15% tile waste it removes.  Folding the edge outputs into the main grid as its FIRST
+  workgroups (so they overlap the tiled work) is the untried version.
+- conv_tiled_p's innermost loop is ~72% FFMA (44.5 instructions / 32 FFMA) but the kernel runs at ~38% of fp32
+  peak; the rest is stall time a profiler would have to name (barrier skew, register-bank conflicts, LDS
+  latency).  That needs ncu on an H100 -- a pod rental, not done.
+SASS of v1's hot loop (docker ptxas sm_90): 46 instructions per 32 FFMA -- the loop is fine; the losses were
+exposed global latency per (ci, ky) stage (fixed by the pipeline), occupancy, and tile waste (225 = 7 x 32 + 1
+and 28 x 8 + 1: ~15% of workgroups compute one useful line).
+
+Trap found on the way: `(let ((S ..)) (dotimes+ (s ..) (< s S)))` -- Lisp reads s and S as ONE symbol; the
+pipelined kernel computed all zeros until the stage count was renamed NS.
 
 ## Diagnostics (all --mode test; the table comes back as the RuntimeError)
 - `diag_conv2d_accuracy.py` -- ours / reference vs a float64 conv2d, mismatch counts.
