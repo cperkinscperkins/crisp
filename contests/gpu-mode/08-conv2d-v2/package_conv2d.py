@@ -257,13 +257,17 @@ def custom_kernel(data: input_t) -> output_t:
 # FFT lane (conv2d_fft.crisp): where the cuDNN reference is an FFT (the A100), any accurate method passes.
 # Overlap-save on 64 x 64 tiles; planar complex spectra in device scratch made once per shape.
 # ------------------------------------------------------------------------------------------------
-FFT_KERNELS = ("fft_fwd", "cgemm", "fft_inv", "fft_fwd32", "cgemm32", "fft_inv32")
+FFT_KERNELS = ("fft_fwd", "cgemm", "fft_inv", "fft_fwd32", "cgemm32", "fft_inv32", "fft8_fwd", "fft8_inv", "cgemm2")
 FFT_COMMON = r'''
 import math as _math
 
 _FFT_REFERENCE_CC = {(8, 0)}        # A100: cuDNN's own answer is an FFT (accurate), so ours may be too
 _FFT = {}
-_FFT_SFX = ""          # "" = 64-bit index kernels, "32" = their 32-bit twins
+# variant -> (forward transform, cgemm, inverse transform, twiddle entries); "8" = radix-8 transforms
+_FFT_VARIANTS = {"64": ("fft_fwd", "cgemm", "fft_inv", 32), "32": ("fft_fwd32", "cgemm32", "fft_inv32", 32),
+                 "8": ("fft8_fwd", "cgemm", "fft8_inv", 64), "8c32": ("fft8_fwd", "cgemm32", "fft8_inv", 64),
+                 "8g2": ("fft8_fwd", "cgemm2", "fft8_inv", 64)}
+_FFT_VARIANT = "8g2"     # best on the A100 (diag_conv2d_fft.py, 2026-11-11)
 
 
 def _fft_plan(B, C, H, K):
@@ -275,39 +279,44 @@ def _fft_plan(B, C, H, K):
     st = _FFT.get(key)
     if st is None:
         f = lambda n: torch.empty(n, dtype=torch.float32, device="cuda")
-        m = torch.arange(32, dtype=torch.float64)
-        tw = torch.cat([torch.cos(2 * _math.pi * m / 64), -torch.sin(2 * _math.pi * m / 64)]).float().cuda()
+        def twiddles(n):         # W64^m, m < n: (cos ; -sin)
+            m = torch.arange(n, dtype=torch.float64)
+            return torch.cat([torch.cos(2 * _math.pi * m / 64), -torch.sin(2 * _math.pi * m / 64)]).float().cuda()
         nxf, nwf = C * NBTP * 2112, C * C * 2112
-        st = _FFT[key] = dict(tw=tw, nxf=nxf, nwf=nwf, xr=f(nxf), xi=f(nxf), wr=f(nwf), wi=f(nwf), yr=f(nxf), yi=f(nxf),
+        st = _FFT[key] = dict(tw={32: twiddles(32), 64: twiddles(64)}, nxf=nxf, nwf=nwf,
+                              xr=f(nxf), xi=f(nxf), wr=f(nwf), wi=f(nwf), yr=f(nxf), yi=f(nxf),
                               d0=_dims(C, H, K, 0, NBT, nt, NBTP, B), d1=_dims(C, H, K, 1, NBT, nt, NBTP, B),
                               NBT=NBT, NBTP=NBTP)
     return st
 
 
-def _fft_stage(st, which, x, w, out, sfx=""):
+def _fft_stage(st, which, x, w, out, var):
     P = lambda t: t.data_ptr()
     C = w.shape[0]
     nxf, nwf = st["nxf"], st["nwf"]
+    kf, kg, ki, ntw = _FFT_VARIANTS[var]
+    tw = (P(st["tw"][ntw]), 2 * ntw)
     if which == "wfft":
-        _launch("fft_fwd" + sfx, C * C, {"src": (P(w), w.numel()), "tw": (P(st["tw"]), 64), "dims": (P(st["d1"]), 8),
-                                   "outr": (P(st["wr"]), nwf), "outi": (P(st["wi"]), nwf)})
+        _launch(kf, C * C, {"src": (P(w), w.numel()), "tw": tw, "dims": (P(st["d1"]), 8),
+                            "outr": (P(st["wr"]), nwf), "outi": (P(st["wi"]), nwf)})
     elif which == "xfft":
-        _launch("fft_fwd" + sfx, C * st["NBT"], {"src": (P(x), x.numel()), "tw": (P(st["tw"]), 64), "dims": (P(st["d0"]), 8),
-                                           "outr": (P(st["xr"]), nxf), "outi": (P(st["xi"]), nxf)})
+        _launch(kf, C * st["NBT"], {"src": (P(x), x.numel()), "tw": tw, "dims": (P(st["d0"]), 8),
+                                    "outr": (P(st["xr"]), nxf), "outi": (P(st["xi"]), nxf)})
     elif which == "cgemm":
-        _launch("cgemm" + sfx, 66 * ((C + 31) // 32) * (st["NBTP"] // 7),
+        nblk = st["NBTP"] // 7
+        _launch(kg, 66 * ((C + 31) // 32) * ((nblk + 1) // 2 if kg == "cgemm2" else nblk),
                 {"xr": (P(st["xr"]), nxf), "xi": (P(st["xi"]), nxf), "wr": (P(st["wr"]), nwf), "wi": (P(st["wi"]), nwf),
                  "dims": (P(st["d0"]), 8), "yr": (P(st["yr"]), nxf), "yi": (P(st["yi"]), nxf)})
     else:
-        _launch("fft_inv" + sfx, C * st["NBT"], {"yr": (P(st["yr"]), nxf), "yi": (P(st["yi"]), nxf), "tw": (P(st["tw"]), 64),
-                                           "dims": (P(st["d0"]), 8), "y": (P(out), out.numel())})
+        _launch(ki, C * st["NBT"], {"yr": (P(st["yr"]), nxf), "yi": (P(st["yi"]), nxf), "tw": tw,
+                                    "dims": (P(st["d0"]), 8), "y": (P(out), out.numel())})
 
 
-def _conv_fft(x, w, out, sfx=_FFT_SFX):
+def _conv_fft(x, w, out, var=None):
     B, C, H, _ = x.shape
     st = _fft_plan(B, C, H, w.shape[2])
     for s in ("wfft", "xfft", "cgemm", "ifft"):
-        _fft_stage(st, s, x, w, out, sfx)
+        _fft_stage(st, s, x, w, out, var or _FFT_VARIANT)
     return out
 '''
 
@@ -325,7 +334,7 @@ def custom_kernel(data: input_t) -> output_t:
 # Per-stage timing of the FFT lane on the scored case (eval.py's procedure), plus accuracy vs the reference.
 FFT_TIMING_DIAG = r'''
 
-_DIAG_SFX = ("", "32")
+_DIAG_SFX = ("64", "8", "8g2")
 _DIAG_KERNELS = FFT_KERNELS_PLACEHOLDER
 
 def custom_kernel(data):
@@ -360,14 +369,14 @@ def custom_kernel(data):
             bad = int(((o - ref).abs() > tol).sum().item())
             e = (o - ref).abs()
             m, lo = tm(lambda: _conv_fft(x, w, o, sfx))
-            line = f"   [{sfx or '64'}] total {m:.3f} ms (min {lo:.3f});"
+            line = f"   [{sfx}] total {m:.3f} ms (min {lo:.3f});"
             for s in ("wfft", "xfft", "cgemm", "ifft"):
                 sm, _ = tm(lambda: _fft_stage(st, s, x, w, o, sfx))
                 line += f" {s} {sm:.3f}"
             line += f"; mismatches {bad}, max|d| {e.max().item():.2e}, rms {e.pow(2).mean().sqrt().item():.2e}"
             lines.append(line)
     for k in _DIAG_KERNELS:
-        nb = _C.c_int(); _ck(_lib.cuOccupancyMaxActiveBlocksPerMultiprocessor(_C.byref(nb), _fn[k], 256, ABI[k]["smem"]), "occ")
+        nb = _C.c_int(); _ck(_lib.cuOccupancyMaxActiveBlocksPerMultiprocessor(_C.byref(nb), _fn[k], ABI[k]["block"], ABI[k]["smem"]), "occ")
         regs = _C.c_int(); _lib.cuFuncGetAttribute(_C.byref(regs), 4, _fn[k])
         lcl = _C.c_int(); _lib.cuFuncGetAttribute(_C.byref(lcl), 3, _fn[k])
         lines.append(f"{k}: {regs.value} regs, {lcl.value} B local, smem {ABI[k]['smem']}, {nb.value} blocks/SM")
@@ -567,7 +576,7 @@ def build_all() -> None:
                     "conv2d_v2 v3 (H100 lane): v1 with the (ci, ky) staging pipelined one stage ahead in registers, "
                     "kx unrolled by 4",
                     "conv2d_tiled.crisp", tiled_body("conv_tiled_p"), TILED_KERNELS)
-    perf = ("conv2d_tiled.crisp", "conv2d_fft.crisp")
+    perf = ("conv2d_tiled.crisp", "conv2d_fft.crisp", "conv2d_fft8.crisp")
     make_submission("crisp_conv2d_perf.py",
                     "conv2d_v2 PERFORMANT: per GPU, the method its cuDNN reference allows -- an FFT convolution "
                     "(overlap-save, 64 x 64 tiles) where cuDNN itself uses FFT (A100), else the register-tiled "

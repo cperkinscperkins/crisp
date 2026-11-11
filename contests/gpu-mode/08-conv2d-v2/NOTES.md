@@ -106,8 +106,16 @@ samples max 2.5e-4 on the scored case.  A100 (diag_conv2d_fft.py, scored case, v
 |---|---:|---:|---:|---:|---:|---:|
 | v1, 64-bit indices (leaderboard: 3.20 ms, **#7 / 23**) | 3.21 ms | 0.84 | 0.47 | 1.55 | 0.38 | 0 (max 8.9e-4, rms 1.6e-4) |
 | v1, 32-bit index twins (make_fft32.py) | 3.22 ms | 0.80 | 0.46 | 1.66 | 0.34 | 0 |
-cgemm runs at ~8.8 TFLOPS (45% of fp32 peak), 110 regs, 2 blocks/SM.  The FFT stages are 4-6x above
-their memory floor (radix-2, one barrier per stage).  A100 board: #1 0.855, #5 1.40, #6 2.70 ms.
+| v2 "8": radix-8 transforms (gen_fft8.py -> conv2d_fft8.crisp) | 2.46 ms | 0.46 | 0.28 | 1.55 | 0.20 | 0 (rms 1.58e-4) |
+| v3 "8g2": + cgemm2 (512 threads, two tile blocks share each Wf line) (**leaderboard 2.29 ms**) | 2.29 ms | 0.46 | 0.28 | 1.39 | 0.20 | 0 |
+Radix-8: each 64-point FFT = 8 x 8 (two register DFT8 steps, a `def-function` returning 16 values --
+spelled `=> float ... float`, not `(values ...)`), 4 barriers per tile instead of 12; spectra digit-swapped.
+Shared tile r * 73 + c + c / 8 (put_temp_files_here/conv2d/banks.py): lanes on rows for row steps
+(conflict-free for odd strides), on columns for column steps.
+cgemm SASS (sm_80): 218 instructions per 112 FFMA, 49 of them IMAD (64-bit address math per load);
+cgemm2 191 / 25 IMAD.  Each `(~ v (+ idx 2112ul))` is `gep i8 base, (idx + c) * 4` with plain mul/add, so
+no constant offset folds into the load (see FOR DISCUSSION).  32-bit indices made cgemm slower.
+Floors on the scored case: cgemm 0.70 ms at fp32 peak; transforms ~0.3 ms of DRAM traffic.
 
 ## FOR DISCUSSION (Chris): the performant entry needs two lanes, and only one needs new capability
 
