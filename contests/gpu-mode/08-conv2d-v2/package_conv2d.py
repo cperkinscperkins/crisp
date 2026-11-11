@@ -38,12 +38,57 @@ _spec.loader.exec_module(_sort)
 parse_abi, commented, _popcorn_cli = _sort.parse_abi, _sort.commented, _sort._popcorn_cli
 
 
-def compile_crisp(crisp: str, kernels, arch: str = "sm_80") -> tuple[str, dict[str, str]]:
-    """PTX text and {kernel: CUDA hoist text}.  Run from the repo root (crisp-compile finds its DLLs there)."""
+def _top_level_forms(text: str) -> list[str]:
+    """The top-level forms of a Crisp file (comments outside forms dropped; ; comments and strings respected)."""
+    forms, depth, start, i, n = [], 0, None, 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == ";":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                forms.append(text[start:i + 1])
+        i += 1
+    return forms
+
+
+def merged_source(crisp) -> tuple[str, str]:
+    """(file name, text) for one Crisp file or a tuple of them.  A tuple is concatenated into one module;
+    a top-level form that already appeared in an earlier file (the shared def-types, splat) is dropped."""
+    if isinstance(crisp, str):
+        return crisp, (HERE / crisp).read_text(encoding="utf-8")
+    seen, parts = set(), []
+    for f in crisp:
+        text = (HERE / f).read_text(encoding="utf-8")
+        for form in _top_level_forms(text):
+            key = " ".join(form.split())
+            if key in seen:
+                text = text.replace(form, f";; (shared form dropped: defined earlier in the merged module)", 1)
+            seen.add(key)
+        parts.append(f";; ===== {f} =====\n{text}")
+    name = "_".join(Path(f).stem for f in crisp) + ".crisp"
+    return name, "\n".join(parts)
+
+
+def compile_crisp(crisp, kernels, arch: str = "sm_80") -> tuple[str, dict[str, str]]:
+    """PTX text and {kernel: CUDA hoist text}.  Run from the repo root (crisp-compile finds its DLLs there).
+    crisp is one file name, or a tuple of them compiled as ONE module (see merged_source)."""
     build = HERE / "_build"
     build.mkdir(exist_ok=True)
-    src = build / crisp
-    src.write_text((HERE / crisp).read_text(encoding="utf-8"), encoding="utf-8")
+    name, text = merged_source(crisp)
+    src = build / name
+    src.write_text(text, encoding="utf-8")
     cmd = [str(CRISP_COMPILE), "--ir-target=ptx", f"--ir-target-arch={arch}", "--hoist=cuda", str(src)]
     res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if res.returncode != 0 or "compilation failed" in (res.stdout + res.stderr):
@@ -208,6 +253,128 @@ def custom_kernel(data: input_t) -> output_t:
     return _conv_tiled(_KERNEL, x, w, out)
 '''
 
+# ------------------------------------------------------------------------------------------------
+# FFT lane (conv2d_fft.crisp): where the cuDNN reference is an FFT (the A100), any accurate method passes.
+# Overlap-save on 64 x 64 tiles; planar complex spectra in device scratch made once per shape.
+# ------------------------------------------------------------------------------------------------
+FFT_KERNELS = ("fft_fwd", "cgemm", "fft_inv", "fft_fwd32", "cgemm32", "fft_inv32")
+FFT_COMMON = r'''
+import math as _math
+
+_FFT_REFERENCE_CC = {(8, 0)}        # A100: cuDNN's own answer is an FFT (accurate), so ours may be too
+_FFT = {}
+_FFT_SFX = ""          # "" = 64-bit index kernels, "32" = their 32-bit twins
+
+
+def _fft_plan(B, C, H, K):
+    O, V = H - K + 1, 65 - K
+    nt = -(-O // V)
+    NBT = B * nt * nt
+    NBTP = -(-NBT // 7) * 7
+    key = (B, C, H, K)
+    st = _FFT.get(key)
+    if st is None:
+        f = lambda n: torch.empty(n, dtype=torch.float32, device="cuda")
+        m = torch.arange(32, dtype=torch.float64)
+        tw = torch.cat([torch.cos(2 * _math.pi * m / 64), -torch.sin(2 * _math.pi * m / 64)]).float().cuda()
+        nxf, nwf = C * NBTP * 2112, C * C * 2112
+        st = _FFT[key] = dict(tw=tw, nxf=nxf, nwf=nwf, xr=f(nxf), xi=f(nxf), wr=f(nwf), wi=f(nwf), yr=f(nxf), yi=f(nxf),
+                              d0=_dims(C, H, K, 0, NBT, nt, NBTP, B), d1=_dims(C, H, K, 1, NBT, nt, NBTP, B),
+                              NBT=NBT, NBTP=NBTP)
+    return st
+
+
+def _fft_stage(st, which, x, w, out, sfx=""):
+    P = lambda t: t.data_ptr()
+    C = w.shape[0]
+    nxf, nwf = st["nxf"], st["nwf"]
+    if which == "wfft":
+        _launch("fft_fwd" + sfx, C * C, {"src": (P(w), w.numel()), "tw": (P(st["tw"]), 64), "dims": (P(st["d1"]), 8),
+                                   "outr": (P(st["wr"]), nwf), "outi": (P(st["wi"]), nwf)})
+    elif which == "xfft":
+        _launch("fft_fwd" + sfx, C * st["NBT"], {"src": (P(x), x.numel()), "tw": (P(st["tw"]), 64), "dims": (P(st["d0"]), 8),
+                                           "outr": (P(st["xr"]), nxf), "outi": (P(st["xi"]), nxf)})
+    elif which == "cgemm":
+        _launch("cgemm" + sfx, 66 * ((C + 31) // 32) * (st["NBTP"] // 7),
+                {"xr": (P(st["xr"]), nxf), "xi": (P(st["xi"]), nxf), "wr": (P(st["wr"]), nwf), "wi": (P(st["wi"]), nwf),
+                 "dims": (P(st["d0"]), 8), "yr": (P(st["yr"]), nxf), "yi": (P(st["yi"]), nxf)})
+    else:
+        _launch("fft_inv" + sfx, C * st["NBT"], {"yr": (P(st["yr"]), nxf), "yi": (P(st["yi"]), nxf), "tw": (P(st["tw"]), 64),
+                                           "dims": (P(st["d0"]), 8), "y": (P(out), out.numel())})
+
+
+def _conv_fft(x, w, out, sfx=_FFT_SFX):
+    B, C, H, _ = x.shape
+    st = _fft_plan(B, C, H, w.shape[2])
+    for s in ("wfft", "xfft", "cgemm", "ifft"):
+        _fft_stage(st, s, x, w, out, sfx)
+    return out
+'''
+
+PERF_ENTRY = r'''
+
+def custom_kernel(data: input_t) -> output_t:
+    x, w, out = data
+    if _lib is None:
+        _init()
+    if torch.cuda.get_device_capability() in _FFT_REFERENCE_CC and w.shape[2] <= 33:
+        return _conv_fft(x, w, out)
+    return _conv_tiled("conv_tiled_p", x, w, out)
+'''
+
+# Per-stage timing of the FFT lane on the scored case (eval.py's procedure), plus accuracy vs the reference.
+FFT_TIMING_DIAG = r'''
+
+_DIAG_SFX = ("", "32")
+_DIAG_KERNELS = FFT_KERNELS_PLACEHOLDER
+
+def custom_kernel(data):
+    from reference import generate_input, ref_kernel
+    from utils import clear_l2_cache
+    if _lib is None:
+        _init()
+    def tm(f, reps=5, clear=True):
+        f(); torch.cuda.synchronize()
+        ts = []
+        for _ in range(reps):
+            if clear:
+                clear_l2_cache()
+            torch.cuda.synchronize()
+            a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            a.record(); f(); b.record(); torch.cuda.synchronize()
+            ts.append(a.elapsed_time(b))
+        return sum(ts) / len(ts), min(ts)
+    lines = [f"device {torch.cuda.get_device_name()} cc {torch.cuda.get_device_capability()}"]
+    for case in ((256, 32, 128, 1, 6252), (256, 16, 128, 2, 8841), (128, 8, 64, 4, 54352)):
+        size, ks, ch, b, seed = case
+        d = generate_input(size=size, kernelsize=ks, channels=ch, batch=b, seed=seed)
+        x, w, out = d
+        ref = ref_kernel(d).clone()
+        m, lo = tm(lambda: ref_kernel(d))
+        lines.append(f"case {case}: ref {m:.3f} ms")
+        tol = 1e-3 + 1e-3 * ref.abs()
+        st = _fft_plan(b, ch, size, ks)
+        for sfx in _DIAG_SFX:
+            o = torch.empty_like(out)
+            _conv_fft(x, w, o, sfx); torch.cuda.synchronize()
+            bad = int(((o - ref).abs() > tol).sum().item())
+            e = (o - ref).abs()
+            m, lo = tm(lambda: _conv_fft(x, w, o, sfx))
+            line = f"   [{sfx or '64'}] total {m:.3f} ms (min {lo:.3f});"
+            for s in ("wfft", "xfft", "cgemm", "ifft"):
+                sm, _ = tm(lambda: _fft_stage(st, s, x, w, o, sfx))
+                line += f" {s} {sm:.3f}"
+            line += f"; mismatches {bad}, max|d| {e.max().item():.2e}, rms {e.pow(2).mean().sqrt().item():.2e}"
+            lines.append(line)
+    for k in _DIAG_KERNELS:
+        nb = _C.c_int(); _ck(_lib.cuOccupancyMaxActiveBlocksPerMultiprocessor(_C.byref(nb), _fn[k], 256, ABI[k]["smem"]), "occ")
+        regs = _C.c_int(); _lib.cuFuncGetAttribute(_C.byref(regs), 4, _fn[k])
+        lcl = _C.c_int(); _lib.cuFuncGetAttribute(_C.byref(lcl), 3, _fn[k])
+        lines.append(f"{k}: {regs.value} regs, {lcl.value} B local, smem {ABI[k]['smem']}, {nb.value} blocks/SM")
+    raise RuntimeError("DIAG\n" + "\n".join(lines))
+'''.replace("FFT_KERNELS_PLACEHOLDER", repr(FFT_KERNELS))
+
+
 # A/B timing on ONE runner (GPU MODE's H100s differ ~30%): eval.py's procedure -- clear_l2_cache, events,
 # mean -- for the cuDNN reference and each tiled kernel on the scored case, plus bit-exactness vs the reference.
 TIMING_DIAG = TILED_COMMON + r'''
@@ -369,7 +536,7 @@ def make_submission(out_name: str, title: str, crisp: str, body: str, kernels) -
           "# Generated by contests/gpu-mode/08-conv2d-v2/package_conv2d.py from Crisp source.  The kernels are Crisp,\n"
           "# compiled to PTX by crisp-compile; this file only loads that PTX with the CUDA driver API and launches it.\n"
           "#\n# Crisp source:\n# -------------------------------------------------------------------------\n"
-          f"# --- {crisp} ---\n{commented(HERE / crisp)}\n"
+          + "".join(f"# --- {f} ---\n{commented(HERE / f)}\n" for f in ((crisp,) if isinstance(crisp, str) else crisp)) +
           "# -------------------------------------------------------------------------\n"
           + RUNTIME + body +
           f"\nABI = {json.dumps(abi)}\n\nPTX = r\"\"\"{ptx}\"\"\"\n")
@@ -400,6 +567,14 @@ def build_all() -> None:
                     "conv2d_v2 v3 (H100 lane): v1 with the (ci, ky) staging pipelined one stage ahead in registers, "
                     "kx unrolled by 4",
                     "conv2d_tiled.crisp", tiled_body("conv_tiled_p"), TILED_KERNELS)
+    perf = ("conv2d_tiled.crisp", "conv2d_fft.crisp")
+    make_submission("crisp_conv2d_perf.py",
+                    "conv2d_v2 PERFORMANT: per GPU, the method its cuDNN reference allows -- an FFT convolution "
+                    "(overlap-save, 64 x 64 tiles) where cuDNN itself uses FFT (A100), else the register-tiled "
+                    "direct convolution that keeps cuDNN's (ci, ky, kx) FMA chain bit for bit",
+                    perf, TILED_COMMON + FFT_COMMON + PERF_ENTRY, TILED_KERNELS + FFT_KERNELS)
+    make_submission("diag_conv2d_fft.py", "conv2d_v2 FFT TIMING DIAGNOSTIC (per stage, vs cuDNN, one runner)",
+                    perf, TILED_COMMON + FFT_COMMON + FFT_TIMING_DIAG, TILED_KERNELS + FFT_KERNELS)
     make_submission("diag_conv2d_timing.py", "conv2d_v2 TIMING DIAGNOSTIC (cuDNN vs tiled kernels, one runner)",
                     "conv2d_tiled.crisp", TIMING_DIAG, TILED_KERNELS)
     make_submission("diag_conv2d_orders.py", "conv2d_v2 ORDER DIAGNOSTIC (which FMA chain reproduces cuDNN fp32)",

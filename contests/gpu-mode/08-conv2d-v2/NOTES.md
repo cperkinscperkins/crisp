@@ -92,6 +92,23 @@ pipelined kernel computed all zeros until the stage count was renamed NS.
 - `diag_conv2d_orders.py` -- which cuDNN kernels the reference launches (torch.profiler) and whether a
   (ci, ky, kx) or (ky, kx, ci) FMA chain reproduces it bit for bit.
 
+## FFT lane (A100) -- `conv2d_fft.crisp`, entry `crisp_conv2d_perf.py` (Chris chose option (a), 2026-11-11)
+Overlap-save on 64 x 64 tiles (V = 65 - K valid outputs per tile side), four launches: `fft_fwd` on W
+(mode 1, conjugated) and on X (mode 0), `cgemm` per frequency bin, `fft_inv`.  No complex type: spectra
+are planar (separate re / im arrays) and stored in a scrambled bin order shared by X, W and Y (rows
+bit-reversed), so no stage unscrambles.  The twiddle table comes from the host (no libdevice).
+`crisp_conv2d_perf.py` is ONE performant file for all GPUs: FFT where cc is (8, 0), conv_tiled_p elsewhere.
+Both .crisp files compile as one module (package_conv2d.py `merged_source` drops the repeated def-types).
+
+BMG: 0 mismatches vs conv2d_accurate on all 6 test shapes and all 4 benchmark shapes (contest rule), float64
+samples max 2.5e-4 on the scored case.  A100 (diag_conv2d_fft.py, scored case, vs the reference):
+| version | total | wfft | xfft | cgemm | ifft | mismatches |
+|---|---:|---:|---:|---:|---:|---:|
+| v1, 64-bit indices (leaderboard: 3.20 ms, **#7 / 23**) | 3.21 ms | 0.84 | 0.47 | 1.55 | 0.38 | 0 (max 8.9e-4, rms 1.6e-4) |
+| v1, 32-bit index twins (make_fft32.py) | 3.22 ms | 0.80 | 0.46 | 1.66 | 0.34 | 0 |
+cgemm runs at ~8.8 TFLOPS (45% of fp32 peak), 110 regs, 2 blocks/SM.  The FFT stages are 4-6x above
+their memory floor (radix-2, one barrier per stage).  A100 board: #1 0.855, #5 1.40, #6 2.70 ms.
+
 ## FOR DISCUSSION (Chris): the performant entry needs two lanes, and only one needs new capability
 
 ### H100 lane -- no new API.  In progress (`conv2d_tiled.crisp`).
