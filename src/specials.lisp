@@ -48,6 +48,8 @@
           *208-SCALE-LAYOUTS*
           *210-PAIRS-ONLY*
           *210-STORE-TRANSFORM*
+          *211-SHIFT-OP-NAMES*
+          *212-VOTE-OP-NAMES*
           *ACCUM-BASE-REGISTRY*
           *ACCUM-REGISTRY*
           *AD-ANY-OUTPUT-DOUBLE*

@@ -330,6 +330,9 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-TENSOR-CANONICAL-SPEC OP ARGS)  analysis/structs.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%EXTRACT-SCRATCH-SIZE-EXPR OP ARGS)  analysis/structs.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%FOLD-SCRATCH-SIZE-EXPR X)  analysis/structs.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (SCAN-FORM (FORM CONS))  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - (%SCAN-GENERIC-DEFAULT-SCRATCH FN-NAME)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - - - - - - (%SCRATCH-ALLOCATION-FORM-P FORM)  analysis/core.lisp
@@ -442,7 +445,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-DENORM-EXECUTION-MODE FUNC MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - (%EMIT-SPIRV-SUBGROUP-SIZE-EXECUTION-MODE FUNC MODULE SEMANTIC-FUNCTION)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - (%173-ENSURE-GRAD-DISPATCH-DECLS SEMANTIC-FUNCTION)  codegen.lisp [See above]
-- - - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - (%HP-LOCAL-SIZE-DIMS LOCAL-SIZE-DECL)  hardware-profile.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - (%175-CHECK-KERNEL-WARP-COLLECTIVE-PINNING SEMANTIC-FUNCTION PINNED-P)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%175-REACHES-WARP-COLLECTIVE-P KNAME)  codegen.lisp
@@ -529,7 +532,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%GET-DI-LOCATION NODE MODULE DI-BUILDER DI-SCOPE LOCATION-MAP)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-LOWER (OP
                                                                 (EQL
-                                                                 '%185-FMOD)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp
+                                                                 '%212-WARP-ALL)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC BUILDER MODULE BASE TYPE-NAME &REST ARGS)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
                                                                                                                hw_tmp))  codegen.lisp
@@ -607,7 +610,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-LOWER (OP
                                                                   (EQL
-                                                                   '%185-FMOD)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp [RECURSION]
+                                                                   '%212-WARP-ALL)) BUILDER MODULE ARG-VALS ARG-TYPES RESULT-TYPE)  codegen.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%APPLY-PRECISION-FMF INST)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%185-HELPER-CALL BUILDER MODULE NAME RET-TYPE ARG-VALS BODY-FN)  codegen.lisp
@@ -627,6 +630,19 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%185-FMOD-BODY BUILDER MODULE X Y TYPE-NAME)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-FLOAT-CONST BUILDER MODULE TYPE-NAME VALUE)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%211-LOWER KIND BUILDER MODULE ARG-VALS ARG-TYPES)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (BUILD-CAST-IF-NEEDED BUILDER MODULE FROM-VAL FROM-TYPE-NAME TO-TYPE-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%185-HELPER-CALL BUILDER MODULE NAME RET-TYPE ARG-VALS BODY-FN)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%211-SHIFT-ROTATE-BODY BUILDER MODULE KIND X C X-TYPE)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CRISP-TYPE-TO-LLVM-TYPE TYPE-SPEC MODULE)  codegen/abi.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-CALL BUILDER MODULE NAME RET-TYPE ARGS &OPTIONAL (LABEL
+                                                                                                                 hw_tmp))  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%HW-INTRINSIC-SUFFIX CAT BITS LANES BASE-NAME)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%212-VOTE-LOWER KIND BUILDER MODULE PRED)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%212-PRED-I1 BUILDER PRED)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%193-EMIT-DIE BUILDER MODULE LOCATION &OPTIONAL NODE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP INFO)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%193-DIE-RECORD-GLOBAL MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (GENERATE-NODE-IR (NODE
@@ -784,8 +800,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (CALCULATE-UNIFORMITY-STATE NODE ENV)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (FIND-VARIABLE-IN-ENV NAME ENV)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%194-WARP-INDEX-DIVISION-P NODE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (ACTIVE-HARDWARE-PROFILE)  hardware-profile.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%173-WARP-SIZE)  analysis/core.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%194-LANE-INDEX-NODE-P N)  analysis/core.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%194-LANE-INDEX-NODE-P N)  analysis/core.lisp [RECURSION]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%194-ONE-DIMENSIONAL-WORKGROUP-P)  analysis/core.lisp
@@ -926,7 +941,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-CONTROL-BARRIER BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-SPLIT-BARRIER BUILDER MODULE PHASE)  codegen.lisp
-- - - - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp
+- - - - - - - - - - - - - - - - - - - - - - - - - - - (%COOP-CALL BUILDER MODULE NAME RET-TYPE PARAM-TYPES ARG-VALS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%PTX-SYNCWARP BUILDER MODULE)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - (%SPIRV-GET-OR-CREATE-FN MODULE FN-NAME LLVM-RET-TYPE PARAM-TYPES PARAM-COUNT)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - (%GEN-SPIRV-WARP-BARRIER BUILDER MODULE)  codegen.lisp
@@ -2184,6 +2199,8 @@ Nodes marked `[See above]` have been expanded previously in the document.
 
 - (%210-REPLACE-STORE-SOURCE SRC-FORM NEW)  mma.lisp
 
+- (%212-VOTE-NODE-P NODE)  analysis/core.lisp
+
 - (%AD-REPLAY-READ-SYMS FORM)  autodiff.lisp
 
 - (%AD-REPLAY-SCALAR-WRITE-TARGETS FORM)  autodiff.lisp
@@ -3027,6 +3044,18 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%HW-TYPE-PARTS TYPE-NAME)  analysis/ops.lisp [See above]
 - - (%185-COERCE-LITERAL-NODE FORM NODE TO-TYPE ENV CONTEXT LOCATION POS)  analysis/ops.lisp [See above]
+
+- (ANALYZE-211-SHIFT-OP EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%185-INT-CATEGORY-P TYPE-NAME)  analysis/ops.lisp [See above]
+
+- (ANALYZE-212-VOTE-OP EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%185-INT-CATEGORY-P TYPE-NAME)  analysis/ops.lisp [See above]
+- - (%173-WARP-SIZE)  analysis/core.lisp [See above]
+- - (%SHUFFLE-CHECK-NOT-DIVERGENT OP-NAME LOCATION)  analysis/control.lisp [See above]
 
 - (ANALYZE-ACCUM-OP EXPR ENV CONTEXT LOCATION)  analysis/ops.lisp
 - - (%MF-BLOCK-OF FORM ENV CONTEXT LOCATION)  analysis/ops.lisp

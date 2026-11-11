@@ -1127,9 +1127,97 @@ set!  analyzer's behavior in analysis/structs.lisp."
 (defparameter *185-bit-op-names* '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT")
   "Endeavour 185 P2: the integer bit operator names analyzed by analyze-185-bit-op.")
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 211 -- shift-left / shift-right / rotate-left / rotate-right
+;;;; See tests/spec/211-shift-rotate/shift-rotate.md.
+;;;; ----------------------------------------------------------------------
+
+(defparameter *211-shift-op-names* '("SHIFT-LEFT" "SHIFT-RIGHT" "ROTATE-LEFT" "ROTATE-RIGHT")
+  "Endeavour 211: the shift / rotate operators analyzed by analyze-211-shift-op.  Each takes (x count);
+   the count is taken modulo x's width.")
+
+(defun analyze-211-shift-op (expr env context location)
+  "Analyzes (shift-left x n) / (shift-right x n) / (rotate-left x n) / (rotate-right x n) (endeavour 211).
+   X is a scalar integer and fixes the result type; N may be any integer type (codegen converts it to X's
+   type, which cannot change its low bits, so 'N mod width' is the same either way).  shift-right is
+   logical for an unsigned X, arithmetic for a signed one."
+  (let* ((name (symbol-name (first expr)))
+         (args (rest expr)))
+    (unless (= (length args) 2)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~) takes 2 arguments (x count); got ~a" name (length args))
+             :source-location location))
+    (let* ((nodes (loop for a in args for i from 1
+                        collect (analyze-expression a env context (append location (list i)))))
+           (x-type (get-single-value-type (first nodes)))
+           (n-type (get-single-value-type (second nodes))))
+      (unless (%185-int-category-p x-type)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): operands must be integers (chapter 32/05); got ~(~a~)" name x-type)
+               :source-location location))
+      (unless (%185-int-category-p n-type)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): the count must be an integer; got ~(~a~)" name n-type)
+               :source-location location))
+      (log:debug "analyze-211-shift-op: ~a x=~a count=~a" name x-type n-type)
+      (make-semantic-hw-op :op (cond ((string= name "SHIFT-LEFT") '%211-shift-left)
+                                     ((string= name "SHIFT-RIGHT") '%211-shift-right)
+                                     ((string= name "ROTATE-LEFT") '%211-rotate-left)
+                                     (t '%211-rotate-right))
+                           :type x-type :args nodes :source-location location))))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 212 -- warp-ballot / warp-any / warp-all
+;;;; See tests/spec/212-warp-vote/warp-vote.md.
+;;;; ----------------------------------------------------------------------
+
+(defparameter *212-vote-op-names*
+  '(("WARP-BALLOT" . %212-warp-ballot) ("WARP-ANY?" . %212-warp-any) ("WARP-ALL?" . %212-warp-all))
+  "Endeavour 212: the warp vote operators and the semantic-hw-op op each analyzes to.  Each takes one
+   predicate (a condition, as for if: nonzero is true).  warp-ballot gives a uint mask, bit L set iff lane
+   L's predicate holds; warp-any? / warp-all? give a 0 / 1 int, like a comparison.")
+
+(defun analyze-212-vote-op (expr env context location)
+  "Analyzes (warp-ballot pred) / (warp-any? pred) / (warp-all? pred) (endeavour 212).
+   PRED is a condition under if's rule: a comparison, or any integer scalar read as nonzero-is-true (Crisp's
+   comparisons are 0 / 1 ints).  A float is refused.  The vote is a warp collective, checked exactly as a
+   shuffle is (%shuffle-check-not-divergent: every lane must reach it, and it is recorded for loop exits
+   and call sites).  warp-ballot's uint holds 32 lanes, so a profile whose warp is wider is refused
+   (Chris, 2026-11-10); on PTX the warp is 32 by architecture."
+  (let* ((name (symbol-name (first expr)))
+         (lname (string-downcase name))
+         (op (cdr (assoc name *212-vote-op-names* :test #'string=)))
+         (args (rest expr)))
+    (unless (= (length args) 1)
+      (error 'crisp-compiler-error
+             :message (format nil "~a takes one argument, the predicate; got ~a.  There is no member-mask argument: a vote may only run where every lane of the warp reaches it, so the mask is always the whole warp."
+                              lname (length args))
+             :source-location location))
+    (let* ((pred (analyze-expression (first args) env context (append location '(1))))
+           (ptype (get-single-value-type pred)))
+      (unless (or (%185-int-category-p ptype)
+                  (and (symbolp ptype) (string-equal (symbol-name ptype) "BOOL")))
+        (error 'crisp-compiler-error
+               :message (format nil "~a: the predicate must be a condition -- a comparison, or an integer read as nonzero-is-true, as for if; got ~(~a~).  Write the comparison you mean, e.g. (> x 0.0)."
+                                lname ptype)
+               :source-location location))
+      (when (and (eq op '%212-warp-ballot) (> (%173-warp-size) 32))
+        (error 'crisp-compiler-error
+               :message (format nil "warp-ballot: a warp of ~a lanes (the active hardware profile's :simd-width) does not fit the 32-bit mask warp-ballot returns -- a uint, bit L for lane L.  Crisp has no wider ballot until a target with such warps exists; warp-any? and warp-all? work at any width."
+                                (%173-warp-size))
+               :source-location location))
+      (%shuffle-check-not-divergent lname location)
+      (log:debug "analyze-212-vote-op: ~a pred-type=~a warp=~a" lname ptype (%173-warp-size))
+      (make-semantic-hw-op :op op
+                           :type (if (eq op '%212-warp-ballot) 'uint 'int)
+                           :args (list pred)
+                           :source-location location))))
+
 (defun %185-register-math-op-analyzers ()
   "Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language
-   and :crisp.compiler.  Called from register-ops-analyzers."
+   and :crisp.compiler.  Called from register-ops-analyzers.
+   Endeavour 211: also analyze-211-shift-op under every *211-shift-op-names* name.
+   Endeavour 212: also analyze-212-vote-op under every *212-vote-op-names* name."
   (let ((cl-pkg (find-package :crisp-language))
         (cc-pkg (find-package :crisp.compiler)))
     (dolist (name *185-math-op-names*)
@@ -1138,7 +1226,15 @@ set!  analyzer's behavior in analysis/structs.lisp."
     ;; P2: the integer bit operations
     (dolist (name *185-bit-op-names*)
       (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-bit-op)
-      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-bit-op)))
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-bit-op))
+    ;; Endeavour 211: shifts and rotates, count modulo the width
+    (dolist (name *211-shift-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-211-shift-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-211-shift-op))
+    ;; Endeavour 212: the warp votes
+    (dolist (entry *212-vote-op-names*)
+      (setf (gethash (intern (car entry) cl-pkg) *expression-analyzers*) 'analyze-212-vote-op)
+      (setf (gethash (intern (car entry) cc-pkg) *expression-analyzers*) 'analyze-212-vote-op)))
   (%register-accum-analyzers))
 
 (defun analyze-185-bit-op (expr env context location)

@@ -1,8 +1,8 @@
 # Crisp Codebase Reference
 
-Generated on 2026-11-09T16:25:34.658788Z
+Generated on 2026-11-11T17:05:43.035063Z
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
 ### DEFUN `%MMTS-ACCUMULATOR-MAP-TARGET`
 - **Args**: `(REDUCTION-BODY C-TILE)`
@@ -1379,7 +1379,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\analysis\core.lisp`
 
 ### DEFVAR `*IN-LANE-DIVERGENT*`
 
@@ -2135,10 +2135,17 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFUN `%212-VOTE-NODE-P`
+- **Args**: `(NODE)`
+
+  > Endeavour 212: T when NODE is a semantic-hw-op for a warp vote.
+
+
+---
 ### DEFUN `CALCULATE-UNIFORMITY-STATE`
 - **Args**: `(NODE ENV)`
 
-  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :warp-uniform (Endeavour 194), :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: per-work-item ids (get-global-id/get-local-id/*-linear-id/  >      get-global-id-abs) are :divergent; ids/sizes/offsets constant across the  >      workgroup (get-workgroup-id, get-num-groups, get-*-work-size, get-global-offset,  >      get-work-dim, get-*-linear-size, get-total-*) are :uniform.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
+  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :warp-uniform (Endeavour 194), :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: per-work-item ids (get-global-id/get-local-id/*-linear-id/  >      get-global-id-abs) are :divergent; ids/sizes/offsets constant across the  >      workgroup (get-workgroup-id, get-num-groups, get-*-work-size, get-global-offset,  >      get-work-dim, get-*-linear-size, get-total-*) are :uniform.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.  >    Endeavour 212: a warp vote (warp-ballot / warp-any? / warp-all?) is :warp-uniform (:uniform when its  >    predicate is).
 
 
 ---
@@ -2296,7 +2303,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\ops.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\analysis\ops.lisp`
 
 ### DEFUN `%NARY-FOLD-LEFT`
 - **Args**: `(EXPR)`
@@ -2739,9 +2746,35 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFPARAMETER `*211-SHIFT-OP-NAMES*`
+
+  > Endeavour 211: the shift / rotate operators analyzed by analyze-211-shift-op.  Each takes (x count);  >    the count is taken modulo x's width.
+
+
+---
+### DEFUN `ANALYZE-211-SHIFT-OP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (shift-left x n) / (shift-right x n) / (rotate-left x n) / (rotate-right x n) (endeavour 211).  >    X is a scalar integer and fixes the result type; N may be any integer type (codegen converts it to X's  >    type, which cannot change its low bits, so 'N mod width' is the same either way).  shift-right is  >    logical for an unsigned X, arithmetic for a signed one.
+
+
+---
+### DEFPARAMETER `*212-VOTE-OP-NAMES*`
+
+  > Endeavour 212: the warp vote operators and the semantic-hw-op op each analyzes to.  Each takes one  >    predicate (a condition, as for if: nonzero is true).  warp-ballot gives a uint mask, bit L set iff lane  >    L's predicate holds; warp-any? / warp-all? give a 0 / 1 int, like a comparison.
+
+
+---
+### DEFUN `ANALYZE-212-VOTE-OP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (warp-ballot pred) / (warp-any? pred) / (warp-all? pred) (endeavour 212).  >    PRED is a condition under if's rule: a comparison, or any integer scalar read as nonzero-is-true (Crisp's  >    comparisons are 0 / 1 ints).  A float is refused.  The vote is a warp collective, checked exactly as a  >    shuffle is (%shuffle-check-not-divergent: every lane must reach it, and it is recorded for loop exits  >    and call sites).  warp-ballot's uint holds 32 lanes, so a profile whose warp is wider is refused  >    (Chris, 2026-11-10); on PTX the warp is 32 by architecture.
+
+
+---
 ### DEFUN `%185-REGISTER-MATH-OP-ANALYZERS`
 
-  > Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language  >    and :crisp.compiler.  Called from register-ops-analyzers.
+  > Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language  >    and :crisp.compiler.  Called from register-ops-analyzers.  >    Endeavour 211: also analyze-211-shift-op under every *211-shift-op-names* name.  >    Endeavour 212: also analyze-212-vote-op under every *212-vote-op-names* name.
 
 
 ---
@@ -3568,7 +3601,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\analysis\structs.lisp`
 
 ### DEFUN `GET-ARRAY-ELEMENT-TYPE`
 - **Args**: `(TYPE)`
@@ -3724,10 +3757,17 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFUN `%FOLD-SCRATCH-SIZE-EXPR`
+- **Args**: `(X)`
+
+  > Endeavour 212: X, a make-scratch-* size expression, with every foldable part folded to an integer --  >    integer literals, (+ - * / ...) of foldable parts, and (warp-size), which is %173-warp-size for the target  >    being compiled (32 on PTX, the profile's :simd-width on SPIR-V).  A per-dimension list (8 (warp-size)) is  >    folded element by element.  Anything else -- a keyword such as :match-workgroup-size, a runtime name, a  >    division by zero -- is returned as it was, so the hoisters see exactly what they saw before.  >    Why: the size reaches the metacrisp verbatim and the hoisters can only size a buffer from a number; per-warp  >    shared state needs (warps per workgroup) x K words, which differs between NVIDIA and BMG.
+
+
+---
 ### DEFUN `%EXTRACT-SCRATCH-SIZE-EXPR`
 - **Args**: `(OP ARGS)`
 
-  > Extracts the user-supplied size expression from make-scratch-* args.
+  > Extracts the user-supplied size expression from make-scratch-* args.  >    Endeavour 212: folded to an integer where it can be (%fold-scratch-size-expr), so (warp-size) may size a  >    per-warp buffer.  Every caller -- the Pass 1 scan, the analyzer and the AD rebuild of a scratch form --  >    records or re-emits this value.
 
 
 ---
@@ -3933,7 +3973,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\anf-transform.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\anf-transform.lisp`
 
 ### DEFVAR `*ANF-COUNTER*`
 
@@ -4130,7 +4170,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\api.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\api.lisp`
 
 ### DEFVAR `*API-TEMP-ROOT*`
 
@@ -4449,7 +4489,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\autodiff.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\autodiff.lisp`
 
 ### DEFUN `%VJP-VIA-TILE-BODY-MAP`
 - **Args**: `(FORM)`
@@ -6131,7 +6171,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\codegen.lisp`
 
 ### DEFUN `%COOP-LENGTH`
 - **Args**: `(BUILDER MODULE MAT-VAL ELEM-LLVM ROWS COLS USE)`
@@ -6837,6 +6877,34 @@ Generated on 2026-11-09T16:25:34.658788Z
 - **Args**: `(BUILDER MODULE X Y TYPE-NAME)`
 
   > Float mod: r = frem(x, y); r + y when r /= 0 and r, y differ in sign.
+
+
+---
+### DEFUN `%211-SHIFT-ROTATE-BODY`
+- **Args**: `(BUILDER MODULE KIND X C X-TYPE)`
+
+  > Endeavour 211: the body of a shift / rotate of X by C (already X-TYPE), KIND one of :shl :shr :rotl  >    :rotr.  The count is taken modulo the width:  >      shifts  -> (and c (bits - 1)) then shl / lshr (unsigned) / ashr (signed).  LLVM drops the and when it  >                 can prove c's range; on PTX the shift is then one instruction.  >      rotates -> llvm.fshl / llvm.fshr (x, x, c), whose count is ALREADY modulo the width by definition;  >                 NVPTX makes a 32-bit one a single shf.l.wrap / shf.r.wrap.
+
+
+---
+### DEFUN `%211-LOWER`
+- **Args**: `(KIND BUILDER MODULE ARG-VALS ARG-TYPES)`
+
+  > Endeavour 211: lower shift / rotate KIND through an internal helper __crisp_<kind>_<type> -- noinline  >    on SPIR-V only (the BMG needs it for inline integer bodies, BUG 120 family), inlined on PTX  >    (%185-helper-call).  The count is converted to the operand's type first, as for ash.
+
+
+---
+### DEFUN `%212-PRED-I1`
+- **Args**: `(BUILDER PRED)`
+
+  > Endeavour 212: the vote predicate PRED (an LLVM integer value) as an i1, under if's rule: nonzero is  >    true.  An i1 passes through.
+
+
+---
+### DEFUN `%212-VOTE-LOWER`
+- **Args**: `(KIND BUILDER MODULE PRED)`
+
+  > Endeavour 212: one warp vote of KIND (:ballot :any :all) on predicate PRED, as ONE hardware op.  >      PTX     llvm.nvvm.vote.{ballot,any,all}.sync with the full member mask -- legal because the analyzer  >              only lets a vote run where every lane of the warp reaches it (as for the shuffles).  >      SPIR-V  __spirv_GroupNonUniformBallot (Subgroup scope; component 0 of its uvec4 holds lanes 0..31)  >              / __spirv_GroupNonUniformAny / __spirv_GroupNonUniformAll.  >    :ballot returns an i32 mask; :any / :all return a 0 / 1 i32 (a Crisp condition, like a comparison).
 
 
 ---
@@ -7975,7 +8043,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 ---
 ### DEFPARAMETER `*WARP-COLLECTIVE-OPERATOR-NAMES*`
 
-  > Operators whose correctness depends on the warp width the kernel actually runs at.  >    reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a  >    user writes, and listing them means the scan works whether or not they have been expanded.
+  > Operators whose correctness depends on the warp width the kernel actually runs at.  >    reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a  >    user writes, and listing them means the scan works whether or not they have been expanded.  >    Endeavour 212: the votes -- a ballot's bits are lane positions, and any? / all? count the lanes.
 
 
 ---
@@ -8211,7 +8279,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\codegen\abi.lisp`
 
 ### DEFPARAMETER `*CACHED-INT32-TYPE*`
 
@@ -8282,7 +8350,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\compiler.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\compiler.lisp`
 
 ### DEFVAR `*GRID-FUNCTIONS*`
 
@@ -8912,7 +8980,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\enums.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\enums.lisp`
 
 ### DEFMACRO `DEF-ENUMERATION`
 - **Args**: `(NAME &REST SPECS)`
@@ -8925,7 +8993,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 - **Args**: `(X)`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\environment.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\environment.lisp`
 
 ### DEFUN `PARSE-FUNCTION-DECLARATIONS`
 - **Args**: `(PARAMS DECLARATIONS)`
@@ -9108,7 +9176,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\errors.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\errors.lisp`
 
 ### DEFPARAMETER `*UNSUPPORTED-FORM-HINTS*`
 
@@ -9123,7 +9191,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\globals.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\globals.lisp`
 
 ### DEFVAR `*REGISTER-TILE-ELEMS*`
 
@@ -9227,7 +9295,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hardware-profile.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hardware-profile.lisp`
 
 ### DEFPARAMETER `*HARDWARE-PROFILE-SCHEMA*`
 
@@ -9378,7 +9446,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\main.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist-cuda\main.lisp`
 
 ### DEFVAR `*MMA-SWIZZLE-DESCRIBES*`
 
@@ -9962,9 +10030,9 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-cuda\package.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist-cuda\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist-l0\main.lisp`
 
 ### DEFVAR `*L0-SELECTED-REGISTERS-PER-THREAD*`
 
@@ -10460,9 +10528,9 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist-l0\package.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist-l0\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\codegen-base.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist\codegen-base.lisp`
 
 ### DEFUN `CRISP-TYPE-TO-CPP-TYPE`
 - **Args**: `(CRISP-TYPE)`
@@ -10653,7 +10721,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\common.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist\common.lisp`
 
 ### DEFUN `PARSE-METACRISP-FILE`
 - **Args**: `(FILEPATH)`
@@ -10737,9 +10805,9 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\package.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\hoist\source-mode.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\hoist\source-mode.lisp`
 
 ### DEFVAR `*HOIST-KERNEL-SOURCE-MODE*`
 
@@ -10859,7 +10927,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\llvm-bindings.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\llvm-bindings.lisp`
 
 ### DEFUN `LLVM-BFLOAT-TYPE`
 
@@ -11020,7 +11088,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 ### DEFCONSTANT `+LLVM-FAST-MATH-ALL+`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\macros.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\macros.lisp`
 
 ### DEFMACRO `LET`
 - **Args**: `(BINDINGS &BODY BODY)`
@@ -11869,7 +11937,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\main.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\main.lisp`
 
 ### DEFUN `PRINT-COMPILER-ERROR`
 - **Args**: `(C FILENAME)`
@@ -12023,7 +12091,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\mangling.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\mangling.lisp`
 
 ### DEFVAR `*TEMPLATE-ARITY-LOOKUP-FN*`
 
@@ -12105,7 +12173,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\metadata-val.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\metadata-val.lisp`
 
 ### DEFMACRO `DEFINE-FORWARD-ONLY-VALIDATOR`
 - **Args**: `(NAME ARGS &BODY BODY)`
@@ -12754,7 +12822,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\metadata.lisp`
 
 ### DEFUN `%MODULE-USES-CLUSTER-REACH-P`
 
@@ -12936,7 +13004,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\mma.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\mma.lisp`
 
 ### DEFUN `%MAP-ELEMENTS-FN-NAME`
 - **Args**: `(FN-FORM)`
@@ -14855,9 +14923,9 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\package.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\package.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\parameters.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\parameters.lisp`
 
 ### DEFSTRUCT `PARAMETER-DEF`
 
@@ -14865,7 +14933,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\reader.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\reader.lisp`
 
 ### DEFVAR `*193-READ-FILE*`
 
@@ -14904,7 +14972,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\semantic.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\semantic.lisp`
 
 ### DEFSTRUCT `CRISP-TYPE`
 
@@ -15287,7 +15355,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\session.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\session.lisp`
 
 ### DEFSTRUCT `COMPILER-SESSION`
 
@@ -15313,9 +15381,9 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\specials.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\specials.lisp`
 
-## File: `C:\Users\cperk\Documents\crisp-man\src\struct-definitions.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\struct-definitions.lisp`
 
 ### DEFSTRUCT `CRISP-STRUCT-DEFINITION`
 
@@ -15341,7 +15409,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\structs.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\structs.lisp`
 
 ### DEFUN `%STRUCT-NATIVE-ALIGNMENT`
 - **Args**: `(STRUCT-NAME)`
@@ -15460,7 +15528,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\templates.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\templates.lisp`
 
 ### DEFVAR `*PARTIAL-TEMPLATE-INSTANTIATIONS*`
 
@@ -15635,7 +15703,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\type-checker.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\type-checker.lisp`
 
 ### DEFUN `GET-PROMOTED-TYPE`
 - **Args**: `(TYPE-A-NAME TYPE-B-NAME)`
@@ -15665,7 +15733,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\brand.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\types\brand.lisp`
 
 ### DEFVAR `*BRAND-INSTANCE-CACHE*`
 
@@ -15761,12 +15829,12 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\definitions.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\types\definitions.lisp`
 
 ### DEFSTRUCT `ENUMERATION-DEF`
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\hierarchy.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\types\hierarchy.lisp`
 
 ### DEFVAR `*TYPE-DERIVATION-GRAPH*`
 
@@ -16004,7 +16072,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\types\registry.lisp`
 
 ### DEFUN `%ARCH-SUPPORTS-CLUSTERS-P`
 - **Args**: `(ARCH)`
@@ -16244,7 +16312,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\types\validation.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\types\validation.lisp`
 
 ### DEFUN `EXCLUDED-TEMPLATE-BASE-TYPE-P`
 - **Args**: `(BASE-TYPE)`
@@ -16486,7 +16554,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
-## File: `C:\Users\cperk\Documents\crisp-man\src\utils.lisp`
+## File: `c:\Users\cperk\Documents\crisp-man\src\utils.lisp`
 
 ### DEFMACRO `LET-D`
 - **Args**: `(BINDINGS &BODY BODY)`

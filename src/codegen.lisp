@@ -2780,6 +2780,122 @@
                       (crisp-type-to-llvm-type type-name module) arg-vals
                       (lambda (b params) (%185-fmod-body b module (first params) (second params) type-name)))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 211 -- shift / rotate lowering (funnel shifts; a noinline helper on SPIR-V)
+;;;; See tests/spec/211-shift-rotate/shift-rotate.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %211-shift-rotate-body (builder module kind x c x-type)
+  "Endeavour 211: the body of a shift / rotate of X by C (already X-TYPE), KIND one of :shl :shr :rotl
+   :rotr.  The count is taken modulo the width:
+     shifts  -> (and c (bits - 1)) then shl / lshr (unsigned) / ashr (signed).  LLVM drops the and when it
+                can prove c's range; on PTX the shift is then one instruction.
+     rotates -> llvm.fshl / llvm.fshr (x, x, c), whose count is ALREADY modulo the width by definition;
+                NVPTX makes a 32-bit one a single shf.l.wrap / shf.r.wrap."
+  (multiple-value-bind (cat bits) (%hw-type-parts x-type)
+    (let ((ity (crisp-type-to-llvm-type x-type module)))
+      (log:debug "%211-shift-rotate-body: ~a ~a (~a bits, ~a)" kind x-type bits cat)
+      (ecase kind
+        ((:shl :shr)
+         (let ((m (crisp.llvm-bindings::llvm-build-and builder c (llvm-const-int ity (1- bits) 0) "sh_cnt")))
+           (cond ((eq kind :shl) (crisp.llvm-bindings::llvm-build-shl builder x m "shift_left"))
+                 ((eq cat :unsigned-int) (crisp.llvm-bindings::llvm-build-l-shr builder x m "shift_right"))
+                 (t (crisp.llvm-bindings::llvm-build-a-shr builder x m "shift_right")))))
+        ((:rotl :rotr)
+         (%hw-call builder module
+                   (format nil "llvm.~a.~a" (if (eq kind :rotl) "fshl" "fshr") (%hw-intrinsic-suffix cat bits nil nil))
+                   ity (list x x c) "rotate"))))))
+
+(defun %211-lower (kind builder module arg-vals arg-types)
+  "Endeavour 211: lower shift / rotate KIND through an internal helper __crisp_<kind>_<type> -- noinline
+   on SPIR-V only (the BMG needs it for inline integer bodies, BUG 120 family), inlined on PTX
+   (%185-helper-call).  The count is converted to the operand's type first, as for ash."
+  (let* ((x-type (first arg-types))
+         (c (build-cast-if-needed builder module (second arg-vals) (second arg-types) x-type))
+         (helper (format nil "__crisp_~a_~(~a~)"
+                         (ecase kind (:shl "shift_left") (:shr "shift_right") (:rotl "rotate_left") (:rotr "rotate_right"))
+                         x-type)))
+    (%185-helper-call builder module helper (crisp-type-to-llvm-type x-type module) (list (first arg-vals) c)
+                      (lambda (b params)
+                        (%211-shift-rotate-body b module kind (first params) (second params) x-type)))))
+
+(defmethod %hw-lower ((op (eql '%211-shift-left)) builder module arg-vals arg-types result-type)
+  "shift-left (endeavour 211): x << (n mod width)."
+  (declare (ignore result-type))
+  (%211-lower :shl builder module arg-vals arg-types))
+
+(defmethod %hw-lower ((op (eql '%211-shift-right)) builder module arg-vals arg-types result-type)
+  "shift-right (endeavour 211): x >> (n mod width); logical for unsigned, arithmetic for signed."
+  (declare (ignore result-type))
+  (%211-lower :shr builder module arg-vals arg-types))
+
+(defmethod %hw-lower ((op (eql '%211-rotate-left)) builder module arg-vals arg-types result-type)
+  "rotate-left (endeavour 211): llvm.fshl(x, x, n), n mod width."
+  (declare (ignore result-type))
+  (%211-lower :rotl builder module arg-vals arg-types))
+
+(defmethod %hw-lower ((op (eql '%211-rotate-right)) builder module arg-vals arg-types result-type)
+  "rotate-right (endeavour 211): llvm.fshr(x, x, n), n mod width."
+  (declare (ignore result-type))
+  (%211-lower :rotr builder module arg-vals arg-types))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 212 -- warp vote lowering (vote.sync on PTX, group-non-uniform ops on SPIR-V)
+;;;; See tests/spec/212-warp-vote/warp-vote.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %212-pred-i1 (builder pred)
+  "Endeavour 212: the vote predicate PRED (an LLVM integer value) as an i1, under if's rule: nonzero is
+   true.  An i1 passes through."
+  (let ((ty (crisp.llvm-bindings::llvm-type-of pred)))
+    (if (= (crisp.llvm-bindings::llvm-get-int-type-width ty) 1)
+        pred
+        (crisp.llvm-bindings::llvm-build-icmp builder crisp.llvm-bindings::+llvm-int-ne+ pred
+                                              (crisp.llvm-bindings::llvm-const-int ty 0 nil) "vote_pred"))))
+
+(defun %212-vote-lower (kind builder module pred)
+  "Endeavour 212: one warp vote of KIND (:ballot :any :all) on predicate PRED, as ONE hardware op.
+     PTX     llvm.nvvm.vote.{ballot,any,all}.sync with the full member mask -- legal because the analyzer
+             only lets a vote run where every lane of the warp reaches it (as for the shuffles).
+     SPIR-V  __spirv_GroupNonUniformBallot (Subgroup scope; component 0 of its uvec4 holds lanes 0..31)
+             / __spirv_GroupNonUniformAny / __spirv_GroupNonUniformAll.
+   :ballot returns an i32 mask; :any / :all return a 0 / 1 i32 (a Crisp condition, like a comparison)."
+  (let* ((i32 (crisp.llvm-bindings::llvm-int32-type))
+         (i1 (crisp.llvm-bindings::llvm-int1-type))
+         (p (%212-pred-i1 builder pred))
+         (zext (lambda (v) (crisp.llvm-bindings::llvm-build-zext builder v i32 "vote_i32"))))
+    (log:debug "%212-vote-lower: ~a backend=~a" kind *target-backend*)
+    (if (eq *target-backend* :ptx)
+        (let ((full (crisp.llvm-bindings::llvm-const-int i32 #xFFFFFFFF nil)))
+          (ecase kind
+            (:ballot (%coop-call builder module "llvm.nvvm.vote.ballot.sync" i32 (list i32 i1) (list full p)))
+            (:any (funcall zext (%coop-call builder module "llvm.nvvm.vote.any.sync" i1 (list i32 i1) (list full p))))
+            (:all (funcall zext (%coop-call builder module "llvm.nvvm.vote.all.sync" i1 (list i32 i1) (list full p))))))
+        (let ((scope (crisp.llvm-bindings::llvm-const-int i32 3 nil)))   ; Subgroup
+          (ecase kind
+            (:ballot
+             (let* ((v4 (crisp.llvm-bindings::llvm-vector-type i32 4))
+                    (mask4 (%coop-call builder module "__spirv_GroupNonUniformBallot" v4 (list i32 i1) (list scope p))))
+               (crisp.llvm-bindings::llvm-build-extract-element
+                builder mask4 (crisp.llvm-bindings::llvm-const-int i32 0 nil) "ballot_lo")))
+            (:any (funcall zext (%coop-call builder module "__spirv_GroupNonUniformAny" i1 (list i32 i1) (list scope p))))
+            (:all (funcall zext (%coop-call builder module "__spirv_GroupNonUniformAll" i1 (list i32 i1) (list scope p)))))))))
+
+(defmethod %hw-lower ((op (eql '%212-warp-ballot)) builder module arg-vals arg-types result-type)
+  "warp-ballot (endeavour 212): uint mask, bit L set iff lane L's predicate is true."
+  (declare (ignore arg-types result-type))
+  (%212-vote-lower :ballot builder module (first arg-vals)))
+
+(defmethod %hw-lower ((op (eql '%212-warp-any)) builder module arg-vals arg-types result-type)
+  "warp-any? (endeavour 212): 1 when the predicate holds in some lane of the warp, else 0."
+  (declare (ignore arg-types result-type))
+  (%212-vote-lower :any builder module (first arg-vals)))
+
+(defmethod %hw-lower ((op (eql '%212-warp-all)) builder module arg-vals arg-types result-type)
+  "warp-all? (endeavour 212): 1 when the predicate holds in every lane of the warp, else 0."
+  (declare (ignore arg-types result-type))
+  (%212-vote-lower :all builder module (first arg-vals)))
+
 
 ;; -- comparisons --
 
@@ -8284,10 +8400,12 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
 
 (defparameter *warp-collective-operator-names*
   '("SHUFFLE" "SHUFFLE-UP" "SHUFFLE-DOWN" "SHUFFLE-XOR"
-    "REDUCE-WARP" "REDUCE-WORKGROUP")
+    "REDUCE-WARP" "REDUCE-WORKGROUP"
+    "WARP-BALLOT" "WARP-ANY?" "WARP-ALL?")
   "Operators whose correctness depends on the warp width the kernel actually runs at.
    reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a
-   user writes, and listing them means the scan works whether or not they have been expanded.")
+   user writes, and listing them means the scan works whether or not they have been expanded.
+   Endeavour 212: the votes -- a ballot's bits are lane positions, and any? / all? count the lanes.")
 
 (defun %175-uses-warp-collective-p (x)
   "Syntactic: does X mention a warp collective anywhere?  Walks car and cdr separately so a
