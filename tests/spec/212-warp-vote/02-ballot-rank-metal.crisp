@@ -1,0 +1,58 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER r: 0 0 0 1
+;; HOIST-EXPECT: BUFFER r2: 1 1 2 2
+;; HOIST-EXPECT: BUFFER p: 3 3 2 3
+;; HOIST-EXPECT: BUFFER p2: 3 2 3 3
+;; HOIST-EXPECT: BUFFER z: 1 1 1 1
+;;
+;; Endeavour 212 ON-METAL: the radix-sort ranking idiom (CUB's), and the reason warp-ballot exists.
+;;
+;; Each lane holds a 2-bit digit d = lane mod 3.  One ballot per digit bit, each flipped where this
+;; lane's bit is 0, ANDed together, gives PEERS: the lanes whose digit equals this lane's.  Then
+;;   rank = popcount(peers & lanes-below-me)
+;; is this lane's position among its peers, i.e. a stable counting-sort rank within the warp.
+;;
+;; The flip is written with arithmetic, (lognot (logxor v (- 0u bit))), not with an `if`: a per-lane
+;; `if` feeding a subgroup op misbehaves on BMG (BUG 109).  The sort's kernel will use the same form.
+;;
+;; Lanes 0..7: digits 0 1 2 0 1 2 0 1.
+;;   r = how many lower lanes share my digit  -> 0 0 0 1 1 1 2 2   (width-independent: lower lanes only)
+;;   p = popcount(peers) among lanes 0..7     -> digit 0: 3, digit 1: 3, digit 2: 2
+;;       (peers masked to lanes 0..7 so the count does not depend on the warp width)
+;; Lanes 0..3 go to r / p and lanes 4..7 to r2 / p2: the harness prints four elements per buffer.
+;;
+;; THE 16-LANE TRAP (found by the sort, v1k): on a 16-lane warp a ballot's bits 16..31 are 0, so
+;; (lognot v) SETS them -- lanes that do not exist.  Every flipped ballot is therefore ANDed with the
+;; warp's real lanes, FULL = (shift-right (lognot 0u) (- 32u (warp-size))): 0xFFFF on BMG, ~0 on NVIDIA.
+;; Without it popcount(peers) counts 16 phantom lanes on BMG and a radix sort's counters go wrong.
+;;   z = 1 when peers has no bit beyond the warp                        -> 1 1 1 1
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel ballot_rank_metal (&out r p r2 p2 z)
+  (declare #'(&out u-vec u-vec u-vec u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid   (get-local-id 0))
+        (lane  (warp-lane))
+        (full  (shift-right (lognot 0u) (- 32u (warp-size))))
+        (d     (rem lane 3u))
+        (bit0  (logand d 1u))
+        (bit1  (logand (shift-right d 1u) 1u))
+        (v0    (warp-ballot (= bit0 1u)))
+        (v1    (warp-ballot (= bit1 1u)))
+        (peers (logand full
+                       (logand (lognot (logxor v0 (- 0u bit0)))
+                               (lognot (logxor v1 (- 0u bit1))))))
+        (below (popcount (logand peers (- (shift-left 1u lane) 1u))))
+        (low8  (popcount (logand peers 255u))))
+    (when (< lid 4ul)
+      (set! (~ r lid) (to-ulong below))
+      (set! (~ p lid) (to-ulong low8))
+      (set! (~ z lid) (to-ulong (= (logand peers (lognot full)) 0u))))
+    (when (and (>= lid 4ul) (< lid 8ul))
+      (set! (~ r2 (- lid 4ul)) (to-ulong below))
+      (set! (~ p2 (- lid 4ul)) (to-ulong low8)))))

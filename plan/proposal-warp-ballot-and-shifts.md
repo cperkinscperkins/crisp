@@ -156,3 +156,11 @@ Decisions (Chris, 2026-11-10)
 * Count semantics: modulo the width (OpenCL C's rule).
 * `warp-ballot` returns `uint`; a profile whose warp-size is over 32 is a compile error until such a target
   exists (option a).
+
+Status
+------
+* Part A: endeavour 211 (tests/spec/211-shift-rotate/), sort v1j: -9.2% on the H100.
+* Part B: endeavour 212 (tests/spec/212-warp-vote/warp-vote.md), 2026-11-10.  One refinement made while
+  implementing, for review: the predicate is a CONDITION as for `if` (a comparison or a nonzero integer),
+  not a `bool`, because Crisp's comparisons are 0 / 1 ints inside the compiler; `warp-any?` / `warp-all?`
+  give a 0 / 1 int like a comparison.

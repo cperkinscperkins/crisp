@@ -1,0 +1,39 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-212-vote
+;; TEST-WITH[--ir-target=spv --hardware-profile=bmg] : validate-spv-212-vote
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 7 1 0 3
+;;
+;; Endeavour 212 -- each vote is ONE hardware instruction, never a loop of shuffles:
+;;   PTX     vote.sync.ballot.b32 / vote.sync.any.pred / vote.sync.all.pred, full member mask (legal
+;;           because a vote is a warp collective: Crisp only lets every lane of the warp reach it), and
+;;           no shfl.sync in the module;
+;;   SPIR-V  OpGroupNonUniformBallot (component 0 of its uvec4) / OpGroupNonUniformAny /
+;;           OpGroupNonUniformAll, Subgroup scope.
+;;
+;; Data: v = 1 2 3 4 on lanes 0..3, and 0 on every lane above.
+;;   out[0]  ballot((v odd) or (v = 2))     lanes 0 1 2       -> 0b111 = 7
+;;   out[1]  any(v = 4)                     lane 3            -> 1
+;;   out[2]  all(v > 0)                     not lanes 4..     -> 0
+;;   out[3]  popcount(ballot(v > 2)) + any  lanes 2 3, + 1    -> 3   (a mask and a bool in one expression)
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel vote_lowering (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid  (get-local-id 0))
+        (lane (warp-lane))
+        (v    (* (+ lane 1u) (to-uint (< lane 4u))))
+        (b    (warp-ballot (or (= (logand v 1u) 1u) (= v 2u))))
+        (a    (warp-any? (= v 4u)))
+        (l    (warp-all? (> v 0u)))
+        (c    (+ (popcount (warp-ballot (> v 2u))) (to-uint a))))
+    (when (= lid 0ul)
+      (set! (~ out 0ul) (to-ulong b))
+      (set! (~ out 1ul) (to-ulong a))
+      (set! (~ out 2ul) (to-ulong l))
+      (set! (~ out 3ul) (to-ulong c)))))

@@ -1,0 +1,18 @@
+;; TEST-EXPECT: PASS
+;; CHECK-FAIL: "cannot be pinned"
+;; CHECK-FAIL-FLAGS: --ir-target=spv
+;;
+;; Endeavour 212: a vote needs a PINNED subgroup size on SPIR-V, exactly as a shuffle does (173/errors/06).
+;; The bits of a ballot are lane positions, so a mask computed for 16 lanes and run on 32 is wrong, not
+;; slow.  The rule comes from listing the three votes in *warp-collective-operator-names*; this spec is what
+;; proves they are listed.  Here local-size is absent, so nothing can be pinned.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_unpinned_lane_group (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32))
+  (let ((lane (warp-lane))
+        (a    (warp-all? (< lane 64u))))
+    (when (= lane 0u)
+      (set! (~ out 0ul) (to-ulong a)))))

@@ -1,0 +1,47 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER m: 10 31 0 8192
+;; HOIST-EXPECT: BUFFER w: 1 1 5 65535
+;;
+;; Endeavour 212 ON-METAL: (warp-ballot pred) -> uint, bit L set iff lane L's predicate is true.
+;;
+;; Every predicate is false on lanes 16 and up, so each mask is the same whether the warp is 16 lanes
+;; (BMG) or 32 (NVIDIA):
+;;   m[0]  lanes 1 and 3           -> 0b1010          = 10
+;;   m[1]  lanes 0..4              -> 0b11111         = 31
+;;   m[2]  no lane                 -> 0
+;;   m[3]  lane 13 only            -> 1 << 13         = 8192
+;; and, in w (the harness prints four elements per buffer):
+;;   w[0]  a predicate every lane holds sets exactly (warp-size) bits         -> 1
+;;   w[1]  every lane received the same mask (lane 0's, through a shuffle)    -> 1
+;;   w[2]  popcount of m[1]                                                    -> 5
+;;   w[3]  the low 16 bits of an all-lanes ballot                              -> 65535
+;; The kernel is two warps on BMG and one on NVIDIA; each warp votes on its own lanes, and both
+;; give the same masks.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel ballot_metal (&out m w)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid  (get-local-id 0))
+        (lane (warp-lane))
+        (b1   (warp-ballot (or (= lane 1u) (= lane 3u))))
+        (b2   (warp-ballot (< lane 5u)))
+        (b3   (warp-ballot (> lane 99u)))
+        (b4   (warp-ballot (= lane 13u)))
+        (b5   (warp-ballot (< lane 64u)))
+        (b0   (shuffle (to-ulong b1) 0ul))
+        (same (warp-all? (= b0 (to-ulong b1)))))
+    (when (= lid 0ul)
+      (set! (~ m 0ul) (to-ulong b1))
+      (set! (~ m 1ul) (to-ulong b2))
+      (set! (~ m 2ul) (to-ulong b3))
+      (set! (~ m 3ul) (to-ulong b4))
+      (set! (~ w 0ul) (to-ulong (= (popcount b5) (warp-size))))
+      (set! (~ w 1ul) (to-ulong same))
+      (set! (~ w 2ul) (to-ulong (popcount b2)))
+      (set! (~ w 3ul) (to-ulong (logand b5 65535u))))))

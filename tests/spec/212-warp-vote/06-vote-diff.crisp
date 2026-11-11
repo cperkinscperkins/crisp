@@ -1,0 +1,34 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv]: PASS
+;; COMPILE-WITH[--hardware-profile=bmg --ir-target=spv --differentiate]: PASS
+;; SKIP-DEFAULT-PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; VERIFY-AUTODIFF: A=4x16@0:0.01 at.A=0,2 expect.A=17.0 group=64 h=0.5 atol=1e-2 output-mat=4x16
+;;
+;; Endeavour 212 A|D: the votes are not differentiable values -- a mask and two bools -- so they carry no
+;; gradient, like popcount and the comparisons.  A float path that USES their results still
+;; differentiates.  The predicates read the ACTIVE input, so the backward walk meets all three votes on the
+;; active path and must know each is a zero-gradient operator.
+;;
+;; Setup copied from 173/09: 4x16 floats, one 16-lane BMG warp per row (VERIFY-AUTODIFF selects SPIR-V).
+;; Every predicate below holds (or fails) by a wide margin, so the h = 0.5 finite-difference step cannot
+;; flip one:
+;;   w = popcount(ballot(v > -100))  = 16  (all lanes)
+;;     + (if (warp-all? (< v 100)) 1 0)    = 1
+;;     + (if (warp-any? (> v 1000)) 100 0) = 0
+;;     = 17,   C = w * A   ->   d sum(C) / dA[0,2] = 17.
+
+(def-type mat-t (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel vote_diff (A &out C)
+  (declare #'(mat-t &out mat-t)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((tid (to-int (get-local-linear-id))))
+    (let ((row (/ tid 16))
+          (col (rem tid 16)))
+      (let ((v (~ A row col)))
+        (let ((w (+ (to-float (popcount (warp-ballot (> v -100.0))))
+                    (if (warp-all? (< v 100.0)) 1.0 0.0)
+                    (if (warp-any? (> v 1000.0)) 100.0 0.0))))
+          (set! (~ C row col) (* w v)))))))

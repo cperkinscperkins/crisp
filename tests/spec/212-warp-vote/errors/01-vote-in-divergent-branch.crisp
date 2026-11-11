@@ -1,0 +1,17 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "warp-ballot is a warp collective"
+;;
+;; Endeavour 212: a vote is a WARP COLLECTIVE, under the shuffles' rule (173 D6, 194).  Here it sits in a
+;; branch only lanes 0 and 1 take, so the ballot would count lanes that never arrive: on PTX the full
+;; member mask no longer describes reality, and on SPIR-V a non-uniform group op is undefined there.
+;; Legal spelling: vote in every lane, gate only the store.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_bad_region (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (warp-lane)))
+    (when (< lane 2u)
+      (set! (~ out (to-ulong lane)) (to-ulong (warp-ballot (> lane 0u)))))))
