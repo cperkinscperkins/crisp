@@ -4,7 +4,7 @@
   "leaderboard_id": 543,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/543?tab=rankings",
   "directory": "01-vectoradd-v2",
-  "crisp_commit": "28ca6e51",
+  "crisp_commit": "006eae6d",
   "workload": {
     "dtype": "float16",
     "shape": [
@@ -44,10 +44,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-10-30T08:19:11Z",
+      "captured_at": "2026-11-11T03:09:12Z",
       "user_name": "cperkinscperkins",
       "rank": 20,
-      "total_entrants": 67,
+      "total_entrants": 68,
       "file_name": "crisp_b200_inplace_2xhalf4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp",
       "py_file": "01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py",
@@ -57,13 +57,13 @@
       "submission_id": 962482,
       "top1_score_us": 225.45,
       "top1_user": "zjsxply",
-      "median_score_us": 236.34
+      "median_score_us": 236.41
     },
     "H100": {
-      "captured_at": "2026-10-30T08:19:11Z",
+      "captured_at": "2026-11-11T03:09:12Z",
       "user_name": "cperkinscperkins",
-      "rank": 24,
-      "total_entrants": 43,
+      "rank": 25,
+      "total_entrants": 44,
       "file_name": "crisp_f16_direct_half4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_direct_half4.crisp",
       "py_file": "01-vectoradd-v2/crisp_f16_direct_half4.py",
@@ -73,13 +73,13 @@
       "submission_id": 962388,
       "top1_score_us": 512.59,
       "top1_user": "zjsxply",
-      "median_score_us": 526.18
+      "median_score_us": 526.22
     },
     "A100": {
-      "captured_at": "2026-10-30T08:19:11Z",
+      "captured_at": "2026-11-11T03:09:12Z",
       "user_name": "cperkinscperkins",
-      "rank": 55,
-      "total_entrants": 106,
+      "rank": 56,
+      "total_entrants": 107,
       "file_name": "crisp_f16_direct_half4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_direct_half4.crisp",
       "py_file": "01-vectoradd-v2/crisp_f16_direct_half4.py",
@@ -89,13 +89,13 @@
       "submission_id": 962434,
       "top1_score_us": 868.35,
       "top1_user": "WGX11",
-      "median_score_us": 912.32
+      "median_score_us": 911.81
     },
     "L4": {
-      "captured_at": "2026-10-30T08:19:11Z",
+      "captured_at": "2026-11-11T03:09:12Z",
       "user_name": "cperkinscperkins",
       "rank": 22,
-      "total_entrants": 38,
+      "total_entrants": 39,
       "file_name": "crisp_f16_direct_half4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_direct_half4.crisp",
       "py_file": "01-vectoradd-v2/crisp_f16_direct_half4.py",

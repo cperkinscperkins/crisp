@@ -28,8 +28,28 @@ Evidence, measured
   - H100, 100M: downsweep 783 -> ~690 us per pass (-12%); wall 3150 -> 2892 us (-8%).
   - That is the CEILING for a run-time rotate/shift builtin: a run-time `shf.r.wrap` is the same single
     instruction as the literal one.
-* **Ballot: not measured yet.**  The estimate below is arithmetic, and the first step of that half of the
-  plan is a probe to replace it (see Staging).
+* **Ballot (measured on metal, 2026-11-10, probes 970445 / 970446).**  Three CUDA downsweeps
+  (put_temp_files_here/gpumode/sort/ballot_probe/ds.cu) swapped into the v1j pipeline: Crisp's minmax, upsweep
+  and scans are unchanged.  All arms are correct at 1 / 4097 / 1M (normal and duplicates) / 10M / 100M.  Every
+  CUDA arm is pinned at 4 workgroups/SM, Crisp's own occupancy.  H100, whole sort at 100M:
+
+  | arm | us | vs Crisp, per pass |
+  |---|---:|---:|
+  | CUDA split2 (a straight port of Crisp's two 4-bit splits: the control) | 4094 | +138 |
+  | Crisp v1j | 3680 | -- |
+  | **CUDA ballot ranking (8 ballots, one 8-bit pass)** | **3394** | **-95** |
+  | CUDA ballot at 6 workgroups/SM (spills 120 B) | 4441 | +254 |
+  | CUDA match.any ranking | 5239 | +520 |
+
+  - The ALGORITHM's value is ballot vs its same-compiler control: -233 us per pass, about -28% of that
+    downsweep.  That matches the -30% estimate.
+  - Crisp's own codegen beats nvcc's port of the same algorithm by 138 us per pass (40 vs 64 registers), so a
+    Crisp ballot downsweep should land at or below the CUDA ballot's 3394 us (-8% wall at the least).
+  - `match.any` is a loss: leave `warp-match-any` out, as proposed.
+  - Ballot ranking needs the 16 ranks packed two per register.  Unpacked, it spills at 4 workgroups/SM.
+  - The first, unpinned run (970445: nvcc picked ~80 registers, 3 workgroups/SM) had every CUDA arm slower than
+    Crisp.  Occupancy has to be equal before any arms are compared.
+  - **Verdict: GO for Part B.**
 
 Part A -- shifts and rotates (small, self-contained)
 ----------------------------------------------------
