@@ -74,4 +74,13 @@ Tried and rejected: v7 with the epilogue `:via :tma` (`matmul_b200_tcgen05_mn_tm
 `build_diag_b200_v7.py`): 234.5 vs 228.4 us at the scored case, 1295 vs 867 us at 8192^3 -- the 17 KB of
 staging (115712 B per workgroup) likely leaves one workgroup per SM where v7 keeps two.
 
+A100 / L4, 2026-11-11: the 4-warp kernel's K tile per cp.async stage, one A100 runner
+(`build_diag_ampere_k.py`): K16 4880 / K32 4223 / K64 6007 us at the scored case (2048 case: 695 / 725 /
+1027), all exact; cuBLAS 611.  v8 = v7 with K32 (`matmul_ampere_4w_k32.crisp`): L4 leaderboard 970705
+**6661.9 us** (v3 7117), A100 970704 5171 us -- worse than v5's 4863 on the board, so v5 stays there.
+**The A100 / L4 lever is `ldmatrix`:** the mma.sync fragments come from shared memory as ~2.3 sixteen-bit
+`ld.shared` per `mma.sync` (src/mma.lisp: "ldmatrix is a later perf optimization").  `ldmatrix.x4`
+(`.trans` for the row-major B) loads four fragment registers per instruction -- an endeavour in the core
+mma.sync lowering, for Chris to scope.
+
 Beauty entry (`crisp_matmul_beauty.py`), H100 benchmark: 86.0 ms.  Full report: `../REPORT-matmul_v2.md`.

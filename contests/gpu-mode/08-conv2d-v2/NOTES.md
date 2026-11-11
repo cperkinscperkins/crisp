@@ -107,7 +107,10 @@ samples max 2.5e-4 on the scored case.  A100 (diag_conv2d_fft.py, scored case, v
 | v1, 64-bit indices (leaderboard: 3.20 ms, **#7 / 23**) | 3.21 ms | 0.84 | 0.47 | 1.55 | 0.38 | 0 (max 8.9e-4, rms 1.6e-4) |
 | v1, 32-bit index twins (make_fft32.py) | 3.22 ms | 0.80 | 0.46 | 1.66 | 0.34 | 0 |
 | v2 "8": radix-8 transforms (gen_fft8.py -> conv2d_fft8.crisp) | 2.46 ms | 0.46 | 0.28 | 1.55 | 0.20 | 0 (rms 1.58e-4) |
-| v3 "8g2": + cgemm2 (512 threads, two tile blocks share each Wf line) (**leaderboard 2.29 ms**) | 2.29 ms | 0.46 | 0.28 | 1.39 | 0.20 | 0 |
+| v3 "8g2": + cgemm2 (512 threads, two tile blocks share each Wf line) (leaderboard 2.29 ms) | 2.29 ms | 0.46 | 0.28 | 1.39 | 0.20 | 0 |
+| v4 "8" with typed-GEP addressing (compiler overlay, 2026-11-11) (**leaderboard 970698: 2.195 ms**) | 2.20 ms | 0.46 | 0.28 | 1.29 | 0.21 | 0 |
+(Round-2 item 2 was done: the typed GEP folds `idx + c` into load offsets -- cgemm's loop 218 -> 178
+instructions; cgemm2's advantage disappears with it, so the plain cgemm is the default again.)
 Radix-8: each 64-point FFT = 8 x 8 (two register DFT8 steps, a `def-function` returning 16 values --
 spelled `=> float ... float`, not `(values ...)`), 4 barriers per tile instead of 12; spectra digit-swapped.
 Shared tile r * 73 + c + c / 8 (put_temp_files_here/conv2d/banks.py): lanes on rows for row steps

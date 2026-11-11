@@ -451,6 +451,10 @@ B200_TMA = dict(key="b200", crisp="matmul_b200_tma_mma.crisp", arch="sm_100", ti
 B200_TC = dict(key="b200tc", crisp="matmul_b200_tcgen05.crisp", arch="sm_100a", tile=(128, 256), k_step=64,
                b_layout="col", profile="b200", profile_file="benchmarks/profiles/b200.crisp")
 
+# v8: v7 with the Ampere / Ada 4-warp kernel staging K = 32 per cp.async stage (A100 diag: 4880 -> 4223 us
+# at the scored case, exact; K = 64 was slower, 6007 us).
+AMPERE4W_K32 = dict(AMPERE4W, key="ampk32", crisp="matmul_ampere_4w_k32.crisp", k_step=32)
+
 # v7 (endeavour 213): the B200 kernel reads the contest's (K N) b as given -- :b-major :mn, no transpose.
 B200_TCMN = dict(key="b200mn", crisp="matmul_b200_tcgen05_mn.crisp", arch="sm_100a", tile=(128, 256), k_step=64,
                  b_layout="row", profile="b200", profile_file="benchmarks/profiles/b200.crisp")
@@ -512,6 +516,15 @@ def build_all() -> None:
         "matmul_v2 v7: H100 wgmma 2wg_deep, transB, stmatrix + TMA-store epilogue; B200 tcgen05 reading b MN-major (no transpose); A100 / L4 4-warp cp.async + mma.sync",
         {k: v for k, v in ks.items() if k not in ("b200tc", "transpose")}, DISPATCH_V7,
         ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05_mn.crisp", "matmul_ampere_4w.crisp",
+         "matmul_small_mma.crisp"])
+    ks["ampk32"] = build_kernel(KernelSpec(**AMPERE4W_K32))
+    make_submission(
+        "crisp_matmul_v8.py",
+        "matmul_v2 v8: H100 wgmma 2wg_deep + TMA-store epilogue; B200 tcgen05 reading b MN-major; A100 / L4 4-warp cp.async + mma.sync, K = 32 per stage",
+        {k: v for k, v in ks.items() if k not in ("b200tc", "transpose", "ampere4w")},
+        DISPATCH_V7.replace('_load("ampere4w", PTX_AMPERE4W)', '_load("ampk32", PTX_AMPK32)')
+                   .replace("_mod.run_ampere4w(a, b, c)", "_mod.run_ampk32(a, b, c)"),
+        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05_mn.crisp", "matmul_ampere_4w_k32.crisp",
          "matmul_small_mma.crisp"])
     # The beauty entry: one portable 13-line kernel for every GPU and shape.
     beauty = build_kernel(KernelSpec(key="beauty", crisp="matmul_beauty.crisp", arch="sm_80", tile=(16, 8),
