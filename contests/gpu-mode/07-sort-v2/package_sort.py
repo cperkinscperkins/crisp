@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CRISP_COMPILE = REPO_ROOT / "bin" / "crisp-compile.exe"
 RESULTS_JSON = REPO_ROOT / "contests" / "gpu-mode" / "results" / "sort_v2.json"
-KERNELS = ("sort_minmax", "sort_upsweep", "sort_digit_scan", "sort_downsweep")
+KERNELS = ("sort_minmax", "sort_upsweep", "sort_scan_chunks", "sort_scan_tiles", "sort_downsweep")
 FIELDS = ("ptr", "byte_size", "off0", "str0", "ext0", "length")
 
 
@@ -121,6 +121,7 @@ def commented(path: Path) -> str:
 
 RUNTIME = r'''
 import ctypes as _C
+import math as _math
 import torch
 from task import input_t, output_t
 
@@ -215,11 +216,13 @@ def custom_kernel(data: input_t) -> output_t:
     if _lib is None:
         _init()
     nb = (n + _TILE - 1) // _TILE
+    ng = _math.isqrt(nb - 1) + 1                     # chunk count; the kernels derive the chunk size
     b = _bufs.get(n)
     if b is None:
         b = _bufs[n] = dict(tmp=torch.empty(n, dtype=torch.float32, device="cuda"),
                             hist=torch.empty(256 * nb, dtype=torch.int32, device="cuda"),
                             scanned=torch.empty(256 * nb, dtype=torch.int32, device="cuda"),
+                            csum=torch.empty(256 * ng, dtype=torch.int32, device="cuda"),
                             totals=torch.empty(256, dtype=torch.int32, device="cuda"),
                             mm=torch.empty(2, dtype=torch.int32, device="cuda"),
                             mm0=torch.tensor([-1, 0], dtype=torch.int32, device="cuda"))
@@ -233,14 +236,15 @@ def custom_kernel(data: input_t) -> output_t:
         out.copy_(x)
         return out
     prm = _prm(passes)
-    hist, scanned, totals, tmp = b["hist"], b["scanned"], b["totals"], b["tmp"]
+    hist, scanned, csum, totals, tmp = b["hist"], b["scanned"], b["csum"], b["totals"], b["tmp"]
     src = x
     for i in range(passes):
         dst = out if (passes - 1 - i) % 2 == 0 else tmp
         pr = (P(prm) + 12 * i, 3)
         _launch("sort_upsweep", nb, {"src": (P(src), n), "mm": (P(mm), 2), "prm": pr, "hist": (P(hist), 256 * nb)})
-        _launch("sort_digit_scan", 256, {"hist": (P(hist), 256 * nb), "scanned": (P(scanned), 256 * nb),
-                                         "totals": (P(totals), 256)})
+        _launch("sort_scan_chunks", ng, {"hist": (P(hist), 256 * nb), "csum": (P(csum), 256 * ng)})
+        _launch("sort_scan_tiles", ng, {"hist": (P(hist), 256 * nb), "csum": (P(csum), 256 * ng),
+                                        "scanned": (P(scanned), 256 * nb), "totals": (P(totals), 256)})
         _launch("sort_downsweep", nb, {"src": (P(src), n), "mm": (P(mm), 2), "prm": pr,
                                        "scanned": (P(scanned), 256 * nb), "totals": (P(totals), 256),
                                        "dst": (P(dst), n)})
@@ -497,7 +501,8 @@ def build_all() -> None:
                     "sort_v2 BEAUTY: plain bitonic sort -- compare-and-swap, shared-memory tiles, global merge passes",
                     "sort_bitonic_beauty.crisp", BITONIC, BITONIC_KERNELS)
     make_submission("crisp_sort_v1.py",
-                    "sort_v2 v1: LSD radix sort, range-reduced keys (min/max pass), reduce-then-scan, 4096-key tiles",
+                    "sort_v2 v1 (rev i): LSD radix sort, range-reduced keys (min/max pass), reduce-then-scan, 4096-key tiles,"
+                    " tile-major histograms, sqrt-chunked digit scan",
                     "sort_radix.crisp")
     make_submission("diag_sort_v1.py", "sort_v2 v1 DIAGNOSTIC (per-launch timing at 100M / 10M / 1M)",
                     "sort_radix.crisp", DIAG)
@@ -526,7 +531,7 @@ def submit_popcorn(py_file: Path, gpu: str, mode: str) -> str:
     log.write_text(res.stdout + "\n" + res.stderr, encoding="utf-8")
     print(f"popcorn exit {res.returncode}; log {log}")
     record_run(res.stdout, gpu, py_file.name, mode)
-    return res.stdout
+    return res.stdout + "\n" + res.stderr     # popcorn prints a 429's "Try again in Ns" on stderr
 
 
 def record_run(stdout: str, gpu: str, file_name: str, mode: str) -> None:

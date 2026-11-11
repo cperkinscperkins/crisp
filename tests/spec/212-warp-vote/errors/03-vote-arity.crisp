@@ -1,0 +1,16 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "takes one argument"
+;;
+;; Endeavour 212: (warp-any? pred) takes exactly one predicate.  There is no member-mask argument: Crisp
+;; only lets a vote run where every lane of the warp reaches it, so the mask is always the whole warp.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_two_args (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (warp-lane))
+        (a    (warp-any? #xFFFFFFFF (= lane 0u))))
+    (when (= lane 0u)
+      (set! (~ out 0ul) (to-ulong a)))))

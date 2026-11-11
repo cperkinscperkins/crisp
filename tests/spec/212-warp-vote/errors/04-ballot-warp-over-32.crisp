@@ -1,0 +1,23 @@
+;; TEST-EXPECT: PASS
+;; COMPILE-WITH[--hardware-profile=lanes64-gpu --ir-target=spv]: FAIL "does not fit the 32-bit mask"
+;; COMPILE-WITH[--hardware-profile=lanes64-gpu --ir-target=ptx]: PASS
+;;
+;; Endeavour 212 (decision, Chris 2026-11-10): warp-ballot returns a uint, so a warp wider than 32 lanes
+;; is a compile error until such a target exists -- not a silently truncated mask.  The profile here is
+;; defined in this file with a 64-lane :simd-width.
+;;
+;; On PTX the profile does not govern the warp size (NVIDIA's warp is 32 by architecture, 173), so the
+;; same source compiles there; the default pass, with no profile, is 32 lanes and passes too.
+
+(def-hardware-profile lanes64-gpu :simd-width 64)
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_wide (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((lane (warp-lane))
+        (m    (warp-ballot (= lane 0u))))
+    (when (= lane 0u)
+      (set! (~ out 0ul) (to-ulong m)))))

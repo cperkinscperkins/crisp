@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 06: Matmul (fp16 C = A B, 4096x5120x4096 scored)",
   "leaderboard_id": 540,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/540?tab=rankings",
-  "crisp_commit": "28ca6e51",
+  "crisp_commit": "e4fa2603",
   "workload": {
     "description": "C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS.",
     "total_flops": 171798691840
@@ -32,10 +32,10 @@
   },
   "standings": {
     "H100": {
-      "captured_at": "2026-10-30T08:19:01Z",
+      "captured_at": "2026-11-11T06:42:01Z",
       "user_name": "cperkinscperkins",
       "rank": 29,
-      "total_entrants": 43,
+      "total_entrants": 44,
       "file_name": "crisp_matmul_v5.py",
       "crisp_file": "06-matmul-v2/matmul_h100_2wg_tma.crisp",
       "py_file": "06-matmul-v2/crisp_matmul_v5.py",
@@ -45,13 +45,13 @@
       "submission_id": 968487,
       "top1_score_us": 204.96,
       "top1_user": "zachw113",
-      "median_score_us": 220.94
+      "median_score_us": 222.04
     },
     "A100": {
-      "captured_at": "2026-10-30T08:19:01Z",
+      "captured_at": "2026-11-11T06:42:01Z",
       "user_name": "cperkinscperkins",
-      "rank": 54,
-      "total_entrants": 55,
+      "rank": 55,
+      "total_entrants": 56,
       "file_name": "crisp_matmul_v5.py",
       "crisp_file": "06-matmul-v2/matmul_h100_2wg_tma.crisp",
       "py_file": "06-matmul-v2/crisp_matmul_v5.py",
@@ -61,7 +61,7 @@
       "submission_id": 968649,
       "top1_score_us": 595.63,
       "top1_user": "WGX11",
-      "median_score_us": 727.19
+      "median_score_us": 733.25
     },
     "L4": {
       "captured_at": "2026-10-30T08:19:01Z",

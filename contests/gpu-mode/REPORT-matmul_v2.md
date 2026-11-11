@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `matmul_v2`
 
-> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `28ca6e51`).
+> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `e4fa2603`).
 
 **Workload:** C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS..
 
@@ -8,8 +8,8 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **H100** | Hopper (sm_90) | **#29** / 43 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.2% (`204.96 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-10-30 08:19` |
-| **A100** | Ampere (sm_80) | **#54** / 55 | **4862.98 µs** | 4929.54 µs | 35 TFLOPS | 12.2% (`595.63 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-10-30 08:19` |
+| **H100** | Hopper (sm_90) | **#29** / 44 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.2% (`204.96 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-11 06:42` |
+| **A100** | Ampere (sm_80) | **#55** / 56 | **4862.98 µs** | 4929.54 µs | 35 TFLOPS | 12.2% (`595.63 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-11 06:42` |
 | **L4** | Ada Lovelace (sm_89) | **#25** / 25 | **7055.49 µs** | 7020.40 µs | 24 TFLOPS | 28.2% (`1989.62 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-10-30 08:19` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)

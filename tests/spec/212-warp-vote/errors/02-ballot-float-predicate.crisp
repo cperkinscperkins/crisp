@@ -1,0 +1,18 @@
+;; TEST-EXPECT: FAIL
+;; CHECK-FAIL: "the predicate must be a condition"
+;;
+;; Endeavour 212: a vote's predicate is a CONDITION, under the same rule as if / when: a comparison, or an
+;; integer read as "nonzero is true" (Crisp's comparisons are themselves 0 / 1 integers).  A float is not a
+;; condition -- (warp-ballot x) on a float x has no single obvious meaning -- so it is refused.  Write the
+;; comparison you mean: (warp-ballot (> x 0.0)).
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel k_float_pred (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lane (warp-lane))
+        (m    (warp-ballot (to-float lane))))
+    (when (= lane 0u)
+      (set! (~ out 0ul) (to-ulong m)))))

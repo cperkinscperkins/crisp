@@ -2720,6 +2720,12 @@ Alternately, the `sizeExpression` can be a compile-time known value, in which ca
 or it can be any runtime value or some other Storage Handle variable.  In these cases, this will be noted in the hoisting comment,
 but that may lack clarity. It is best ot use the `:msg` key as well.
 
+A compile-time size may be ARITHMETIC over integer literals and `(warp-size)` -- `+ - * /` -- and is folded to
+a number for the target being compiled. That is how per-WARP shared state is sized: 256 counters per warp of a
+256-thread workgroup is `(* 256 (/ 256 (warp-size)))`, which is 2048 words on NVIDIA (8 warps) and 4096 on
+Intel BMG (16 warps). A literal sized for the widest target wastes shared memory, and with it occupancy, on
+the others. ✅
+
 ##### `sizeExpression` for matrices and tensors
 
 `:match-workgroup-size` and  `:match-grid-size` (and `:match-warp-tile`) all work well when the arity of the `local_work_size`/`global_work_size` matches
@@ -6080,13 +6086,34 @@ to a reduction in a logarithmic number of steps.
         ... (shuffle-xor someVal s))
 ```
 
-#### Ballot Operations 📝
+#### Ballot Operations ✅
 The ballot primitives allow the warp to vote on a predicate.
 
+The predicate is a **condition**, under the same rule as `if` / `when`: a comparison, or an integer read
+as nonzero-is-true. A float is refused; write the comparison you mean, `(> x 0.0)`.
 
-##### warp-ballot 📝
-`(warp-ballot predicate:bool) -> uint`
+A vote is a **warp collective**, under exactly the shuffles' rules: every lane of the warp must reach
+it (it is refused inside a per-lane branch, or a loop a lane may leave early), and on SPIR-V the
+kernel's subgroup size must be pinned (`--hardware-profile` plus a compile-time `local-size`). That is
+what lets each vote be ONE instruction with the whole warp as its member mask: `vote.sync` on NVIDIA,
+`OpGroupNonUniformBallot` / `Any` / `All` on SPIR-V. There is no member-mask argument.
+
+A vote's result is the same in every lane, so Crisp **infers it warp-uniform**: a branch on
+`(warp-any? ...)`, or on a ballot mask, may itself hold a shuffle or another vote, and a loop holding
+one may exit on `(warp-all? ...)`. (Mixing the result with a per-lane value, say
+`(logand mask (shift-left 1u (warp-lane)))`, makes it per-lane again, as you would expect.)
+
+Under `--differentiate` the votes carry no gradient, like `popcount` and the comparisons; a float
+computation that uses their results still differentiates.
+
+
+##### warp-ballot ✅
+`(warp-ballot predicate) -> uint`
 Returns a bitmask where the Nth bit is set if the Nth thread in the warp evaluated `predicate` to true.
+
+The mask is a `uint`, 32 bits: one per lane of an NVIDIA warp (32) or an Intel BMG subgroup (16, the
+high bits zero). A hardware profile whose warp is wider than 32 lanes is a compile error until such a
+target exists; `warp-any?` / `warp-all?` work at any width.
 
 Think of `warp-ballot` as a bitwise poll of the warp. Every thread passes in a boolean (the predicate). 
 The hardware collects these booleans from all active threads simultaneously and packs 
@@ -6098,10 +6125,31 @@ Each thread receives this same composite integer containing the votes of everyon
 
 This is a very useful operation often used in conjunction with the `popcount` bit operation. (See the Bit Twiddling section)
 
-##### warp-any? / warp-all? 📝
-`(warp-any? predicate:bool) -> bool`
-`(warp-all? predicate:bool) -> bool`
-Returns true if any (or all) active threads in the warp evaluate `predicate` to true. These are extremely fast hardware reductions.
+This is the ranking step of a radix sort, CUB-style: one ballot per bit of a lane's digit, each
+flipped where the lane's own bit is 0, ANDed together, gives the lanes whose digit equals this lane's;
+counting the ones below this lane gives its stable rank among them.
+
+```lisp
+(let ((full  (shift-right (lognot 0u) (- 32u (warp-size))))   ; the warp's real lanes
+      (v0    (warp-ballot (= bit0 1u)))
+      (v1    (warp-ballot (= bit1 1u)))
+      (peers (logand full
+                     (logand (lognot (logxor v0 (- 0u bit0)))   ; v0 where bit0 = 1, else (lognot v0)
+                             (lognot (logxor v1 (- 0u bit1))))))
+      (rank  (popcount (logand peers (- (shift-left 1u (warp-lane)) 1u)))))
+  ...)
+```
+
+On a 16-lane warp the mask's bits 16..31 are 0, so `(lognot v)` SETS them: lanes that do not exist.
+AND every flipped ballot with the warp's real lanes, as `full` does above, or `(popcount peers)` counts
+16 phantom lanes on Intel (on NVIDIA the two are the same).
+
+##### warp-any? / warp-all? ✅
+`(warp-any? predicate) -> condition`
+`(warp-all? predicate) -> condition`
+Returns true if any (or all) threads in the warp evaluate `predicate` to true. These are extremely
+fast hardware reductions. The result is a condition, 0 or 1, exactly like a comparison's: use it in
+`when` / `if`, or convert it with `to-uint` / `to-ulong`.
 
 #### Supported Types ✅
 The hardware shuffle instruction moves **32 bits**. Crisp natively supports the 32-bit
@@ -9142,6 +9190,27 @@ count compiles to a single shift; a run-time count adds a select or two, branch-
 `popcount` counts the set bits of the two's-complement representation, so `(popcount -1)` on an `int` is 32
 (Common Lisp's `logcount` would count the zero bits of a negative number instead).
 `logand` / `logior` / `logxor` take two operands of the same integer type; `lognot` one.
+
+#### Shifts and rotates: `shift-left` `shift-right` `rotate-left` `rotate-right` ✅
+
+`ash` is the shift that is always right.  These four are the shifts that are always cheap: the count is taken
+**modulo the bit width** (OpenCL C's rule), so every count is still defined, but there is no select chain to
+pay for -- a shift is one instruction (two if the compiler cannot prove the count's range), and a 32-bit
+rotate is one funnel shift (`shf.l.wrap` / `shf.r.wrap` on NVIDIA).  Reach for them when the count is a
+run-time value in a hot loop; `ash` costs a few selects there because it must honour a count of either
+sign and any size.
+```
+(shift-left 1u 3)         => 8
+(shift-left 1u 33)        => 2            ; 33 mod 32 = 1
+(shift-left 1u -1)        => 2147483648   ; -1 mod 32 = 31: NOT a right shift
+(shift-right -16 2)       => -4           ; signed: arithmetic (sign fill)
+(shift-right 4294967295u 28) => 15        ; unsigned: logical
+(rotate-right 1u 1)       => 2147483648
+(rotate-left 2147483649u 1) => 3
+(rotate-right x -1)       ; = (rotate-left x 1)
+```
+The first operand is a scalar integer of any width and fixes the result type; the count may be any integer
+type.  All four are integer operators, so they carry no gradient under `--differentiate`.
 
 ### Integer Division ✅
 

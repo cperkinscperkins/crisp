@@ -1,0 +1,36 @@
+;; TEST-EXPECT: PASS
+;; TEST-WITH[--ir-target=ptx] : validate-ptx-211-shift-rotate
+;; TEST-WITH[--ir-target=spv] : validate-spv-211-helpers-noinline
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER a: 4096 2048 1024 512
+;; HOIST-EXPECT: BUFFER b: 2147483648 1073741824 536870912 268435456
+;; HOIST-EXPECT: BUFFER c: 1 2 4 8
+;; HOIST-EXPECT: BUFFER d: 3 6 12 24
+;;
+;; Endeavour 211 -- what the four forms cost.  The reason they exist is that (ash x n) with a run-time
+;; n is a branch-free select chain (~10 instructions: n may have either sign and any size); the sort_v2
+;; radix sort's per-key rotate was 15% of its downsweep's instructions.
+;;
+;; THE VALIDATORS:
+;;   PTX: a 32-bit rotate by a run-time count is ONE funnel shift (shf.l.wrap.b32 / shf.r.wrap.b32);
+;;        the kernel has no selp.b32 (the ash select chain) and no call to a __crisp_ helper.
+;;   SPIR-V: each __crisp_shift_* / __crisp_rotate_* helper keeps FunctionControl DontInline -- the BMG
+;;        needs inline integer bodies behind a helper (BUG 120 family), as for ash and popcount.
+;; The counts are RUNTIME values (the global id i = 0..3), so nothing folds.
+;;   a: (shift-right 4096u i)                      4096 2048 1024 512
+;;   b: (rotate-right 1u (+ i 1))                  2^31 2^30 2^29 2^28
+;;   c: (rotate-left 2147483648u (+ i 1))          1 2 4 8
+;;   d: (shift-left 3u i)                          3 6 12 24
+
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel shift_rotate_lowering (&out a b c d)
+  (declare #'(&out u-vec u-vec u-vec u-vec => nil)
+           (global-size :set-to 4))
+  (let ((i (get-global-id 0))
+        (s (to-uint i)))
+    (set! (~ a i) (shift-right 4096u s))
+    (set! (~ b i) (rotate-right 1u (+ s 1u)))
+    (set! (~ c i) (rotate-left 2147483648u (+ s 1u)))
+    (set! (~ d i) (shift-left 3u s))))

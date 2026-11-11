@@ -1,0 +1,19 @@
+;; VERIFY-AUTODIFF: input=2.5 atol=1e-2 expect.input=17.0
+;;
+;; (atol 1e-2: out is ~42, so the float32 finite difference is only good to ~2e-3; the analytical
+;; gradient is exactly 17.)
+;; Endeavour 211 -- the four forms are integer operators: they carry no gradient (like ash, logand,
+;; popcount), and a float path that uses their results still differentiates.  The integer here comes
+;; FROM the active input (k = (floor x) = 2 at x = 2.5, piecewise constant), so the backward walk meets
+;; every one of the four forms on the active path and must know each is a zero-gradient operator.
+;;   scale = (shift-left k 2) 8 + (rotate-right k 1) 1 + (shift-right 16 k) 4 + (rotate-left k 1) 4 = 17
+;;   out   = scale * x   ->   d out / d x = 17   (k does not move for a small step around 2.5)
+
+(def-type cell-float (cell float :address-space :global))
+
+(def-kernel shift_rotate_diff_k (input &out out)
+  (declare #'(cell-float &out cell-float))
+  (let ((x     (~ input))
+        (k     (floor x))
+        (scale (+ (shift-left k 2) (rotate-right k 1) (shift-right 16 k) (rotate-left k 1))))
+    (set! (~ out) (* (to-float scale) x))))

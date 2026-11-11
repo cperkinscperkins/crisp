@@ -154,10 +154,11 @@ well supported inside the MMA paths.
   uniform across the workgroup.
 - **Two levels of uniform** (Endeavour 194).  A BARRIER (`sync-workgroup`, `to-workgroup-uniform`, a tile
   op, or a call to a function holding one) needs every thread of the WORKGROUP to arrive: only under
-  workgroup-uniform conditions and loop bounds.  A WARP COLLECTIVE (shuffle, `reduce-warp`,
+  workgroup-uniform conditions and loop bounds.  A WARP COLLECTIVE (shuffle, `reduce-warp`, a vote,
   `to-warp-uniform`, `sync-warp`, or a call reaching one) needs only its WARP: a warp-uniform condition or
   plain-loop bound is enough.  Warp-uniform values: `to-warp-uniform`, `(warp-id)`, a variable after
-  `reduce-warp`, a function whose returns are all warp-uniform.  `if+` / `dotimes+` need workgroup-uniform.
+  `reduce-warp`, a vote's result (`warp-ballot`, `warp-any?`, `warp-all?`), a function whose returns are
+  all warp-uniform.  `if+` / `dotimes+` need workgroup-uniform.
 - `to-workgroup-uniform` / `to-warp-uniform` BROADCAST (local thread 0 / lane 0) -- each costs a barrier /
   a shuffle and is a collective itself.  `(declare (uniform x))` asserts for free.
 - **Strides** hand each thread its work: `loop-vector-stride` (one vector), `grid-stride`, `tile-stride`,
@@ -181,6 +182,7 @@ well supported inside the MMA paths.
 | `sqrt rsqrt` | float / double. |
 | `exp log log2 exp2 sin cos tan asin acos atan tanh erf pow atan2` | float / double.  PTX needs libdevice (§1). |
 | `ash logand logior logxor lognot popcount` | integers.  `(ash x n)`: n > 0 left, n < 0 right, defined for any n. |
+| `shift-left shift-right rotate-left rotate-right` | integers.  The count is taken MOD the bit width (`(shift-left 1u 33)` is 2; a negative count wraps too, it does not reverse direction).  One instruction, where a run-time `ash` is a select chain: use these in hot loops. |
 | `op-fma op-saturate op-min3 op-max3 op-rsqrt-approx` ... | hardware ops, chapter 32/07. |
 | `*! +! -! widen` | widening ops; on the basic types they are `* + -` and the identity.  Quantized types: §11. |
 | `to-sat` | `(to-sat char x)`: float to integer, nearest (ties to even), saturating, NaN to 0. |
@@ -194,7 +196,21 @@ pack/unpack ops, `fmin` / `fmax` (use `min` / `max`).
 
 `(get-global-id 0)`, `(get-local-id 0)`, `(get-local-linear-id)`, `(get-workgroup-id 0)`, `(warp-lane)`,
 `(warp-id)`, `(warp-size)`; `(sync-workgroup)`; shuffles `shuffle`, `shuffle-up`, `shuffle-down`,
-`shuffle-xor`.
+`shuffle-xor`; votes `warp-ballot`, `warp-any?`, `warp-all?`.
+
+**Votes** (Endeavour 212) take one predicate, a condition as for `if` (a comparison, or an integer:
+nonzero is true; a float is refused).  `(warp-ballot p)` is a `uint` with bit L set iff lane L's `p` holds
+(16 bits used on BMG, 32 on NVIDIA); `(warp-any? p)` / `(warp-all? p)` are 0 / 1 conditions like a
+comparison.  Each is ONE instruction (`vote.sync` / `OpGroupNonUniformBallot`, `Any`, `All`), a warp
+collective with the shuffles' rules, and its result is warp-uniform.  The radix-sort rank of a lane
+among the lanes holding the same digit is a ballot per digit bit, then
+`(popcount (logand peers (- (shift-left 1u (warp-lane)) 1u)))` -- see `tests/spec/212-warp-vote/02`.
+Build the per-bit flip with arithmetic, `(lognot (logxor v (- 0u bit)))`, not a per-lane `if` (BUG 109).
+**`(lognot mask)` on BMG sets bits 16..31 -- lanes that do not exist.**  AND it with the warp's real lanes,
+`(shift-right (lognot 0u) (- 32u (warp-size)))`, before you count it.
+Per-warp shared state is sized with `(warp-size)` in the scratch size, e.g.
+`(make-scratch-vector smem-vec (* 256 (/ 256 (warp-size))))` for 256 words per warp: it folds to a number for
+the target being compiled (8 warps x 256 on NVIDIA, 16 x 256 on BMG) -- no shared memory wasted on NVIDIA.
 
 `(warp-size)` comes from the hardware profile: 32 on NVIDIA, 16 on BMG.  **On SPIR-V a warp collective
 (shuffle, warp reduction) needs `--hardware-profile=...` AND a literal `(local-size :set-to N)` that is a

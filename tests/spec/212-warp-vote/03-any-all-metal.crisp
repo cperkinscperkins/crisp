@@ -1,0 +1,44 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER v: 1 0 1 0
+;; HOIST-EXPECT: BUFFER w: 1 0 1 0
+;;
+;; Endeavour 212 ON-METAL: (warp-any? pred) and (warp-all? pred) -> bool.
+;;
+;;   v[0]  any: lane 5 holds it                 -> 1
+;;   v[1]  any: no lane holds it                -> 0
+;;   v[2]  all: every lane (< 64) holds it      -> 1
+;;   v[3]  all: only lanes 0..4 hold it         -> 0
+;;   w[0]  any of a predicate every lane holds  -> 1   (the two edge cases of each:
+;;   w[1]  all of a predicate no lane holds     -> 0    none / every lane)
+;;   w[2]  any: lane 0 only                     -> 1
+;;   w[3]  all: every lane but 7                -> 0
+;; Width-independent: 16 or 32 lanes give the same answers.
+
+(def-type u-vec (vector ulong :address-space :global :align :compact))
+
+(def-kernel any_all_metal (&out v w)
+  (declare #'(&out u-vec u-vec => nil)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((lid  (get-local-id 0))
+        (lane (warp-lane))
+        (a1   (warp-any? (= lane 5u)))
+        (a2   (warp-any? (> lane 99u)))
+        (a3   (warp-all? (< lane 64u)))
+        (a4   (warp-all? (< lane 5u)))
+        (a5   (warp-any? (< lane 64u)))
+        (a6   (warp-all? (> lane 99u)))
+        (a7   (warp-any? (= lane 0u)))
+        (a8   (warp-all? (> (logxor lane 7u) 0u))))
+    (when (= lid 0ul)
+      (set! (~ v 0ul) (to-ulong a1))
+      (set! (~ v 1ul) (to-ulong a2))
+      (set! (~ v 2ul) (to-ulong a3))
+      (set! (~ v 3ul) (to-ulong a4))
+      (set! (~ w 0ul) (to-ulong a5))
+      (set! (~ w 1ul) (to-ulong a6))
+      (set! (~ w 2ul) (to-ulong a7))
+      (set! (~ w 3ul) (to-ulong a8)))))
