@@ -1,0 +1,140 @@
+;; conv2d_v2 performant entry (H100 lane): a register-tiled direct convolution that keeps cuDNN's rounding.
+;;
+;; On the H100 the reference is cuDNN's implicit_convolve_sgemm with TF32 off: every output is ONE fp32
+;; fused-multiply-add chain in (input channel, filter row, filter column) order, and the checker wants that
+;; chain's rounding (~2e-3 off the exact answer at K=32, C=128 -- more than its 1e-3 atol).  So no FFT, no
+;; tensor cores, no split sums.  What is left is doing the 0.85e12 FMAs well:
+;;
+;;   * a workgroup owns 32 output channels x an 8 x 32 pixel patch of one image (8192 outputs);
+;;   * a thread owns 8 channels x 4 neighbouring pixels: eight float4 accumulators, each lane its own chain;
+;;   * for each (ci, ky) the workgroup stages the 8 x (31 + K) input rows and the K x 32 filter taps in
+;;     shared memory, then every thread runs kx = 0 .. K-1: one new input value (a sliding window of four),
+;;     two float4 filter loads (a broadcast), eight float4 FMAs.
+;;
+;; w_transpose first reorders W from (co, ci, ky, kx) to (ci, ky, kx, co) so the taps load coalesced.
+;; Shapes come in a small int vector, dims = (C, H, K, B).  K must be at most 32 (the staged row is 63 wide).
+(def-type in-vec   (vector float :address-space :global :align :compact))
+(def-type out-vec  (vector float :address-space :global :align :compact))
+(def-type dims-vec (vector int   :address-space :global :align :compact))
+
+(def-function splat (s)
+  (declare #'(float => float4))
+  ##(s s s s))
+
+;; WT = W transposed, seen as matrices: W is C rows (co) x CKK columns (ci, ky, kx), WT is CKK x C,
+;; i.e. WT[((ci * K + ky) * K + kx) * C + co] = W[((co * C + ci) * K + ky) * K + kx].  A workgroup moves one
+;; 32 x 32 tile through shared memory (rows padded to 33, so the column reads miss no banks): both the
+;; global reads and the global writes are whole 128-byte rows.  Groups = ceil(C / 32) * ceil(CKK / 32).
+(def-kernel w_transpose (W dims &out WT)
+  (declare #'(in-vec dims-vec &out out-vec => nil)
+           (global-size :derive-from WT :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((C    (to-ulong (~ dims 0)))
+        (K    (to-ulong (~ dims 2)))
+        (CKK  (* C K K))
+        (tile (make-scratch-vector float 1056))   ; 32 x 33
+        (ntc  (/ (+ CKK 31ul) 32ul))
+        (wg   (get-workgroup-id 0))
+        (r0   (* (/ wg ntc) 32ul))                ; first co of the tile
+        (c0   (* (rem wg ntc) 32ul))              ; first (ci, ky, kx) of the tile
+        (t    (get-local-linear-id))
+        (tx   (rem t 32ul))
+        (ty   (/ t 32ul)))
+    (dotimes (j 4ul)
+      (let ((row (+ r0 ty (* j 8ul)))
+            (col (+ c0 tx)))
+        (when (and (< row C) (< col CKK))
+          (set! (~ tile (+ (* (+ ty (* j 8ul)) 33ul) tx)) (~ W (+ (* row CKK) col))))))
+    (sync-workgroup)
+    (dotimes (j 4ul)
+      (let ((row (+ c0 ty (* j 8ul)))             ; WT row = (ci, ky, kx)
+            (col (+ r0 tx)))                      ; WT column = co
+        (when (and (< row CKK) (< col C))
+          (set! (~ WT (+ (* row C) col)) (~ tile (+ (* tx 33ul) ty (* j 8ul)))))))))
+
+(def-kernel conv_tiled (X WT dims &out Y)
+  (declare #'(in-vec in-vec dims-vec &out out-vec => nil)
+           (global-size :derive-from Y :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((C   (to-ulong (~ dims 0)))
+        (H   (to-ulong (~ dims 1)))
+        (K   (to-ulong (~ dims 2)))
+        (O   (+ (- H K) 1ul))
+        (xs  (make-scratch-vector float 512))       ; 8 rows x 63, row stride 63 (= -1 mod 32 banks)
+        (ws  (make-scratch-vector float 1024))      ; K x 32 taps, [kx][co]
+        (ws4 (make-vector ws float4 :length 256ul))
+        ;; which patch: wg = ((b * nco + cot) * nby + by) * nbx + bx
+        (nbx (/ (+ O 31ul) 32ul))
+        (nby (/ (+ O 7ul) 8ul))
+        (nco (/ (+ C 31ul) 32ul))
+        (wg  (get-workgroup-id 0))
+        (bx  (rem wg nbx))
+        (by  (rem (/ wg nbx) nby))
+        (cot (rem (/ wg (* nbx nby)) nco))
+        (b   (/ wg (* nbx nby nco)))
+        (ox0 (* bx 32ul))
+        (oy0 (* by 8ul))
+        (co0 (* cot 32ul))
+        ;; which outputs this thread owns
+        (t   (get-local-linear-id))
+        (g   (/ t 64ul))                           ; channel group: co0 + 8g .. co0 + 8g + 7 (a warp shares it)
+        (r   (rem (/ t 8ul) 8ul))                  ; patch row
+        (c0  (* (rem t 8ul) 4ul))                  ; first of the thread's four patch columns
+        (a0 (splat 0.0)) (a1 (splat 0.0)) (a2 (splat 0.0)) (a3 (splat 0.0))
+        (a4 (splat 0.0)) (a5 (splat 0.0)) (a6 (splat 0.0)) (a7 (splat 0.0)))
+    (declare (uniform C H K O))
+    (dotimes+ (ci C)
+      (dotimes+ (ky K)
+        (sync-workgroup)
+        ;; stage the input rows oy0 + ky .. oy0 + ky + 7, columns ox0 .. ox0 + 62 (zero past the image)
+        (dotimes (j 2ul)
+          (let ((e (+ t (* j 256ul))))
+            (when (< e 504ul)
+              (let ((gy (+ oy0 ky (/ e 63ul)))
+                    (gx (+ ox0 (rem e 63ul))))
+                (set! (~ xs e) (if (and (< gy H) (< gx H))
+                                   (~ X (+ (* (+ (* (+ (* b C) ci) H) gy) H) gx))
+                                   0.0))))))
+        ;; stage the taps WT[ci, ky, kx, co0 .. co0 + 31] as ws[kx * 32 + co]
+        (dotimes (j 4ul)
+          (let ((e (+ t (* j 256ul))))
+            (when (< e (* K 32ul))
+              (let ((co (+ co0 (rem e 32ul))))
+                (set! (~ ws e) (if (< co C)
+                                   (~ WT (+ (* (+ (* (+ (* ci K) ky) K) (/ e 32ul)) C) co))
+                                   0.0))))))
+        (sync-workgroup)
+        (let ((xr (+ (* r 63ul) c0))
+              (xa (~ xs xr))
+              (xb (~ xs (+ xr 1ul)))
+              (xc (~ xs (+ xr 2ul))))
+          (dotimes (kx K)
+            (let ((xd (~ xs (+ xr kx 3ul)))
+                  (x4 ##(xa xb xc xd))
+                  (wl (~ ws4 (+ (* kx 8ul) (* g 2ul))))          ; taps for channels 8g .. 8g + 3
+                  (wh (~ ws4 (+ (* kx 8ul) (* g 2ul) 1ul))))     ; and 8g + 4 .. 8g + 7
+              (set! a0 (op-fma x4 (splat (x~ wl)) a0))
+              (set! a1 (op-fma x4 (splat (y~ wl)) a1))
+              (set! a2 (op-fma x4 (splat (z~ wl)) a2))
+              (set! a3 (op-fma x4 (splat (w~ wl)) a3))
+              (set! a4 (op-fma x4 (splat (x~ wh)) a4))
+              (set! a5 (op-fma x4 (splat (y~ wh)) a5))
+              (set! a6 (op-fma x4 (splat (z~ wh)) a6))
+              (set! a7 (op-fma x4 (splat (w~ wh)) a7))
+              (set! xa xb)
+              (set! xb xc)
+              (set! xc xd))))))
+    ;; write the 8 x 4 outputs that lie inside the image
+    (let ((oy (+ oy0 r))
+          (ox (+ ox0 c0)))
+      (when (< oy O)
+        (dotimes (j 8ul)
+          (let ((co (+ co0 (* g 8ul) j))
+                (v  (cond ((= j 0ul) a0) ((= j 1ul) a1) ((= j 2ul) a2) ((= j 3ul) a3)
+                          ((= j 4ul) a4) ((= j 5ul) a5) ((= j 6ul) a6) (else a7))))
+            (when (< co C)
+              (let ((row (* (+ (* (+ (* b C) co) O) oy) O)))
+                (when (< ox O)          (set! (~ Y (+ row ox))      (x~ v)))
+                (when (< (+ ox 1ul) O)  (set! (~ Y (+ row ox 1ul))  (y~ v)))
+                (when (< (+ ox 2ul) O)  (set! (~ Y (+ row ox 2ul))  (z~ v)))
+                (when (< (+ ox 3ul) O)  (set! (~ Y (+ row ox 3ul))  (w~ v)))))))))))

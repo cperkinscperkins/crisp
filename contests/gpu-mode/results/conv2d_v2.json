@@ -1,0 +1,27 @@
+{
+  "problem": "conv2d_v2",
+  "title": "GPU MODE Challenge 08: 2-D convolution (fp32; 256x256, K=32, 128 channels, batch 1 scored)",
+  "leaderboard_id": 537,
+  "leaderboard_url": "https://www.gpumode.com/leaderboard/537?tab=rankings",
+  "workload": {
+    "description": "Y = conv2d(X, W), no padding, stride 1, fp32, checked at rtol = atol = 1e-3 against cuDNN with TF32 disabled.  task.yml lists 5 benchmarks; kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: size 256, kernelsize 32, channels 128, batch 1 (seed 6252) -- 225x225x128 outputs, each a 131,072-term dot product: 1.699 TFLOP as a direct convolution.",
+    "total_flops": 1698693120000
+  },
+  "runs": [
+    {
+      "timestamp": "2026-11-11T16:47:07Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_conv2d_beauty",
+      "file_name": "crisp_conv2d_beauty.py",
+      "mode": "test",
+      "submission_id": 970628,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    }
+  ]
+}
