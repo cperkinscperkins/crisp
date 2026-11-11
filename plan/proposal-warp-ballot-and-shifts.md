@@ -130,9 +130,9 @@ Staging (each step is a go / no-go for the next)
    pass taught that their results are warp-uniform, and docs (writing-crisp.md, ideal_001.md status).
 4. The sort's downsweep rewritten on ballots, BMG bit-exact, then the H100 diagnostic and the leaderboard.
 
-Open questions for Chris
-------------------------
-* Names: `shift-left` / `shift-right` / `rotate-left` / `rotate-right`?  (`ash` is taken by its Lisp
-  meaning; CL has no rotate.)
-* Count semantics "mod bits": OK, or would you rather have "n must be in [0, bits), checked under --debug"?
-* Part B's return type on a hypothetical 64-wide target: error now, or `ulong` everywhere?
+Decisions (Chris, 2026-11-10)
+-----------------------------
+* Names: `shift-left` / `shift-right` / `rotate-left` / `rotate-right`.
+* Count semantics: modulo the width (OpenCL C's rule).
+* `warp-ballot` returns `uint`; a profile whose warp-size is over 32 is a compile error until such a target
+  exists (option a).

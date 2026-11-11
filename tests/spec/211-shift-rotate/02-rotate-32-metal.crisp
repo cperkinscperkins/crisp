@@ -1,0 +1,31 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER ru: 3 2147483648 2014458966 2
+;; HOIST-EXPECT: BUFFER rn: 12 305419896 -3 -1
+;;
+;; Endeavour 211 -- rotate-left / rotate-right: bits leaving one end re-enter at the other; the count
+;; is taken modulo the width, so a negative count rotates the other way.  The sort_v2 radix sort
+;; rotates every key by the pass's (run-time) digit shift; see plan/proposal-warp-ballot-and-shifts.md.
+;; Run-time counts (z = workgroup id = 0).  305419896 = #x12345678.
+;;   ru: (rotate-left 2147483649u 1) 3        (rotate-right 1u 1) 2147483648
+;;       (rotate-right 305419896u 8) 2014458966 [#x78123456]    (rotate-left 1u 33) 2
+;;   rn: (rotate-right 6u -1) 12   [-1 mod 32 = 31: rotate-right 31 = rotate-left 1]
+;;       (rotate-left (rotate-right 305419896u 13) 13) 305419896
+;;       (rotate-left -2 1) -3     [#xFFFFFFFE -> #xFFFFFFFD; a signed value rotates its bits]
+;;       (rotate-right -1 7) -1
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel rotate_32 (&out ru rn)
+  (declare #'(&out u-vec i-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0))))
+    (set! (~ ru 0) (rotate-left 2147483649u (+ z 1)))
+    (set! (~ ru 1) (rotate-right 1u (+ z 1)))
+    (set! (~ ru 2) (rotate-right 305419896u (+ z 8)))
+    (set! (~ ru 3) (rotate-left 1u (+ z 33)))
+    (set! (~ rn 0) (to-int (rotate-right 6u (+ z -1))))
+    (set! (~ rn 1) (to-int (rotate-left (rotate-right 305419896u (+ z 13)) (+ z 13))))
+    (set! (~ rn 2) (rotate-left -2 (+ z 1)))
+    (set! (~ rn 3) (rotate-right -1 (+ z 7)))))

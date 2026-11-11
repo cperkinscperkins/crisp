@@ -228,3 +228,239 @@
 
 
 (in-package :crisp.compiler)
+
+;;;; =====================================================================================
+;;;; Endeavour 211 -- shift-left / shift-right / rotate-left / rotate-right
+;;;; (plan/proposal-warp-ballot-and-shifts.md; tests/spec/211-shift-rotate/)
+;;;; =====================================================================================
+
+;; src/autodiff.lisp  (whole-function copy, script-extracted; only change: the 211 names join the
+;; integer-operator list -- integer results carry no gradient)
+(defun %185-math-backward (v expr emit-fn local-adj-fn)
+  "Backward rules for the endeavour-185 P1 ops, matched by NAME.  Returns T when EXPR is one of
+   them (the clause handled it), else NIL.
+   Endeavour 206: %mf-block-scale is a constant and %mf-ste is straight-through."
+  (flet ((local-adj (x) (funcall local-adj-fn x))
+         (emit (x) (funcall emit-fn x))
+         (sym (n) (%185-crisp-sym n)))
+    (let ((op (car expr)))
+      (cond
+        ;; Endeavour 206: (%mf-block-scale ..) is a constant; (%mf-ste NAME X SV) passes V's adjoint to X.
+        ((%185-op-named-p op "%MF-BLOCK-SCALE") t)
+        ((%185-op-named-p op "%MF-STE")
+         (let ((x (third expr)))
+           (when (symbolp x)
+             (funcall emit-fn `(set! ,(funcall local-adj-fn x)
+                                     (+ ,(funcall local-adj-fn x) ,(funcall local-adj-fn v)))))
+           t))
+        ((and (%qint-narrowing-target op) (= (length expr) 2)) ; endeavour 205: a raw cast truncates
+         (when (symbolp (cadr expr))           ; here, not the skip list: q-int ends in INT, a silent zero
+           (error 'crisp-compiler-error
+                  :message (format nil "(~(~a~) ~(~a~)): a raw cast has no gradient.  Use (~(~a~) x scale) or (~(~a~) acc multiplier)."
+                                   op (cadr expr) op op)))
+         t)
+        ((or (%185-op-named-p op "MAX") (%185-op-named-p op "MIN")) ; endeavour 205: follows the winner
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v))
+                (ge (%185-crisp-sym ">=")) (lt (%185-crisp-sym "<"))
+                (if-sym (%185-crisp-sym "IF"))
+                (a-wins (if (%185-op-named-p op "MAX") `(,ge ,a ,b) `(,lt ,a ,b)))
+                (a-share `(%q-raw-float (,if-sym ,a-wins 1 0) ,v-adj))
+                (b-share `(%q-raw-float (,if-sym ,a-wins 0 1) ,v-adj)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* ,a-share ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* ,b-share ,v-adj)))))
+           t))
+        ((and (%qint-narrowing-target op) (= (length expr) 3)) ; endeavour 205: straight-through
+         (let ((x (cadr expr)) (y (caddr expr)) (q (%qint-narrowing-target op)) (v-adj (local-adj v)))
+           (when (symbolp x)
+             (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (%q-ste :value ,q ,x ,y) ,v-adj)))))
+           (when (symbolp y)
+             (emit `(set! ,(local-adj y) (+ ,(local-adj y) (* (%q-ste :scale ,q ,x ,y) ,v-adj)))))
+           t))
+        ((and (%185-op-named-p op "TO-FLOAT") (= (length expr) 3)) ; endeavour 205: scale * q is exact
+         (let ((q (cadr expr)) (s (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp q) (emit `(set! ,(local-adj q) (+ ,(local-adj q) (* ,s ,v-adj)))))
+           (when (symbolp s) (emit `(set! ,(local-adj s) (+ ,(local-adj s) (* (%q-raw-float ,q ,s) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "SQRT")            ; d/da sqrt(a) = 0.5 / sqrt(a)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (/ 0.5 (,(sym "SQRT") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "RSQRT")           ; d/da a^-1/2 = -0.5 rsqrt(a) / a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* -0.5 (/ (,(sym "RSQRT") ,a) ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "TANH")            ; d/da tanh(a) = 1 - tanh(a)^2
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (- 1.0 (* (,(sym "TANH") ,a) (,(sym "TANH") ,a))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ERF")             ; d/da erf(a) = 2/sqrt(pi) exp(-a^2)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 1.1283791670955126 (exp (- 0.0 (* ,a ,a)))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "EXP2")            ; d/da 2^a = ln2 2^a
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (* 0.6931471805599453 (,(sym "EXP2") ,a)) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "ABS")             ; d/da |a| = sign(a)  (0 at 0)
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a)
+             (emit `(set! ,(local-adj a) (+ ,(local-adj a)
+                                            (* (- (to-float (> ,a 0.0)) (to-float (< ,a 0.0))) ,v-adj)))))
+           t))
+        ((%185-op-named-p op "CLAMP")           ; x passes through inside [lo,hi]; lo below; hi above
+         (destructuring-bind (x lo hi) (cdr expr)
+           (let ((v-adj (local-adj v)))
+             (when (symbolp x)
+               (emit `(set! ,(local-adj x) (+ ,(local-adj x) (* (to-float (* (>= ,x ,lo) (<= ,x ,hi))) ,v-adj)))))
+             (when (symbolp lo)
+               (emit `(set! ,(local-adj lo) (+ ,(local-adj lo) (* (to-float (< ,x ,lo)) ,v-adj)))))
+             (when (symbolp hi)
+               (emit `(set! ,(local-adj hi) (+ ,(local-adj hi) (* (to-float (> ,x ,hi)) ,v-adj)))))
+             t)))
+        ((%185-op-named-p op "+!")              ; endeavour 203: on the basic types +! is +
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "-!")              ; endeavour 203: on the basic types -! is -
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (- ,(local-adj b) ,v-adj))))
+           t))
+        ((%185-op-named-p op "WIDEN")           ; endeavour 203: the identity on basic types
+         (let ((a (cadr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) ,v-adj))))
+           t))
+        ((%185-op-named-p op "*!")              ; D6: *! is *
+         (let* ((a (cadr expr)) (b (caddr expr)) (v-adj (local-adj v)))
+           (when (symbolp a) (emit `(set! ,(local-adj a) (+ ,(local-adj a) (* (%q-raw-float ,b ,v-adj) ,v-adj)))))
+           (when (symbolp b) (emit `(set! ,(local-adj b) (+ ,(local-adj b) (* (%q-raw-float ,a ,v-adj) ,v-adj)))))
+           t))
+        ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
+        ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
+        ((some (lambda (n) (%185-op-named-p op n))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"
+                 "SHIFT-LEFT" "SHIFT-RIGHT" "ROTATE-LEFT" "ROTATE-RIGHT"))   ; endeavour 211
+         t)
+        (t nil)))))
+
+;; src/analysis/ops.lisp  (NEW, endeavour 211)
+(defparameter *211-shift-op-names* '("SHIFT-LEFT" "SHIFT-RIGHT" "ROTATE-LEFT" "ROTATE-RIGHT")
+  "Endeavour 211: the shift / rotate operators analyzed by analyze-211-shift-op.  Each takes (x count);
+   the count is taken modulo x's width.")
+
+;; src/analysis/ops.lisp  (NEW, endeavour 211)
+(defun analyze-211-shift-op (expr env context location)
+  "Analyzes (shift-left x n) / (shift-right x n) / (rotate-left x n) / (rotate-right x n) (endeavour 211).
+   X is a scalar integer and fixes the result type; N may be any integer type (codegen converts it to X's
+   type, which cannot change its low bits, so 'N mod width' is the same either way).  shift-right is
+   logical for an unsigned X, arithmetic for a signed one."
+  (let* ((name (symbol-name (first expr)))
+         (args (rest expr)))
+    (unless (= (length args) 2)
+      (error 'crisp-compiler-error
+             :message (format nil "~(~a~) takes 2 arguments (x count); got ~a" name (length args))
+             :source-location location))
+    (let* ((nodes (loop for a in args for i from 1
+                        collect (analyze-expression a env context (append location (list i)))))
+           (x-type (get-single-value-type (first nodes)))
+           (n-type (get-single-value-type (second nodes))))
+      (unless (%185-int-category-p x-type)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): operands must be integers (chapter 32/05); got ~(~a~)" name x-type)
+               :source-location location))
+      (unless (%185-int-category-p n-type)
+        (error 'crisp-compiler-error
+               :message (format nil "~(~a~): the count must be an integer; got ~(~a~)" name n-type)
+               :source-location location))
+      (log:debug "analyze-211-shift-op: ~a x=~a count=~a" name x-type n-type)
+      (make-semantic-hw-op :op (cond ((string= name "SHIFT-LEFT") '%211-shift-left)
+                                     ((string= name "SHIFT-RIGHT") '%211-shift-right)
+                                     ((string= name "ROTATE-LEFT") '%211-rotate-left)
+                                     (t '%211-rotate-right))
+                           :type x-type :args nodes :source-location location))))
+
+;; src/analysis/ops.lisp  (whole-function copy; only change: registers the endeavour-211 names too)
+(defun %185-register-math-op-analyzers ()
+  "Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language
+   and :crisp.compiler.  Called from register-ops-analyzers.
+   Endeavour 211: also analyze-211-shift-op under every *211-shift-op-names* name."
+  (let ((cl-pkg (find-package :crisp-language))
+        (cc-pkg (find-package :crisp.compiler)))
+    (dolist (name *185-math-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-math-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-math-op))
+    ;; P2: the integer bit operations
+    (dolist (name *185-bit-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-185-bit-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-185-bit-op))
+    ;; Endeavour 211: shifts and rotates, count modulo the width
+    (dolist (name *211-shift-op-names*)
+      (setf (gethash (intern name cl-pkg) *expression-analyzers*) 'analyze-211-shift-op)
+      (setf (gethash (intern name cc-pkg) *expression-analyzers*) 'analyze-211-shift-op)))
+  (%register-accum-analyzers))
+
+;; src/codegen.lisp  (NEW, endeavour 211)
+(defun %211-shift-rotate-body (builder module kind x c x-type)
+  "Endeavour 211: the body of a shift / rotate of X by C (already X-TYPE), KIND one of :shl :shr :rotl
+   :rotr.  The count is taken modulo the width:
+     shifts  -> (and c (bits - 1)) then shl / lshr (unsigned) / ashr (signed).  LLVM drops the and when it
+                can prove c's range; on PTX the shift is then one instruction.
+     rotates -> llvm.fshl / llvm.fshr (x, x, c), whose count is ALREADY modulo the width by definition;
+                NVPTX makes a 32-bit one a single shf.l.wrap / shf.r.wrap."
+  (multiple-value-bind (cat bits) (%hw-type-parts x-type)
+    (let ((ity (crisp-type-to-llvm-type x-type module)))
+      (log:debug "%211-shift-rotate-body: ~a ~a (~a bits, ~a)" kind x-type bits cat)
+      (ecase kind
+        ((:shl :shr)
+         (let ((m (crisp.llvm-bindings::llvm-build-and builder c (llvm-const-int ity (1- bits) 0) "sh_cnt")))
+           (cond ((eq kind :shl) (crisp.llvm-bindings::llvm-build-shl builder x m "shift_left"))
+                 ((eq cat :unsigned-int) (crisp.llvm-bindings::llvm-build-l-shr builder x m "shift_right"))
+                 (t (crisp.llvm-bindings::llvm-build-a-shr builder x m "shift_right")))))
+        ((:rotl :rotr)
+         (%hw-call builder module
+                   (format nil "llvm.~a.~a" (if (eq kind :rotl) "fshl" "fshr") (%hw-intrinsic-suffix cat bits nil nil))
+                   ity (list x x c) "rotate"))))))
+
+;; src/codegen.lisp  (NEW, endeavour 211)
+(defun %211-lower (kind builder module arg-vals arg-types)
+  "Endeavour 211: lower shift / rotate KIND through an internal helper __crisp_<kind>_<type> -- noinline
+   on SPIR-V only (the BMG needs it for inline integer bodies, BUG 120 family), inlined on PTX
+   (%185-helper-call).  The count is converted to the operand's type first, as for ash."
+  (let* ((x-type (first arg-types))
+         (c (build-cast-if-needed builder module (second arg-vals) (second arg-types) x-type))
+         (helper (format nil "__crisp_~a_~(~a~)"
+                         (ecase kind (:shl "shift_left") (:shr "shift_right") (:rotl "rotate_left") (:rotr "rotate_right"))
+                         x-type)))
+    (%185-helper-call builder module helper (crisp-type-to-llvm-type x-type module) (list (first arg-vals) c)
+                      (lambda (b params)
+                        (%211-shift-rotate-body b module kind (first params) (second params) x-type)))))
+
+;; src/codegen.lisp  (NEW, endeavour 211)
+(defmethod %hw-lower ((op (eql '%211-shift-left)) builder module arg-vals arg-types result-type)
+  "shift-left (endeavour 211): x << (n mod width)."
+  (declare (ignore result-type))
+  (%211-lower :shl builder module arg-vals arg-types))
+
+;; src/codegen.lisp  (NEW, endeavour 211)
+(defmethod %hw-lower ((op (eql '%211-shift-right)) builder module arg-vals arg-types result-type)
+  "shift-right (endeavour 211): x >> (n mod width); logical for unsigned, arithmetic for signed."
+  (declare (ignore result-type))
+  (%211-lower :shr builder module arg-vals arg-types))
+
+;; src/codegen.lisp  (NEW, endeavour 211)
+(defmethod %hw-lower ((op (eql '%211-rotate-left)) builder module arg-vals arg-types result-type)
+  "rotate-left (endeavour 211): llvm.fshl(x, x, n), n mod width."
+  (declare (ignore result-type))
+  (%211-lower :rotl builder module arg-vals arg-types))
+
+;; src/codegen.lisp  (NEW, endeavour 211)
+(defmethod %hw-lower ((op (eql '%211-rotate-right)) builder module arg-vals arg-types result-type)
+  "rotate-right (endeavour 211): llvm.fshr(x, x, n), n mod width."
+  (declare (ignore result-type))
+  (%211-lower :rotr builder module arg-vals arg-types))

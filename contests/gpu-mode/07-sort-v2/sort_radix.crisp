@@ -129,10 +129,10 @@
 ;; Count the digits of the four keys in V into the histogram slice at H.
 (def-function count-digits4 (v h shift is-first kmin &out shist)
   (declare #'(uint4 uint int uint uint &out smem-vec => nil))
-  (atomic-inc! (~ shist (+ h (logand (ash (key-of (x~ v) is-first kmin) (- shift)) 255u))))
-  (atomic-inc! (~ shist (+ h (logand (ash (key-of (y~ v) is-first kmin) (- shift)) 255u))))
-  (atomic-inc! (~ shist (+ h (logand (ash (key-of (z~ v) is-first kmin) (- shift)) 255u))))
-  (atomic-inc! (~ shist (+ h (logand (ash (key-of (w~ v) is-first kmin) (- shift)) 255u))))
+  (atomic-inc! (~ shist (+ h (logand (shift-right (key-of (x~ v) is-first kmin) shift) 255u))))
+  (atomic-inc! (~ shist (+ h (logand (shift-right (key-of (y~ v) is-first kmin) shift) 255u))))
+  (atomic-inc! (~ shist (+ h (logand (shift-right (key-of (z~ v) is-first kmin) shift) 255u))))
+  (atomic-inc! (~ shist (+ h (logand (shift-right (key-of (w~ v) is-first kmin) shift) 255u))))
   (return))
 
 (def-kernel sort_upsweep (src mm prm &out hist)
@@ -171,7 +171,7 @@
         (dotimes (j 16u)
           (let ((p (+ (* j 256u) tid)))
             (when (< p valid)
-              (let ((d (logand (ash (load-key u (+ base (to-ulong p)) is-first kmin) (- shift)) 255u)))
+              (let ((d (logand (shift-right (load-key u (+ base (to-ulong p)) is-first kmin) shift) 255u)))
                 (atomic-inc! (~ shist (+ (* wid 256u) d))))))))
     (sync-workgroup)
     (let ((c 0u))
@@ -283,7 +283,7 @@
 
 (def-function nib-field (lo hi d)
   (declare #'(ulong ulong uint => uint))
-  (return (to-uint (logand (ash (if (< d 8u) lo hi) (- (to-int (* (logand d 7u) 8u)))) 255ul))))
+  (return (to-uint (logand (shift-right (if (< d 8u) lo hi) (* (logand d 7u) 8u)) 255ul))))
 
 ;; Stable counting sort of the 4096 keys in IN by the 4 bits at SH, into OUT.  Workgroup-uniform.
 (def-grid-function split-nibble (in out cnt wtot tid sh)
@@ -292,7 +292,7 @@
   (let ((lo 0ul)
         (hi 0ul))
     (dotimes (j 16u)
-      (let ((d   (logand (ash (~ in (+ (* j 257u) tid)) (- sh)) 15u))
+      (let ((d   (logand (shift-right (~ in (+ (* j 257u) tid)) sh) 15u))
             (inc (nib-inc d)))
         (set! lo (+ lo (if (< d 8u) inc 0ul)))
         (set! hi (+ hi (if (< d 8u) 0ul inc)))))
@@ -317,7 +317,7 @@
         (hi 0ul))
     (dotimes (j 16u)
       (let ((k   (~ in (+ (* j 257u) tid)))
-            (d   (logand (ash k (- sh)) 15u))
+            (d   (logand (shift-right k sh) 15u))
             (inc (nib-inc d))
             (r   (+ (~ cnt (cnt-word (+ (* d 256u) tid))) (nib-field lo hi d))))
         (set! lo (+ lo (if (< d 8u) inc 0ul)))
@@ -329,13 +329,14 @@
 ;; Rotate the 32-bit key K right / left by S (0 .. 24).  The downsweep rotates each key once on load
 ;; so the pass's digit is the low byte -- every later digit is a constant mask -- and back once on
 ;; write.  (A run-time ash costs ~10 instructions; six per key per pass were 20% of the downsweep.)
+;; v1j: rotate-right / rotate-left (endeavour 211) -- one funnel shift each.
 (def-function rot-right (k s)
   (declare #'(uint int => uint))
-  (return (logior (ash k (- s)) (ash k (- 32 s)))))
+  (return (rotate-right k s)))
 
 (def-function rot-left (k s)
   (declare #'(uint int => uint))
-  (return (logior (ash k s) (ash k (- s 32)))))
+  (return (rotate-left k s)))
 
 (def-kernel sort_downsweep (src mm prm scanned totals &out dst)
   (declare #'(fin-vec u-vec u-vec u-vec u-vec &out fout-vec => nil)

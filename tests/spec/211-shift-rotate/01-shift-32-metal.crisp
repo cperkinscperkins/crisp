@@ -1,0 +1,35 @@
+;; TEST-EXPECT: PASS
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; HOIST-EXPECT: BUFFER su: 8 2 2147483648 1
+;; HOIST-EXPECT: BUFFER sr: 15 1 4294967295 2
+;; HOIST-EXPECT: BUFFER si: -4 -1 3 1
+;;
+;; Endeavour 211 -- shift-left / shift-right: the count is taken MODULO THE WIDTH (OpenCL C's rule),
+;; so every count is defined and the shift is one or two instructions.  shift-right is logical for an
+;; unsigned value, arithmetic (sign-filling) for a signed one.  The counts are run-time values (z is
+;; the workgroup id, 0), so nothing folds.
+;;   su: (shift-left 1u 3) 8   (shift-left 1u 33) 2   (shift-left 1u -1) 2147483648   [-1 mod 32 = 31]
+;;       (shift-left 1u 64) 1
+;;   sr: (shift-right 4294967295u 28) 15   (shift-right 256u 40) 1   [40 mod 32 = 8]
+;;       (shift-right 4294967295u 32) 4294967295   (shift-right 8u -30) 2   [-30 mod 32 = 2]
+;;   si: (shift-right -16 2) -4   (shift-right -1 31) -1   (shift-left 3 32) 3   (shift-right 64 -26) 1
+
+(def-type i-vec (vector int :address-space :global :align :compact))
+(def-type u-vec (vector uint :address-space :global :align :compact))
+
+(def-kernel shift_32 (&out su sr si)
+  (declare #'(&out u-vec u-vec i-vec => nil)
+           (global-size :set-to 1))
+  (let ((z (to-int (get-workgroup-id 0))))
+    (set! (~ su 0) (shift-left 1u (+ z 3)))
+    (set! (~ su 1) (shift-left 1u (+ z 33)))
+    (set! (~ su 2) (shift-left 1u (+ z -1)))
+    (set! (~ su 3) (shift-left 1u (+ z 64)))
+    (set! (~ sr 0) (shift-right 4294967295u (+ z 28)))
+    (set! (~ sr 1) (shift-right 256u (+ z 40)))
+    (set! (~ sr 2) (shift-right 4294967295u (+ z 32)))
+    (set! (~ sr 3) (shift-right 8u (+ z -30)))
+    (set! (~ si 0) (shift-right -16 (+ z 2)))
+    (set! (~ si 1) (shift-right -1 (+ z 31)))
+    (set! (~ si 2) (shift-left 3 (+ z 32)))
+    (set! (~ si 3) (shift-right 64 (+ z -26)))))

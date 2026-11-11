@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "shift-left: operands must be integers"
+;;
+;; Endeavour 211: shift-left / shift-right / rotate-left / rotate-right are integer-only, like the other
+;; bit operations (chapter 32/05).  A float is refused, not bit-cast.
+
+(def-function f (a n)
+  (declare #'(float int => float))
+  (shift-left a n))

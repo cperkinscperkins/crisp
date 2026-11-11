@@ -181,6 +181,7 @@ well supported inside the MMA paths.
 | `sqrt rsqrt` | float / double. |
 | `exp log log2 exp2 sin cos tan asin acos atan tanh erf pow atan2` | float / double.  PTX needs libdevice (§1). |
 | `ash logand logior logxor lognot popcount` | integers.  `(ash x n)`: n > 0 left, n < 0 right, defined for any n. |
+| `shift-left shift-right rotate-left rotate-right` | integers.  The count is taken MOD the bit width (`(shift-left 1u 33)` is 2; a negative count wraps too, it does not reverse direction).  One instruction, where a run-time `ash` is a select chain: use these in hot loops. |
 | `op-fma op-saturate op-min3 op-max3 op-rsqrt-approx` ... | hardware ops, chapter 32/07. |
 | `*! +! -! widen` | widening ops; on the basic types they are `* + -` and the identity.  Quantized types: §11. |
 | `to-sat` | `(to-sat char x)`: float to integer, nearest (ties to even), saturating, NaN to 0. |

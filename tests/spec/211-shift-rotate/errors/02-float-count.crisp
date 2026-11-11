@@ -1,0 +1,9 @@
+;;
+;; CHECK-FAIL: "rotate-right: the count must be an integer"
+;;
+;; Endeavour 211: the count of shift-left / shift-right / rotate-left / rotate-right may be any integer
+;; type (it is taken modulo the operand's width), but not a float.
+
+(def-function f (a n)
+  (declare #'(uint float => uint))
+  (rotate-right a n))
