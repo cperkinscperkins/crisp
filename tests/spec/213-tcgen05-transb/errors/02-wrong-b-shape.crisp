@@ -1,0 +1,11 @@
+;; CHECK-FAIL: "B tile must be (K N) = (64 128)"
+;; CHECK-FAIL-FLAGS: --ir-target=ptx --ir-target-arch=sm_100a
+;; Endeavour 213 -- :b-major :mn with an (N K) B tile: the option says B is (K N), the tile disagrees.
+(def-type mt (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel e213_two (&out C)
+  (declare #'(&out mt) (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (128 64)))
+        (B-tile (make-scratch-matrix half (128 64)))
+        (D (make-tcgen05-accumulator float (128 128) 0.0)))
+    (tcgen05-accumulate-via-tile (128 128 64) D A-tile B-tile :swizzle :128b :b-major :mn)
+    (store-tile D C (0 0))))

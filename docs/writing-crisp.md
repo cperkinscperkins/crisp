@@ -357,6 +357,8 @@ under the 227 KB limit.
   - The initial value is 0.
 - **The accumulate:** `(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b)`.
   - A is `(128 K)` and B is `(N K)`, TMA-loaded with `:swizzle :128b`.
+  - B may instead be the row-major `(K N)` tile of a plain `a @ b`: add `:b-major :mn` (half /
+    bfloat16 only; endeavour 213).  The B200 matmul_v2 entry dropped a 34 us transpose this way.
   - K is 64 for half / bfloat16, 32 for float (tf32), and 128 for char / uchar.
   - 8-bit operands (char, uchar, a `def-qint`) need an int or `(accum Q)` accumulator:
     `(make-tcgen05-accumulator int (128 N) 0)`.  The qint and sign rules are the other MMA paths'.

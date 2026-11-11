@@ -1,0 +1,48 @@
+;; Endeavour 213 rung 02 -- the B200 matmul_v2 kernel shape with an MN-major B: 128 x 256 tiles, a 2-deep
+;; TMA ring of A (128 64) and B (64 256) -- (K N), four 64-wide boxes per load -- warp-specialized
+;; (:epilogue 4 / :producer 1 / :mma 1), the accumulator in tensor memory, :b-major :mn on every MMA.
+;;
+;; THE VALIDATOR (validate-ptx-tcgen05-transb-ring): the loop body's four kind::f16 MMAs, the instruction
+;; descriptor 138477584 (f16, B MN-major, N>>3 = 32, M>>4 = 8), the MN-major B descriptor, and at least
+;; 5 TMA copies in the producer (A + B's four boxes).  Metal: contests/gpu-mode/06-matmul-v2 v7 on a B200.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_100a] : validate-ptx-tcgen05-transb-ring
+;; SKIP-WITH[--differentiate]: "tcgen05 has no backward yet (D-208-8)"
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tcgen05_b_mn_ring (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 192))
+  (let ((A-ring    (make-scratch-matrix-ring half (128 64) :ring-count 2))
+        (B-ring    (make-scratch-matrix-ring half (64 256) :ring-count 2))   ; (K N) -- Major::MN
+        (D         (make-tcgen05-accumulator float (128 256) 0.0))
+        (K         (inner-dimension A B))
+        (empty     (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :signaled))
+        (full      (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting))
+        (acc-full  (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 1 :initial-state :waiting))
+        (acc-empty (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 4 :initial-state :signaled)))
+    (tile-stride C (128 256) (grid-y grid-x)
+      (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
+          (:epilogue
+            (await (ring-get acc-full 0))
+            (store-tile (to-half D) C (grid-y grid-x))
+            (signal (ring-get acc-empty 0)))
+          (:producer
+            (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+              (let ((slot (mod grid-k (to-ulong 2))))
+                (await (ring-get empty slot))
+                (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+                (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot) :swizzle :128b))))
+          (:mma
+            (await (ring-get acc-empty 0))
+            (set! D (make-tcgen05-accumulator float (128 256) 0.0))
+            (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+              (let ((slot (mod grid-k (to-ulong 2))))
+                (await (ring-get full slot))
+                (tcgen05-accumulate-via-tile (128 256 64) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                             :swizzle :128b :b-major :mn :on-complete (ring-get empty slot))))
+            (tcgen05-commit (ring-get acc-full 0)))))))
