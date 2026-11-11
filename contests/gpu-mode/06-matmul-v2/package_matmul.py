@@ -451,6 +451,23 @@ B200_TMA = dict(key="b200", crisp="matmul_b200_tma_mma.crisp", arch="sm_100", ti
 B200_TC = dict(key="b200tc", crisp="matmul_b200_tcgen05.crisp", arch="sm_100a", tile=(128, 256), k_step=64,
                b_layout="col", profile="b200", profile_file="benchmarks/profiles/b200.crisp")
 
+# v7 (endeavour 213): the B200 kernel reads the contest's (K N) b as given -- :b-major :mn, no transpose.
+B200_TCMN = dict(key="b200mn", crisp="matmul_b200_tcgen05_mn.crisp", arch="sm_100a", tile=(128, 256), k_step=64,
+                 b_layout="row", profile="b200", profile_file="benchmarks/profiles/b200.crisp")
+
+DISPATCH_V7 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
+        _load("h100tma", PTX_H100TMA)
+        _mod.run_h100tma(a, b, c)
+    elif _CAP == (10, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
+        _load("b200mn", PTX_B200MN)
+        _mod.run_b200mn(a, b, c)
+    elif _CAP[0] in (8, 10) and M % 128 == 0 and N % 128 == 0 and K % 16 == 0:
+        _load("ampere4w", PTX_AMPERE4W)
+        _mod.run_ampere4w(a, b, c)
+    else:
+        _load("small", PTX_SMALL)
+        _mod.run_small(a, b, c)"""
+
 # v6: v5's dispatch with the B200 on tcgen05 (transpose b, then the tensor-memory kernel).
 DISPATCH_V6 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
         _load("h100tma", PTX_H100TMA)
@@ -487,13 +504,14 @@ def build_all() -> None:
           "b200tc": build_kernel(KernelSpec(**B200_TC)),
           "transpose": build_kernel(KernelSpec(**TRANSPOSE)),
           "ampere4w": build_kernel(KernelSpec(**AMPERE4W))}
-    # v6 (resume-gpumode): v5 + the B200 on tcgen05.  Built with today's compiler, so every TMA descriptor
-    # is passed by value (endeavour 210).  v5 (endeavour 199) and earlier are kept as submitted.
+    # v7 (endeavour 213): v6 with the B200 kernel reading b as given (:b-major :mn) -- no transpose.  v6
+    # (resume-gpumode; B200 265 us, 2026-11-11) and earlier are kept as submitted.
+    ks["b200mn"] = build_kernel(KernelSpec(**B200_TCMN))
     make_submission(
-        "crisp_matmul_v6.py",
-        "matmul_v2 v6: H100 wgmma 2wg_deep, transB, stmatrix + TMA-store epilogue; B200 tcgen05 (tensor memory); A100 / L4 4-warp cp.async + mma.sync",
-        ks, DISPATCH_V6,
-        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05.crisp", "transpose_b.crisp", "matmul_ampere_4w.crisp",
+        "crisp_matmul_v7.py",
+        "matmul_v2 v7: H100 wgmma 2wg_deep, transB, stmatrix + TMA-store epilogue; B200 tcgen05 reading b MN-major (no transpose); A100 / L4 4-warp cp.async + mma.sync",
+        {k: v for k, v in ks.items() if k not in ("b200tc", "transpose")}, DISPATCH_V7,
+        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05_mn.crisp", "matmul_ampere_4w.crisp",
          "matmul_small_mma.crisp"])
     # The beauty entry: one portable 13-line kernel for every GPU and shape.
     beauty = build_kernel(KernelSpec(key="beauty", crisp="matmul_beauty.crisp", arch="sm_80", tile=(16, 8),

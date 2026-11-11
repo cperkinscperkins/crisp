@@ -191,6 +191,21 @@
       "per_case_us": null,
       "public_score_us": 2292.73,
       "secret_score_us": 2291.57
+    },
+    {
+      "timestamp": "2026-11-11T22:25:26Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_conv2d_perf",
+      "file_name": "crisp_conv2d_perf.py",
+      "mode": "leaderboard",
+      "submission_id": 970698,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 2195.16,
+      "secret_score_us": 2188.45
     }
   ]
 }

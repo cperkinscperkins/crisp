@@ -267,7 +267,7 @@ _FFT = {}
 _FFT_VARIANTS = {"64": ("fft_fwd", "cgemm", "fft_inv", 32), "32": ("fft_fwd32", "cgemm32", "fft_inv32", 32),
                  "8": ("fft8_fwd", "cgemm", "fft8_inv", 64), "8c32": ("fft8_fwd", "cgemm32", "fft8_inv", 64),
                  "8g2": ("fft8_fwd", "cgemm2", "fft8_inv", 64)}
-_FFT_VARIANT = "8g2"     # best on the A100 (diag_conv2d_fft.py, 2026-11-11)
+_FFT_VARIANT = "8"       # best on the A100 with typed-GEP addressing (diag 2026-11-11: 2.198 vs 8g2 2.285 ms)
 
 
 def _fft_plan(B, C, H, K):

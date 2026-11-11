@@ -64,4 +64,14 @@ longer regenerates them.  v4 = the transB kernel on H100, and the 4-warp kernel 
 | L4 | `crisp_matmul_v3.py` | 7117.0 | 25 / 25 | 1990 |
 | B200 | -- | -- | every job (ours and a pure-torch probe) hit the runner's hard timeout | 92 |
 
+B200, 2026-11-11 (the queue works again): `crisp_matmul_v6.py` -- tcgen05, tensor-memory accumulator, after a
+transpose of b -- leaderboard 970691: 265.4 us, 48 / 53.  Diag (`build_diag_b200.py`, scored case):
+transpose 33.8 + kernel 226.3 us; cuBLAS 139.3.  **`crisp_matmul_v7.py`** reads b as given with
+`:b-major :mn` (endeavour 213, `matmul_b200_tcgen05_mn.crisp`): leaderboard 970696 **230.2 us**, every
+benchmark exact; rank 48 / 53 (#47 is 201 us, median 114, #1 92).  The rest of the gap is 2-SM MMA
+(`cta_group::2`) + persistent / cluster scheduling, which Crisp does not have.
+Tried and rejected: v7 with the epilogue `:via :tma` (`matmul_b200_tcgen05_mn_tma.crisp`,
+`build_diag_b200_v7.py`): 234.5 vs 228.4 us at the scored case, 1295 vs 867 us at 8192^3 -- the 17 KB of
+staging (115712 B per workgroup) likely leaves one workgroup per SM where v7 keeps two.
+
 Beauty entry (`crisp_matmul_beauty.py`), H100 benchmark: 86.0 ms.  Full report: `../REPORT-matmul_v2.md`.
