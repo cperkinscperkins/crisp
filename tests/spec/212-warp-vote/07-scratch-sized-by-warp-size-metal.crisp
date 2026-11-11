@@ -1,0 +1,37 @@
+;; TEST-EXPECT: PASS
+;; HOIST-HARDWARE-PROFILE: bmg
+;; TEST-HOIST[L0]: validate-l0-host-run
+;; TEST-HOIST[CUDA]: validate-cuda-host-run
+;; HOIST-EXPECT: BUFFER out: 100 101 102 103
+;;
+;; Endeavour 212: a scratch size may name (warp-size).  Per-WARP shared state -- the sort's warp-private
+;; digit counters -- needs (warps per workgroup) x K words: 8 x K on NVIDIA, 16 x K on BMG.  A literal
+;; sized for the widest case costs NVIDIA occupancy (sort v1k: 8 KB of shared memory = one workgroup per SM
+;; = 830 us at 100M on H100); one sized for NVIDIA overruns on BMG.
+;;
+;; The compiler accepted (warp-size) in the size all along, but passed the EXPRESSION through to the
+;; metacrisp, and both hoisters refused it ("neither an integer nor a list of 1 integers").  The size is
+;; now folded to an integer for the target being compiled -- literals, + - * /, and (warp-size).
+;;
+;; Here: 4 words per warp.  Every warp writes its slots; the LAST warp's slots hold 100 + lane, and they
+;; sit at the very end of the buffer, so a buffer sized for too few warps would be overrun exactly there.
+;; Width-independent: 4 warps on BMG, 2 on NVIDIA, the same 100 101 102 103.
+
+(def-type u-vec    (vector ulong :address-space :global :align :compact))
+(def-type smem-vec (vector uint  :address-space :local  :align :compact))
+
+(def-kernel per_warp_scratch (&out out)
+  (declare #'(&out u-vec => nil)
+           (global-size :set-to 64)
+           (local-size  :set-to 64))
+  (let ((lid  (get-local-id 0))
+        (lane (warp-lane))
+        (wid  (warp-id))
+        (last (- (warp-count) 1u))
+        (buf  (make-scratch-vector smem-vec (* 4 (/ 64 (warp-size))))))
+    (when (< lane 4u)
+      (set! (~ buf (+ (* wid 4u) lane))
+            (+ lane (* 100u (to-uint (= wid last))))))
+    (sync-workgroup)
+    (when (< lid 4ul)
+      (set! (~ out lid) (to-ulong (~ buf (+ (* last 4u) (to-uint lid))))))))

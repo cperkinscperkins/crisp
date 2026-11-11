@@ -112,3 +112,21 @@ Same-machine A/Bs under eval.py's procedure, H100, 100M, mean of 8 (diagab_212.p
     (warp-size) is not folded before the size expression is written out.
   - A literal 4096 on both targets costs the H100 a workgroup per SM (v1k vs v1k2).
   - A literal 2048 overruns shared memory on BMG.
+
+## Scratch sizes may name (warp-size) (Chris: option 1, 2026-11-10)
+
+- `%fold-scratch-size-expr` (src/analysis/structs.lisp, new) folds a make-scratch-* size to an integer for
+  the target being compiled.  It handles integer literals, `+ - * /`, `(warp-size)`
+  (`%173-warp-size`: 32 on PTX, the profile's `:simd-width` on SPIR-V), and per-dimension lists element
+  by element.
+  - Anything else is returned unchanged: keywords such as `:match-workgroup-size`, runtime names, a
+    division by zero.
+- `%extract-scratch-size-expr` (whole-function replacement) returns the folded value.  Its three callers
+  get it: the Pass 1 scan, the analyzer, and the AD rebuild of a scratch form.
+- Spec 07-scratch-sized-by-warp-size-metal: red first (both hoists failed), then BMG gives
+  100 101 102 103.  By hand: metacrisp `:size-expr 8` on PTX (2 warps x 4) and `16` on BMG (4 x 4).  The
+  CUDA hoist sizes the buffer at 32 bytes.
+- **The sort is folded: sort_radix.crisp = v1k3**, wcnt = `(* 256 (/ 256 (warp-size)))`.
+  - BMG bit-exact (42 cases), with wcnt folded to 4096.
+  - crisp_sort_v1.py / diag_sort_v1.py rebuilt.  Their PTX and ABI are byte-identical to the measured
+    v1k3 arm (downsweep smem 52352 bytes on NVIDIA).

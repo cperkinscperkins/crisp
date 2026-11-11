@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 07: Sort (fp32, 100,000,000 keys scored)",
   "leaderboard_id": 542,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/542?tab=rankings",
-  "crisp_commit": "006eae6d",
+  "crisp_commit": "e4fa2603",
   "workload": {
     "description": "Sort a 1-D fp32 tensor ascending; must equal torch.sort exactly. task.yml lists 5 benchmarks (100K .. 100M); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: 100,000,000 floats (seed 6252), rows of randn + seed + i -- nearly sorted by row. The traffic below is the floor: read 400 MB once and write 400 MB once.",
     "total_traffic_bytes": 800000000
@@ -32,7 +32,7 @@
   },
   "standings": {
     "H100": {
-      "captured_at": "2026-11-11T03:09:11Z",
+      "captured_at": "2026-11-11T06:42:03Z",
       "user_name": "cperkinscperkins",
       "rank": 17,
       "total_entrants": 30,
@@ -40,15 +40,15 @@
       "crisp_file": "07-sort-v2/sort_radix.crisp",
       "py_file": "07-sort-v2/crisp_sort_v1.py",
       "hardware_profile": null,
-      "public_score_us": 3711.94,
-      "secret_score_us": 3699.62,
-      "submission_id": 970442,
+      "public_score_us": 3156.15,
+      "secret_score_us": 3175.36,
+      "submission_id": 970485,
       "top1_score_us": 325.85,
       "top1_user": "HariCharanK",
       "median_score_us": 2217.98
     },
     "A100": {
-      "captured_at": "2026-11-11T03:09:11Z",
+      "captured_at": "2026-11-11T06:42:03Z",
       "user_name": "cperkinscperkins",
       "rank": 24,
       "total_entrants": 33,
@@ -56,15 +56,15 @@
       "crisp_file": "07-sort-v2/sort_radix.crisp",
       "py_file": "07-sort-v2/crisp_sort_v1.py",
       "hardware_profile": null,
-      "public_score_us": 6783.83,
-      "secret_score_us": 6771.4,
-      "submission_id": 970443,
+      "public_score_us": 5794.22,
+      "secret_score_us": 5852.4,
+      "submission_id": 970486,
       "top1_score_us": 582.9,
       "top1_user": "Artem Lukoianov",
       "median_score_us": 3893.93
     },
     "L4": {
-      "captured_at": "2026-11-11T03:09:11Z",
+      "captured_at": "2026-11-11T06:42:03Z",
       "user_name": "cperkinscperkins",
       "rank": 13,
       "total_entrants": 18,
@@ -72,9 +72,9 @@
       "crisp_file": "07-sort-v2/sort_radix.crisp",
       "py_file": "07-sort-v2/crisp_sort_v1.py",
       "hardware_profile": null,
-      "public_score_us": 24338.88,
-      "secret_score_us": 24399.76,
-      "submission_id": 970444,
+      "public_score_us": 23639.68,
+      "secret_score_us": 23793.05,
+      "submission_id": 970488,
       "top1_score_us": 3534.85,
       "top1_user": "HariCharanK",
       "median_score_us": 15444.31
@@ -113,8 +113,17 @@
       "key": "crisp_sort_v1j",
       "crisp_file": "07-sort-v2/sort_radix.crisp",
       "py_file": "07-sort-v2/crisp_sort_v1.py",
-      "strategy": "rev j: run-time shifts / rotates as endeavour 211's shift-right / rotate-right / rotate-left (one funnel shift each, where a run-time ash is a select chain): downsweep SASS -15%, registers 56 -> 40",
+      "strategy": "rev j: run-time shifts / rotates as endeavour 211's shift-right / rotate-right / rotate-left (one funnel shift each, where a run-time ash is a select chain): downsweep SASS -15%, registers 56 -> 40 [source at git e4fa2603]",
       "registers": 40,
+      "hardware_profile": null
+    },
+    {
+      "step": "4",
+      "key": "crisp_sort_v1k",
+      "crisp_file": "07-sort-v2/sort_radix.crisp",
+      "py_file": "07-sort-v2/crisp_sort_v1.py",
+      "strategy": "rev k: the downsweep ranks with warp ballots (endeavour 212's warp-ballot), CUB-style -- 8 ballots per key give the lanes sharing its 8-bit digit, popcount gives its rank -- in place of two 4-bit counting splits; the tile is loaded into shared memory first; per-warp counters sized by (warp-size)",
+      "registers": null,
       "hardware_profile": null
     }
   ],
@@ -347,6 +356,66 @@
       "per_case_us": null,
       "public_score_us": 24338.88,
       "secret_score_us": 24399.76
+    },
+    {
+      "timestamp": "2026-11-11T06:38:40Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_sort_v1k",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "test",
+      "submission_id": 970484,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-11-11T06:39:15Z",
+      "gpu": "H100",
+      "kernel_key": "crisp_sort_v1k",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "leaderboard",
+      "submission_id": 970485,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 3156.15,
+      "secret_score_us": 3175.36
+    },
+    {
+      "timestamp": "2026-11-11T06:39:50Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_sort_v1k",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "leaderboard",
+      "submission_id": 970486,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 5794.22,
+      "secret_score_us": 5852.4
+    },
+    {
+      "timestamp": "2026-11-11T06:41:25Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_sort_v1k",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "leaderboard",
+      "submission_id": 970488,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 23639.68,
+      "secret_score_us": 23793.05
     }
   ],
   "ablation_size_label": "scored case: 100,000,000 floats (ranking_by LAST)",
@@ -358,7 +427,8 @@
     "**The downsweep is instruction-bound, not memory-bound:** -9% SASS gave -16% time (rev d). A run-time ash is a branch-free select chain; endeavour 211 added shift-left / shift-right / rotate-left / rotate-right (count mod width), and the per-key rotate became one funnel shift: -9.2% on the whole sort (rev j).",
     "**The histogram layout was the upsweep's limit:** digit-major per-tile counts hit 256 sectors per tile; tile-major made the upsweep 193 -> 150 us per pass (a fenced no-write probe: 136).",
     "**GPU MODE H100 runners differ by ~30%:** the same kernels ran 3150 vs 4063 us on two nodes, so a single leaderboard score cannot rank two kernels. Every A/B here runs all arms inside ONE test submission under eval.py's procedure (diagab_*.py). On one H100: v1c 4922, v1i 4063, v1j 3692 us; torch.sort (CUB) 5280.",
-    "**Next lever, measured before building:** a CUDA ballot-ranking downsweep (one 8-bit pass, 8 warp ballots) beat a CUDA port of the current two 4-bit splits by 233 us per pass at equal occupancy, and beat Crisp v1j by 95 us per pass (diagp_ballot.py). match.any was slower than ballots. Next: warp-ballot in Crisp."
+    "**Warp ballots replaced the two 4-bit splits (rev k):** a CUDA probe measured it before Crisp had a ballot (diagp_ballot.py), endeavour 212 added warp-ballot / warp-any? / warp-all?, and the Crisp downsweep went -14% on the whole sort (one H100: v1j 3693, v1k 3165 us).",
+    "**Two traps on the way, both measured:** (1) shared memory is occupancy -- 8 KB more cost 830 us on H100 (3 vs 4 workgroups per SM), hence per-warp counters sized by (warp-size); (2) a global load inside a 16-round loop with a warp sync per round is 16 serial memory latencies -- loading the tile first took the ballot version from +7% to -14% against v1j."
   ],
   "beauty_entry": {
     "crisp_file": "07-sort-v2/sort_bitonic_beauty.crisp",

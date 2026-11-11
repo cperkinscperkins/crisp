@@ -2720,6 +2720,12 @@ Alternately, the `sizeExpression` can be a compile-time known value, in which ca
 or it can be any runtime value or some other Storage Handle variable.  In these cases, this will be noted in the hoisting comment,
 but that may lack clarity. It is best ot use the `:msg` key as well.
 
+A compile-time size may be ARITHMETIC over integer literals and `(warp-size)` -- `+ - * /` -- and is folded to
+a number for the target being compiled. That is how per-WARP shared state is sized: 256 counters per warp of a
+256-thread workgroup is `(* 256 (/ 256 (warp-size)))`, which is 2048 words on NVIDIA (8 warps) and 4096 on
+Intel BMG (16 warps). A literal sized for the widest target wastes shared memory, and with it occupancy, on
+the others. ✅
+
 ##### `sizeExpression` for matrices and tensors
 
 `:match-workgroup-size` and  `:match-grid-size` (and `:match-warp-tile`) all work well when the arity of the `local_work_size`/`global_work_size` matches

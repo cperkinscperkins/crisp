@@ -208,6 +208,9 @@ among the lanes holding the same digit is a ballot per digit bit, then
 Build the per-bit flip with arithmetic, `(lognot (logxor v (- 0u bit)))`, not a per-lane `if` (BUG 109).
 **`(lognot mask)` on BMG sets bits 16..31 -- lanes that do not exist.**  AND it with the warp's real lanes,
 `(shift-right (lognot 0u) (- 32u (warp-size)))`, before you count it.
+Per-warp shared state is sized with `(warp-size)` in the scratch size, e.g.
+`(make-scratch-vector smem-vec (* 256 (/ 256 (warp-size))))` for 256 words per warp: it folds to a number for
+the target being compiled (8 warps x 256 on NVIDIA, 16 x 256 on BMG) -- no shared memory wasted on NVIDIA.
 
 `(warp-size)` comes from the hardware profile: 32 on NVIDIA, 16 on BMG.  **On SPIR-V a warp collective
 (shuffle, warp reduction) needs `--hardware-profile=...` AND a literal `(local-size :set-to N)` that is a
