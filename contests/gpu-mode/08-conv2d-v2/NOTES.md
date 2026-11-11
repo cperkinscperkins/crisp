@@ -117,6 +117,22 @@ cgemm2 191 / 25 IMAD.  Each `(~ v (+ idx 2112ul))` is `gep i8 base, (idx + c) * 
 no constant offset folds into the load (see FOR DISCUSSION).  32-bit indices made cgemm slower.
 Floors on the scored case: cgemm 0.70 ms at fp32 peak; transforms ~0.3 ms of DRAM traffic.
 
+## FOR DISCUSSION (Chris), round 2 -- after the A100 lane reached 2.29 ms (#6; #5 is 1.40 ms)
+1. **3xTF32 tensor-core cgemm** (cgemm is 1.39 of 2.29 ms; its fp32 floor is 0.70).  The Ampere
+   `mma-accumulate-via-tile (16 8 8)` float (TF32) path exists, so no new instruction support -- but our
+   spectra are bin-innermost (that is what makes the FFT writes and today's cgemm coalesced), and the MMA
+   path stages contiguous 16 x 8 tiles.  Needs a bin-major layout or a gather-staging scheme, plus the
+   big / small operand split (could be written by the forward FFT).  Endeavour-sized; maybe 0.5-0.8 ms.
+2. **Codegen: element addresses that fold constant offsets.**  `(~ v (+ i 2112ul))` lowers to
+   `gep i8 base, (i + 2112) * 4` with a plain mul/add, so every load pays its own 64-bit address math (25-49
+   IMAD per 112 FFMA in cgemm's loop) instead of an immediate offset.  A typed
+   `getelementptr inbounds float` (or nuw/nsw on the index arithmetic) would likely fold them -- a src
+   change that touches every kernel, so: IR corpus + suites, your call.
+3. **The complex-number endeavour, informed by this lane:** what the FFT actually used was planar float
+   arrays, a 16-value `def-function` (dft8), a host twiddle table, and a complex multiply written out four
+   times.  A `complex` record + `cmul`/`conj` + a DFT8 building block would cover all of it; the A|D
+   convention question (Wirtinger) is untouched by the contest.
+
 ## FOR DISCUSSION (Chris): the performant entry needs two lanes, and only one needs new capability
 
 ### H100 lane -- no new API.  In progress (`conv2d_tiled.crisp`).
