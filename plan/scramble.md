@@ -40,10 +40,10 @@ NEXT  (housekeeping-oct)
       Open: re-measure the float4 kernel on H100 (the .nc effect + the new resource line).
 - [x] matmul report is not up-to-date. winning entry on leaderboard is not in Reprot.
      plus we added :via :tma support, but don't see ANY kernel using that 
-- [ ] matmul contest for GPU Mode needs B200 and teneg05? support ( follow up to wgmma )
-- [ ] benchmarks need above, plus incorporation of :via :tma and possibly other code changes introduced by matmul-contest branch.  And then rerun.
+- [x] matmul contest for GPU Mode needs B200 and teneg05? support ( follow up to wgmma )
+- [x] benchmarks need above, plus incorporation of :via :tma and possibly other code changes introduced by matmul-contest branch.  And then rerun.
 - [ ] tcgen05 for B200 
-- [ ] MMA benchmarking of new quantized ints and microfloat bloacks
+- [x] MMA benchmarking of new quantized ints and microfloat bloacks
 - - PLAN ??
 - - [ ] complex
 - - [ ] FFI
