@@ -251,3 +251,197 @@
 
 
 (in-package :crisp.compiler)
+
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 216 -- ldmatrix for 16-bit mma.sync operand fragments read from shared memory
+;;;; See tests/spec/216-ldmatrix/ldmatrix.md.
+;;;; ----------------------------------------------------------------------
+
+;; src/mma.lisp
+(defvar *216-ldmatrix* t
+  "Endeavour 216.  When true, a 16-bit load-fragment-a / -b whose source is an eligible shared-memory
+   scratch matrix is ONE ldmatrix per fragment instead of 8 (A) / 4 (B) scalar ld.shared.b16.  NIL
+   restores the per-element reads exactly -- the switch a twin-PTX A/B build flips.")
+
+;; src/mma.lisp
+(defun %216-ldmatrix-eligible-p (src probe elem operand context)
+  "Endeavour 216.  T when load-fragment-OPERAND (:a or :b) of SRC (analyzed as PROBE, element ELEM) can
+   be one ldmatrix: PTX, a 16-bit element, SRC a :local (shared-memory) ROW-MAJOR matrix whose static
+   (ROWS COLS) are known and whose row is a multiple of 16 bytes -- ldmatrix takes each 8-element row
+   segment from a 16-byte-aligned address, and a fragment's segments start at multiples of 8 columns,
+   so the row pitch is the only thing that can break the alignment.  Every refusal is logged and keeps
+   the per-element reads, which are correct for any layout."
+  (let* ((canon (ignore-errors (%ts-canonicalize-tensor-type (get-single-value-type probe))))
+         (addr (and (consp canon) (>= (length canon) 4) (fourth canon)))
+         (ct (and canon (%get-tensor-ct canon)))
+         (dims (ignore-errors (%198-tile-static-dims src 2 context)))
+         (why (cond ((not *216-ldmatrix*) "disabled")
+                    ((eq *target-backend* :spirv) "SPIR-V")
+                    ((not (eql (%mma-elem-bits elem) 16)) "not a 16-bit element")
+                    ((not (and addr (symbolp addr) (string= (symbol-name addr) "LOCAL"))) "not shared memory")
+                    ((not (and ct (symbolp ct) (string= (symbol-name ct) "LAST"))) "not row-major")
+                    ((null dims) "no static tile dims")
+                    ((/= 0 (mod (* 2 (second dims)) 16)) "row pitch not a multiple of 16 bytes"))))
+    (log:debug "216 ldmatrix ~a ~a: canon=~a dims=~a -> ~a" operand src canon dims (or why "ELIGIBLE"))
+    (null why)))
+
+;; src/mma.lisp
+(defun %216-ldmatrix-node (operand src probe elem coords env context location)
+  "Endeavour 216.  The semantic-hw-op for one ldmatrix fragment load.  Lane L supplies one 16-byte row
+   address; ldmatrix hands each lane, per 8x8 matrix, row L/4 columns 2(L%4), 2(L%4)+1 -- the mma.sync
+   pair (groupID, 2*tid) -- in one .b32 register, low column in the low half.
+
+     :a  x4, matrices in Ra0..Ra3 order: (rows +0, cols +0) (rows +8, cols +0) (rows +0, cols +8)
+         (rows +8, cols +8) of the 16x16 tile at (16 TY, 16 TK).  Lane L: row 16 TY + L%8 + 8((L/8)%2),
+         col 16 TK + 8(L/16).
+     :b  x2.trans on the row-major (K N) tile: matrices k +0 and k +8 at column 8 TX.  .trans gives lane
+         L rows 2(L%4), 2(L%4)+1 of column L/4 -- the B pair (2*tid, groupID).  Lane L (L%16 used):
+         row 16 TK + L%8 + 8((L/8)%2), col 8 TX."
+  (let* ((lane '(to-int (warp-lane)))
+         ;; A's row and B's K row follow the same rule: 16 per tile step, lane%8 within a matrix, and
+         ;; +8 for the odd matrices (lanes 8-15, 24-31).
+         (r-form `(+ (* ,(first coords) 16) (rem ,lane 8) (* (rem (/ ,lane 8) 2) 8)))
+         (c-form (ecase operand
+                   (:a `(+ (* ,(second coords) 16) (* (/ ,lane 16) 8)))
+                   (:b `(* ,(second coords) 8))))
+         (r-node (analyze-expression r-form env context (append location '(2))))
+         (c-node (analyze-expression c-form env context (append location '(3))))
+         (rec (%nvvm-frag-record operand elem)))
+    (log:info "216: load-fragment-~(~a~) ~a ~a -> ldmatrix (~a)" operand src coords rec)
+    (make-semantic-hw-op :op (ecase operand (:a '%216-ldmatrix-a) (:b '%216-ldmatrix-b))
+                         :args (list probe r-node c-node)
+                         :type rec
+                         :source-location location)))
+
+;; src/mma.lisp
+(defvar *216-orig-analyze-load-fragment-a* (fdefinition 'analyze-load-fragment-a))
+;; src/mma.lisp
+(defvar *216-orig-analyze-load-fragment-b* (fdefinition 'analyze-load-fragment-b))
+
+;; src/mma.lisp
+(defun analyze-load-fragment-a (expr env context location)
+  "Endeavour 216 wrapper: a 16-bit A fragment from an eligible shared-memory scratch matrix is one
+   ldmatrix.x4 (%216-ldmatrix-node); everything else is the per-element read below it (the wrapped
+   original, *216-orig-analyze-load-fragment-a*)."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (if (eq *target-backend* :spirv)
+        (funcall *216-orig-analyze-load-fragment-a* expr env context location)
+        (let* ((probe (analyze-expression src env context (append location '(1))))
+               (elem (%coop-elem-of probe)))
+          (if (%216-ldmatrix-eligible-p src probe elem :a context)
+              (%216-ldmatrix-node :a src probe elem tile-id env context location)
+              (funcall *216-orig-analyze-load-fragment-a* expr env context location))))))
+
+;; src/mma.lisp
+(defun analyze-load-fragment-b (expr env context location)
+  "Endeavour 216 wrapper: a 16-bit B fragment from an eligible row-major (K N) shared-memory scratch
+   matrix is one ldmatrix.x2.trans (%216-ldmatrix-node); everything else is the per-element read (the
+   wrapped original, *216-orig-analyze-load-fragment-b*)."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (if (eq *target-backend* :spirv)
+        (funcall *216-orig-analyze-load-fragment-b* expr env context location)
+        (let* ((probe (analyze-expression src env context (append location '(1))))
+               (elem (%coop-elem-of probe)))
+          (if (%216-ldmatrix-eligible-p src probe elem :b context)
+              (%216-ldmatrix-node :b src probe elem tile-id env context location)
+              (funcall *216-orig-analyze-load-fragment-b* expr env context location))))))
+
+;; src/mma.lisp
+(defun %216-to-i64 (builder v)
+  "Endeavour 216.  Integer LLVM value V widened (sign-extended) to i64; an i64 passes through."
+  (let ((i64 (crisp.llvm-bindings::llvm-int64-type)))
+    (if (= (crisp.llvm-bindings::llvm-get-int-type-width (crisp.llvm-bindings::llvm-type-of v)) 64)
+        v
+        (crisp.llvm-bindings::llvm-build-sext builder v i64 "ldm_i64"))))
+
+;; src/mma.lisp
+(defun %216-shared-elem-ptr (builder tensor-val r c elem-llvm)
+  "Endeavour 216.  The shared-memory address of element (R, C) of the scratch matrix TENSOR-VAL (a Crisp
+   tensor struct: field 0 = storage {ptr, i64}, field 2 = strides), as R*s0 + C*s1 elements of ELEM-LLVM
+   from the base -- the addressing %coop-tensor-ptr+stride-impl uses.  A base outside addrspace(3) is a
+   bug upstream of here, so it is refused rather than cast."
+  (let* ((storage (llvm-build-extract-value builder tensor-val 0 "ldm_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "ldm_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "ldm_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "ldm_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "ldm_s1"))
+         (flat (llvm-build-add builder
+                               (llvm-build-mul builder (%216-to-i64 builder r) s0 "ldm_r")
+                               (llvm-build-mul builder (%216-to-i64 builder c) s1 "ldm_c")
+                               "ldm_flat")))
+    (unless (= (%ptr-as base) 3)
+      (error 'crisp-compiler-error
+             :message (format nil "Endeavour 216 internal: ldmatrix source base is in addrspace(~a), not shared memory (3)." (%ptr-as base))))
+    (cffi:with-foreign-object (idx :pointer 1)
+      (setf (cffi:mem-aref idx :pointer 0) flat)
+      (llvm-build-gep2 builder elem-llvm base idx 1 "ldm_ptr"))))
+
+;; src/mma.lisp
+(defun %216-ldmatrix-lower (builder module arg-vals result-type nregs trans)
+  "Endeavour 216.  One ldmatrix.sync.aligned.m8n8.{x4,x2}[.trans].shared.b16 into the fragment record
+   RESULT-TYPE: NREGS .b32 registers, each split into the record's two 16-bit fields in order (element 0
+   of the <2 x half> = the low half = the lower column / row).  %emit-nvvm-mma re-packs those pairs, and
+   LLVM folds the split and the re-pack away."
+  (destructuring-bind (tensor-val r c) arg-vals
+    (let* ((rec-ty (crisp-type-to-llvm-type result-type module))
+           (elem-llvm (llvm-type-of (llvm-build-extract-value builder (llvm-get-undef rec-ty) 0 "ldm_probe")))
+           (i32 (llvm-int32-type))
+           (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count nregs)))
+                     (dotimes (i nregs) (setf (cffi:mem-aref elts 'llvm-type-ref i) i32))
+                     (llvm-struct-type-in-context (llvm-get-module-context module) elts nregs nil)))
+           (name (format nil "llvm.nvvm.ldmatrix.sync.aligned.m8n8.x~d~:[~;.trans~].b16.p3" nregs trans))
+           (ptr (%216-shared-elem-ptr builder tensor-val r c elem-llvm))
+           (call (%coop-call builder module name ret-ty (list (llvm-type-of ptr)) (list ptr)))
+           (v2 (llvm-vector-type elem-llvm 2))
+           (agg (llvm-get-undef rec-ty)))
+      (dotimes (i nregs)
+        (let ((pair (llvm-build-bit-cast builder (llvm-build-extract-value builder call i (format nil "ldm_r~d" i))
+                                         v2 (format nil "ldm_v~d" i))))
+          (dotimes (h 2)
+            (setf agg (llvm-build-insert-value
+                       builder agg
+                       (llvm-build-extract-element builder pair (llvm-const-int i32 h nil) (format nil "ldm_e~d~d" i h))
+                       (+ (* 2 i) h) (format nil "ldm_f~d" (+ (* 2 i) h)))))))
+      (log:debug "216 %216-ldmatrix-lower: ~a -> ~a" name result-type)
+      agg)))
+
+;; src/mma.lisp
+(defmethod %hw-lower ((op (eql '%216-ldmatrix-a)) builder module arg-vals arg-types result-type)
+  "Endeavour 216: load-fragment-a as ldmatrix.x4 (see %216-ldmatrix-node)."
+  (declare (ignore arg-types))
+  (%216-ldmatrix-lower builder module arg-vals result-type 4 nil))
+
+;; src/mma.lisp
+(defmethod %hw-lower ((op (eql '%216-ldmatrix-b)) builder module arg-vals arg-types result-type)
+  "Endeavour 216: load-fragment-b as ldmatrix.x2.trans (see %216-ldmatrix-node)."
+  (declare (ignore arg-types))
+  (%216-ldmatrix-lower builder module arg-vals result-type 2 t))
+
+;; src/mma.lisp
+(defun %216-ldmatrix-eligible-p (src probe elem operand context)
+  "Endeavour 216.  T when load-fragment-OPERAND (:a or :b) of SRC (analyzed as PROBE, element ELEM) can
+   be one ldmatrix: PTX, a 16-bit element, SRC a :local (shared-memory) :COMPACT ROW-MAJOR matrix whose
+   static (ROWS COLS) are known and whose row is a multiple of 16 bytes -- ldmatrix takes each 8-element
+   row segment from a 16-byte-aligned address, and a fragment's segments start at multiples of 8 columns,
+   so the row pitch is the only thing that can break the alignment.
+
+   :COMPACT is checked on its own because a (transpose X) view keeps X's contiguous-term (:last) and marks
+   only its alignment slot :strided -- its rows are NOT contiguous, and ldmatrix would read X's rows
+   instead.  (Such a view also has no static scratch dims today, so it was refused already, but only by
+   accident.)  Every refusal is logged and keeps the per-element reads, which are correct for any layout."
+  (let* ((canon (ignore-errors (%ts-canonicalize-tensor-type (get-single-value-type probe))))
+         (addr (and (consp canon) (>= (length canon) 4) (fourth canon)))
+         (aln (and (consp canon) (>= (length canon) 5) (fifth canon)))
+         (ct (and canon (%get-tensor-ct canon)))
+         (dims (ignore-errors (%198-tile-static-dims src 2 context)))
+         (why (cond ((not *216-ldmatrix*) "disabled")
+                    ((eq *target-backend* :spirv) "SPIR-V")
+                    ((not (eql (%mma-elem-bits elem) 16)) "not a 16-bit element")
+                    ((not (and addr (symbolp addr) (string= (symbol-name addr) "LOCAL"))) "not shared memory")
+                    ((not (and aln (symbolp aln) (string= (symbol-name aln) "COMPACT"))) "not compact (a strided view)")
+                    ((not (and ct (symbolp ct) (string= (symbol-name ct) "LAST"))) "not row-major")
+                    ((null dims) "no static tile dims")
+                    ((/= 0 (mod (* 2 (second dims)) 16)) "row pitch not a multiple of 16 bytes"))))
+    (log:debug "216 ldmatrix ~a ~a: canon=~a dims=~a -> ~a" operand src canon dims (or why "ELIGIBLE"))
+    (null why)))

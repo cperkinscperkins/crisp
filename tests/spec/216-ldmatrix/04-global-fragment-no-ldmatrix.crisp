@@ -1,0 +1,22 @@
+;; Endeavour 216 rung 04 -- the fallback: a 16-bit fragment read straight from GLOBAL memory is not ldmatrix.
+;;
+;; ldmatrix reads only the .shared state space, so a fragment whose source is a kernel parameter keeps
+;; the per-element reads (8 for A, 4 for B, each 16 bits).  This is the refusal side of rungs 01-03:
+;; %216-ldmatrix-eligible-p must look at the operand's address space, not just its element width.
+;; A is row-major and B col-major, as in 132's hello-mma, so only the address space disqualifies them.
+;;
+;; The validator: one fp16 m16n8k16 MMA, NO ldmatrix, and the 16-bit global loads still there.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-216-global-fragment
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :col-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel global_fragment_fp16 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 32)
+           (local-size  :set-to 32))
+  (let ((C-acc  (make-register-fragment 16 8 0.0))
+        (A-frag (load-fragment-a A (0 0)))
+        (B-frag (load-fragment-b B (0 0))))
+    (store-fragment (mma-accumulate C-acc A-frag B-frag) C (0 0))))

@@ -15,3 +15,86 @@
 ;; validate-ptx-200-helpers-inline, validate-spv-200-helpers-noinline (before main); %vad-resolve-symbolic-size
 ;; (:match-global-size) replaced in place.
 ;; EMPTY as of 2026-10-29 -- endeavours 196-199's validators folded into tests/run-specs.lisp.
+
+;; tests/run-specs.lisp  (endeavour 216, before validate-spv-200-helpers-noinline)
+;;;; Endeavour 216 -- ldmatrix for 16-bit mma.sync fragments.  See tests/spec/216-ldmatrix/.
+;;;; Needles are whole instruction spellings: the word "ldmatrix" alone would also match a kernel name.
+
+(defun %216-check-one-warp (label ptx-string mma-needle)
+  "Endeavour 216 specs 01 / 02: one warp, a 64x64 register tile, K = 16 per stage -- 4 A fragments (one
+   ldmatrix.x4 each) and 8 B fragments (one ldmatrix.x2.trans each) feed 32 m16n8k16 MMAs (MMA-NEEDLE), and
+   no fragment element is read with a scalar ld.shared.b16 any more."
+  (%208-check-counts
+   label ptx-string
+   (list (list mma-needle 32 "4 x 8 fragments of a 64x64 tile, one K = 16 step")
+         (list "ldmatrix.sync.aligned.m8n8.x4.shared.b16" 4 "one per A fragment (16x16): 64 rows / 16")
+         (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" 8 "one per B fragment (16x8): 64 columns / 8")
+         (list "ld.shared.b16" 0 "the per-element fragment reads are gone"))))
+
+(defun validate-ptx-216-ldmatrix-fp16 (file ptx-string)
+  "Endeavour 216 spec 01: fp16 fragments from shared memory by ldmatrix (see %216-check-one-warp)."
+  (declare (ignore file))
+  (%216-check-one-warp "216-ldmatrix-fp16" ptx-string "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32"))
+
+(defun validate-ptx-216-ldmatrix-bf16 (file ptx-string)
+  "Endeavour 216 spec 02: bf16 fragments from shared memory by ldmatrix (see %216-check-one-warp)."
+  (declare (ignore file))
+  (%216-check-one-warp "216-ldmatrix-bf16" ptx-string "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32"))
+
+(defun validate-ptx-216-ldmatrix-ring (file ptx-string)
+  "Endeavour 216 spec 03: the 4-warp contest kernel with a 3-slot cp.async ring -- fragments come from
+   (ring-get A-RING slot) by ldmatrix, and the ring keeps (3-1) x 2 cp.async groups in flight.  The
+   ldmatrix COUNTS are not pinned: LLVM merges some of the four warps' unrolled branches (which differ only
+   in address constants), so how many copies survive is LLVM's choice, not the compiler's."
+  (declare (ignore file))
+  (%208-check-counts
+   "216-ldmatrix-ring" ptx-string
+   (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" :some "the fp16 MMAs")
+         (list "ldmatrix.sync.aligned.m8n8.x4.shared.b16" :some "A fragments from a ring slot")
+         (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" :some "B fragments from a ring slot")
+         (list "ld.shared.b16" 0 "no per-element fragment reads")
+         ;; LLVM prints the operand after a space AND a tab.
+         (list (format nil "cp.async.wait_group ~c4" #\Tab) 1 "a 3-slot ring with 2 arrivals keeps 4 groups in flight"))))
+
+(defun validate-ptx-216-global-fragment (file ptx-string)
+  "Endeavour 216 spec 04: fragments read from GLOBAL memory are not ldmatrix (it reads only .shared): one
+   fp16 MMA, 8 + 4 per-element 16-bit global loads, no ldmatrix."
+  (declare (ignore file))
+  (%208-check-counts
+   "216-global-fragment" ptx-string
+   (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" 1 "one fragment MMA")
+         (list "ldmatrix.sync" 0 "a global source keeps the per-element reads")
+         (list "ld.global.nc.b16" 12 "8 A elements + 4 B elements"))))
+
+
+;; tests/run-specs.lisp  (endeavour 216: replaces the two definitions of the same name above)
+(defun %216-check-one-warp (label ptx-string mma-needle)
+  "Endeavour 216 specs 01 / 02: one warp, a 64x64 register tile, K = 16 per stage.  Forward: 4 A fragments
+   (one ldmatrix.x4 each) and 8 B fragments (one ldmatrix.x2.trans each) feed 32 m16n8k16 MMAs.
+   Under --differentiate the PTX holds the forward kernel AND the _grad kernel's two backward GEMMs, whose
+   operands are materialized transposes and a staged dC -- shared tiles, so ldmatrix too:
+     dA = dC (64x64) . B^T (64x16): A = dC, 4 row frags x 4 K steps = 16 x4; B = B^T, 2 col frags x 4 = 8 x2.trans; 32 MMAs
+     dB = A^T (16x64) . dC (64x64): A = A^T, 1 x 4 = 4 x4;  B = dC, 8 x 4 = 32 x2.trans;                     32 MMAs
+   so 96 MMAs, 24 x4, 48 x2.trans.  Either way no fragment element is read with a scalar ld.shared.b16."
+  (let ((d (and (boundp '*compile-differentiate*) *compile-differentiate*)))
+    (%208-check-counts
+     label ptx-string
+     (list (list mma-needle (if d 96 32) "forward 4 x 8 fragments x 1 K step (+ dA and dB, 32 each, under --differentiate)")
+           (list "ldmatrix.sync.aligned.m8n8.x4.shared.b16" (if d 24 4) "one per A fragment: forward 4 (+ dA 16 + dB 4)")
+           (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" (if d 48 8) "one per B fragment: forward 8 (+ dA 8 + dB 32)")
+           (list "ld.shared.b16" 0 "the per-element fragment reads are gone")))))
+
+(defun validate-ptx-216-global-fragment (file ptx-string)
+  "Endeavour 216 spec 04: fragments read from GLOBAL memory are not ldmatrix (it reads only .shared): one
+   fp16 MMA, 8 + 4 per-element 16-bit global loads, no ldmatrix.  Under --differentiate the _grad kernel
+   adds its own global reads (36 in all), so only the absence of ldmatrix and the presence of the 16-bit
+   global loads are pinned there."
+  (declare (ignore file))
+  (let ((d (and (boundp '*compile-differentiate*) *compile-differentiate*)))
+    (%208-check-counts
+     "216-global-fragment" ptx-string
+     (append
+      (list (list "ldmatrix.sync" 0 "a global source keeps the per-element reads")
+            (list "ld.global.nc.b16" (if d :some 12) "8 A elements + 4 B elements"))
+      (unless d
+        (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" 1 "one fragment MMA")))))))

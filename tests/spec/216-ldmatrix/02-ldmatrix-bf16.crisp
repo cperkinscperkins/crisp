@@ -1,0 +1,38 @@
+;; Endeavour 216 rung 02 -- the bf16 twin of rung 01: ldmatrix moves .b16, so bfloat16 takes the same path.
+;;
+;; WHAT THIS PINS.  ldmatrix does not know element types -- it moves .b16 -- and the bf16 m16n8k16 operand
+;; layout is the fp16 one, so the same lane mapping fills the bf16 fragment record.  What differs is only
+;; the record (register-fragment-a-bf16-16x16, -b-bf16-16x8) and the field type each .b32 register is split
+;; into (<2 x bfloat> instead of <2 x half>); %emit-nvvm-mma then packs the pairs into the i32 operands
+;; the bf16 MMA takes.
+;;
+;; One warp, a 64x64 register tile, K = 16 per stage: 4 A fragments (ldmatrix.x4) and 8 B fragments
+;; (ldmatrix.x2.trans) feed 32 m16n8k16 bf16 MMAs, and NO ld.shared.b16 is left.
+;;
+;; Metal: the fp16 path was proved bit-exact on an A100 (rung 01); bf16 shares every instruction but the
+;; MMA's type suffix, and no bf16 Ampere kernel was run on metal in endeavour 216.
+;;
+;; C is float so the kernel differentiates: the backward's MMAs read materialized transposes (A-TILE_BWT,
+;; B-TILE_BWT) and a staged dC (C-TILE_BWDC) -- compact row-major shared tiles -- so they are ldmatrix too.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-216-ldmatrix-bf16
+(def-type a-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix bfloat16 :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel frag_bf16 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix bfloat16 (64 16)))
+        (B-tile (make-scratch-matrix bfloat16 (16 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))
