@@ -5796,11 +5796,65 @@
             (analyze-expression `(progn (set! ,p0-form ,lo-form) (set! ,p1-form ,hi-form))
                                 env context location))))))
 
+;;;; Endeavour 215 -- the %run-ok-p / %store-run analyzers.  See tests/spec/215-tcgen05-vector-stores/.
+
+(defun analyze-%run-ok-p-expression (expr env context location)
+  "Endeavour 215.  Analyzer for (%run-ok-p P0 P1), P0 / P1 aref forms naming adjacent elements of one
+   storage.  Type int.  An element type that does not pack (endeavour 197's rule) analyses to the
+   literal 0, so the guarded wide branch is dead and the pair / scalar arms behind it run."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error :message "%run-ok-p: expects two aref forms" :source-location location))
+  (let* ((p0 (analyze-expression (second expr) env context (append location '(1))))
+         (p1 (analyze-expression (third expr) env context (append location '(2))))
+         (bytes (%197-pair-elem-bytes (semantic-node-type p0))))
+    (log:debug "215 %run-ok-p: elem-type=~a bytes=~a" (semantic-node-type p0) bytes)
+    (if (and bytes (semantic-aref-p p0) (semantic-aref-p p1))
+        (make-semantic-run-ok-p :place0-node p0 :place1-node p1 :elem-bytes bytes
+                                :type 'int :source-location location)
+        (make-semantic-literal :value-type 'int :value 0 :source-location location))))
+
+(defun analyze-%store-run-expression (expr env context location)
+  "Endeavour 215.  Analyzer for (%store-run P0 .. Pn-1 V0 .. Vn-1): one semantic-store-run when every
+   value already has P0's element type, that type packs, and the run is a whole number of 16-byte
+   vectors; otherwise exactly (progn (set! P0 V0) ... (set! Pn-1 Vn-1)), so conversions and type errors
+   are set!'s own.  Values are compared by their SINGLE-VALUE type (210's rule for :transformF calls).
+   The caller guards it with (%run-ok-p P0 P1)."
+  (let* ((args (rest expr))
+         (n (floor (length args) 2)))
+    (unless (and (evenp (length args)) (>= n 2))
+      (error 'crisp-compiler-error :message "%store-run: expects (%store-run P0 .. Pn-1 V0 .. Vn-1), n >= 2"
+             :source-location location))
+    (let* ((place-forms (subseq args 0 n))
+           (value-forms (subseq args n))
+           (p0 (analyze-expression (first place-forms) env context (append location '(1))))
+           (elem (semantic-node-type p0))
+           (bytes (%197-pair-elem-bytes elem))
+           (vals (loop for v in value-forms
+                       for i from (1+ n)
+                       collect (analyze-expression v env context (append location (list i))))))
+      (if (and bytes (semantic-aref-p p0)
+               (zerop (mod (* n bytes) 16))
+               (every (lambda (v) (equal (get-single-value-type v) elem)) vals))
+          (progn
+            (log:debug "215 %store-run: ~a x ~a (~a bytes) -> ~a sixteen-byte store~:p"
+                       n elem bytes (/ (* n bytes) 16))
+            (make-semantic-store-run :place-node p0 :lo-node (first vals) :hi-node (second vals)
+                                     :elem-bytes bytes :value-nodes vals
+                                     :type 'nil :source-location location))
+          (progn
+            (log:debug "215 %store-run: falling back to ~a set!s (elem ~a, bytes ~a, value types ~a)"
+                       n elem bytes (mapcar #'semantic-node-type vals))
+            (analyze-expression `(progn ,@(mapcar (lambda (p v) `(set! ,p ,v)) place-forms value-forms))
+                                env context location))))))
+
 (defun register-197-pair-store-analyzers ()
   "Endeavour 197.  Registers %store-pair and %pair-ok-p (internal forms of the accumulator store
-   lowering) in both packages, like the other % forms in register-control-analyzers."
+   lowering) in both packages, like the other % forms in register-control-analyzers.
+   Endeavour 215: also %store-run / %run-ok-p (the tcgen05 store's 16-byte arm)."
   (dolist (entry (list (cons "%STORE-PAIR" #'analyze-%store-pair-expression)
-                       (cons "%PAIR-OK-P"  #'analyze-%pair-ok-p-expression)))
+                       (cons "%PAIR-OK-P"  #'analyze-%pair-ok-p-expression)
+                       (cons "%STORE-RUN"  #'analyze-%store-run-expression)
+                       (cons "%RUN-OK-P"   #'analyze-%run-ok-p-expression)))
     (let ((sym-cl (intern (car entry) (find-package :crisp-language)))
           (sym-cc (intern (car entry) (find-package :crisp.compiler))))
       (setf (gethash sym-cl *expression-analyzers*) (cdr entry))

@@ -665,6 +665,21 @@ Returns the value at the location BEFORE the attempt (see the header for why not
   type
   source-location)
 
+;;;; Endeavour 215 -- the 16-byte store nodes (they :include the 197 ones, so the semantic-node-type /
+;;;; semantic-node-source-location etypecases take them).  See tests/spec/215-tcgen05-vector-stores/.
+
+(defstruct (semantic-store-run (:include semantic-store-pair))
+  "Endeavour 215.  (%store-run P0 .. Pn-1 V0 .. Vn-1): the n values stored as 16-byte vector stores from
+   P0's element address.  Only legal under a (%run-ok-p P0 P1) guard -- the lowering that emits it
+   always puts it there.  Includes semantic-store-pair (PLACE-NODE = P0, LO-NODE / HI-NODE = V0 / V1,
+   ELEM-BYTES), so every etypecase that knows the 197 node knows this one; VALUE-NODES holds all n."
+  value-nodes)
+
+(defstruct (semantic-run-ok-p (:include semantic-pair-ok-p))
+  "Endeavour 215.  (%run-ok-p P0 P1) -> int 1 when P1's address is exactly one element past P0's (so the
+   row's stride is 1 and any run from P0 is contiguous) AND P0 is 16-byte aligned, else 0.  Includes
+   semantic-pair-ok-p; only its alignment mask differs.")
+
 (defstruct semantic-wgmma-tma-store
   "Endeavour 199.  (store-tile-at (to-half D) C (ROW COL) :via :tma): the m64xN wgmma accumulator D,
    converted to 16 bits, written to C at (ROW COL) through staging shared memory and TMA stores."

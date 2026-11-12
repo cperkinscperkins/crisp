@@ -5398,7 +5398,8 @@
 (defun analyze-%tcgen05-mma (expr env context location)
   "Endeavour 208.  (%tcgen05-mma D A B K [BAR]) -> the semantic-tcgen05-op :mma node, typed as D.
    A / B become (~ tile 0 0) so codegen's third value is the shared-memory base (as for wgmma).  A
-   site without BAR is synchronous and gets its own mbarrier index in this kernel."
+   site without BAR is synchronous and gets its own mbarrier index in this kernel.
+   Endeavour 213: :b-mn T in the plist when the enclosing accumulate said :b-major :mn."
   (destructuring-bind (d a b k &optional bar) (cdr expr)
     (let* ((d-node (analyze-expression d env context (append location '(1))))
            (d-type (semantic-node-type d-node))
@@ -5423,7 +5424,8 @@
        :op :mma
        :args (if bar-node (list d-node a-ref b-ref bar-node) (list d-node a-ref b-ref))
        :plist (list :m (first dims) :n (second dims) :k k :elem elem :b-elem b-elem
-                    :issue-warp (%208-issue-warp) :sync-site site :kernel key)
+                    :issue-warp (%208-issue-warp) :sync-site site :kernel key
+                    :b-mn *213-tcgen05-b-mn*)
        :type d-type
        :source-location location))))
 
@@ -5869,10 +5871,12 @@
   "Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at
    (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row
    m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the
-   row's 32 elements -- as 16 packed pairs (endeavour 197) when the first pair is adjacent and
-   aligned, else as scalars.  A fence::after_thread_sync opens the store (the accumulator was
-   completed by another thread's MMA) and a fence::before_thread_sync closes it (the next MMA into
-   these columns must not overtake the reads).  CONVERT as in %wgmma-store-rewrite-origin.
+   row's 32 elements -- Endeavour 215: as 4 runs of 8 (%store-run, 16-byte vector stores) when the
+   row is contiguous and the chunk's first element 16-byte aligned (%run-ok-p); else as 16 packed
+   pairs (endeavour 197) when the first pair is adjacent and aligned; else as scalars.  A
+   fence::after_thread_sync opens the store (the accumulator was completed by another thread's MMA)
+   and a fence::before_thread_sync closes it (the next MMA into these columns must not overtake the
+   reads).  CONVERT as in %wgmma-store-rewrite-origin.
    Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED
    integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32
    row record holds plain int, and the destination element holds exactly its own type.
@@ -5887,6 +5891,8 @@
                         ;; element BEFORE any conversion or derived-integer cast.
                         (if *210-store-transform* (%map-elements-call *210-store-transform* raw) raw))))
                (if convert (%196-wrap-conversion convert x) (%store-frag-elem-cast elem x)))))
+      (log:debug "215 tcgen05 store rewrite: ~a chunk~:p of 32, wide arm (4 runs of 8) / pair arm / scalar arm"
+                 chunks)
       `(let ((tcv ,tile))
          (let ((r0 (+ (,to-int ,row-origin) (+ (* (rem (,to-int (warp-id)) 4) 32) (,to-int (warp-lane)))))
                (c0 (,to-int ,col-origin)))
@@ -5895,13 +5901,21 @@
                    for ch = (intern (format nil "TCROW~d" c) (find-package :crisp.compiler))
                    for base = (* 32 c)
                    collect `(let ((,ch (%tcgen05-ld tcv ,c)))
-                              (,if-sym (%pair-ok-p (~ ,dest r0 (+ c0 ,base)) (~ ,dest r0 (+ c0 ,(1+ base))))
-                                (progn ,@(loop for j below 32 by 2
-                                               collect `(%store-pair (~ ,dest r0 (+ c0 ,(+ base j)))
-                                                                     (~ ,dest r0 (+ c0 ,(+ base j 1)))
-                                                                     ,(elt-of ch j) ,(elt-of ch (1+ j)))))
-                                (progn ,@(loop for j below 32
-                                               collect `(set! (~ ,dest r0 (+ c0 ,(+ base j))) ,(elt-of ch j)))))))
+                              (,if-sym (%run-ok-p (~ ,dest r0 (+ c0 ,base)) (~ ,dest r0 (+ c0 ,(1+ base))))
+                                ;; Endeavour 215: 4 runs of 8 contiguous elements, 16-byte stores.
+                                (progn ,@(loop for j below 32 by 8
+                                               collect `(%store-run
+                                                         ,@(loop for i below 8
+                                                                 collect `(~ ,dest r0 (+ c0 ,(+ base j i))))
+                                                         ,@(loop for i below 8
+                                                                 collect (elt-of ch (+ j i))))))
+                                (,if-sym (%pair-ok-p (~ ,dest r0 (+ c0 ,base)) (~ ,dest r0 (+ c0 ,(1+ base))))
+                                  (progn ,@(loop for j below 32 by 2
+                                                 collect `(%store-pair (~ ,dest r0 (+ c0 ,(+ base j)))
+                                                                       (~ ,dest r0 (+ c0 ,(+ base j 1)))
+                                                                       ,(elt-of ch j) ,(elt-of ch (1+ j)))))
+                                  (progn ,@(loop for j below 32
+                                                 collect `(set! (~ ,dest r0 (+ c0 ,(+ base j))) ,(elt-of ch j))))))))
            (%tcgen05-fence-before))))))
 
 (defun %208-analyze-store-tile-base (expr env context location)
@@ -6064,6 +6078,10 @@
          :type 'void
          :source-location location)))))
 
+(defvar *213-tcgen05-b-mn* nil
+  "Endeavour 213.  T while analyzing the %tcgen05-mma that a tcgen05-accumulate-via-tile with :b-major :mn
+   rewrote to; analyze-%tcgen05-mma copies it into the node's plist as :b-mn.")
+
 (defun analyze-tcgen05-accumulate-via-tile-base (expr env context location)
   "Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR])
    -> (set! D (%tcgen05-mma D A B K [BAR])).  D += A.B over K, issued by one thread into tensor memory.
@@ -6080,7 +6098,11 @@
    memory as a :128b TMA load lays them down.
 
    Endeavour 208 phase 4: analyze-tcgen05-accumulate-via-tile (below) wraps this; block
-   tiles go to the block-scaled path first."
+   tiles go to the block-scaled path first.
+
+   Endeavour 213: :b-major :mn declares B as (K N) -- MN-major, the plain `a @ b` layout -- read with
+   the instruction descriptor's transpose-B bit.  16-bit elements only (as wgmma's, endeavour 198).
+   The flag reaches %tcgen05-mma's node through *213-tcgen05-b-mn*."
   (%tcgen05-require-arch "tcgen05-accumulate-via-tile" location)
   (destructuring-bind (shape d a b &rest kwargs) (cdr expr)
     (unless (and (listp shape) (= (length shape) 3) (every #'integerp shape))
@@ -6125,9 +6147,13 @@
           (error 'crisp-compiler-error
                  :message "tcgen05-accumulate-via-tile needs :swizzle :128b: A and B are read through shared-memory descriptors built for the 128-byte swizzle that a (load-tile .. :swizzle :128b) TMA load lays down."
                  :source-location location))
-        (unless (and (symbolp bm) (string-equal (symbol-name bm) "K"))
+        (unless (and (symbolp bm) (member (symbol-name bm) '("K" "MN") :test #'string-equal))
           (error 'crisp-compiler-error
-                 :message (format nil "tcgen05-accumulate-via-tile: :b-major ~s is not supported yet; B must be (N K), K-major." bm)
+                 :message (format nil "tcgen05-accumulate-via-tile: :b-major must be :k (B is (N K)) or :mn (B is (K N)); got ~s." bm)
+                 :source-location location))
+        (when (and (string-equal (symbol-name bm) "MN") (not (%tcgen05-16bit-elem-p elem)))
+          (error 'crisp-compiler-error
+                 :message (format nil "tcgen05-accumulate-via-tile: :b-major :mn needs half or bfloat16 operands (the transpose-B bit is 16-bit only); got ~(~a~).  Stage B as (N K) instead." elem)
                  :source-location location))
         (let ((want (* 4 (nth-value 1 (%208-mma-kind elem)))))
           (unless (= k want)
@@ -6144,12 +6170,20 @@
             (error 'crisp-compiler-error
                    :message (format nil "tcgen05-accumulate-via-tile: A tile must be (M K) = (~a ~a), but it is (~a ~a)." m k (or a-r '?) (or a-c '?))
                    :source-location location))
-          (when (or (and b-r (/= b-r n)) (and b-c (/= b-c k)))
-            (error 'crisp-compiler-error
-                   :message (format nil "tcgen05-accumulate-via-tile: B tile must be (N K) = (~a ~a), K-major as for wgmma, but it is (~a ~a)." n k (or b-r '?) (or b-c '?))
-                   :source-location location)))
-        (analyze-expression `(set! ,d (%tcgen05-mma ,d ,a ,b ,k ,@(when bar (list bar))))
-                            env context location)))))
+          (if (string-equal (symbol-name bm) "MN")
+              (when (or (and b-r (/= b-r k)) (and b-c (/= b-c n)))
+                (error 'crisp-compiler-error
+                       :message (format nil "tcgen05-accumulate-via-tile :b-major :mn: B tile must be (K N) = (~a ~a), but it is (~a ~a)." k n (or b-r '?) (or b-c '?))
+                       :source-location location))
+              (when (or (and b-r (/= b-r n)) (and b-c (/= b-c k)))
+                (error 'crisp-compiler-error
+                       :message (format nil "tcgen05-accumulate-via-tile: B tile must be (N K) = (~a ~a), K-major as for wgmma, but it is (~a ~a).~:[~; A (K N) B tile is MN-major: say so with :b-major :mn.~]"
+                                        n k (or b-r '?) (or b-c '?) (and (eql b-r k) (eql b-c n) (%tcgen05-16bit-elem-p elem)))
+                       :source-location location))))
+        (log:debug "213 tcgen05-accumulate-via-tile: b-major ~a" bm)
+        (let ((*213-tcgen05-b-mn* (string-equal (symbol-name bm) "MN")))
+          (analyze-expression `(set! ,d (%tcgen05-mma ,d ,a ,b ,k ,@(when bar (list bar))))
+                              env context location))))))
 
 (defun analyze-tcgen05-accumulate-via-tile (expr env context location)
   "Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR]).

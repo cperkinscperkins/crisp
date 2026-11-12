@@ -3971,8 +3971,10 @@
 (defun %aref-tensor-ir (array-node cell-spec element-type index-val builder module var-env
                         di-builder di-scope location-map)
   "semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the
-   element pointer is the parent storage's base pointer (SROA field 0 of field 0) plus index * sizeof.
-   A read of a read-only kernel-parameter tensor gets !invariant.load.  Returns (values loaded nil ptr)."
+   element pointer is a typed `getelementptr inbounds T, base, index` off the parent storage's base
+   pointer (SROA field 0 of field 0) -- typed, so a constant term of the index folds into the access's
+   immediate offset.  A read of a read-only kernel-parameter tensor gets !invariant.load.
+   Returns (values loaded nil ptr)."
   (let* ((tensor-val     (generate-node-ir array-node builder module var-env
                                            di-builder di-scope location-map))
          (elem-type-spec element-type)
@@ -3986,18 +3988,12 @@
     (let* ((parent-val  (llvm-build-extract-value builder tensor-val 0 "t_parent_val"))
            (base-ptr    (llvm-build-extract-value builder parent-val 0 "t_base_ptr"))
            ;; flat element index already incorporates offsets and strides
-           (flat-i64    (llvm-build-sext builder index-val (llvm-int64-type) "t_flat_i64"))
-           (elem-size   (llvm-size-of elem-llvm-type))
-           (byte-off    (llvm-build-mul builder flat-i64 elem-size "t_byte_off")))
+           (flat-i64    (llvm-build-sext builder index-val (llvm-int64-type) "t_flat_i64")))
       (cffi:with-foreign-object (indices :pointer 1)
-        (setf (cffi:mem-aref indices :pointer 0) byte-off)
-        (let* ((ptr-i8   (llvm-build-in-bounds-gep2
-                          builder (llvm-int8-type) base-ptr indices 1 "t_ptr_i8"))
-               (ptr-as   (llvm-get-pointer-address-space (llvm-type-of ptr-i8)))
-               (t-ptr    (llvm-build-bit-cast
-                          builder ptr-i8
-                          (llvm-pointer-type elem-llvm-type ptr-as) "t_ptr"))
-               (loaded   (llvm-build-load2 builder elem-llvm-type t-ptr "t_elem")))
+        (setf (cffi:mem-aref indices :pointer 0) flat-i64)
+        (let* ((t-ptr  (llvm-build-in-bounds-gep2
+                        builder elem-llvm-type base-ptr indices 1 "t_ptr"))
+               (loaded (llvm-build-load2 builder elem-llvm-type t-ptr "t_elem")))
           (when mark-invariant-p
             (%attach-invariant-load loaded module))
           (values loaded nil t-ptr))))))
@@ -5863,6 +5859,67 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
          (st (llvm-build-store builder v ptr)))
     (crisp.llvm-bindings::llvm-set-alignment st (* 2 bytes))
     (log:debug "197 codegen %store-pair: <2 x ~a-byte> align ~a" bytes (* 2 bytes))
+    (values nil nil)))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 215 -- 16-byte tcgen05 epilogue stores: %run-ok-p and %store-run codegen
+;;;; See tests/spec/215-tcgen05-vector-stores/tcgen05-vector-stores.md.
+;;;; ----------------------------------------------------------------------
+
+(defmethod generate-node-ir ((node semantic-run-ok-p) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 215.  i32 (p1 - p0 == bytes) & ((p0 & 15) == 0), zero-extended like a comparison.  The
+   adjacency test proves the row's stride is one element, so every run starting at P0 is contiguous."
+  (let* ((bytes (semantic-run-ok-p-elem-bytes node))
+         (i64 (llvm-int64-type))
+         (p0 (%197-aref-element-pointer (semantic-run-ok-p-place0-node node) builder module var-env
+                                         di-builder di-scope location-map "%run-ok-p"))
+         (p1 (%197-aref-element-pointer (semantic-run-ok-p-place1-node node) builder module var-env
+                                         di-builder di-scope location-map "%run-ok-p"))
+         (a0 (llvm-build-ptr-to-int builder p0 i64 "run_a0"))
+         (a1 (llvm-build-ptr-to-int builder p1 i64 "run_a1"))
+         (adjacent (llvm-build-icmp builder +llvm-int-eq+ (llvm-build-sub builder a1 a0 "run_gap")
+                                    (llvm-const-int i64 bytes nil) "run_adjacent"))
+         (aligned (llvm-build-icmp builder +llvm-int-eq+
+                                   (crisp.llvm-bindings::llvm-build-and builder a0 (llvm-const-int i64 15 nil)
+                                                                         "run_misalign")
+                                   (llvm-const-int i64 0 nil) "run_aligned"))
+         (ok (crisp.llvm-bindings::llvm-build-and builder adjacent aligned "run_ok")))
+    (log:debug "215 codegen %run-ok-p: elem-bytes=~a" bytes)
+    (values (llvm-build-zext builder ok (llvm-int32-type) "run_ok_ext") nil)))
+
+(defmethod generate-node-ir ((node semantic-store-run) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 215.  The n values as n*bytes/16 stores of <16/bytes x T>, each aligned to 16, the k-th at
+   element offset k*16/bytes from P0 (NVPTX: st.global.v4.b32 for 8 halves / bf16s or 4 floats,
+   st.global.v2.b64 for 2 doubles)."
+  (let* ((bytes (semantic-store-run-elem-bytes node))
+         (per (floor 16 bytes))
+         (ptr (%197-aref-element-pointer (semantic-store-run-place-node node) builder module var-env
+                                          di-builder di-scope location-map "%store-run"))
+         (vals (mapcar (lambda (vn)
+                         (extract-primary-value builder (generate-node-ir vn builder module var-env
+                                                                          di-builder di-scope location-map)
+                                                (semantic-node-type vn)))
+                       (semantic-store-run-value-nodes node)))
+         (elem-ty (llvm-type-of (first vals)))
+         (vec-ty (llvm-vector-type elem-ty per))
+         (i32 (llvm-int32-type))
+         (i64 (llvm-int64-type)))
+    (loop for k from 0
+          for group on vals by (lambda (l) (nthcdr per l))
+          do (let ((v (llvm-get-undef vec-ty))
+                   (addr (if (zerop k)
+                             ptr
+                             (cffi:with-foreign-object (indices :pointer 1)
+                               (setf (cffi:mem-aref indices :pointer 0) (llvm-const-int i64 (* k per) nil))
+                               (llvm-build-in-bounds-gep2 builder elem-ty ptr indices 1 "run_ptr")))))
+               (loop for x in group
+                     for i below per
+                     do (setf v (llvm-build-insert-element builder v x (llvm-const-int i32 i nil) "run_elt")))
+               (crisp.llvm-bindings::llvm-set-alignment (llvm-build-store builder v addr) 16)))
+    (log:debug "215 codegen %store-run: ~a values, ~a x <~a x ~a-byte> align 16"
+               (length vals) (floor (length vals) per) per bytes)
     (values nil nil)))
 
 ;;;; ----------------------------------------------------------------------
@@ -9099,12 +9156,36 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
       (:fence-after  (%208-asm builder "tcgen05.fence::after_thread_sync;")  (funcall void))
       (:fence-before (%208-asm builder "tcgen05.fence::before_thread_sync;") (funcall void)))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 213 -- the MN-major tcgen05 shared-memory descriptor (:b-major :mn)
+;;;; See tests/spec/213-tcgen05-transb/tcgen05-transb.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %213-smem-desc-mn (builder base-ptr kslice-byte-off lbo-bytes)
+  "Endeavour 213.  The Blackwell shared-memory descriptor of an MN-MAJOR 16-bit operand under the 128-byte
+   swizzle: 198's MN-major layout (CUTLASS Major::MN, B128 -- 64 MN elements per 128-byte row, 8 rows per
+   1024-byte atom; LBO = the stride between 64-wide MN atoms = one TMA box, LBO-BYTES; SBO = the stride
+   between 8-row K groups = 1024) with %208-smem-desc's Blackwell fields: VERSION 1 at [46,48) and
+   SWIZZLE_128B = 2 at [61,64).  The k16 slice advances KSLICE-BYTE-OFF = 16 rows x 128 B per slice."
+  (let* ((i32 (llvm-int32-type)) (i64 (llvm-int64-type))
+         (const-val (logior (ash (floor lbo-bytes 16) 16) (ash (floor 1024 16) 32) (ash 1 46) (ash 2 61)))
+         (addr0 (llvm-build-ptr-to-int builder base-ptr i32 "tcmn_addr"))
+         (addr  (if (zerop kslice-byte-off) addr0
+                    (llvm-build-add builder addr0 (llvm-const-int i32 kslice-byte-off nil) "tcmn_addr_k")))
+         (sh    (crisp.llvm-bindings::llvm-build-l-shr builder addr (llvm-const-int i32 4 nil) "tcmn_sh"))
+         (msk   (crisp.llvm-bindings::llvm-build-and builder sh (llvm-const-int i32 #x3FFF nil) "tcmn_start"))
+         (st64  (llvm-build-zext builder msk i64 "tcmn_start64")))
+    (log:debug "213 MN-major B descriptor: LBO=~a SBO=1024 kslice-off=~a" lbo-bytes kslice-byte-off)
+    (crisp.llvm-bindings::llvm-build-or builder st64 (llvm-const-int i64 const-val nil) "tcmn_desc")))
+
 (defun %208-gen-mma-plain (node builder module var-env di-builder di-scope location-map)
   "Endeavour 208.  The 16-bit / tf32 / int8 emitter (was %208-gen-mma).  D += A.B: lane 0 of the issuing warp builds the descriptors and issues K/16
    tcgen05.mma.kind::f16 (the first with enable-input-d = !FRESH, the rest accumulating), then commits
    -- to :on-complete's barrier, or to this site's own mbarrier, on which every executing thread then
    waits (parity from an entry-block visit counter) before fence::after_thread_sync.  Returns D with
-   FRESH cleared."
+   FRESH cleared.
+   Endeavour 213: a :b-mn node sets the instruction descriptor's transpose-B bit (16) and reads B through
+   %213-smem-desc-mn (LBO = one 64-wide TMA box of K rows, SBO 1024; the k16 slice advances 2048 bytes)."
   (flet ((gen (n) (generate-node-ir n builder module var-env di-builder di-scope location-map)))
     (destructuring-bind (d-node a-node b-node &optional bar-node) (semantic-tcgen05-op-args node)
       (let* ((pl     (semantic-tcgen05-op-plist node))
@@ -9124,7 +9205,9 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
              (tid    (%208-linear-tid builder module))
              (issuer (llvm-build-icmp builder +llvm-int-eq+ tid
                                       (llvm-const-int i32 (* 32 (getf pl :issue-warp)) nil) "tc_issuer"))
-             (idesc  (%208-idesc (getf pl :m) (getf pl :n) (getf pl :elem) (getf pl :b-elem)))
+             (b-mn   (getf pl :b-mn))
+             (idesc  (logior (%208-idesc (getf pl :m) (getf pl :n) (getf pl :elem) (getf pl :b-elem))
+                             (if b-mn (ash 1 16) 0)))
              (kind   (%208-mma-kind (getf pl :elem)))
              (slices (floor (getf pl :k) (nth-value 1 (%208-mma-kind (getf pl :elem))))))
         ;; As for wgmma: a tf32 MMA under a non-fast precision silently does not honour IEEE.
@@ -9134,8 +9217,8 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
                   *math-precision*))
         (unless (and a-ptr b-ptr)
           (error "tcgen05: A/B (~ tile 0 0) did not yield a shared-memory pointer (a ~a b ~a)" a-ptr b-ptr))
-        (log:debug "208 gen mma: idesc #x~8,'0x slices ~a issue-warp ~a site ~a on-complete ~a"
-                   idesc slices (getf pl :issue-warp) site (and bar-node t))
+        (log:debug "208 gen mma: idesc #x~8,'0x slices ~a issue-warp ~a site ~a on-complete ~a b-mn ~a"
+                   idesc slices (getf pl :issue-warp) site (and bar-node t) b-mn)
         (%208-if builder issuer
                  (lambda ()
                    (let* ((base (llvm-build-load2 builder i32 (%208-tmem-slot module) "tmem_base"))
@@ -9150,7 +9233,9 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
                                  "r,l,l,r,r,~{memory}" nil (list i32 i64 i64 i32 i32)
                                  (list dt
                                        (%208-smem-desc builder a-ptr (* kk 32))
-                                       (%208-smem-desc builder b-ptr (* kk 32))
+                                       (if b-mn
+                                           (%213-smem-desc-mn builder b-ptr (* kk 2048) (* (getf pl :k) 128))
+                                           (%208-smem-desc builder b-ptr (* kk 32)))
                                        (llvm-const-int i32 idesc nil)
                                        (if (zerop kk) en0 (llvm-const-int i32 1 nil)))))
                      (%208-commit-asm builder (or bar-addr mbar-addr))))

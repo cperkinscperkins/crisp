@@ -5442,7 +5442,8 @@
   (declare (ignore file))
   (%208-check-counts
    "tcgen05-acc-ring" ptx-string
-   (list (list ", 512;" 2 "512 columns: the alloc ([addr], 512) and the dealloc (taddr, 512)")
+   (list (list "], 512;" 1 "512 columns: the alloc ([addr], 512)")
+         (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret")
          (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs per K-step")
          (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 ":on-complete + tcgen05-commit")
          (list "__crisp_tc_mbar_" 0 "nothing synchronous")
@@ -5481,7 +5482,8 @@
   (declare (ignore file))
   (%208-check-counts
    "tcgen05-qint-ring" ptx-string
-   (list (list ", 512;" 2 "512 columns, allocated and freed: two s32 128 x 256 accumulators")
+   (list (list "], 512;" 1 "512 columns allocated: two s32 128 x 256 accumulators")
+         (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret")
          (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "four K = 32 MMAs per K-step")
          (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 "slot release + acc-full")
          (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads")
@@ -5554,6 +5556,70 @@
        (%208-check-counts "tcgen05-nvfp4-pipeline" ptx-string
                           (list (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2
                                       "slot release + acc-full")))))
+
+;;;; Endeavour 213 -- tcgen05 :b-major :mn validators.  See tests/spec/213-tcgen05-transb/.
+
+(defun validate-ptx-tcgen05-transb (file ptx-string)
+  "Endeavour 213 spec 01: one synchronous 128x128x64 f16 tcgen05 accumulate with an MN-major (K N) B.
+   Pins the instruction descriptor with the transpose-B bit (f32 D, f16 A/B, A K-major, B MN-major,
+   N>>3 = 16, M>>4 = 8 -> 136380432), the MN-major B shared-memory descriptor (LBO 8192, SBO 1024,
+   version 1, SWIZZLE_128B -> 4611756662083026944), and three TMA copies (A + B's two 64-wide boxes).
+   ptxas cannot check either descriptor: they are runtime operands."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-transb" ptx-string
+   (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
+         (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "K = 64 is four K = 16 MMAs")
+         (list "136380432" :some "the instruction descriptor: f16, B MN-major (bit 16), N = 128, M = 128")
+         (list "4611756662083026944" :some "the MN-major B descriptor: LBO 8192, SBO 1024, version 1, SWIZZLE_128B")
+         (list "4611756662049538048" :some "A keeps the K-major descriptor")
+         (list "cp.async.bulk.tensor" 3 "A plus B's two 64-wide boxes"))))
+
+(defun validate-ptx-tcgen05-transb-ring (file ptx-string)
+  "Endeavour 213 spec 02: the warp-specialized 128 x 256 ring kernel with an MN-major (64 256) B.  The
+   loop body is emitted once: four kind::f16 MMAs, the instruction descriptor 138477584 (f16, B MN-major,
+   N>>3 = 32, M>>4 = 8), the MN-major B descriptor, and five TMA copies (A + B's four 64-wide boxes)."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-transb-ring" ptx-string
+   (list (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs in the loop body")
+         (list "138477584" :some "the instruction descriptor: f16, B MN-major (bit 16), N = 256, M = 128")
+         (list "4611756662083026944" :some "the MN-major B descriptor: LBO 8192, SBO 1024, version 1, SWIZZLE_128B")
+         (list "cp.async.bulk.tensor" 5 "A plus B's four 64-wide boxes"))))
+
+;;;; Endeavour 215 -- 16-byte tcgen05 epilogue store validators.  See tests/spec/215-tcgen05-vector-stores/.
+
+(defun validate-ptx-tcgen05-vector-stores-f32 (file ptx-string)
+  "Endeavour 215 spec 01: a 128x128 float tcgen05 accumulator stored to a float C.  Each of the 4
+   32-column chunks has a wide arm of 4 runs x 8 floats = 8 st.global.v4.b32 (32 in all), with
+   endeavour 197's pair arm (st.global.v2.b32) and the scalar arm (st.global.b32) behind it as run-time
+   fallbacks.  LLVM 21 prints f32 stores as .b32."
+  (declare (ignore file))
+  ;; The pair arm's 8-byte store prints as st.global.v2.b32 -- or as st.global.b64 when the spec runs
+  ;; after 210's :transformF specs in the same image (BUG 162: in-process codegen differs by spec order).
+  (let ((pairs (+ (%208-count "st.global.v2.b32" ptx-string) (%208-count "st.global.b64" ptx-string))))
+    (unless (plusp pairs)
+      (format *error-output* "FAIL (tcgen05-vector-stores-f32): no 8-byte pair stores -- the 197 pair arm is gone~%"))
+    (and (plusp pairs)
+         (%208-check-counts
+          "tcgen05-vector-stores-f32" ptx-string
+          (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
+                (list "tcgen05.ld.sync.aligned.32x32b" :some "the accumulator is read back from tensor memory")
+                (list "st.global.v4.b32" 32 "the wide arm: 4 chunks x 4 runs x 2 sixteen-byte vectors (LLVM 21 prints f32 stores as .b32)")
+                (list "st.global.b32" :some "the scalar arm stays as the last fallback"))))))
+
+(defun validate-ptx-tcgen05-vector-stores-f16 (file ptx-string)
+  "Endeavour 215 spec 02: a 128x128 float tcgen05 accumulator stored as (to-half D) to a half C.  Each
+   of the 4 32-column chunks has a wide arm of 4 runs x 8 halves = 4 st.global.v4.b32 (16 in all), with
+   endeavour 197's pair arm (st.global.b32) and the scalar arm (st.global.b16) behind it."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-vector-stores-f16" ptx-string
+   (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
+         (list "tcgen05.ld.sync.aligned.32x32b" :some "the accumulator is read back from tensor memory")
+         (list "st.global.v4.b32" 16 "the wide arm: 4 chunks x 4 runs of 8 halves")
+         (list "st.global.b32" :some "the 197 pair arm stays as the first fallback")
+         (list "st.global.b16" :some "the scalar arm stays as the last fallback"))))
 
 (defun validate-spv-200-helpers-noinline (spv-path)
   "Endeavour 200 / BUG 138: on SPIR-V every ash / popcount helper keeps FunctionControl DontInline (2)

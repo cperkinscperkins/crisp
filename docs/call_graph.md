@@ -1225,6 +1225,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%208-ASM BUILDER ASM &OPTIONAL (CONSTRAINTS
                                                                                          ~{memory}) RET-TYPE PTYPES ARGS)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%208-SMEM-DESC BUILDER BASE-PTR KSLICE-BYTE-OFF)  codegen.lisp [See above]
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - (%213-SMEM-DESC-MN BUILDER BASE-PTR KSLICE-BYTE-OFF LBO-BYTES)  codegen.lisp
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%208-COMMIT-ASM BUILDER MBAR-ADDR-I32)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%208-ENTRY-COUNTER BUILDER NAME)  codegen.lisp [See above]
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - (%GEN-NVVM-MBARRIER-TRY-WAIT-PARITY BUILDER MBAR-ADDR-I32 PHASE-I32)  codegen.lisp [See above]
@@ -2845,8 +2846,6 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - (%SPV-FLOAT-IDS TXT WIDTH)  mma.lisp
 - - (%SPV-TOKENS S)  mma.lisp [See above]
 
-- (%TCGEN05-16BIT-ELEM-P ELEM)  mma.lisp
-
 - (%UNSUPPORTED-FORM-HINT FORM)  errors.lisp
 
 - (%VJP-LOAD-FRAGMENT FORM CTX)  autodiff.lisp
@@ -2943,11 +2942,22 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (RESOLVE-TYPE-ALIAS TYPE-SPEC)  types/validation.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
+- (ANALYZE-%RUN-OK-P-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (%197-PAIR-ELEM-BYTES ELEM-TYPE)  analysis/control.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+
 - (ANALYZE-%SPIRV-ASYNC-COPY-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 
 - (ANALYZE-%STORE-PAIR-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
+- - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
+- - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
+- - (%197-PAIR-ELEM-BYTES ELEM-TYPE)  analysis/control.lisp [See above]
+- - (GET-SINGLE-VALUE-TYPE NODE)  analysis/core.lisp [See above]
+
+- (ANALYZE-%STORE-RUN-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/control.lisp
 - - (ANALYZE-EXPRESSION EXPR ENV CONTEXT LOCATION)  analysis/core.lisp [See above]
 - - (SEMANTIC-NODE-TYPE NODE)  analysis/core.lisp [See above]
 - - (%197-PAIR-ELEM-BYTES ELEM-TYPE)  analysis/control.lisp [See above]
@@ -3815,6 +3825,7 @@ Nodes marked `[See above]` have been expanded previously in the document.
 - - - (%ELEM-INTEGER-P ELEM)  mma.lisp [See above]
 - - - (%CHECK-MMA-ELEMENT-FAMILY A B C LOCATION)  mma.lisp [See above]
 - - - (%208-MMA-KIND ELEM)  mma.lisp [See above]
+- - - (%TCGEN05-16BIT-ELEM-P ELEM)  mma.lisp
 - - - (%MMA-OPERAND-EXTENT REF TILES WHICH)  mma.lisp
 - - - - (%RESOLVE-TILE-REF REF TILES)  mma.lisp
 - - - - - (%HEAD-NAME-EQ HEAD NAME)  mma.lisp [See above]

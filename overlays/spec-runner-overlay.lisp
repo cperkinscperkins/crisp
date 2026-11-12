@@ -1,5 +1,8 @@
 ;; overlays/spec-runner-overlay.lisp
 (in-package :crisp.spec-runner)
+;; EMPTY as of 2026-11-11 -- validate-ptx-tcgen05-acc-ring / -qint-ring (the "], 512;" needle),
+;; endeavour 213's validate-ptx-tcgen05-transb(-ring) and endeavour 215's
+;; validate-ptx-tcgen05-vector-stores-f32 / -f16 folded into tests/run-specs.lisp.
 ;; EMPTY as of 2026-11-11 -- endeavours 211 / 212's validators (%211-helper-names,
 ;; validate-ptx-211-shift-rotate, validate-spv-211-helpers-noinline, validate-ptx-212-vote,
 ;; validate-spv-212-vote) folded into tests/run-specs.lisp.
@@ -12,108 +15,3 @@
 ;; validate-ptx-200-helpers-inline, validate-spv-200-helpers-noinline (before main); %vad-resolve-symbolic-size
 ;; (:match-global-size) replaced in place.
 ;; EMPTY as of 2026-10-29 -- endeavours 196-199's validators folded into tests/run-specs.lisp.
-
-;; ---------------------------------------------------------------------------------------------------
-;; Address codegen (typed GEP, 2026-11-11): constant byte offsets now fold into the address arithmetic,
-;; so an `add.s64 %rd, %rd, 512;` also ends in ", 512;".  The 512-column needle is pinned to the
-;; tcgen05.alloc form ("], 512;", as spec 01 pins "], 128;") and the dealloc is required separately.
-;; tests/run-specs.lisp
-(defun validate-ptx-tcgen05-acc-ring (file ptx-string)
-  "Endeavour 208 spec 05: the pipeline over a 2-slot accumulator ring -- all 512 columns allocated and
-   freed, the asynchronous commits only, and the direct store of a 128 x 256 accumulator."
-  (declare (ignore file))
-  (%208-check-counts
-   "tcgen05-acc-ring" ptx-string
-   (list (list "], 512;" 1 "512 columns: the alloc ([addr], 512)")
-         (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret")
-         (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs per K-step")
-         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 ":on-complete + tcgen05-commit")
-         (list "__crisp_tc_mbar_" 0 "nothing synchronous")
-         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads"))))
-;; tests/run-specs.lisp
-(defun validate-ptx-tcgen05-qint-ring (file ptx-string)
-  "Endeavour 208 spec 11: the three-role pipeline on def-qint operands, two s32 128 x 256 accumulators
-   (512 columns).  Two commits (the :on-complete slot release and acc-full), eight loads per tile,
-   the N = 256 int8 descriptor."
-  (declare (ignore file))
-  (%208-check-counts
-   "tcgen05-qint-ring" ptx-string
-   (list (list "], 512;" 1 "512 columns allocated: two s32 128 x 256 accumulators")
-         (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret")
-         (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "four K = 32 MMAs per K-step")
-         (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 "slot release + acc-full")
-         (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads")
-         (list "138413216" :some "the instruction descriptor: S32, INT8 x INT8, N>>3 = 32, M>>4 = 8")
-         (list "cvt.rn.f32" 0 "stored as (accum q-a), never through float"))))
-
-;; ===================================================================================================
-;; Endeavour 213: tcgen05 :b-major :mn validators (tests/spec/213-tcgen05-transb/).
-;; ===================================================================================================
-
-;; tests/run-specs.lisp
-(defun validate-ptx-tcgen05-transb (file ptx-string)
-  "Endeavour 213 spec 01: one synchronous 128x128x64 f16 tcgen05 accumulate with an MN-major (K N) B.
-   Pins the instruction descriptor with the transpose-B bit (f32 D, f16 A/B, A K-major, B MN-major,
-   N>>3 = 16, M>>4 = 8 -> 136380432), the MN-major B shared-memory descriptor (LBO 8192, SBO 1024,
-   version 1, SWIZZLE_128B -> 4611756662083026944), and three TMA copies (A + B's two 64-wide boxes).
-   ptxas cannot check either descriptor: they are runtime operands."
-  (declare (ignore file))
-  (%208-check-counts
-   "tcgen05-transb" ptx-string
-   (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
-         (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "K = 64 is four K = 16 MMAs")
-         (list "136380432" :some "the instruction descriptor: f16, B MN-major (bit 16), N = 128, M = 128")
-         (list "4611756662083026944" :some "the MN-major B descriptor: LBO 8192, SBO 1024, version 1, SWIZZLE_128B")
-         (list "4611756662049538048" :some "A keeps the K-major descriptor")
-         (list "cp.async.bulk.tensor" 3 "A plus B's two 64-wide boxes"))))
-
-;; tests/run-specs.lisp
-(defun validate-ptx-tcgen05-transb-ring (file ptx-string)
-  "Endeavour 213 spec 02: the warp-specialized 128 x 256 ring kernel with an MN-major (64 256) B.  The
-   loop body is emitted once: four kind::f16 MMAs, the instruction descriptor 138477584 (f16, B MN-major,
-   N>>3 = 32, M>>4 = 8), the MN-major B descriptor, and five TMA copies (A + B's four 64-wide boxes)."
-  (declare (ignore file))
-  (%208-check-counts
-   "tcgen05-transb-ring" ptx-string
-   (list (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs in the loop body")
-         (list "138477584" :some "the instruction descriptor: f16, B MN-major (bit 16), N = 256, M = 128")
-         (list "4611756662083026944" :some "the MN-major B descriptor: LBO 8192, SBO 1024, version 1, SWIZZLE_128B")
-         (list "cp.async.bulk.tensor" 5 "A plus B's four 64-wide boxes"))))
-
-;; ===================================================================================================
-;; Endeavour 215: 16-byte epilogue stores for tcgen05 accumulators (tests/spec/215-tcgen05-vector-stores/).
-;; ===================================================================================================
-
-;; tests/run-specs.lisp
-(defun validate-ptx-tcgen05-vector-stores-f32 (file ptx-string)
-  "Endeavour 215 spec 01: a 128x128 float tcgen05 accumulator stored to a float C.  Each of the 4
-   32-column chunks has a wide arm of 4 runs x 8 floats = 8 st.global.v4.b32 (32 in all), with
-   endeavour 197's pair arm (st.global.v2.b32) and the scalar arm (st.global.b32) behind it as run-time
-   fallbacks.  LLVM 21 prints f32 stores as .b32."
-  (declare (ignore file))
-  ;; The pair arm's 8-byte store prints as st.global.v2.b32 -- or as st.global.b64 when the spec runs
-  ;; after 210's :transformF specs in the same image (BUG 162: in-process codegen differs by spec order).
-  (let ((pairs (+ (%208-count "st.global.v2.b32" ptx-string) (%208-count "st.global.b64" ptx-string))))
-    (unless (plusp pairs)
-      (format *error-output* "FAIL (tcgen05-vector-stores-f32): no 8-byte pair stores -- the 197 pair arm is gone~%"))
-    (and (plusp pairs)
-         (%208-check-counts
-          "tcgen05-vector-stores-f32" ptx-string
-          (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
-                (list "tcgen05.ld.sync.aligned.32x32b" :some "the accumulator is read back from tensor memory")
-                (list "st.global.v4.b32" 32 "the wide arm: 4 chunks x 4 runs x 2 sixteen-byte vectors (LLVM 21 prints f32 stores as .b32)")
-                (list "st.global.b32" :some "the scalar arm stays as the last fallback"))))))
-
-;; tests/run-specs.lisp
-(defun validate-ptx-tcgen05-vector-stores-f16 (file ptx-string)
-  "Endeavour 215 spec 02: a 128x128 float tcgen05 accumulator stored as (to-half D) to a half C.  Each
-   of the 4 32-column chunks has a wide arm of 4 runs x 8 halves = 4 st.global.v4.b32 (16 in all), with
-   endeavour 197's pair arm (st.global.b32) and the scalar arm (st.global.b16) behind it."
-  (declare (ignore file))
-  (%208-check-counts
-   "tcgen05-vector-stores-f16" ptx-string
-   (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
-         (list "tcgen05.ld.sync.aligned.32x32b" :some "the accumulator is read back from tensor memory")
-         (list "st.global.v4.b32" 16 "the wide arm: 4 chunks x 4 runs of 8 halves")
-         (list "st.global.b32" :some "the 197 pair arm stays as the first fallback")
-         (list "st.global.b16" :some "the scalar arm stays as the last fallback"))))
