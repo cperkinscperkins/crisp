@@ -8,10 +8,14 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | — | **#20** / 25 | **53575.02 µs** | 53580.96 µs | 32 TFLOPS | 0.9% (`478.53 µs`) | `crisp_conv2d_tiled_p.py` | — | `2026-11-12 03:48` |
-| **H100** | — | **#25** / 34 | **66417.54 µs** | 66433.44 µs | 26 TFLOPS | 0.9% (`594.89 µs`) | `crisp_conv2d_tiled_p.py` | — | `2026-11-12 03:48` |
-| **A100** | — | **#6** / 23 | **2195.16 µs** | 2188.45 µs | 774 TFLOPS | 39.0% (`855.04 µs`) | `crisp_conv2d_perf.py` | — | `2026-11-12 03:48` |
-| **L4** | — | **#10** / 15 | **189378.56 µs** | 187812.56 µs | 9 TFLOPS | 2.5% (`4698.29 µs`) | `crisp_conv2d_tiled_p.py` | — | `2026-11-12 03:48` |
+| **B200** | — | **#20** / 25 | **53575.02 µs** | 53580.96 µs | 32 TFLOPS | 0.9% (`478.53 µs`)¹ | `crisp_conv2d_tiled_p.py` | — | `2026-11-12 03:48` |
+| **H100** | — | **#25** / 34 | **66417.54 µs** | 66433.44 µs | 26 TFLOPS | 0.9% (`594.89 µs`)¹ | `crisp_conv2d_tiled_p.py` | — | `2026-11-12 03:48` |
+| **A100** | — | **#6** / 23 | **2195.16 µs** | 2188.45 µs | 774 TFLOPS² | 39.0% (`855.04 µs`) | `crisp_conv2d_perf.py` | — | `2026-11-12 03:48` |
+| **L4** | — | **#10** / 15 | **189378.56 µs** | 187812.56 µs | 9 TFLOPS | 2.5% (`4698.29 µs`)¹ | `crisp_conv2d_tiled_p.py` | — | `2026-11-12 03:48` |
+
+¹ On this GPU the reference (cuDNN, TF32 off) runs one sequential fp32 FMA chain per output, and only that (ci, ky, kx) chain matches it within rtol = atol = 1e-3 -- more accurate sums fail ([08-conv2d-v2/NOTES.md](08-conv2d-v2/NOTES.md), finding 1).  0.85e12 FMAs at the peak fp32 rate take at least ~25 ms on H100, ~21 ms on B200 and ~56 ms on L4.  The 0.5-5 ms #1 entries are below that floor: they predate today's reference or were scored when cuDNN picked another algorithm, so % of #1 is not a reachable target here.  Against the fp32 floor Crisp is at 38% (H100), 40% (B200) and 30% (L4).
+
+² Effective rate: the direct-convolution FLOP count (1.699 TFLOP) divided by time.  On A100 the reference itself is cuDNN's FFT, so accurate methods pass, and the Crisp kernel is an FFT (overlap-save on 64x64 tiles, per-bin complex GEMM) that performs far fewer FLOPs -- this is not a hardware throughput (A100 fp32 peak is 19.5 TFLOPS).
 
 ## § 2 — Technique Ladder & Cross-GPU Ablation (`size = 16384`)
 

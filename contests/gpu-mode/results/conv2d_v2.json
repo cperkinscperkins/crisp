@@ -274,5 +274,23 @@
       "median_score_us": 114251.78
     }
   },
-  "crisp_commit": "b0fe7502"
+  "crisp_commit": "b0fe7502",
+  "gpu_notes": {
+    "H100": {
+      "top1_mark": "¹"
+    },
+    "B200": {
+      "top1_mark": "¹"
+    },
+    "L4": {
+      "top1_mark": "¹"
+    },
+    "A100": {
+      "rate_mark": "²"
+    }
+  },
+  "footnotes": {
+    "¹": "On this GPU the reference (cuDNN, TF32 off) runs one sequential fp32 FMA chain per output, and only that (ci, ky, kx) chain matches it within rtol = atol = 1e-3 -- more accurate sums fail ([08-conv2d-v2/NOTES.md](08-conv2d-v2/NOTES.md), finding 1).  0.85e12 FMAs at the peak fp32 rate take at least ~25 ms on H100, ~21 ms on B200 and ~56 ms on L4.  The 0.5-5 ms #1 entries are below that floor: they predate today's reference or were scored when cuDNN picked another algorithm, so % of #1 is not a reachable target here.  Against the fp32 floor Crisp is at 38% (H100), 40% (B200) and 30% (L4).",
+    "²": "Effective rate: the direct-convolution FLOP count (1.699 TFLOP) divided by time.  On A100 the reference itself is cuDNN's FFT, so accurate methods pass, and the Crisp kernel is an FFT (overlap-save on 64x64 tiles, per-bin complex GEMM) that performs far fewer FLOPs -- this is not a hardware throughput (A100 fp32 peak is 19.5 TFLOPS)."
+  }
 }

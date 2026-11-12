@@ -19,10 +19,10 @@
 
 | Contest | GPU | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 | Winning Crisp Kernel | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|
-| [`conv2d_v2`](REPORT-conv2d_v2.md) | **B200** | **#20** / 25 | **53575.02 µs** | 53580.96 µs | 32 TFLOPS | **0.9%** | `crisp_conv2d_tiled_p.py` | `2026-11-12 03:48` |
-| [`conv2d_v2`](REPORT-conv2d_v2.md) | **H100** | **#25** / 34 | **66417.54 µs** | 66433.44 µs | 26 TFLOPS | **0.9%** | `crisp_conv2d_tiled_p.py` | `2026-11-12 03:48` |
-| [`conv2d_v2`](REPORT-conv2d_v2.md) | **A100** | **#6** / 23 | **2195.16 µs** | 2188.45 µs | 774 TFLOPS | **39.0%** | `crisp_conv2d_perf.py` | `2026-11-12 03:48` |
-| [`conv2d_v2`](REPORT-conv2d_v2.md) | **L4** | **#10** / 15 | **189378.56 µs** | 187812.56 µs | 9 TFLOPS | **2.5%** | `crisp_conv2d_tiled_p.py` | `2026-11-12 03:48` |
+| [`conv2d_v2`](REPORT-conv2d_v2.md) | **B200** | **#20** / 25 | **53575.02 µs** | 53580.96 µs | 32 TFLOPS | **0.9%**¹ | `crisp_conv2d_tiled_p.py` | `2026-11-12 03:48` |
+| [`conv2d_v2`](REPORT-conv2d_v2.md) | **H100** | **#25** / 34 | **66417.54 µs** | 66433.44 µs | 26 TFLOPS | **0.9%**¹ | `crisp_conv2d_tiled_p.py` | `2026-11-12 03:48` |
+| [`conv2d_v2`](REPORT-conv2d_v2.md) | **A100** | **#6** / 23 | **2195.16 µs** | 2188.45 µs | 774 TFLOPS² | **39.0%** | `crisp_conv2d_perf.py` | `2026-11-12 03:48` |
+| [`conv2d_v2`](REPORT-conv2d_v2.md) | **L4** | **#10** / 15 | **189378.56 µs** | 187812.56 µs | 9 TFLOPS | **2.5%**¹ | `crisp_conv2d_tiled_p.py` | `2026-11-12 03:48` |
 | [`grayscale_v2`](REPORT-grayscale_v2.md) | **B200** | **#28** / 51 | **601.52 µs** | 605.34 µs | 7.14 TB/s | **98.0%** | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | `2026-11-12 03:48` |
 | [`grayscale_v2`](REPORT-grayscale_v2.md) | **H100** | **#28** / 40 | **1379.23 µs** | 1379.64 µs | 3.11 TB/s | **84.5%** | [`crisp_grayscale_direct_vec4.py`](03-grayscale-v2/crisp_grayscale_direct_vec4.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4.crisp)) | `2026-11-12 03:48` |
 | [`grayscale_v2`](REPORT-grayscale_v2.md) | **A100** | **#25** / 129 | **2394.84 µs** | 2392.06 µs | 1.79 TB/s | **97.9%** | [`crisp_grayscale_direct_vec4_nc.py`](03-grayscale-v2/crisp_grayscale_direct_vec4_nc.py) ([`.crisp`](03-grayscale-v2/grayscale_direct_vec4_nc.crisp)) | `2026-11-12 03:48` |
@@ -50,6 +50,10 @@
 | [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **H100** | **#34** / 71 | **82.81 µs** | 82.68 µs | 2.53 TB/s | **82.0%** | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | `2026-11-12 03:48` |
 | [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **A100** | **#68** / 125 | **144.77 µs** | 146.15 µs | 1.45 TB/s | **69.9%** | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | `2026-11-12 03:48` |
 | [`vectorsum_v2`](REPORT-vectorsum_v2.md) | **L4** | **#13** / 47 | **866.51 µs** | 866.30 µs | 242.0 GB/s | **79.9%** | [`crisp_vectorsum_lastman_u8_cs256.py`](02-vectorsum-v2/crisp_vectorsum_lastman_u8_cs256.py) ([`.crisp`](02-vectorsum-v2/vectorsum_lastman_wg_u8.crisp)) | `2026-11-12 03:48` |
+
+¹ [`conv2d_v2`](REPORT-conv2d_v2.md): On this GPU the reference (cuDNN, TF32 off) runs one sequential fp32 FMA chain per output, and only that (ci, ky, kx) chain matches it within rtol = atol = 1e-3 -- more accurate sums fail ([08-conv2d-v2/NOTES.md](08-conv2d-v2/NOTES.md), finding 1).  0.85e12 FMAs at the peak fp32 rate take at least ~25 ms on H100, ~21 ms on B200 and ~56 ms on L4.  The 0.5-5 ms #1 entries are below that floor: they predate today's reference or were scored when cuDNN picked another algorithm, so % of #1 is not a reachable target here.  Against the fp32 floor Crisp is at 38% (H100), 40% (B200) and 30% (L4).
+
+² [`conv2d_v2`](REPORT-conv2d_v2.md): Effective rate: the direct-convolution FLOP count (1.699 TFLOP) divided by time.  On A100 the reference itself is cuDNN's FFT, so accurate methods pass, and the Crisp kernel is an FFT (overlap-save on 64x64 tiles, per-bin complex GEMM) that performs far fewer FLOPs -- this is not a hardware throughput (A100 fp32 peak is 19.5 TFLOPS).
 
 ## ✨ Beauty Contestants — Idiomatic Crisp Showcase
 

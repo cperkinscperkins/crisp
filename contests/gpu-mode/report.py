@@ -166,6 +166,29 @@ def format_rate(workload: Dict[str, Any], us: float | None) -> str:
     return format_bw(workload.get("total_traffic_bytes", 0), us)
 
 
+def gpu_note(p: Dict[str, Any], gpu: str) -> Dict[str, Any]:
+    """Per-GPU annotations for a problem, kept at problem level (results/<problem>.json "gpu_notes")
+    because --refresh rebuilds standings[gpu] from scratch.  Keys: "rate_mark" (appended to the
+    Achieved BW / TFLOPS cell) and "top1_mark" (appended to the % of #1 cell); each mark names an
+    entry in the problem's "footnotes" map."""
+    return p.get("gpu_notes", {}).get(gpu, {})
+
+
+def used_footnotes(p: Dict[str, Any]) -> List[tuple]:
+    """(mark, text) for every footnote some GPU row of problem P actually references, in GPUS order."""
+    notes = p.get("footnotes", {})
+    seen: List[str] = []
+    for gpu in GPUS:
+        if gpu not in p.get("standings", {}):
+            continue
+        n = gpu_note(p, gpu)
+        for key in ("rate_mark", "top1_mark"):
+            m = n.get(key)
+            if m and m in notes and m not in seen:
+                seen.append(m)
+    return [(m, notes[m]) for m in seen]
+
+
 def render_problem_report(p: Dict[str, Any]) -> str:
     prob = p["problem"]
     title = p.get("title", prob)
@@ -207,9 +230,12 @@ def render_problem_report(p: Dict[str, Any]) -> str:
         sec_us = st.get("secret_score_us")
         pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
         sec_str = f"{sec_us:.2f} µs" if sec_us is not None else "—"
-        bw_str = format_rate(wl, pub_us)
+        note = gpu_note(p, gpu)
+        bw_str = format_rate(wl, pub_us) + note.get("rate_mark", "")
         top1_us = st.get("top1_score_us")
         pct_top1 = f"{(top1_us / pub_us) * 100.0:.1f}% (`{top1_us:.2f} µs`)" if (top1_us and pub_us) else "—"
+        if top1_us and pub_us:
+            pct_top1 += note.get("top1_mark", "")
         crisp_f = st.get("crisp_file", "")
         py_f = st.get("py_file", "")
         fname = st.get("file_name", "")
@@ -223,6 +249,8 @@ def render_problem_report(p: Dict[str, Any]) -> str:
             f"| **{gpu}** | {arch} | {rank_str} | {pub_str} | {sec_str} | {bw_str} | {pct_top1} | {kernel_link} | {prof} | `{cap}` |"
         )
     L.append("")
+    for mark, text in used_footnotes(p):
+        L.append(f"{mark} {text}\n")
 
     # Section 1b: Beauty Contestant Showcase
     beauty = p.get("beauty_entry")
@@ -430,9 +458,12 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
             sec_us = st.get("secret_score_us")
             pub_str = f"**{pub_us:.2f} µs**" if pub_us is not None else "—"
             sec_str = f"{sec_us:.2f} µs" if sec_us is not None else "—"
-            bw_str = format_rate(p.get("workload", {}), pub_us)
+            note = gpu_note(p, gpu)
+            bw_str = format_rate(p.get("workload", {}), pub_us) + note.get("rate_mark", "")
             top1_us = st.get("top1_score_us")
             pct_str = f"**{(top1_us / pub_us) * 100.0:.1f}%**" if (top1_us and pub_us) else "—"
+            if top1_us and pub_us:
+                pct_str += note.get("top1_mark", "")
             crisp_f = st.get("crisp_file", "")
             py_f = st.get("py_file", "")
             fname = st.get("file_name", "")
@@ -442,6 +473,9 @@ def render_master_index(problems: List[Dict[str, Any]]) -> str:
                 f"| [`{prob}`](REPORT-{prob}.md) | **{gpu}** | {rank_str} | {pub_str} | {sec_str} | {bw_str} | {pct_str} | {k_link} | `{cap}` |"
             )
     L.append("")
+    for p in problems:
+        for mark, text in used_footnotes(p):
+            L.append(f"{mark} [`{p['problem']}`](REPORT-{p['problem']}.md): {text}\n")
 
     L.append("## ✨ Beauty Contestants — Idiomatic Crisp Showcase\n")
     L.append(
