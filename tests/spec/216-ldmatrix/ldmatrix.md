@@ -77,7 +77,12 @@ halves).  It does not work, and that is the finding: `k32pad` came back WRONG (2
 the run-time stride; `ring3pad` was exact and exactly as fast as `ring3` (3564 vs 3555), i.e. ring slots
 ignore the literal strides altogether.  A padded scratch needs real compiler support -- D-216-5.
 
-V10_PLACEHOLDER
+**v10** (`crisp_matmul_v10.py`, `package_matmul.build_v10`): v9 with the A100 / L4 lane on the ring kernel.
+A100 test 970864 passed (every test shape, exact -- including the small fallback, which is ldmatrix too);
+**leaderboard 970869: 3555.3 us** public (secret 3556.0), v5's 4863 before -> 16.8% of #1 (was 12.2%); still
+#56 / 57, the field being cuBLAS at ~600-700 us.  L4: test 970865 and retry 970870 both hit GPU MODE's hard
+timeout (so did diag 3's L4 half, 970866, and every B200 job tonight), so v10 is NOT on the L4 board yet;
+diag 2 measured it there at 4355 us vs v8's 6662.
 
 ## Decisions for review
 - **D-216-1 -- a wrapped analyzer and a `semantic-hw-op`, no new node.**  `analyze-load-fragment-a/-b` are

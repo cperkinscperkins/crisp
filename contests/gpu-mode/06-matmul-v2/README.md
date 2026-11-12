@@ -83,6 +83,14 @@ A100 / L4, 2026-11-11: the 4-warp kernel's K tile per cp.async stage, one A100 r
 (`.trans` for the row-major B) loads four fragment registers per instruction -- an endeavour in the core
 mma.sync lowering, for Chris to scope.
 
+**v10 (endeavour 216, 2026-11-12): ldmatrix + a cp.async ring.**  The fragments now come from shared memory
+by `ldmatrix.x4` (A) / `ldmatrix.x2.trans` (the (K N) B), and `matmul_ampere_4w_ring.crisp` stages A / B in
+3-slot rings.  A100 twin A/B (970853): scored shape 4204 -> 3032 us; ring 2898 us (970856).  Leaderboard
+970869: **A100 3555.3 us** (v5 4863; the board's runner was an SXM4, slower than diag 2's PCIe).  L4: the ring
+measured 4355 us vs v8's 6662 (970860), but three L4 submissions (970865, 970866, 970870) hit GPU MODE's hard
+timeout, so v10 is not yet on the L4 board.  Next lever: bank conflicts (tests/spec/216-ldmatrix/ldmatrix.md,
+D-216-5).
+
 **B200 scored-shape study (2026-11-11, popcorn B200 diags; endeavour 214's 2-SM pair parked).**  Where
 v7's 226 us goes, measured by removing or reshaping one thing at a time (all arms exact unless noted):
 | probe (diag) | 4096 x 5120 x 4096 | 9472 x 2048 x 4096 | 8192^3 |

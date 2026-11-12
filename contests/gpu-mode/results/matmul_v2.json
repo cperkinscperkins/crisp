@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 06: Matmul (fp16 C = A B, 4096x5120x4096 scored)",
   "leaderboard_id": 540,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/540?tab=rankings",
-  "crisp_commit": "b0fe7502",
+  "crisp_commit": "173f3fb1",
   "workload": {
     "description": "C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS.",
     "total_flops": 171798691840
@@ -32,7 +32,7 @@
   },
   "standings": {
     "H100": {
-      "captured_at": "2026-11-12T03:48:28Z",
+      "captured_at": "2026-11-12T10:52:36Z",
       "user_name": "cperkinscperkins",
       "rank": 29,
       "total_entrants": 44,
@@ -48,23 +48,23 @@
       "median_score_us": 222.04
     },
     "A100": {
-      "captured_at": "2026-11-12T03:48:28Z",
+      "captured_at": "2026-11-12T10:52:36Z",
       "user_name": "cperkinscperkins",
       "rank": 56,
       "total_entrants": 57,
-      "file_name": "crisp_matmul_v5.py",
-      "crisp_file": "06-matmul-v2/matmul_h100_2wg_tma.crisp",
-      "py_file": "06-matmul-v2/crisp_matmul_v5.py",
-      "hardware_profile": null,
-      "public_score_us": 4862.98,
-      "secret_score_us": 4929.54,
-      "submission_id": 968649,
+      "file_name": "crisp_matmul_v10.py",
+      "crisp_file": "06-matmul-v2/matmul_ampere_4w_ring.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v10.py",
+      "hardware_profile": "h100",
+      "public_score_us": 3555.33,
+      "secret_score_us": 3556.01,
+      "submission_id": 970869,
       "top1_score_us": 595.63,
       "top1_user": "WGX11",
       "median_score_us": 727.19
     },
     "L4": {
-      "captured_at": "2026-11-12T03:48:28Z",
+      "captured_at": "2026-11-12T10:52:36Z",
       "user_name": "cperkinscperkins",
       "rank": 21,
       "total_entrants": 21,
@@ -80,7 +80,7 @@
       "median_score_us": 2240.77
     },
     "B200": {
-      "captured_at": "2026-11-12T03:48:28Z",
+      "captured_at": "2026-11-12T10:52:36Z",
       "user_name": "cperkinscperkins",
       "rank": 41,
       "total_entrants": 53,
@@ -186,6 +186,15 @@
       "strategy": "B200: 16-byte tcgen05 epilogue stores (endeavour 215; the 4-byte stores were a third of v7's time) and a 128x128 tile at 3 workgroups / SM where it fills the waves better (the scored shape) -- 156 us",
       "registers": null,
       "hardware_profile": "b200"
+    },
+    {
+      "step": "10",
+      "key": "crisp_matmul_v10",
+      "crisp_file": "06-matmul-v2/matmul_ampere_4w_ring.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v10.py",
+      "strategy": "A100 / L4 (endeavour 216): mma.sync fragments from shared memory by ldmatrix (x4 for A, x2.trans for the (K N) B) instead of 8 / 4 ld.shared.b16 each, and a 3-slot cp.async ring -- A100 4863 -> 3555 us; H100 / B200 as v9",
+      "registers": null,
+      "hardware_profile": "h100"
     }
   ],
   "runs": [
@@ -809,6 +818,36 @@
       "per_case_us": null,
       "public_score_us": null,
       "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-11-12T10:21:50Z",
+      "gpu": "A100",
+      "kernel_key": "crisp_matmul_v10",
+      "file_name": "crisp_matmul_v10.py",
+      "mode": "leaderboard",
+      "submission_id": 970869,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 3555.33,
+      "secret_score_us": 3556.01
+    },
+    {
+      "timestamp": "2026-11-12T10:51:57Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_matmul_v10",
+      "file_name": "crisp_matmul_v10.py",
+      "mode": "test",
+      "submission_id": 970870,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
     }
   ],
   "ablation_size_label": "scored case: 4096x5120x4096 (ranking_by LAST)",
@@ -819,7 +858,8 @@
     "**TMA multicast does not help 2wg_deep:** a 2x2-cluster multicast variant was correct and slower (366 vs 309 us); the two-warpgroup tile already reuses each TMA load twice.",
     "**A100 / L4 needed compiler work (endeavour 196):** the Ampere `cp.async` load-tile refused 16-bit tiles (cp.async moves 4/8/16 bytes) -- it now copies 16-byte chunks spread over every thread; the register fit-check refused a 4-warp distributed tile; and `await` on a cp.async barrier lacked the CTA barrier after `wait_group` (2.8% wrong outputs once tiles were shared across warps). A100 6.78 -> 4.96 ms. The remaining gap is operand fragments read from shared memory one 2-byte element at a time (no `ldmatrix`).",
     "**Packaging:** a TMA kernel takes 65 parameters, more than an inline `asm` statement accepts, so this entry loads the PTX through the CUDA driver API (`dlopen` libcuda, `cuModuleLoadDataEx`) with the launch ABI read out of the CUDA hoist. `CU_JIT_THREADS_PER_BLOCK` stands in for `__launch_bounds__`; without it the 288-thread wgmma block failed to launch.",
-    "**B200 -- tcgen05, then the epilogue:** the B200 path is Crisp's tcgen05 kernel (endeavours 208/209: accumulator in tensor memory, warp-specialized producer / MMA / epilogue). v6 transposed b first (265 us); tcgen05 `:b-major :mn` (endeavour 213) read it as given (230 us). Pricing v7 one piece at a time on popcorn (no rental) found the real cost: with the epilogue's stores removed it ran 147.5 us -- the tcgen05 layout hands each thread a whole row, and it left as 4-byte stores, 32 rows per warp instruction. 16-byte stores (endeavour 215) plus a 128x128 tile for the scored shape's 2.16-wave quantization: **156 us**, rank 41/53. Measured and rejected on the way: persistent scheduling (~3%), and a 2-SM `cta_group::2` pair (exact on metal, +7-9% only on full-wave shapes; endeavour 214, parked)."
+    "**B200 -- tcgen05, then the epilogue:** the B200 path is Crisp's tcgen05 kernel (endeavours 208/209: accumulator in tensor memory, warp-specialized producer / MMA / epilogue). v6 transposed b first (265 us); tcgen05 `:b-major :mn` (endeavour 213) read it as given (230 us). Pricing v7 one piece at a time on popcorn (no rental) found the real cost: with the epilogue's stores removed it ran 147.5 us -- the tcgen05 layout hands each thread a whole row, and it left as 4-byte stores, 32 rows per warp instruction. 16-byte stores (endeavour 215) plus a 128x128 tile for the scored shape's 2.16-wave quantization: **156 us**, rank 41/53. Measured and rejected on the way: persistent scheduling (~3%), and a 2-SM `cta_group::2` pair (exact on metal, +7-9% only on full-wave shapes; endeavour 214, parked).",
+    "**ldmatrix closed a third of the A100 gap (endeavour 216):** a twin A/B on one A100 (same compiler, ldmatrix switched off) took the scored shape from 4204 to 3032 us, bit-exact; the 3-slot cp.async ring adds ~5%. What is left (A100 ~2.9 ms vs cuBLAS ~0.64) is, by arithmetic, shared-memory bank conflicts: the scratch tiles' 64 B / 256 B row pitches make the ldmatrix reads 4- and 8-way conflicted. A padded or swizzled scratch layout is the next lever (tests/spec/216-ldmatrix/ldmatrix.md, D-216-5)."
   ],
   "beauty_entry": {
     "crisp_file": "06-matmul-v2/matmul_beauty.crisp",
