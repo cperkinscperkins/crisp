@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `sort_v2`
 
-> Generated from [`results/sort_v2.json`](results/sort_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/542?tab=rankings](https://www.gpumode.com/leaderboard/542?tab=rankings) (Crisp commit `e4fa2603`).
+> Generated from [`results/sort_v2.json`](results/sort_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/542?tab=rankings](https://www.gpumode.com/leaderboard/542?tab=rankings) (Crisp commit `b0fe7502`).
 
 **Workload:** Sort a 1-D fp32 tensor ascending; must equal torch.sort exactly. task.yml lists 5 benchmarks (100K .. 100M); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: 100,000,000 floats (seed 6252), rows of randn + seed + i -- nearly sorted by row. The traffic below is the floor: read 400 MB once and write 400 MB once..
 
@@ -8,9 +8,9 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **H100** | Hopper (sm_90) | **#17** / 30 | **3156.15 µs** | 3175.36 µs | 253.5 GB/s | 10.3% (`325.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-11 06:42` |
-| **A100** | Ampere (sm_80) | **#24** / 33 | **5794.22 µs** | 5852.40 µs | 138.1 GB/s | 10.1% (`582.90 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-11 06:42` |
-| **L4** | Ada Lovelace (sm_89) | **#13** / 18 | **23639.68 µs** | 23793.05 µs | 33.8 GB/s | 15.0% (`3534.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-11 06:42` |
+| **H100** | Hopper (sm_90) | **#17** / 30 | **3156.15 µs** | 3175.36 µs | 253.5 GB/s | 10.3% (`325.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 03:48` |
+| **A100** | Ampere (sm_80) | **#24** / 33 | **5794.22 µs** | 5852.40 µs | 138.1 GB/s | 10.1% (`582.90 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 03:48` |
+| **L4** | Ada Lovelace (sm_89) | **#13** / 18 | **23639.68 µs** | 23793.05 µs | 33.8 GB/s | 15.0% (`3534.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 03:48` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 

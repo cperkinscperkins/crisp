@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 07: Sort (fp32, 100,000,000 keys scored)",
   "leaderboard_id": 542,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/542?tab=rankings",
-  "crisp_commit": "e4fa2603",
+  "crisp_commit": "b0fe7502",
   "workload": {
     "description": "Sort a 1-D fp32 tensor ascending; must equal torch.sort exactly. task.yml lists 5 benchmarks (100K .. 100M); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: 100,000,000 floats (seed 6252), rows of randn + seed + i -- nearly sorted by row. The traffic below is the floor: read 400 MB once and write 400 MB once.",
     "total_traffic_bytes": 800000000
@@ -32,7 +32,7 @@
   },
   "standings": {
     "H100": {
-      "captured_at": "2026-11-11T06:42:03Z",
+      "captured_at": "2026-11-12T03:48:30Z",
       "user_name": "cperkinscperkins",
       "rank": 17,
       "total_entrants": 30,
@@ -48,7 +48,7 @@
       "median_score_us": 2217.98
     },
     "A100": {
-      "captured_at": "2026-11-11T06:42:03Z",
+      "captured_at": "2026-11-12T03:48:30Z",
       "user_name": "cperkinscperkins",
       "rank": 24,
       "total_entrants": 33,
@@ -64,7 +64,7 @@
       "median_score_us": 3893.93
     },
     "L4": {
-      "captured_at": "2026-11-11T06:42:03Z",
+      "captured_at": "2026-11-12T03:48:30Z",
       "user_name": "cperkinscperkins",
       "rank": 13,
       "total_entrants": 18,
