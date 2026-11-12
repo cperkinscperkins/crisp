@@ -4696,3 +4696,19 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         does nothing.  Any misspelled declaration behaves the same.  A warning (or error) for a
         declaration no analyzer reads would catch it; the set of known declarations is spread over the
         analyzers, so the list has to be gathered first.
+
+[ ] 162 IN-PROCESS CODEGEN DEPENDS ON WHICH SPECS RAN BEFORE -- THE SAME KERNEL COMPILES DIFFERENTLY.
+        Found 2026-11-11 (endeavour 215): tests/spec/215-tcgen05-vector-stores/01 compiled in-process by
+        run-specs ALONE (--filter=215-tcgen05) vs AFTER 210-tcgen05-misc/02 + /03 (the two :transformF
+        specs; --filter=tcgen05-store reproduces) gives different PTX: 2287 vs 2029 lines, 325 vs 69 .b64
+        registers, the 197 pair arm's <2 x float> stores as packed st.global.b64 (cvt/shl/or each pair)
+        instead of st.global.v2.b32.  Both are correct; the leaked state makes WORSE code.  Also
+        *tma-mbar-counter* (src/codegen.lisp) is never reset, so mbarrier globals are numbered by image
+        history (__crisp_mbar_3 vs _1) -- cosmetic, but the same family.
+        NOT YET LOCATED: no triple / transform leaked into the kernel (no 3.0 multiply), and the runner
+        sets no compile special except from the command line.  Suspects: state 210's :transformF path
+        leaves behind (a def-function registry entry, a type / struct cache) that changes the IR the
+        rewrite produces.  The exe (fresh process per file) is unaffected, so submissions and the IR
+        corpus are not; in-process spec results are.  215/01's validator accepts either spelling of the
+        8-byte pair store meanwhile (comment cites this bug).
+        Evidence: put_temp_files_here/215/validated-group.ptx vs validated-f32.ptx.

@@ -3866,6 +3866,78 @@
         (progn (format *error-output* "FAIL: ~d st.global.v2, ~d scalar st.global (want >0 and 0)~%" v2 scalar)
                nil))))
 
+;;;; Endeavour 211 -- shift / rotate validators.  See tests/spec/211-shift-rotate/.
+
+(defun %211-helper-names (text)
+  "The __crisp_shift_* / __crisp_rotate_* helper names mentioned in TEXT."
+  (remove-duplicates (cl-ppcre:all-matches-as-strings "__crisp_(?:shift|rotate)_(?:left|right)_[a-z]+" text)
+                     :test #'string=))
+
+(defun validate-ptx-211-shift-rotate (file ptx-string)
+  "Endeavour 211: on PTX a 32-bit rotate by a run-time count is ONE funnel shift (shf.l.wrap.b32 and
+   shf.r.wrap.b32 both present), the module has no selp.b32 (the select chain a run-time ash needs), and
+   no call reaches a __crisp_shift / __crisp_rotate helper (they inline on PTX)."
+  (declare (ignore file))
+  (let ((calls (cl-ppcre:all-matches-as-strings "call(?:\\.uni)?[^;]*__crisp_(?:shift|rotate)_" ptx-string))
+        (selps (cl-ppcre:all-matches-as-strings "\\bselp\\.b32" ptx-string)))
+    (cond (calls (format t "  FAIL: a helper is still called: ~a~%" (first calls)) nil)
+          ((not (cl-ppcre:scan "\\bshf\\.l\\.wrap\\.b32" ptx-string)) (format t "  FAIL: no shf.l.wrap.b32~%") nil)
+          ((not (cl-ppcre:scan "\\bshf\\.r\\.wrap\\.b32" ptx-string)) (format t "  FAIL: no shf.r.wrap.b32~%") nil)
+          (selps (format t "  FAIL: ~a selp.b32 (a select chain survived)~%" (length selps)) nil)
+          (t t))))
+
+(defun validate-spv-211-helpers-noinline (spv-path)
+  "Endeavour 211: on SPIR-V every __crisp_shift_* / __crisp_rotate_* helper keeps FunctionControl
+   DontInline (2) -- the BMG needs it (BUG 120 family).  Passes with a note when llvm-spirv is unavailable."
+  (let ((txt (crisp.compiler::%spv-disasm spv-path)))
+    (if (null txt)
+        (progn (format t "  NOTE: llvm-spirv unavailable; DontInline not checked~%") t)
+        (let ((names (%211-helper-names txt))
+              (bad nil))
+          (dolist (nm names)
+            (let* ((id (cl-ppcre:register-groups-bind (i) ((format nil "Name (\\d+) \"~a\"" nm) txt) i))
+                   (ctl (and id (cl-ppcre:register-groups-bind (c)
+                                    ((format nil "(?m)^5 Function \\d+ ~a (\\d+) " id) txt)
+                                  (parse-integer c)))))
+              (unless (and ctl (logtest ctl 2))
+                (push (format nil "~a (control ~a)" nm ctl) bad))))
+          (cond ((< (length names) 4)
+                 (format t "  FAIL: expected 4 shift / rotate helpers, found ~a: ~{~a~^, ~}~%" (length names) names) nil)
+                (bad (format t "  FAIL: helpers without DontInline: ~{~a~^, ~}~%" bad) nil)
+                (t t))))))
+
+;;;; Endeavour 212 -- warp vote validators.  See tests/spec/212-warp-vote/.
+
+(defun validate-ptx-212-vote (file ptx-string)
+  "Endeavour 212: on PTX each vote is ONE vote.sync instruction with the full member mask --
+   vote.sync.ballot.b32, vote.sync.any.pred and vote.sync.all.pred all present, each with mask -1 -- and the
+   module has no shfl.sync (a vote is not built from shuffles)."
+  (declare (ignore file))
+  (let ((votes (cl-ppcre:all-matches-as-strings "vote\\.sync\\.(?:ballot\\.b32|any\\.pred|all\\.pred)[^;]*;" ptx-string)))
+    (cond ((not (cl-ppcre:scan "vote\\.sync\\.ballot\\.b32" ptx-string)) (format t "  FAIL: no vote.sync.ballot.b32~%") nil)
+          ((not (cl-ppcre:scan "vote\\.sync\\.any\\.pred" ptx-string)) (format t "  FAIL: no vote.sync.any.pred~%") nil)
+          ((not (cl-ppcre:scan "vote\\.sync\\.all\\.pred" ptx-string)) (format t "  FAIL: no vote.sync.all.pred~%") nil)
+          ((find-if-not (lambda (v) (cl-ppcre:scan ",\\s*-1;$" v)) votes)
+           (format t "  FAIL: a vote without the full member mask: ~a~%" (find-if-not (lambda (v) (cl-ppcre:scan ",\\s*-1;$" v)) votes)) nil)
+          ((cl-ppcre:scan "\\bshfl\\.sync" ptx-string) (format t "  FAIL: a shfl.sync in a vote-only kernel~%") nil)
+          (t t))))
+
+(defun validate-spv-212-vote (spv-path)
+  "Endeavour 212: on SPIR-V the votes are the group-non-uniform ops -- GroupNonUniformBallot,
+   GroupNonUniformAny and GroupNonUniformAll present, with the GroupNonUniformBallot and GroupNonUniformVote
+   capabilities declared (a strict driver refuses the ops without them) -- and no GroupNonUniformShuffle.
+   Passes with a note when llvm-spirv is unavailable."
+  (let ((txt (crisp.compiler::%spv-disasm spv-path)))
+    (if (null txt)
+        (progn (format t "  NOTE: llvm-spirv unavailable; votes not checked~%") t)
+        (let ((missing (remove-if (lambda (re) (cl-ppcre:scan re txt))
+                                  '("(?m)^\\d+ GroupNonUniformBallot " "(?m)^\\d+ GroupNonUniformAny "
+                                    "(?m)^\\d+ GroupNonUniformAll " "Capability GroupNonUniformBallot\\b"
+                                    "Capability GroupNonUniformVote\\b"))))
+          (cond (missing (format t "  FAIL: missing from the SPIR-V: ~{~a~^, ~}~%" missing) nil)
+                ((cl-ppcre:scan "GroupNonUniformShuffle" txt) (format t "  FAIL: a shuffle in a vote-only kernel~%") nil)
+                (t t))))))
+
 (defun validate-ptx-distributed-mma (file ptx-string)
   "Endeavor 139 (Chapter 3, decision A) — a warp-distributed register tile.  The kernel's 32x16 tile
    is 4 fragments split across 2 consumer warps, so each warp computes only 2 (not the full 4).
@@ -5370,7 +5442,8 @@
   (declare (ignore file))
   (%208-check-counts
    "tcgen05-acc-ring" ptx-string
-   (list (list ", 512;" 2 "512 columns: the alloc ([addr], 512) and the dealloc (taddr, 512)")
+   (list (list "], 512;" 1 "512 columns: the alloc ([addr], 512)")
+         (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret")
          (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs per K-step")
          (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 ":on-complete + tcgen05-commit")
          (list "__crisp_tc_mbar_" 0 "nothing synchronous")
@@ -5409,7 +5482,8 @@
   (declare (ignore file))
   (%208-check-counts
    "tcgen05-qint-ring" ptx-string
-   (list (list ", 512;" 2 "512 columns, allocated and freed: two s32 128 x 256 accumulators")
+   (list (list "], 512;" 1 "512 columns allocated: two s32 128 x 256 accumulators")
+         (list "tcgen05.dealloc.cta_group::1.sync.aligned.b32" 1 "freed before ret")
          (list "tcgen05.mma.cta_group::1.kind::i8 [" 4 "four K = 32 MMAs per K-step")
          (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2 "slot release + acc-full")
          (list "tcgen05.ld.sync.aligned.32x32b.x32.b32" 8 "N = 256: eight 32-column loads")
@@ -5482,6 +5556,70 @@
        (%208-check-counts "tcgen05-nvfp4-pipeline" ptx-string
                           (list (list "tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64" 2
                                       "slot release + acc-full")))))
+
+;;;; Endeavour 213 -- tcgen05 :b-major :mn validators.  See tests/spec/213-tcgen05-transb/.
+
+(defun validate-ptx-tcgen05-transb (file ptx-string)
+  "Endeavour 213 spec 01: one synchronous 128x128x64 f16 tcgen05 accumulate with an MN-major (K N) B.
+   Pins the instruction descriptor with the transpose-B bit (f32 D, f16 A/B, A K-major, B MN-major,
+   N>>3 = 16, M>>4 = 8 -> 136380432), the MN-major B shared-memory descriptor (LBO 8192, SBO 1024,
+   version 1, SWIZZLE_128B -> 4611756662083026944), and three TMA copies (A + B's two 64-wide boxes).
+   ptxas cannot check either descriptor: they are runtime operands."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-transb" ptx-string
+   (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
+         (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "K = 64 is four K = 16 MMAs")
+         (list "136380432" :some "the instruction descriptor: f16, B MN-major (bit 16), N = 128, M = 128")
+         (list "4611756662083026944" :some "the MN-major B descriptor: LBO 8192, SBO 1024, version 1, SWIZZLE_128B")
+         (list "4611756662049538048" :some "A keeps the K-major descriptor")
+         (list "cp.async.bulk.tensor" 3 "A plus B's two 64-wide boxes"))))
+
+(defun validate-ptx-tcgen05-transb-ring (file ptx-string)
+  "Endeavour 213 spec 02: the warp-specialized 128 x 256 ring kernel with an MN-major (64 256) B.  The
+   loop body is emitted once: four kind::f16 MMAs, the instruction descriptor 138477584 (f16, B MN-major,
+   N>>3 = 32, M>>4 = 8), the MN-major B descriptor, and five TMA copies (A + B's four 64-wide boxes)."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-transb-ring" ptx-string
+   (list (list "tcgen05.mma.cta_group::1.kind::f16 [" 4 "four K = 16 MMAs in the loop body")
+         (list "138477584" :some "the instruction descriptor: f16, B MN-major (bit 16), N = 256, M = 128")
+         (list "4611756662083026944" :some "the MN-major B descriptor: LBO 8192, SBO 1024, version 1, SWIZZLE_128B")
+         (list "cp.async.bulk.tensor" 5 "A plus B's four 64-wide boxes"))))
+
+;;;; Endeavour 215 -- 16-byte tcgen05 epilogue store validators.  See tests/spec/215-tcgen05-vector-stores/.
+
+(defun validate-ptx-tcgen05-vector-stores-f32 (file ptx-string)
+  "Endeavour 215 spec 01: a 128x128 float tcgen05 accumulator stored to a float C.  Each of the 4
+   32-column chunks has a wide arm of 4 runs x 8 floats = 8 st.global.v4.b32 (32 in all), with
+   endeavour 197's pair arm (st.global.v2.b32) and the scalar arm (st.global.b32) behind it as run-time
+   fallbacks.  LLVM 21 prints f32 stores as .b32."
+  (declare (ignore file))
+  ;; The pair arm's 8-byte store prints as st.global.v2.b32 -- or as st.global.b64 when the spec runs
+  ;; after 210's :transformF specs in the same image (BUG 162: in-process codegen differs by spec order).
+  (let ((pairs (+ (%208-count "st.global.v2.b32" ptx-string) (%208-count "st.global.b64" ptx-string))))
+    (unless (plusp pairs)
+      (format *error-output* "FAIL (tcgen05-vector-stores-f32): no 8-byte pair stores -- the 197 pair arm is gone~%"))
+    (and (plusp pairs)
+         (%208-check-counts
+          "tcgen05-vector-stores-f32" ptx-string
+          (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
+                (list "tcgen05.ld.sync.aligned.32x32b" :some "the accumulator is read back from tensor memory")
+                (list "st.global.v4.b32" 32 "the wide arm: 4 chunks x 4 runs x 2 sixteen-byte vectors (LLVM 21 prints f32 stores as .b32)")
+                (list "st.global.b32" :some "the scalar arm stays as the last fallback"))))))
+
+(defun validate-ptx-tcgen05-vector-stores-f16 (file ptx-string)
+  "Endeavour 215 spec 02: a 128x128 float tcgen05 accumulator stored as (to-half D) to a half C.  Each
+   of the 4 32-column chunks has a wide arm of 4 runs x 8 halves = 4 st.global.v4.b32 (16 in all), with
+   endeavour 197's pair arm (st.global.b32) and the scalar arm (st.global.b16) behind it."
+  (declare (ignore file))
+  (%208-check-counts
+   "tcgen05-vector-stores-f16" ptx-string
+   (list (list ".target sm_100a" 1 "tcgen05 is sm_100a-only")
+         (list "tcgen05.ld.sync.aligned.32x32b" :some "the accumulator is read back from tensor memory")
+         (list "st.global.v4.b32" 16 "the wide arm: 4 chunks x 4 runs of 8 halves")
+         (list "st.global.b32" :some "the 197 pair arm stays as the first fallback")
+         (list "st.global.b16" :some "the scalar arm stays as the last fallback"))))
 
 (defun validate-spv-200-helpers-noinline (spv-path)
   "Endeavour 200 / BUG 138: on SPIR-V every ash / popcount helper keeps FunctionControl DontInline (2)

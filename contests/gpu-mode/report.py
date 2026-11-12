@@ -379,7 +379,9 @@ def render_problem_report(p: Dict[str, Any]) -> str:
         sid = r.get("submission_id", "—")
         b_str = (
             f"{r['benchmark_mean_us']:.1f} ± {r['benchmark_std_us']:.1f}"
-            if r.get("benchmark_mean_us") is not None
+            if r.get("benchmark_mean_us") is not None and r.get("benchmark_std_us") is not None
+            # a recorder that captures no std (conv2d's) still shows its mean
+            else f"{r['benchmark_mean_us']:.1f}" if r.get("benchmark_mean_us") is not None
             else "—"
         )
         p_str = f"**{r['public_score_us']:.2f}**" if r.get("public_score_us") is not None else "—"

@@ -47,7 +47,7 @@ NEXT  (housekeeping-oct)
 - - PLAN ??
 - - [ ] complex
 - - [ ] FFI
-- - [ ] SOA Vector / Matrix 
+- - [ ] SOA Vector / Matrix <-- do this BEFORE complex. We might want to use them to represent banks of complexes
 - - [ ] bitonic and radix sort
 
 

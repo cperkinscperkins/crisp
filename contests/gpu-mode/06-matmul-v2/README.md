@@ -64,4 +64,52 @@ longer regenerates them.  v4 = the transB kernel on H100, and the 4-warp kernel 
 | L4 | `crisp_matmul_v3.py` | 7117.0 | 25 / 25 | 1990 |
 | B200 | -- | -- | every job (ours and a pure-torch probe) hit the runner's hard timeout | 92 |
 
+B200, 2026-11-11 (the queue works again): `crisp_matmul_v6.py` -- tcgen05, tensor-memory accumulator, after a
+transpose of b -- leaderboard 970691: 265.4 us, 48 / 53.  Diag (`build_diag_b200.py`, scored case):
+transpose 33.8 + kernel 226.3 us; cuBLAS 139.3.  **`crisp_matmul_v7.py`** reads b as given with
+`:b-major :mn` (endeavour 213, `matmul_b200_tcgen05_mn.crisp`): leaderboard 970696 **230.2 us**, every
+benchmark exact; rank 48 / 53 (#47 is 201 us, median 114, #1 92).  The rest of the gap is 2-SM MMA
+(`cta_group::2`) + persistent / cluster scheduling, which Crisp does not have.
+Tried and rejected: v7 with the epilogue `:via :tma` (`matmul_b200_tcgen05_mn_tma.crisp`,
+`build_diag_b200_v7.py`): 234.5 vs 228.4 us at the scored case, 1295 vs 867 us at 8192^3 -- the 17 KB of
+staging (115712 B per workgroup) likely leaves one workgroup per SM where v7 keeps two.
+
+A100 / L4, 2026-11-11: the 4-warp kernel's K tile per cp.async stage, one A100 runner
+(`build_diag_ampere_k.py`): K16 4880 / K32 4223 / K64 6007 us at the scored case (2048 case: 695 / 725 /
+1027), all exact; cuBLAS 611.  v8 = v7 with K32 (`matmul_ampere_4w_k32.crisp`): L4 leaderboard 970705
+**6661.9 us** (v3 7117), A100 970704 5171 us -- worse than v5's 4863 on the board, so v5 stays there.
+**The A100 / L4 lever is `ldmatrix`:** the mma.sync fragments come from shared memory as ~2.3 sixteen-bit
+`ld.shared` per `mma.sync` (src/mma.lisp: "ldmatrix is a later perf optimization").  `ldmatrix.x4`
+(`.trans` for the row-major B) loads four fragment registers per instruction -- an endeavour in the core
+mma.sync lowering, for Chris to scope.
+
+**B200 scored-shape study (2026-11-11, popcorn B200 diags; endeavour 214's 2-SM pair parked).**  Where
+v7's 226 us goes, measured by removing or reshaping one thing at a time (all arms exact unless noted):
+| probe (diag) | 4096 x 5120 x 4096 | 9472 x 2048 x 4096 | 8192^3 |
+|---|---:|---:|---:|
+| v7 | 226 | 161 | 872 |
+| persistent, 296 CTAs (2 / SM) (970760) | 219 | 156 | 889 |
+| 128 x 128 tile, ring 2, 3 CTAs / SM (`make_n128.py`; 970754) | 208 | 182 | 1042 |
+| v7, epilogue stores REMOVED (wrong output; timing only; 970761) | 147.5 | 110.6 | 764 |
+| v7, epilogue stores as `st.global.v4.b32` (hand-edited PTX, `pair_probe/make_wide_stores.py`; 970762) | 171.0 | **119.9** | **787.5** |
+| 128 x 128 + `v4` stores (970762) | **150.5** | 148.6 | 992 |
+| cuBLAS | 118 | 95 | 674 |
+
+- **The epilogue was a third of the scored time** (78 of 226 us), not bandwidth (C is 42 MB, ~5 us of
+  HBM): the tcgen05 32x32b layout gives a thread a whole row, and it left as 128 4-byte stores per thread,
+  each warp instruction touching 32 rows.  16-byte stores take 55 us of the 78 back.  `v8` (32 B, one
+  sector) needs PTX 8.8 -- not in the CUDA 12.8 ptxas used here.
+- The scored shape also wants the 128 x 128 tile (2.16 waves of 128 x 256 tiles -> 2.88 of 128 x 128 at
+  3 CTAs / SM); full-wave shapes want 128 x 256.
+- Persistence is worth ~3% at K = 4096, nothing at 8192.
+- Hand-edited PTX is not submitted: an entry is compiler output.  The compiler change became endeavour
+  215 (tests/spec/215-tcgen05-vector-stores/): 16-byte tcgen05 epilogue stores, compiler-built v7 175.1 us
+  and 128 x 128 152.6 us (diag 970772, exact, fallback arms forced and exact too).
+
+**v9** (`crisp_matmul_v9.py`, endeavour 215; `build_all` now builds only v9 + beauty, v6-v8 are kept as
+submitted): v8's dispatch, the B200 choosing 128 x 256 (`matmul_b200_tcgen05_mn.crisp`) or 128 x 128
+(`matmul_b200_tcgen05_mn_128.crisp`) by wave fill.  B200 leaderboard 970774: **156.1 us**, rank **41 / 53**
+(v7 230.2, 48).  The board labels the score a geomean of the benchmarks.
+
+
 Beauty entry (`crisp_matmul_beauty.py`), H100 benchmark: 86.0 ms.  Full report: `../REPORT-matmul_v2.md`.

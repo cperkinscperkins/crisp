@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-11-09T16:25:34.658788Z
+Generated on 2026-11-12T04:23:54.132617Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -1346,9 +1346,23 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFUN `ANALYZE-%RUN-OK-P-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 215.  Analyzer for (%run-ok-p P0 P1), P0 / P1 aref forms naming adjacent elements of one  >    storage.  Type int.  An element type that does not pack (endeavour 197's rule) analyses to the  >    literal 0, so the guarded wide branch is dead and the pair / scalar arms behind it run.
+
+
+---
+### DEFUN `ANALYZE-%STORE-RUN-EXPRESSION`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 215.  Analyzer for (%store-run P0 .. Pn-1 V0 .. Vn-1): one semantic-store-run when every  >    value already has P0's element type, that type packs, and the run is a whole number of 16-byte  >    vectors; otherwise exactly (progn (set! P0 V0) ... (set! Pn-1 Vn-1)), so conversions and type errors  >    are set!'s own.  Values are compared by their SINGLE-VALUE type (210's rule for :transformF calls).  >    The caller guards it with (%run-ok-p P0 P1).
+
+
+---
 ### DEFUN `REGISTER-197-PAIR-STORE-ANALYZERS`
 
-  > Endeavour 197.  Registers %store-pair and %pair-ok-p (internal forms of the accumulator store  >    lowering) in both packages, like the other % forms in register-control-analyzers.
+  > Endeavour 197.  Registers %store-pair and %pair-ok-p (internal forms of the accumulator store  >    lowering) in both packages, like the other % forms in register-control-analyzers.  >    Endeavour 215: also %store-run / %run-ok-p (the tcgen05 store's 16-byte arm).
 
 
 ---
@@ -2135,10 +2149,17 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFUN `%212-VOTE-NODE-P`
+- **Args**: `(NODE)`
+
+  > Endeavour 212: T when NODE is a semantic-hw-op for a warp vote.
+
+
+---
 ### DEFUN `CALCULATE-UNIFORMITY-STATE`
 - **Args**: `(NODE ENV)`
 
-  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :warp-uniform (Endeavour 194), :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: per-work-item ids (get-global-id/get-local-id/*-linear-id/  >      get-global-id-abs) are :divergent; ids/sizes/offsets constant across the  >      workgroup (get-workgroup-id, get-num-groups, get-*-work-size, get-global-offset,  >      get-work-dim, get-*-linear-size, get-total-*) are :uniform.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
+  > Recursively determines the uniformity state of an analyzed semantic AST node.  >    Returns :uniform, :warp-uniform (Endeavour 194), :divergent, or :unknown.  >    - Literals are :uniform.  >    - Variables are looked up in the env for their stored uniformity. If env lookup  >      fails or missing, defaults to :unknown. Kernel arguments are initialized to :uniform.  >    - GPU Builtins: per-work-item ids (get-global-id/get-local-id/*-linear-id/  >      get-global-id-abs) are :divergent; ids/sizes/offsets constant across the  >      workgroup (get-workgroup-id, get-num-groups, get-*-work-size, get-global-offset,  >      get-work-dim, get-*-linear-size, get-total-*) are :uniform.  >    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.  >      If any arg is :divergent, it is :divergent. Otherwise :unknown.  >    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.  >    - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.  >    Endeavour 212: a warp vote (warp-ballot / warp-any? / warp-all?) is :warp-uniform (:uniform when its  >    predicate is).
 
 
 ---
@@ -2739,9 +2760,35 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFPARAMETER `*211-SHIFT-OP-NAMES*`
+
+  > Endeavour 211: the shift / rotate operators analyzed by analyze-211-shift-op.  Each takes (x count);  >    the count is taken modulo x's width.
+
+
+---
+### DEFUN `ANALYZE-211-SHIFT-OP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (shift-left x n) / (shift-right x n) / (rotate-left x n) / (rotate-right x n) (endeavour 211).  >    X is a scalar integer and fixes the result type; N may be any integer type (codegen converts it to X's  >    type, which cannot change its low bits, so 'N mod width' is the same either way).  shift-right is  >    logical for an unsigned X, arithmetic for a signed one.
+
+
+---
+### DEFPARAMETER `*212-VOTE-OP-NAMES*`
+
+  > Endeavour 212: the warp vote operators and the semantic-hw-op op each analyzes to.  Each takes one  >    predicate (a condition, as for if: nonzero is true).  warp-ballot gives a uint mask, bit L set iff lane  >    L's predicate holds; warp-any? / warp-all? give a 0 / 1 int, like a comparison.
+
+
+---
+### DEFUN `ANALYZE-212-VOTE-OP`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (warp-ballot pred) / (warp-any? pred) / (warp-all? pred) (endeavour 212).  >    PRED is a condition under if's rule: a comparison, or any integer scalar read as nonzero-is-true (Crisp's  >    comparisons are 0 / 1 ints).  A float is refused.  The vote is a warp collective, checked exactly as a  >    shuffle is (%shuffle-check-not-divergent: every lane must reach it, and it is recorded for loop exits  >    and call sites).  warp-ballot's uint holds 32 lanes, so a profile whose warp is wider is refused  >    (Chris, 2026-11-10); on PTX the warp is 32 by architecture.
+
+
+---
 ### DEFUN `%185-REGISTER-MATH-OP-ANALYZERS`
 
-  > Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language  >    and :crisp.compiler.  Called from register-ops-analyzers.
+  > Registers analyze-185-math-op under every *185-math-op-names* name, in both :crisp-language  >    and :crisp.compiler.  Called from register-ops-analyzers.  >    Endeavour 211: also analyze-211-shift-op under every *211-shift-op-names* name.  >    Endeavour 212: also analyze-212-vote-op under every *212-vote-op-names* name.
 
 
 ---
@@ -3724,10 +3771,17 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFUN `%FOLD-SCRATCH-SIZE-EXPR`
+- **Args**: `(X)`
+
+  > Endeavour 212: X, a make-scratch-* size expression, with every foldable part folded to an integer --  >    integer literals, (+ - * / ...) of foldable parts, and (warp-size), which is %173-warp-size for the target  >    being compiled (32 on PTX, the profile's :simd-width on SPIR-V).  A per-dimension list (8 (warp-size)) is  >    folded element by element.  Anything else -- a keyword such as :match-workgroup-size, a runtime name, a  >    division by zero -- is returned as it was, so the hoisters see exactly what they saw before.  >    Why: the size reaches the metacrisp verbatim and the hoisters can only size a buffer from a number; per-warp  >    shared state needs (warps per workgroup) x K words, which differs between NVIDIA and BMG.
+
+
+---
 ### DEFUN `%EXTRACT-SCRATCH-SIZE-EXPR`
 - **Args**: `(OP ARGS)`
 
-  > Extracts the user-supplied size expression from make-scratch-* args.
+  > Extracts the user-supplied size expression from make-scratch-* args.  >    Endeavour 212: folded to an integer where it can be (%fold-scratch-size-expr), so (warp-size) may size a  >    per-warp buffer.  Every caller -- the Pass 1 scan, the analyzer and the AD rebuild of a scratch form --  >    records or re-emits this value.
 
 
 ---
@@ -6840,6 +6894,34 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFUN `%211-SHIFT-ROTATE-BODY`
+- **Args**: `(BUILDER MODULE KIND X C X-TYPE)`
+
+  > Endeavour 211: the body of a shift / rotate of X by C (already X-TYPE), KIND one of :shl :shr :rotl  >    :rotr.  The count is taken modulo the width:  >      shifts  -> (and c (bits - 1)) then shl / lshr (unsigned) / ashr (signed).  LLVM drops the and when it  >                 can prove c's range; on PTX the shift is then one instruction.  >      rotates -> llvm.fshl / llvm.fshr (x, x, c), whose count is ALREADY modulo the width by definition;  >                 NVPTX makes a 32-bit one a single shf.l.wrap / shf.r.wrap.
+
+
+---
+### DEFUN `%211-LOWER`
+- **Args**: `(KIND BUILDER MODULE ARG-VALS ARG-TYPES)`
+
+  > Endeavour 211: lower shift / rotate KIND through an internal helper __crisp_<kind>_<type> -- noinline  >    on SPIR-V only (the BMG needs it for inline integer bodies, BUG 120 family), inlined on PTX  >    (%185-helper-call).  The count is converted to the operand's type first, as for ash.
+
+
+---
+### DEFUN `%212-PRED-I1`
+- **Args**: `(BUILDER PRED)`
+
+  > Endeavour 212: the vote predicate PRED (an LLVM integer value) as an i1, under if's rule: nonzero is  >    true.  An i1 passes through.
+
+
+---
+### DEFUN `%212-VOTE-LOWER`
+- **Args**: `(KIND BUILDER MODULE PRED)`
+
+  > Endeavour 212: one warp vote of KIND (:ballot :any :all) on predicate PRED, as ONE hardware op.  >      PTX     llvm.nvvm.vote.{ballot,any,all}.sync with the full member mask -- legal because the analyzer  >              only lets a vote run where every lane of the warp reaches it (as for the shuffles).  >      SPIR-V  __spirv_GroupNonUniformBallot (Subgroup scope; component 0 of its uvec4 holds lanes 0..31)  >              / __spirv_GroupNonUniformAny / __spirv_GroupNonUniformAll.  >    :ballot returns an i32 mask; :any / :all return a 0 / 1 i32 (a Crisp condition, like a comparison).
+
+
+---
 ### DEFMACRO `DEF-COMPARISON-CODEGEN`
 - **Args**: `(TYPE-NAME INT-PRED FLOAT-PRED ACCESSOR-PREFIX)`
 
@@ -7011,7 +7093,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 - **Args**: `(ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE
               VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
-  > semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the  >    element pointer is the parent storage's base pointer (SROA field 0 of field 0) plus index * sizeof.  >    A read of a read-only kernel-parameter tensor gets !invariant.load.  Returns (values loaded nil ptr).
+  > semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the  >    element pointer is a typed `getelementptr inbounds T, base, index` off the parent storage's base  >    pointer (SROA field 0 of field 0) -- typed, so a constant term of the index folds into the access's  >    immediate offset.  A read of a read-only kernel-parameter tensor gets !invariant.load.  >    Returns (values loaded nil ptr).
 
 
 ---
@@ -7975,7 +8057,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 ---
 ### DEFPARAMETER `*WARP-COLLECTIVE-OPERATOR-NAMES*`
 
-  > Operators whose correctness depends on the warp width the kernel actually runs at.  >    reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a  >    user writes, and listing them means the scan works whether or not they have been expanded.
+  > Operators whose correctness depends on the warp width the kernel actually runs at.  >    reduce-warp and reduce-workgroup are listed as well as the raw shuffles: they are the forms a  >    user writes, and listing them means the scan works whether or not they have been expanded.  >    Endeavour 212: the votes -- a ballot's bits are lane positions, and any? / all? count the lanes.
 
 
 ---
@@ -8197,10 +8279,17 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFUN `%213-SMEM-DESC-MN`
+- **Args**: `(BUILDER BASE-PTR KSLICE-BYTE-OFF LBO-BYTES)`
+
+  > Endeavour 213.  The Blackwell shared-memory descriptor of an MN-MAJOR 16-bit operand under the 128-byte  >    swizzle: 198's MN-major layout (CUTLASS Major::MN, B128 -- 64 MN elements per 128-byte row, 8 rows per  >    1024-byte atom; LBO = the stride between 64-wide MN atoms = one TMA box, LBO-BYTES; SBO = the stride  >    between 8-row K groups = 1024) with %208-smem-desc's Blackwell fields: VERSION 1 at [46,48) and  >    SWIZZLE_128B = 2 at [61,64).  The k16 slice advances KSLICE-BYTE-OFF = 16 rows x 128 B per slice.
+
+
+---
 ### DEFUN `%208-GEN-MMA-PLAIN`
 - **Args**: `(NODE BUILDER MODULE VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
-  > Endeavour 208.  The 16-bit / tf32 / int8 emitter (was %208-gen-mma).  D += A.B: lane 0 of the issuing warp builds the descriptors and issues K/16  >    tcgen05.mma.kind::f16 (the first with enable-input-d = !FRESH, the rest accumulating), then commits  >    -- to :on-complete's barrier, or to this site's own mbarrier, on which every executing thread then  >    waits (parity from an entry-block visit counter) before fence::after_thread_sync.  Returns D with  >    FRESH cleared.
+  > Endeavour 208.  The 16-bit / tf32 / int8 emitter (was %208-gen-mma).  D += A.B: lane 0 of the issuing warp builds the descriptors and issues K/16  >    tcgen05.mma.kind::f16 (the first with enable-input-d = !FRESH, the rest accumulating), then commits  >    -- to :on-complete's barrier, or to this site's own mbarrier, on which every executing thread then  >    waits (parity from an entry-block visit counter) before fence::after_thread_sync.  Returns D with  >    FRESH cleared.  >    Endeavour 213: a :b-mn node sets the instruction descriptor's transpose-B bit (16) and reads B through  >    %213-smem-desc-mn (LBO = one 64-wide TMA box of K rows, SBO 1024; the k16 slice advances 2048 bytes).
 
 
 ---
@@ -14513,7 +14602,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 ### DEFUN `ANALYZE-%TCGEN05-MMA`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 208.  (%tcgen05-mma D A B K [BAR]) -> the semantic-tcgen05-op :mma node, typed as D.  >    A / B become (~ tile 0 0) so codegen's third value is the shared-memory base (as for wgmma).  A  >    site without BAR is synchronous and gets its own mbarrier index in this kernel.
+  > Endeavour 208.  (%tcgen05-mma D A B K [BAR]) -> the semantic-tcgen05-op :mma node, typed as D.  >    A / B become (~ tile 0 0) so codegen's third value is the shared-memory base (as for wgmma).  A  >    site without BAR is synchronous and gets its own mbarrier index in this kernel.  >    Endeavour 213: :b-mn T in the plist when the enclosing accumulate said :b-major :mn.
 
 
 ---
@@ -14692,7 +14781,7 @@ Generated on 2026-11-09T16:25:34.658788Z
 ### DEFUN `%TCGEN05-STORE-REWRITE-ORIGIN`
 - **Args**: `(TILE DEST ROW-ORIGIN COL-ORIGIN N &OPTIONAL CONVERT ELEM)`
 
-  > Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row  >    m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the  >    row's 32 elements -- as 16 packed pairs (endeavour 197) when the first pair is adjacent and  >    aligned, else as scalars.  A fence::after_thread_sync opens the store (the accumulator was  >    completed by another thread's MMA) and a fence::before_thread_sync closes it (the next MMA into  >    these columns must not overtake the reads).  CONVERT as in %wgmma-store-rewrite-origin.  >    Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED  >    integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32  >    row record holds plain int, and the destination element holds exactly its own type.  >    Endeavour 210 (F-210-1): when *210-store-transform* is bound (a store's :transformF), each element  >    read from tensor memory is passed through that function first.
+  > Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at  >    (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row  >    m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the  >    row's 32 elements -- Endeavour 215: as 4 runs of 8 (%store-run, 16-byte vector stores) when the  >    row is contiguous and the chunk's first element 16-byte aligned (%run-ok-p); else as 16 packed  >    pairs (endeavour 197) when the first pair is adjacent and aligned; else as scalars.  A  >    fence::after_thread_sync opens the store (the accumulator was completed by another thread's MMA)  >    and a fence::before_thread_sync closes it (the next MMA into these columns must not overtake the  >    reads).  CONVERT as in %wgmma-store-rewrite-origin.  >    Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED  >    integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32  >    row record holds plain int, and the destination element holds exactly its own type.  >    Endeavour 210 (F-210-1): when *210-store-transform* is bound (a store's :transformF), each element  >    read from tensor memory is passed through that function first.
 
 
 ---
@@ -14772,10 +14861,16 @@ Generated on 2026-11-09T16:25:34.658788Z
 
 
 ---
+### DEFVAR `*213-TCGEN05-B-MN*`
+
+  > Endeavour 213.  T while analyzing the %tcgen05-mma that a tcgen05-accumulate-via-tile with :b-major :mn  >    rewrote to; analyze-%tcgen05-mma copies it into the node's plist as :b-mn.
+
+
+---
 ### DEFUN `ANALYZE-TCGEN05-ACCUMULATE-VIA-TILE-BASE`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR])  >    -> (set! D (%tcgen05-mma D A B K [BAR])).  D += A.B over K, issued by one thread into tensor memory.  >   >    Without :on-complete it is SYNCHRONOUS (D-208-2): the issuing thread commits to a compiler-owned  >    mbarrier and every thread executing the form waits on it.  With :on-complete BAR it commits to BAR  >    and returns at once.  >   >    Operands: half / bfloat16 (kind::f16, K = 64) or float (kind::tf32, K = 32) -- either way one  >    128-byte swizzle atom of K, four instructions.  >    Phase 3: char / uchar (or types derived from them, e.g. def-qint) are kind::i8, K = 128, into an  >    s32 accumulator.  The signs of A and B are independent.  The element-family rule is 204's  >    (%check-mma-element-family); the qint-role rule is 207's, applied by %qint-mma-walk over the LET.  M = 128; A (M K) and B (N K) K-major in shared  >    memory as a :128b TMA load lays them down.  >   >    Endeavour 208 phase 4: analyze-tcgen05-accumulate-via-tile (below) wraps this; block  >    tiles go to the block-scaled path first.
+  > Endeavour 208.  (tcgen05-accumulate-via-tile (M N K) D A B :swizzle :128b [:on-complete BAR])  >    -> (set! D (%tcgen05-mma D A B K [BAR])).  D += A.B over K, issued by one thread into tensor memory.  >   >    Without :on-complete it is SYNCHRONOUS (D-208-2): the issuing thread commits to a compiler-owned  >    mbarrier and every thread executing the form waits on it.  With :on-complete BAR it commits to BAR  >    and returns at once.  >   >    Operands: half / bfloat16 (kind::f16, K = 64) or float (kind::tf32, K = 32) -- either way one  >    128-byte swizzle atom of K, four instructions.  >    Phase 3: char / uchar (or types derived from them, e.g. def-qint) are kind::i8, K = 128, into an  >    s32 accumulator.  The signs of A and B are independent.  The element-family rule is 204's  >    (%check-mma-element-family); the qint-role rule is 207's, applied by %qint-mma-walk over the LET.  M = 128; A (M K) and B (N K) K-major in shared  >    memory as a :128b TMA load lays them down.  >   >    Endeavour 208 phase 4: analyze-tcgen05-accumulate-via-tile (below) wraps this; block  >    tiles go to the block-scaled path first.  >   >    Endeavour 213: :b-major :mn declares B as (K N) -- MN-major, the plain `a @ b` layout -- read with  >    the instruction descriptor's transpose-B bit.  16-bit elements only (as wgmma's, endeavour 198).  >    The flag reaches %tcgen05-mma's node through *213-tcgen05-b-mn*.
 
 
 ---
@@ -15272,6 +15367,18 @@ Generated on 2026-11-09T16:25:34.658788Z
 ### DEFSTRUCT `SEMANTIC-PAIR-OK-P`
 
   > Endeavour 197.  (%pair-ok-p P0 P1) -> int 1 when P1's address is exactly one element past P0's AND  >    P0 is aligned to two elements, else 0.  Address arithmetic on the two element pointers, so it  >    covers the strides and the tensor's base offset without either being visible to Crisp.
+
+
+---
+### DEFSTRUCT `SEMANTIC-STORE-RUN`
+
+  > Endeavour 215.  (%store-run P0 .. Pn-1 V0 .. Vn-1): the n values stored as 16-byte vector stores from  >    P0's element address.  Only legal under a (%run-ok-p P0 P1) guard -- the lowering that emits it  >    always puts it there.  Includes semantic-store-pair (PLACE-NODE = P0, LO-NODE / HI-NODE = V0 / V1,  >    ELEM-BYTES), so every etypecase that knows the 197 node knows this one; VALUE-NODES holds all n.
+
+
+---
+### DEFSTRUCT `SEMANTIC-RUN-OK-P`
+
+  > Endeavour 215.  (%run-ok-p P0 P1) -> int 1 when P1's address is exactly one element past P0's (so the  >    row's stride is 1 and any run from P0 is contiguous) AND P0 is 16-byte aligned, else 0.  Includes  >    semantic-pair-ok-p; only its alignment mask differs.
 
 
 ---

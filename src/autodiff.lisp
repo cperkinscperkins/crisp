@@ -967,7 +967,9 @@
         ;; P2 + P0: integer results carry no gradient -- the bit operations, and floor / ceil /
         ;; round (float -> int rounding is piecewise constant: derivative 0 almost everywhere).
         ((some (lambda (n) (%185-op-named-p op n))
-               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"))
+               '("ASH" "LOGAND" "LOGIOR" "LOGXOR" "LOGNOT" "POPCOUNT" "FLOOR" "CEIL" "ROUND" "TO-SAT"
+                 "SHIFT-LEFT" "SHIFT-RIGHT" "ROTATE-LEFT" "ROTATE-RIGHT"     ; endeavour 211
+                 "WARP-BALLOT" "WARP-ANY?" "WARP-ALL?"))                ; endeavour 212: a mask / a 0-1 int
          t)
         (t nil)))))
 

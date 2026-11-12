@@ -1,0 +1,36 @@
+;; Endeavour 213 rung 01 -- a (K N) B tile read by tcgen05 MN-major: (tcgen05-accumulate-via-tile ... :b-major :mn).
+;;
+;; WHY.  GPU MODE matmul_v2's b is (K N), N-contiguous -- Major::MN for the tensor core.  Until 213 tcgen05
+;; read B only as (N K), so the B200 entry transposed b first (34 us of a 251 us call).  The 16-bit
+;; tcgen05.mma reads an MN-major B directly: the instruction descriptor's transpose-B bit (16), and B's
+;; shared-memory descriptor in 198's MN-major form (LBO = one 64-wide TMA box = 64 K rows x 128 B = 8192,
+;; SBO = 1024 between 8-row K groups) with the Blackwell version / swizzle fields; the k16 slice advances
+;; 16 rows = 2048 bytes instead of 32.
+;;
+;; THE TMA HALF is 198's: this (64 128) half B tile is 256 bytes wide, so load-tile issues two 64 x 64
+;; boxes on the one mbarrier.
+;;
+;; THE VALIDATOR (validate-ptx-tcgen05-transb): four kind::f16 MMAs, the instruction descriptor
+;; 136380432 (f32 D, f16 A/B, A K-major, B MN-major, N>>3 = 16, M>>4 = 8), the MN-major B descriptor
+;; 4611756662083026944 (LBO 8192, SBO 1024, version 1, SWIZZLE_128B), and 3 TMA copies (A + B's two boxes).
+;; Metal: GPU MODE matmul_v2 on a B200 (contests/gpu-mode/06-matmul-v2, the v7 kernel) -- exact against cuBLAS.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_100a] : validate-ptx-tcgen05-transb
+;; SKIP-WITH[--differentiate]: "tcgen05 has no backward yet (D-208-8)"
+(def-type a-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half  :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel tcgen05_b_mn_fp16 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :set-to 128) (local-size :set-to 128))
+  (let ((A-tile (make-scratch-matrix half (128 64)))     ; (M K)
+        (B-tile (make-scratch-matrix half (64 128)))     ; (K N) -- Major::MN
+        (D      (make-tcgen05-accumulator float (128 128) 0.0))
+        (bar    (make-async-barrier :mode :block)))
+    (load-tile A A-tile (0 0) :barrier bar :swizzle :128b)
+    (load-tile B B-tile (0 0) :barrier bar :swizzle :128b)
+    (await bar)
+    (tcgen05-accumulate-via-tile (128 128 64) D A-tile B-tile :swizzle :128b :b-major :mn)
+    (store-tile D C (0 0))))

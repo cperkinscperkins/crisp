@@ -4,7 +4,7 @@
   "leaderboard_id": 543,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/543?tab=rankings",
   "directory": "01-vectoradd-v2",
-  "crisp_commit": "e4fa2603",
+  "crisp_commit": "b0fe7502",
   "workload": {
     "dtype": "float16",
     "shape": [
@@ -44,10 +44,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-11-11T06:42:03Z",
+      "captured_at": "2026-11-12T03:48:31Z",
       "user_name": "cperkinscperkins",
       "rank": 20,
-      "total_entrants": 68,
+      "total_entrants": 69,
       "file_name": "crisp_b200_inplace_2xhalf4.py",
       "crisp_file": "01-vectoradd-v2/vectoradd_b200_inplace_2xhalf4.crisp",
       "py_file": "01-vectoradd-v2/crisp_b200_inplace_2xhalf4.py",
@@ -60,7 +60,7 @@
       "median_score_us": 236.41
     },
     "H100": {
-      "captured_at": "2026-11-11T06:42:03Z",
+      "captured_at": "2026-11-12T03:48:31Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 44,
@@ -76,7 +76,7 @@
       "median_score_us": 526.22
     },
     "A100": {
-      "captured_at": "2026-11-11T06:42:03Z",
+      "captured_at": "2026-11-12T03:48:31Z",
       "user_name": "cperkinscperkins",
       "rank": 56,
       "total_entrants": 107,
@@ -92,7 +92,7 @@
       "median_score_us": 911.81
     },
     "L4": {
-      "captured_at": "2026-11-11T06:42:03Z",
+      "captured_at": "2026-11-12T03:48:31Z",
       "user_name": "cperkinscperkins",
       "rank": 22,
       "total_entrants": 39,

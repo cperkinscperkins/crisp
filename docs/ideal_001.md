@@ -13612,7 +13612,7 @@ On NVIDIA **Blackwell datacenter parts (B200 / GB200, `sm_100a`)** the tensor-co
 (make-tcgen05-accumulator int (128 N) 0)                         ; s32, for 8-bit operands; or (accum Q)
 (make-tcgen05-accumulator-ring float (128 N) :ring-count R)      ; R of them; (ring-get ACC i) is D_i
 (make-scratch-matrix nvfp4 (128 256))                            ; a block tile: codes + scales (below)
-(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b [:on-complete BARRIER])
+(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b [:b-major :k|:mn] [:on-complete BARRIER])
 (tcgen05-commit BARRIER)        ; BARRIER arrives when every MMA this thread issued has finished
 (store-tile D C (gy gx))   (store-tile-at D C (row col))   (store-tile-at (to-bfloat16 D) C (row col) :via :tma)
 ```
@@ -13628,6 +13628,10 @@ a fresh accumulator.
 **The accumulate.**
 - A is `(128 K)` and B is `(N K)`, both K-major in shared memory, as a `:128b` TMA `load-tile` lays
   them down.
+- **A row-major `(K N)` B** (PyTorch's plain `a @ b`) is read as it is with `:b-major :mn` ✅ (endeavour
+  213, the Blackwell twin of wgmma's 198): stage B as a `(K N)` tile -- `load-tile` issues it as 64-wide
+  boxes -- and the multiply sets the instruction's transpose-B bit.  16-bit operands only (half,
+  bfloat16).  A `(K N)` tile without the option is refused, and the message names it.
 - half / bfloat16 operands take `K = 64`; float (tf32) operands take `K = 32`; char / uchar operands
   take `K = 128`.  Either way K is one 128-byte swizzle atom.
 - **8-bit integer operands** (char, uchar, or a `def-qint` over them) accumulate into an int or
@@ -13654,6 +13658,8 @@ a fresh accumulator.
   the storing role is 4 warps, or the kernel is 128 threads.
 - Thread t holds row t.
 - `(to-half D)` / `(to-bfloat16 D)` convert as they store.
+- Each 32-column chunk leaves as 16-byte vector stores when the row is contiguous and the chunk
+  16-byte aligned (a run-time check), else as adjacent pairs, else element by element (endeavour 215).
 - With `:via :tma` each warp stages its 32 rows in the 128-byte swizzle and sends them as TMA boxes.
 - A fused activation goes on the store: `(store-tile-at (to-bfloat16 D) C (row col) :transformF #'relu)`
   applies the function to each element as it leaves tensor memory, before the conversion (endeavour

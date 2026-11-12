@@ -1,0 +1,71 @@
+;; conv2d_v2 beauty entry: Y = conv2d(X, W) in fp32 -- no padding, stride 1.
+;;
+;;   X : (batch, C, H, H)      the input images
+;;   W : (C, C, K, K)          one KxK filter per (output channel, input channel)
+;;   Y : (batch, C, O, O)      O = H - K + 1
+;;
+;; One thread per output element: a dot product of C*K*K terms -- 131072 at K=32, C=128.  The checker
+;; compares against cuDNN at 1e-3, and a single fp32 running sum of 131072 terms drifts ~2e-3 from the
+;; exact answer.  So HOW the terms are summed decides whether a correct kernel passes, and cuDNN does not
+;; sum them the same way on every GPU:
+;;
+;;   conv2d_cudnn_order -- on the H100 cuDNN runs ONE fused-multiply-add chain in (input channel, filter
+;;                         row, filter column) order.  Summed in that order the result is bit-identical;
+;;                         summed any more accurately, thousands of elements "mismatch".
+;;   conv2d_accurate    -- elsewhere (A100) cuDNN convolves by FFT, ~1e-4 from exact, and the long chain is
+;;                         the one that mismatches.  Summing each window row, then each input channel's
+;;                         window, then the channels keeps every sum short (~1e-4).
+;;
+;; The two kernels differ only in where the partial sums start; the host picks one per GPU.
+(def-type in-vec   (vector float :address-space :global :align :compact))
+(def-type out-vec  (vector float :address-space :global :align :compact))
+(def-type dims-vec (vector int   :address-space :global :align :compact))
+
+(def-kernel conv2d_cudnn_order (X W dims &out Y)
+  (declare #'(in-vec in-vec dims-vec &out out-vec => nil)
+           (global-size :derive-from Y :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((C (to-ulong (~ dims 0)))           ; channels, in = out
+        (H (to-ulong (~ dims 1)))           ; input height = width
+        (K (to-ulong (~ dims 2)))           ; filter height = width
+        (O (+ (- H K) 1ul)))                ; output height = width
+    (loop-vector-stride Y (i)
+      ;; i = ((b * C + co) * O + oy) * O + ox
+      (let ((ox  (rem i O))
+            (oy  (rem (/ i O) O))
+            (co  (rem (/ i (* O O)) C))
+            (b   (/ i (* O O C)))
+            (acc 0.0))
+        (dotimes (ci C)
+          (dotimes (ky K)
+            (let ((x-row (+ (* (+ (* (+ (* b C) ci) H) oy ky) H) ox))   ; X[b, ci, oy + ky, ox]
+                  (w-row (* (+ (* (+ (* co C) ci) K) ky) K)))           ; W[co, ci, ky, 0]
+              (dotimes (kx K)
+                (set! acc (op-fma (~ X (+ x-row kx)) (~ W (+ w-row kx)) acc))))))
+        (set! (~ Y i) acc)))))
+
+(def-kernel conv2d_accurate (X W dims &out Y)
+  (declare #'(in-vec in-vec dims-vec &out out-vec => nil)
+           (global-size :derive-from Y :strategy :strided)
+           (local-size  :set-to 256))
+  (let ((C (to-ulong (~ dims 0)))
+        (H (to-ulong (~ dims 1)))
+        (K (to-ulong (~ dims 2)))
+        (O (+ (- H K) 1ul)))
+    (loop-vector-stride Y (i)
+      (let ((ox    (rem i O))
+            (oy    (rem (/ i O) O))
+            (co    (rem (/ i (* O O)) C))
+            (b     (/ i (* O O C)))
+            (total 0.0))
+        (dotimes (ci C)
+          (let ((window 0.0))
+            (dotimes (ky K)
+              (let ((row   0.0)
+                    (x-row (+ (* (+ (* (+ (* b C) ci) H) oy ky) H) ox))
+                    (w-row (* (+ (* (+ (* co C) ci) K) ky) K)))
+                (dotimes (kx K)
+                  (set! row (op-fma (~ X (+ x-row kx)) (~ W (+ w-row kx)) row)))
+                (set! window (+ window row))))
+            (set! total (+ total window))))
+        (set! (~ Y i) total)))))

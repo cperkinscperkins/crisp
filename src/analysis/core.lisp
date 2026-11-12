@@ -2423,6 +2423,12 @@ in single-pass mode."
   "%uniformity-join over the uniformity of each of NODES, computed in order."
   (%uniformity-join (mapcar (lambda (n) (calculate-uniformity-state n env)) nodes)))
 
+(defun %212-vote-node-p (node)
+  "Endeavour 212: T when NODE is a semantic-hw-op for a warp vote."
+  (and (semantic-hw-op-p node)
+       (member (semantic-hw-op-op node) '(%212-warp-ballot %212-warp-any %212-warp-all))
+       t))
+
 (defun calculate-uniformity-state (node env)
   "Recursively determines the uniformity state of an analyzed semantic AST node.
    Returns :uniform, :warp-uniform (Endeavour 194), :divergent, or :unknown.
@@ -2436,7 +2442,9 @@ in single-pass mode."
    - Math operations (add, sub, mul, etc): if all args are :uniform, it is :uniform.
      If any arg is :divergent, it is :divergent. Otherwise :unknown.
    - Casts/conversions (to-*, as-*) are passthrough: same uniformity as the operand.
-   - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast."
+   - Memory reads (aref) are :divergent (or :unknown) unless explicitly cast.
+   Endeavour 212: a warp vote (warp-ballot / warp-any? / warp-all?) is :warp-uniform (:uniform when its
+   predicate is)."
   (etypecase node
     (semantic-literal :uniform)
     ;; Endeavor 132 (MMA): the accumulator fragment is per-lane (warp-distributed), so
@@ -2485,6 +2493,11 @@ in single-pass mode."
      (%uniformity-of-all (list (semantic-atan2-left-arg node) (semantic-atan2-right-arg node)) env))
     ;; Endeavour 170: a hardware math op combines its arguments exactly like arithmetic --
     ;; divergent if any argument is, uniform only if all of them are.
+    ;; Endeavour 212: a vote hands every lane of the warp the same result -- warp-uniform, and :uniform
+    ;; when the predicate already was (every lane voted alike).  Ahead of the generic hw-op clause.
+    ((and semantic-hw-op
+          (satisfies %212-vote-node-p))
+     (if (eq (%uniformity-of-all (semantic-hw-op-args node) env) :uniform) :uniform :warp-uniform))
     (semantic-hw-op
      (%uniformity-of-all (semantic-hw-op-args node) env))
     ;; Endeavor 120: casts/conversions (to-*, as-*) are passthrough. Covers all

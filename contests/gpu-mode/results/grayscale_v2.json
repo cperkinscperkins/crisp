@@ -4,7 +4,7 @@
   "leaderboard_id": 538,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/538?tab=rankings",
   "directory": "03-grayscale-v2",
-  "crisp_commit": "e4fa2603",
+  "crisp_commit": "b0fe7502",
   "workload": {
     "dtype": "float32",
     "shape": [
@@ -44,10 +44,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-11-11T06:42:00Z",
+      "captured_at": "2026-11-12T03:48:26Z",
       "user_name": "cperkinscperkins",
-      "rank": 27,
-      "total_entrants": 50,
+      "rank": 28,
+      "total_entrants": 51,
       "file_name": "crisp_grayscale_direct_vec4.py",
       "crisp_file": "03-grayscale-v2/grayscale_direct_vec4.crisp",
       "py_file": "03-grayscale-v2/crisp_grayscale_direct_vec4.py",
@@ -57,10 +57,10 @@
       "submission_id": 966635,
       "top1_score_us": 589.48,
       "top1_user": "Artem Lukoianov",
-      "median_score_us": 601.47
+      "median_score_us": 601.41
     },
     "H100": {
-      "captured_at": "2026-11-11T06:42:00Z",
+      "captured_at": "2026-11-12T03:48:26Z",
       "user_name": "cperkinscperkins",
       "rank": 28,
       "total_entrants": 40,
@@ -76,7 +76,7 @@
       "median_score_us": 1371.96
     },
     "A100": {
-      "captured_at": "2026-11-11T06:42:00Z",
+      "captured_at": "2026-11-12T03:48:26Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 129,
@@ -92,7 +92,7 @@
       "median_score_us": 10401.18
     },
     "L4": {
-      "captured_at": "2026-11-11T06:42:00Z",
+      "captured_at": "2026-11-12T03:48:26Z",
       "user_name": "cperkinscperkins",
       "rank": 19,
       "total_entrants": 33,

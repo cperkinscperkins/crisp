@@ -892,27 +892,63 @@
        :source-location location))))
 
 
+(defun %fold-scratch-size-expr (x)
+  "Endeavour 212: X, a make-scratch-* size expression, with every foldable part folded to an integer --
+   integer literals, (+ - * / ...) of foldable parts, and (warp-size), which is %173-warp-size for the target
+   being compiled (32 on PTX, the profile's :simd-width on SPIR-V).  A per-dimension list (8 (warp-size)) is
+   folded element by element.  Anything else -- a keyword such as :match-workgroup-size, a runtime name, a
+   division by zero -- is returned as it was, so the hoisters see exactly what they saw before.
+   Why: the size reaches the metacrisp verbatim and the hoisters can only size a buffer from a number; per-warp
+   shared state needs (warps per workgroup) x K words, which differs between NVIDIA and BMG."
+  (cl:cond
+    ((integerp x) x)
+    ((and (consp x) (symbolp (car x)))
+     (let ((nm (symbol-name (car x))))
+       (cl:cond
+         ((and (string= nm "WARP-SIZE") (null (cdr x)))
+          (let ((w (%173-warp-size)))
+            (log:debug "212: scratch size (warp-size) -> ~a (backend ~a)" w *target-backend*)
+            w))
+         ((member nm '("+" "-" "*" "/") :test #'string=)
+          (let ((args (mapcar #'%fold-scratch-size-expr (cdr x))))
+            (cl:cond
+              ((not (and args (every #'integerp args))) x)
+              ((string= nm "+") (reduce #'+ args))
+              ((string= nm "*") (reduce #'* args))
+              ((string= nm "-") (if (cdr args) (reduce #'- args) (- (car args))))
+              ((some #'zerop (cdr args)) x)
+              (t (let ((q (car args)))
+                   (dolist (d (cdr args) q)
+                     (setf q (cl:truncate q d))))))))
+         (t x))))
+    ((consp x) (mapcar #'%fold-scratch-size-expr x))
+    (t x)))
+
 (defun %extract-scratch-size-expr (op args)
-  "Extracts the user-supplied size expression from make-scratch-* args."
-  (case op
-    ((make-scratch-vector make-scratch-matrix)
-     ;; (make-scratch-vector elem-or-alias size-expr &key ...)
-     (second args))
-    (make-scratch-tensor
-     (let* ((arg1 (first args))
-            (arg2 (second args))
-            ;; Form 1 if arg2 is an integer and arg1 is not a tensor alias
-            (is-tensor-alias (and (symbolp arg1)
-                                  (let ((resolved (resolve-type-alias arg1)))
-                                    (and (consp resolved)
-                                         (member (symbol-name (first resolved))
-                                                 '("TENSOR" "VECTOR" "MATRIX")
-                                                 :test #'string-equal)))))
-            (form-1-p (and (integerp arg2) (not is-tensor-alias))))
-       (if form-1-p
-           (third args)    ; (make-scratch-tensor elem N size-expr ...)
-           (second args)))) ; (make-scratch-tensor alias size-expr ...)
-    (t nil)))
+  "Extracts the user-supplied size expression from make-scratch-* args.
+   Endeavour 212: folded to an integer where it can be (%fold-scratch-size-expr), so (warp-size) may size a
+   per-warp buffer.  Every caller -- the Pass 1 scan, the analyzer and the AD rebuild of a scratch form --
+   records or re-emits this value."
+  (let ((raw (case op
+               ((make-scratch-vector make-scratch-matrix)
+                ;; (make-scratch-vector elem-or-alias size-expr &key ...)
+                (second args))
+               (make-scratch-tensor
+                (let* ((arg1 (first args))
+                       (arg2 (second args))
+                       ;; Form 1 if arg2 is an integer and arg1 is not a tensor alias
+                       (is-tensor-alias (and (symbolp arg1)
+                                             (let ((resolved (resolve-type-alias arg1)))
+                                               (and (consp resolved)
+                                                    (member (symbol-name (first resolved))
+                                                            '("TENSOR" "VECTOR" "MATRIX")
+                                                            :test #'string-equal)))))
+                       (form-1-p (and (integerp arg2) (not is-tensor-alias))))
+                  (if form-1-p
+                      (third args)     ; (make-scratch-tensor elem N size-expr ...)
+                      (second args)))) ; (make-scratch-tensor alias size-expr ...)
+               (t nil))))
+    (%fold-scratch-size-expr raw)))
 
 
 

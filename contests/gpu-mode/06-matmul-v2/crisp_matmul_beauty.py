@@ -121,6 +121,28 @@ static uint64_t tensormap(uint64_t ptr, uint64_t g0, uint64_t g1, uint64_t gstr,
     return (uint64_t)d;
 }
 
+// Since endeavour 210 a descriptor is a kernel parameter BY VALUE (128 bytes, __grid_constant__): encode on
+// the host, cached by the same key, and pass its address in kernelParams.  No device copy, no stale cache.
+static std::map<TmKey, CUtensorMap> tm_val_cache;
+
+static CUtensorMap tensormap_val(uint64_t ptr, uint64_t g0, uint64_t g1, uint64_t gstr,
+                                 uint32_t b0, uint32_t b1, CUtensorMapDataType dt, CUtensorMapSwizzle sw) {
+    TmKey key(ptr, g0, g1, gstr, b0, b1, (int)dt, (int)sw);
+    auto it = tm_val_cache.find(key);
+    if (it != tm_val_cache.end()) return it->second;
+    CUtensorMap host;
+    cuuint64_t gdim[2] = {g0, g1};
+    cuuint64_t gs[1] = {gstr};
+    cuuint32_t box[2] = {b0, b1};
+    cuuint32_t el[2] = {1, 1};
+    ck(drv.tensorMapEncodeTiled(&host, dt, 2, (void*)ptr, gdim, gs, box, el,
+                                CU_TENSOR_MAP_INTERLEAVE_NONE, sw,
+                                CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE),
+       "cuTensorMapEncodeTiled");
+    tm_val_cache[key] = host;
+    return host;
+}
+
 // The 9 Crisp parameters of a rank-2 tensor.  ROW: (R C) contiguous in C.  COL: (R C) contiguous in R.
 #define CRISP_TENSOR(t, P, R, C, ROWMAJOR)                                         \
     uint64_t t##_ptr = (uint64_t)(P);                                              \
@@ -1092,181 +1114,187 @@ PTX_BEAUTY = r"""//
 	.reg .pred 	%p<34>;
 	.reg .b16 	%rs<26>;
 	.reg .b32 	%r<62>;
-	.reg .b64 	%rd<223>;
+	.reg .b64 	%rd<227>;
 
 // %bb.0:                               // %entry
-	ld.param.b64 	%rd112, [matmul_param_43];
-	ld.param.b64 	%rd117, [matmul_param_18];
-	cvta.to.global.u64 	%rd3, %rd117;
-	ld.param.b64 	%rd118, [matmul_param_27];
-	cvta.to.global.u64 	%rd4, %rd118;
-	ld.param.b64 	%rd119, [matmul_param_36];
-	cvta.to.global.u64 	%rd5, %rd119;
-	ld.param.b64 	%rd120, [matmul_param_42];
-	add.s64 	%rd121, %rd120, 15;
-	shr.u64 	%rd122, %rd121, 4;
-	add.s64 	%rd123, %rd112, 7;
-	shr.u64 	%rd6, %rd123, 3;
-	mov.u32 	%r13, %ctaid.x;
-	cvt.u64.u32 	%rd7, %r13;
-	mov.u32 	%r14, %ctaid.y;
-	cvt.u64.u32 	%rd8, %r14;
-	mov.u32 	%r15, %nctaid.x;
-	cvt.u64.u32 	%rd9, %r15;
-	mov.u32 	%r16, %nctaid.y;
-	setp.le.u64 	%p1, %rd122, %rd7;
-	mov.b64 	%rd203, 0;
-	mov.b64 	%rd201, %rd203;
+	ld.param.b64 	%rd110, [matmul_param_43];
+	ld.param.b64 	%rd115, [matmul_param_18];
+	cvta.to.global.u64 	%rd3, %rd115;
+	ld.param.b64 	%rd116, [matmul_param_27];
+	cvta.to.global.u64 	%rd4, %rd116;
+	ld.param.b64 	%rd117, [matmul_param_36];
+	cvta.to.global.u64 	%rd5, %rd117;
+	ld.param.b64 	%rd118, [matmul_param_42];
+	add.s64 	%rd119, %rd118, 15;
+	shr.u64 	%rd120, %rd119, 4;
+	add.s64 	%rd121, %rd110, 7;
+	shr.u64 	%rd6, %rd121, 3;
+	mov.u32 	%r14, %ctaid.x;
+	cvt.u64.u32 	%rd7, %r14;
+	mov.u32 	%r15, %ctaid.y;
+	cvt.u64.u32 	%rd8, %r15;
+	mov.u32 	%r16, %nctaid.x;
+	cvt.u64.u32 	%rd9, %r16;
+	mov.u32 	%r17, %nctaid.y;
+	setp.le.u64 	%p1, %rd120, %rd7;
+	mov.b64 	%rd207, 0;
+	mov.b64 	%rd205, %rd207;
 	@%p1 bra 	$L__BB43_5;
 // %bb.1:                               // %else
-	not.b64 	%rd124, %rd7;
-	add.s64 	%rd11, %rd122, %rd124;
-	and.b64 	%rd125, %rd11, -4294967296;
-	setp.ne.b64 	%p2, %rd125, 0;
+	not.b64 	%rd122, %rd7;
+	add.s64 	%rd11, %rd120, %rd122;
+	and.b64 	%rd123, %rd11, -4294967296;
+	setp.ne.b64 	%p2, %rd123, 0;
 	@%p2 bra 	$L__BB43_3;
 	bra.uni 	$L__BB43_2;
 $L__BB43_3:
-	div.u64 	%rd200, %rd11, %rd9;
+	div.u64 	%rd204, %rd11, %rd9;
 	bra.uni 	$L__BB43_4;
 $L__BB43_2:
-	cvt.u32.u64 	%r17, %rd9;
-	cvt.u32.u64 	%r18, %rd11;
-	div.u32 	%r19, %r18, %r17;
-	cvt.u64.u32 	%rd200, %r19;
+	cvt.u32.u64 	%r18, %rd9;
+	cvt.u32.u64 	%r19, %rd11;
+	div.u32 	%r20, %r19, %r18;
+	cvt.u64.u32 	%rd204, %r20;
 $L__BB43_4:
-	add.s64 	%rd201, %rd200, 1;
+	add.s64 	%rd205, %rd204, 1;
 $L__BB43_5:                             // %ifcont
-	cvt.u64.u32 	%rd10, %r16;
+	cvt.u64.u32 	%rd10, %r17;
 	setp.le.u64 	%p3, %rd6, %rd8;
 	@%p3 bra 	$L__BB43_10;
 // %bb.6:                               // %else137
-	not.b64 	%rd127, %rd8;
-	add.s64 	%rd17, %rd6, %rd127;
-	and.b64 	%rd128, %rd17, -4294967296;
-	setp.ne.b64 	%p4, %rd128, 0;
+	not.b64 	%rd125, %rd8;
+	add.s64 	%rd17, %rd6, %rd125;
+	and.b64 	%rd126, %rd17, -4294967296;
+	setp.ne.b64 	%p4, %rd126, 0;
 	@%p4 bra 	$L__BB43_8;
 	bra.uni 	$L__BB43_7;
 $L__BB43_8:
-	div.u64 	%rd202, %rd17, %rd10;
+	div.u64 	%rd206, %rd17, %rd10;
 	bra.uni 	$L__BB43_9;
 $L__BB43_7:
-	cvt.u32.u64 	%r20, %rd10;
-	cvt.u32.u64 	%r21, %rd17;
-	div.u32 	%r22, %r21, %r20;
-	cvt.u64.u32 	%rd202, %r22;
+	cvt.u32.u64 	%r21, %rd10;
+	cvt.u32.u64 	%r22, %rd17;
+	div.u32 	%r23, %r22, %r21;
+	cvt.u64.u32 	%rd206, %r23;
 $L__BB43_9:
-	add.s64 	%rd203, %rd202, 1;
+	add.s64 	%rd207, %rd206, 1;
 $L__BB43_10:                            // %ifcont138
-	setp.eq.b64 	%p5, %rd201, 0;
+	setp.eq.b64 	%p5, %rd205, 0;
 	@%p5 bra 	$L__BB43_37;
 // %bb.11:                              // %dt_body.lr.ph
-	ld.param.b64 	%rd114, [matmul_param_0];
-	mov.b64 	%rd115, __crisp_dynamic_smem;
-	ld.param.b64 	%rd116, [matmul_param_9];
-	ld.param.b64 	%rd111, [matmul_param_34];
-	ld.param.b64 	%rd110, [matmul_param_33];
-	ld.param.b64 	%rd109, [matmul_param_25];
-	ld.param.b64 	%rd108, [matmul_param_24];
-	ld.param.b64 	%rd107, [matmul_param_16];
-	ld.param.b64 	%rd106, [matmul_param_15];
-	ld.param.b64 	%rd105, [matmul_param_7];
-	ld.param.b64 	%rd104, [matmul_param_6];
-	add.s64 	%rd1, %rd114, %rd115;
-	add.s64 	%rd2, %rd116, %rd115;
-	shr.u64 	%rd23, %rd109, 4;
-	mov.u32 	%r23, %tid.x;
-	cvt.u64.u32 	%rd24, %r23;
-	mov.u32 	%r24, %tid.y;
-	cvt.u64.u32 	%rd25, %r24;
-	mov.u32 	%r25, %ntid.x;
-	cvt.u64.u32 	%rd26, %r25;
-	mov.u32 	%r26, %ntid.y;
-	cvt.u64.u32 	%rd27, %r26;
-	mov.u32 	%r27, %laneid;
-	shr.u32 	%r1, %r27, 2;
-	shl.b32 	%r28, %r27, 1;
-	and.b32 	%r2, %r28, 6;
-	cvt.u64.u32 	%rd130, %r1;
-	mul.lo.s64 	%rd131, %rd107, %rd130;
-	cvt.u64.u32 	%rd132, %r2;
-	add.s64 	%rd133, %rd131, %rd132;
-	shl.b64 	%rd134, %rd133, 1;
-	add.s64 	%rd28, %rd2, %rd134;
+	ld.param.b64 	%rd112, [matmul_param_0];
+	mov.b64 	%rd113, __crisp_dynamic_smem;
+	ld.param.b64 	%rd114, [matmul_param_9];
+	ld.param.b64 	%rd109, [matmul_param_34];
+	ld.param.b64 	%rd108, [matmul_param_33];
+	ld.param.b64 	%rd107, [matmul_param_25];
+	ld.param.b64 	%rd106, [matmul_param_24];
+	ld.param.b64 	%rd105, [matmul_param_16];
+	ld.param.b64 	%rd104, [matmul_param_15];
+	ld.param.b64 	%rd103, [matmul_param_7];
+	ld.param.b64 	%rd102, [matmul_param_6];
+	add.s64 	%rd1, %rd112, %rd113;
+	add.s64 	%rd2, %rd114, %rd113;
+	shr.u64 	%rd23, %rd107, 4;
+	mov.u32 	%r24, %tid.x;
+	cvt.u64.u32 	%rd24, %r24;
+	mov.u32 	%r25, %tid.y;
+	cvt.u64.u32 	%rd25, %r25;
+	mov.u32 	%r26, %ntid.x;
+	cvt.u64.u32 	%rd26, %r26;
+	mov.u32 	%r27, %ntid.y;
+	cvt.u64.u32 	%rd27, %r27;
+	mov.u32 	%r28, %laneid;
+	shr.u32 	%r1, %r28, 2;
+	shl.b32 	%r29, %r28, 1;
+	and.b32 	%r2, %r29, 6;
+	cvt.u64.u32 	%rd128, %r1;
+	mul.lo.s64 	%rd129, %rd105, %rd128;
+	cvt.u64.u32 	%rd130, %r2;
+	shl.b64 	%rd131, %rd129, 1;
+	add.s64 	%rd132, %rd2, %rd131;
+	mul.wide.u32 	%rd133, %r2, 2;
+	add.s64 	%rd28, %rd132, %rd133;
 	or.b32 	%r3, %r2, 1;
-	cvt.u64.u32 	%rd135, %r3;
+	cvt.u64.u32 	%rd134, %r3;
 	or.b32 	%r4, %r1, 8;
-	cvt.u64.u32 	%rd136, %r4;
-	mul.lo.s64 	%rd137, %rd107, %rd136;
-	add.s64 	%rd138, %rd137, %rd132;
-	shl.b64 	%rd139, %rd138, 1;
-	add.s64 	%rd29, %rd2, %rd139;
-	or.b32 	%r29, %r2, 8;
-	cvt.u64.u32 	%rd140, %r29;
-	add.s64 	%rd141, %rd131, %rd140;
+	cvt.u64.u32 	%rd135, %r4;
+	mul.lo.s64 	%rd136, %rd105, %rd135;
+	shl.b64 	%rd137, %rd136, 1;
+	add.s64 	%rd138, %rd2, %rd137;
+	add.s64 	%rd29, %rd138, %rd133;
+	or.b32 	%r30, %r2, 8;
+	cvt.u64.u32 	%rd139, %r30;
+	or.b32 	%r31, %r2, 9;
+	cvt.u64.u32 	%rd140, %r31;
+	mul.lo.s64 	%rd141, %rd103, %rd130;
 	shl.b64 	%rd142, %rd141, 1;
-	add.s64 	%rd30, %rd2, %rd142;
-	or.b32 	%r30, %r2, 9;
-	cvt.u64.u32 	%rd143, %r30;
-	add.s64 	%rd144, %rd137, %rd140;
-	shl.b64 	%rd145, %rd144, 1;
-	add.s64 	%rd31, %rd2, %rd145;
-	mad.lo.s64 	%rd146, %rd105, %rd132, %rd130;
-	shl.b64 	%rd147, %rd146, 1;
-	add.s64 	%rd32, %rd1, %rd147;
-	mad.lo.s64 	%rd148, %rd105, %rd135, %rd130;
+	add.s64 	%rd143, %rd1, %rd142;
+	mul.wide.u32 	%rd144, %r1, 2;
+	add.s64 	%rd30, %rd143, %rd144;
+	mul.lo.s64 	%rd145, %rd103, %rd134;
+	shl.b64 	%rd146, %rd145, 1;
+	add.s64 	%rd147, %rd1, %rd146;
+	add.s64 	%rd31, %rd147, %rd144;
+	mul.lo.s64 	%rd148, %rd103, %rd139;
 	shl.b64 	%rd149, %rd148, 1;
-	add.s64 	%rd33, %rd1, %rd149;
-	mad.lo.s64 	%rd150, %rd105, %rd140, %rd130;
-	shl.b64 	%rd151, %rd150, 1;
-	add.s64 	%rd34, %rd1, %rd151;
-	mad.lo.s64 	%rd152, %rd105, %rd143, %rd130;
-	shl.b64 	%rd153, %rd152, 1;
-	add.s64 	%rd35, %rd1, %rd153;
-	mul.lo.s64 	%rd154, %rd107, %rd24;
-	shl.b64 	%rd155, %rd154, 1;
-	mul.wide.u32 	%rd156, %r24, 2;
-	add.s64 	%rd157, %rd155, %rd156;
-	add.s64 	%rd36, %rd2, %rd157;
-	mul.lo.s64 	%rd158, %rd107, %rd26;
-	shl.b64 	%rd37, %rd158, 1;
-	mul.wide.u32 	%rd38, %r26, 2;
-	mad.lo.s64 	%rd159, %rd106, %rd7, %rd24;
-	mad.lo.s64 	%rd160, %rd109, %rd159, %rd25;
-	shl.b64 	%rd161, %rd160, 1;
-	add.s64 	%rd51, %rd3, %rd161;
-	mul.lo.s64 	%rd162, %rd109, %rd106;
-	mul.lo.s64 	%rd163, %rd162, %rd9;
-	shl.b64 	%rd40, %rd163, 1;
-	shl.b64 	%rd41, %rd107, 1;
-	mul.lo.s64 	%rd164, %rd109, %rd26;
-	shl.b64 	%rd42, %rd164, 1;
-	mul.lo.s64 	%rd165, %rd105, %rd24;
-	shl.b64 	%rd166, %rd165, 1;
-	add.s64 	%rd167, %rd166, %rd156;
-	add.s64 	%rd43, %rd1, %rd167;
-	mul.lo.s64 	%rd168, %rd105, %rd26;
-	shl.b64 	%rd44, %rd168, 1;
-	mad.lo.s64 	%rd50, %rd105, %rd8, %rd25;
-	mad.lo.s64 	%rd169, %rd111, %rd24, %rd50;
-	shl.b64 	%rd170, %rd169, 1;
-	add.s64 	%rd45, %rd4, %rd170;
-	mul.lo.s64 	%rd46, %rd105, %rd10;
-	shl.b64 	%rd47, %rd46, 1;
-	mul.lo.s64 	%rd171, %rd111, %rd104;
-	shl.b64 	%rd48, %rd171, 1;
-	mul.lo.s64 	%rd172, %rd111, %rd26;
-	shl.b64 	%rd49, %rd172, 1;
-	mov.b64 	%rd52, 0;
-	setp.eq.b64 	%p6, %rd203, 0;
-	setp.lt.u64 	%p7, %rd109, 16;
-	setp.eq.b64 	%p8, %rd106, 0;
-	setp.eq.b64 	%p18, %rd104, 0;
+	add.s64 	%rd150, %rd1, %rd149;
+	add.s64 	%rd32, %rd150, %rd144;
+	mul.lo.s64 	%rd151, %rd103, %rd140;
+	shl.b64 	%rd152, %rd151, 1;
+	add.s64 	%rd153, %rd1, %rd152;
+	add.s64 	%rd33, %rd153, %rd144;
+	shl.b64 	%rd34, %rd110, 1;
+	mad.lo.s64 	%rd154, %rd104, %rd7, %rd24;
+	mul.lo.s64 	%rd155, %rd107, %rd154;
+	shl.b64 	%rd156, %rd155, 1;
+	mul.wide.u32 	%rd157, %r25, 2;
+	add.s64 	%rd158, %rd156, %rd157;
+	add.s64 	%rd50, %rd3, %rd158;
+	mul.lo.s64 	%rd159, %rd107, %rd104;
+	mul.lo.s64 	%rd160, %rd159, %rd9;
+	shl.b64 	%rd36, %rd160, 1;
+	shl.b64 	%rd37, %rd105, 1;
+	mul.lo.s64 	%rd161, %rd107, %rd26;
+	shl.b64 	%rd38, %rd161, 1;
+	mul.wide.u32 	%rd39, %r27, 2;
+	mul.lo.s64 	%rd162, %rd105, %rd24;
+	shl.b64 	%rd163, %rd162, 1;
+	add.s64 	%rd164, %rd163, %rd157;
+	add.s64 	%rd40, %rd2, %rd164;
+	mul.lo.s64 	%rd165, %rd105, %rd26;
+	shl.b64 	%rd41, %rd165, 1;
+	mul.lo.s64 	%rd166, %rd109, %rd24;
+	shl.b64 	%rd167, %rd166, 1;
+	mul.lo.s64 	%rd168, %rd103, %rd8;
+	shl.b64 	%rd169, %rd168, 1;
+	add.s64 	%rd170, %rd167, %rd169;
+	add.s64 	%rd171, %rd170, %rd157;
+	add.s64 	%rd42, %rd4, %rd171;
+	mul.lo.s64 	%rd43, %rd103, %rd10;
+	shl.b64 	%rd44, %rd43, 1;
+	mul.lo.s64 	%rd172, %rd109, %rd102;
+	shl.b64 	%rd45, %rd172, 1;
+	mul.lo.s64 	%rd173, %rd109, %rd26;
+	shl.b64 	%rd46, %rd173, 1;
+	mul.lo.s64 	%rd174, %rd103, %rd24;
+	shl.b64 	%rd175, %rd174, 1;
+	add.s64 	%rd176, %rd175, %rd157;
+	add.s64 	%rd47, %rd1, %rd176;
+	mul.lo.s64 	%rd177, %rd103, %rd26;
+	shl.b64 	%rd48, %rd177, 1;
+	add.s64 	%rd49, %rd168, %rd25;
+	mov.b64 	%rd51, 0;
+	setp.eq.b64 	%p6, %rd207, 0;
+	setp.lt.u64 	%p7, %rd107, 16;
+	setp.eq.b64 	%p8, %rd104, 0;
+	setp.eq.b64 	%p18, %rd102, 0;
 	bra.uni 	$L__BB43_12;
 $L__BB43_36:                            // %dt_exit157
                                         //   in Loop: Header=BB43_12 Depth=1
-	add.s64 	%rd52, %rd52, 1;
-	add.s64 	%rd51, %rd51, %rd40;
-	setp.lt.u64 	%p33, %rd52, %rd201;
+	add.s64 	%rd51, %rd51, 1;
+	add.s64 	%rd50, %rd50, %rd36;
+	setp.lt.u64 	%p33, %rd51, %rd205;
 	@%p33 bra 	$L__BB43_12;
 	bra.uni 	$L__BB43_37;
 $L__BB43_12:                            // %dt_body
@@ -1280,36 +1308,39 @@ $L__BB43_12:                            // %dt_body
 	@%p6 bra 	$L__BB43_36;
 // %bb.13:                              // %dt_body156.lr.ph
                                         //   in Loop: Header=BB43_12 Depth=1
-	mad.lo.s64 	%rd174, %rd52, %rd9, %rd7;
-	mul.lo.s64 	%rd53, %rd174, %rd106;
-	cvt.u32.u64 	%r31, %rd174;
-	shl.b32 	%r32, %r31, 4;
-	or.b32 	%r33, %r32, %r1;
-	cvt.s64.s32 	%rd175, %r33;
-	mul.lo.s64 	%rd54, %rd112, %rd175;
-	or.b32 	%r34, %r32, %r4;
-	cvt.s64.s32 	%rd176, %r34;
-	mul.lo.s64 	%rd55, %rd112, %rd176;
-	mov.b64 	%rd208, 0;
-	mov.b64 	%rd206, %rd50;
-	mov.b64 	%rd207, %rd45;
+	mad.lo.s64 	%rd179, %rd51, %rd9, %rd7;
+	mul.lo.s64 	%rd52, %rd179, %rd104;
+	cvt.u32.u64 	%r32, %rd179;
+	shl.b32 	%r33, %r32, 4;
+	or.b32 	%r34, %r33, %r1;
+	cvt.s64.s32 	%rd180, %r34;
+	mad.lo.s64 	%rd53, %rd34, %rd180, %rd5;
+	or.b32 	%r35, %r33, %r4;
+	cvt.s64.s32 	%rd181, %r35;
+	mul.lo.s64 	%rd182, %rd110, %rd181;
+	shl.b64 	%rd183, %rd182, 1;
+	add.s64 	%rd54, %rd5, %rd183;
+	mov.b64 	%rd212, 0;
+	mov.b64 	%rd210, %rd49;
+	mov.b64 	%rd211, %rd42;
 	bra.uni 	$L__BB43_14;
-$L__BB43_41:                            // %else779
+$L__BB43_41:                            // %else760
                                         //   in Loop: Header=BB43_14 Depth=2
-	add.s64 	%rd196, %rd5, %rd68;
-	st.global.b16 	[%rd66], %rs5;
-	st.global.b16 	[%rd196], %rs6;
-	st.global.b16 	[%rd69], %rs7;
-	add.s64 	%rd197, %rd55, %rd67;
-	shl.b64 	%rd198, %rd197, 1;
-	add.s64 	%rd199, %rd5, %rd198;
-	st.global.b16 	[%rd199], %rs8;
-$L__BB43_42:                            // %ifcont780
+	add.s64 	%rd198, %rd53, %rd66;
+	st.global.b16 	[%rd65], %rs5;
+	st.global.b16 	[%rd198], %rs6;
+	st.global.b16 	[%rd67], %rs7;
+	cvt.s64.s32 	%rd199, %r9;
+	add.s64 	%rd201, %rd199, %rd130;
+	shl.b64 	%rd202, %rd201, 1;
+	add.s64 	%rd203, %rd54, %rd202;
+	st.global.b16 	[%rd203+2], %rs8;
+$L__BB43_42:                            // %ifcont761
                                         //   in Loop: Header=BB43_14 Depth=2
-	add.s64 	%rd208, %rd208, 1;
-	add.s64 	%rd207, %rd207, %rd47;
-	add.s64 	%rd206, %rd206, %rd46;
-	setp.lt.u64 	%p32, %rd208, %rd203;
+	add.s64 	%rd212, %rd212, 1;
+	add.s64 	%rd211, %rd211, %rd44;
+	add.s64 	%rd210, %rd210, %rd43;
+	setp.lt.u64 	%p32, %rd212, %rd207;
 	@%p32 bra 	$L__BB43_14;
 	bra.uni 	$L__BB43_36;
 $L__BB43_14:                            // %dt_body156
@@ -1328,51 +1359,51 @@ $L__BB43_14:                            // %dt_body156
 // %bb.15:                              // %dt_body168.lr.ph
                                         //   in Loop: Header=BB43_14 Depth=2
 	mov.b32 	%r5, 0f00000000;
-	mov.b64 	%rd65, 0;
-	mov.b64 	%rd62, %rd207;
-	mov.b64 	%rd63, %rd25;
-	mov.b64 	%rd64, %rd51;
+	mov.b64 	%rd64, 0;
+	mov.b64 	%rd61, %rd211;
+	mov.b64 	%rd62, %rd25;
+	mov.b64 	%rd63, %rd50;
 	mov.b32 	%r6, %r5;
 	mov.b32 	%r7, %r5;
 	mov.b32 	%r8, %r5;
 	bra.uni 	$L__BB43_16;
-$L__BB43_34:                            // %dt_exit383
+$L__BB43_34:                            // %dt_exit381
                                         //   in Loop: Header=BB43_16 Depth=3
 	bar.sync 	0;
 	bar.sync 	0;
-	ld.shared.b16 	%r36, [%rd28];
-	ld.shared.b16 	%r37, [%rd28+2];
-	shl.b32 	%r38, %r37, 16;
-	or.b32 	%r39, %r38, %r36;
-	ld.shared.b16 	%r40, [%rd29];
-	ld.shared.b16 	%r41, [%rd29+2];
-	shl.b32 	%r42, %r41, 16;
-	or.b32 	%r43, %r42, %r40;
-	ld.shared.b16 	%r44, [%rd30];
-	ld.shared.b16 	%r45, [%rd30+2];
-	shl.b32 	%r46, %r45, 16;
-	or.b32 	%r47, %r46, %r44;
-	ld.shared.b16 	%r48, [%rd31];
-	ld.shared.b16 	%r49, [%rd31+2];
-	shl.b32 	%r50, %r49, 16;
-	or.b32 	%r51, %r50, %r48;
-	ld.shared.b16 	%rs16, [%rd32];
-	ld.shared.b16 	%rs17, [%rd33];
-	ld.shared.b16 	%rs18, [%rd34];
-	ld.shared.b16 	%rs19, [%rd35];
-	mov.b32 	%r52, {%rs16, %rs17};
-	mov.b32 	%r53, {%rs18, %rs19};
+	ld.shared.b16 	%r37, [%rd28];
+	ld.shared.b16 	%r38, [%rd28+2];
+	shl.b32 	%r39, %r38, 16;
+	or.b32 	%r40, %r39, %r37;
+	ld.shared.b16 	%r41, [%rd29];
+	ld.shared.b16 	%r42, [%rd29+2];
+	shl.b32 	%r43, %r42, 16;
+	or.b32 	%r44, %r43, %r41;
+	ld.shared.b16 	%r45, [%rd28+16];
+	ld.shared.b16 	%r46, [%rd28+18];
+	shl.b32 	%r47, %r46, 16;
+	or.b32 	%r48, %r47, %r45;
+	ld.shared.b16 	%r49, [%rd29+16];
+	ld.shared.b16 	%r50, [%rd29+18];
+	shl.b32 	%r51, %r50, 16;
+	or.b32 	%r52, %r51, %r49;
+	ld.shared.b16 	%rs16, [%rd30];
+	ld.shared.b16 	%rs17, [%rd31];
+	ld.shared.b16 	%rs18, [%rd32];
+	ld.shared.b16 	%rs19, [%rd33];
+	mov.b32 	%r53, {%rs16, %rs17};
+	mov.b32 	%r54, {%rs18, %rs19};
 	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 		{%r8, %r7, %r6, %r5},
-		{%r39, %r43, %r47, %r51},
-		{%r52, %r53},
+		{%r40, %r44, %r48, %r52},
+		{%r53, %r54},
 		{%r8, %r7, %r6, %r5};
 	bar.sync 	0;
-	add.s64 	%rd65, %rd65, 1;
-	add.s64 	%rd64, %rd64, %rd41;
-	add.s64 	%rd63, %rd63, %rd107;
-	add.s64 	%rd62, %rd62, %rd48;
-	setp.lt.u64 	%p28, %rd65, %rd23;
+	add.s64 	%rd64, %rd64, 1;
+	add.s64 	%rd63, %rd63, %rd37;
+	add.s64 	%rd62, %rd62, %rd105;
+	add.s64 	%rd61, %rd61, %rd45;
+	setp.lt.u64 	%p28, %rd64, %rd23;
 	@%p28 bra 	$L__BB43_16;
 	bra.uni 	$L__BB43_35;
 $L__BB43_16:                            // %dt_body168
@@ -1386,16 +1417,16 @@ $L__BB43_16:                            // %dt_body168
 	@%p8 bra 	$L__BB43_25;
 // %bb.17:                              // %dt_body217.preheader
                                         //   in Loop: Header=BB43_16 Depth=3
-	mov.b64 	%rd72, 0;
-	mov.b64 	%rd70, %rd64;
-	mov.b64 	%rd71, %rd36;
+	mov.b64 	%rd70, 0;
+	mov.b64 	%rd68, %rd40;
+	mov.b64 	%rd69, %rd63;
 	bra.uni 	$L__BB43_18;
 $L__BB43_24:                            // %ifcont231
                                         //   in Loop: Header=BB43_18 Depth=4
-	add.s64 	%rd72, %rd72, %rd26;
-	add.s64 	%rd71, %rd71, %rd37;
-	add.s64 	%rd70, %rd70, %rd42;
-	setp.lt.u64 	%p17, %rd72, %rd106;
+	add.s64 	%rd70, %rd70, %rd26;
+	add.s64 	%rd69, %rd69, %rd38;
+	add.s64 	%rd68, %rd68, %rd41;
+	setp.lt.u64 	%p17, %rd70, %rd104;
 	@%p17 bra 	$L__BB43_18;
 	bra.uni 	$L__BB43_25;
 $L__BB43_18:                            // %dt_body217
@@ -1404,26 +1435,26 @@ $L__BB43_18:                            // %dt_body217
                                         //       Parent Loop BB43_16 Depth=3
                                         // =>      This Loop Header: Depth=4
                                         //           Child Loop BB43_20 Depth 5
-	setp.eq.b64 	%p9, %rd107, 0;
-	add.s64 	%rd73, %rd72, %rd24;
-	setp.ge.u64 	%p10, %rd73, %rd106;
+	setp.eq.b64 	%p9, %rd105, 0;
+	add.s64 	%rd71, %rd70, %rd24;
+	setp.ge.u64 	%p10, %rd71, %rd104;
 	or.pred 	%p11, %p10, %p9;
 	@%p11 bra 	$L__BB43_24;
 // %bb.19:                              // %dt_body236.preheader
                                         //   in Loop: Header=BB43_18 Depth=4
-	add.s64 	%rd74, %rd73, %rd53;
-	mov.b64 	%rd216, 0;
-	mov.b64 	%rd217, %rd216;
+	add.s64 	%rd72, %rd71, %rd52;
+	mov.b64 	%rd220, 0;
+	mov.b64 	%rd221, %rd220;
 	bra.uni 	$L__BB43_20;
 $L__BB43_22:                            // %ifcont250.sink.split
                                         //   in Loop: Header=BB43_20 Depth=5
-	add.s64 	%rd182, %rd71, %rd216;
-	st.shared.b16 	[%rd182], %rs24;
+	add.s64 	%rd189, %rd68, %rd220;
+	st.shared.b16 	[%rd189], %rs24;
 $L__BB43_23:                            // %ifcont250
                                         //   in Loop: Header=BB43_20 Depth=5
-	add.s64 	%rd217, %rd217, %rd27;
-	add.s64 	%rd216, %rd216, %rd38;
-	setp.lt.u64 	%p16, %rd217, %rd107;
+	add.s64 	%rd221, %rd221, %rd27;
+	add.s64 	%rd220, %rd220, %rd39;
+	setp.lt.u64 	%p16, %rd221, %rd105;
 	@%p16 bra 	$L__BB43_20;
 	bra.uni 	$L__BB43_24;
 $L__BB43_20:                            // %dt_body236
@@ -1432,92 +1463,92 @@ $L__BB43_20:                            // %dt_body236
                                         //       Parent Loop BB43_16 Depth=3
                                         //         Parent Loop BB43_18 Depth=4
                                         // =>        This Inner Loop Header: Depth=5
-	add.s64 	%rd180, %rd25, %rd217;
-	setp.ge.u64 	%p12, %rd180, %rd107;
+	add.s64 	%rd187, %rd25, %rd221;
+	setp.ge.u64 	%p12, %rd187, %rd105;
 	@%p12 bra 	$L__BB43_23;
 // %bb.21:                              // %then248
                                         //   in Loop: Header=BB43_20 Depth=5
-	setp.lt.u64 	%p13, %rd74, %rd108;
-	add.s64 	%rd181, %rd63, %rd217;
-	setp.lt.u64 	%p14, %rd181, %rd109;
+	setp.lt.u64 	%p13, %rd72, %rd106;
+	add.s64 	%rd188, %rd62, %rd221;
+	setp.lt.u64 	%p14, %rd188, %rd107;
 	mov.b16 	%rs24, 0x0000;
 	and.pred 	%p15, %p13, %p14;
 	@%p15 bra 	$L__BB43_43;
 	bra.uni 	$L__BB43_22;
 $L__BB43_43:                            // %then270
                                         //   in Loop: Header=BB43_20 Depth=5
-	add.s64 	%rd81, %rd70, %rd216;
-	ld.global.nc.b16 	%rs24, [%rd81];
+	add.s64 	%rd79, %rd69, %rd220;
+	ld.global.nc.b16 	%rs24, [%rd79];
 	bra.uni 	$L__BB43_22;
 $L__BB43_25:                            // %dt_exit218
                                         //   in Loop: Header=BB43_16 Depth=3
 	bar.sync 	0;
 	@%p18 bra 	$L__BB43_34;
-// %bb.26:                              // %dt_body382.preheader
+// %bb.26:                              // %dt_body380.preheader
                                         //   in Loop: Header=BB43_16 Depth=3
-	mul.lo.s64 	%rd75, %rd65, %rd104;
-	mov.b64 	%rd86, 0;
-	mov.b64 	%rd84, %rd62;
-	mov.b64 	%rd85, %rd43;
+	mul.lo.s64 	%rd73, %rd64, %rd102;
+	mov.b64 	%rd84, 0;
+	mov.b64 	%rd82, %rd47;
+	mov.b64 	%rd83, %rd61;
 	bra.uni 	$L__BB43_27;
-$L__BB43_33:                            // %ifcont396
+$L__BB43_33:                            // %ifcont394
                                         //   in Loop: Header=BB43_27 Depth=4
-	add.s64 	%rd86, %rd86, %rd26;
-	add.s64 	%rd85, %rd85, %rd44;
-	add.s64 	%rd84, %rd84, %rd49;
-	setp.lt.u64 	%p27, %rd86, %rd104;
+	add.s64 	%rd84, %rd84, %rd26;
+	add.s64 	%rd83, %rd83, %rd46;
+	add.s64 	%rd82, %rd82, %rd48;
+	setp.lt.u64 	%p27, %rd84, %rd102;
 	@%p27 bra 	$L__BB43_27;
 	bra.uni 	$L__BB43_34;
-$L__BB43_27:                            // %dt_body382
+$L__BB43_27:                            // %dt_body380
                                         //   Parent Loop BB43_12 Depth=1
                                         //     Parent Loop BB43_14 Depth=2
                                         //       Parent Loop BB43_16 Depth=3
                                         // =>      This Loop Header: Depth=4
                                         //           Child Loop BB43_29 Depth 5
-	setp.eq.b64 	%p19, %rd105, 0;
-	add.s64 	%rd87, %rd86, %rd24;
-	setp.ge.u64 	%p20, %rd87, %rd104;
+	setp.eq.b64 	%p19, %rd103, 0;
+	add.s64 	%rd85, %rd84, %rd24;
+	setp.ge.u64 	%p20, %rd85, %rd102;
 	or.pred 	%p21, %p20, %p19;
 	@%p21 bra 	$L__BB43_33;
-// %bb.28:                              // %dt_body401.preheader
+// %bb.28:                              // %dt_body399.preheader
                                         //   in Loop: Header=BB43_27 Depth=4
-	add.s64 	%rd88, %rd87, %rd75;
-	mov.b64 	%rd221, 0;
-	mov.b64 	%rd222, %rd221;
+	add.s64 	%rd86, %rd85, %rd73;
+	mov.b64 	%rd225, 0;
+	mov.b64 	%rd226, %rd225;
 	bra.uni 	$L__BB43_29;
-$L__BB43_31:                            // %ifcont415.sink.split
+$L__BB43_31:                            // %ifcont413.sink.split
                                         //   in Loop: Header=BB43_29 Depth=5
-	add.s64 	%rd187, %rd85, %rd221;
-	st.shared.b16 	[%rd187], %rs25;
-$L__BB43_32:                            // %ifcont415
+	add.s64 	%rd194, %rd82, %rd225;
+	st.shared.b16 	[%rd194], %rs25;
+$L__BB43_32:                            // %ifcont413
                                         //   in Loop: Header=BB43_29 Depth=5
-	add.s64 	%rd222, %rd222, %rd27;
-	add.s64 	%rd221, %rd221, %rd38;
-	setp.lt.u64 	%p26, %rd222, %rd105;
+	add.s64 	%rd226, %rd226, %rd27;
+	add.s64 	%rd225, %rd225, %rd39;
+	setp.lt.u64 	%p26, %rd226, %rd103;
 	@%p26 bra 	$L__BB43_29;
 	bra.uni 	$L__BB43_33;
-$L__BB43_29:                            // %dt_body401
+$L__BB43_29:                            // %dt_body399
                                         //   Parent Loop BB43_12 Depth=1
                                         //     Parent Loop BB43_14 Depth=2
                                         //       Parent Loop BB43_16 Depth=3
                                         //         Parent Loop BB43_27 Depth=4
                                         // =>        This Inner Loop Header: Depth=5
-	add.s64 	%rd185, %rd25, %rd222;
-	setp.ge.u64 	%p22, %rd185, %rd105;
+	add.s64 	%rd192, %rd25, %rd226;
+	setp.ge.u64 	%p22, %rd192, %rd103;
 	@%p22 bra 	$L__BB43_32;
-// %bb.30:                              // %then413
+// %bb.30:                              // %then411
                                         //   in Loop: Header=BB43_29 Depth=5
-	setp.lt.u64 	%p23, %rd88, %rd110;
-	add.s64 	%rd186, %rd206, %rd222;
-	setp.lt.u64 	%p24, %rd186, %rd111;
+	setp.lt.u64 	%p23, %rd86, %rd108;
+	add.s64 	%rd193, %rd210, %rd226;
+	setp.lt.u64 	%p24, %rd193, %rd109;
 	mov.b16 	%rs25, 0x0000;
 	and.pred 	%p25, %p23, %p24;
 	@%p25 bra 	$L__BB43_40;
 	bra.uni 	$L__BB43_31;
-$L__BB43_40:                            // %then435
+$L__BB43_40:                            // %then433
                                         //   in Loop: Header=BB43_29 Depth=5
-	add.s64 	%rd98, %rd84, %rd221;
-	ld.global.nc.b16 	%rs25, [%rd98];
+	add.s64 	%rd96, %rd83, %rd225;
+	ld.global.nc.b16 	%rs25, [%rd96];
 	bra.uni 	$L__BB43_31;
 $L__BB43_35:                            // %dt_exit169.loopexit
                                         //   in Loop: Header=BB43_14 Depth=2
@@ -1527,32 +1558,26 @@ $L__BB43_35:                            // %dt_exit169.loopexit
 	cvt.rn.f16.f32 	%rs8, %r5;
 $L__BB43_38:                            // %dt_exit169
                                         //   in Loop: Header=BB43_14 Depth=2
-	mad.lo.s64 	%rd59, %rd208, %rd10, %rd8;
-	cvt.u32.u64 	%r54, %rd59;
-	shl.b32 	%r55, %r54, 3;
-	or.b32 	%r56, %r55, %r2;
-	cvt.s64.s32 	%rd188, %r56;
-	add.s64 	%rd189, %rd54, %rd188;
-	shl.b64 	%rd190, %rd189, 1;
-	add.s64 	%rd66, %rd5, %rd190;
-	or.b32 	%r57, %r55, %r3;
-	cvt.s64.s32 	%rd67, %r57;
-	add.s64 	%rd191, %rd54, %rd67;
-	shl.b64 	%rd68, %rd191, 1;
-	sub.s64 	%rd192, %rd68, %rd190;
-	setp.eq.b64 	%p29, %rd192, 2;
-	and.b64 	%rd193, %rd66, 3;
-	setp.eq.b64 	%p30, %rd193, 0;
+	mad.lo.s64 	%rd58, %rd212, %rd10, %rd8;
+	cvt.u32.u64 	%r55, %rd58;
+	shl.b32 	%r9, %r55, 3;
+	or.b32 	%r56, %r9, %r2;
+	mul.wide.s32 	%rd195, %r56, 2;
+	add.s64 	%rd65, %rd53, %rd195;
+	or.b32 	%r57, %r9, %r3;
+	mul.wide.s32 	%rd66, %r57, 2;
+	sub.s64 	%rd196, %rd66, %rd195;
+	setp.eq.b64 	%p29, %rd196, 2;
+	and.b64 	%rd197, %rd65, 3;
+	setp.eq.b64 	%p30, %rd197, 0;
 	and.pred 	%p31, %p29, %p30;
-	add.s64 	%rd194, %rd55, %rd188;
-	shl.b64 	%rd195, %rd194, 1;
-	add.s64 	%rd69, %rd5, %rd195;
+	add.s64 	%rd67, %rd54, %rd195;
 	@%p31 bra 	$L__BB43_39;
 	bra.uni 	$L__BB43_41;
-$L__BB43_39:                            // %then778
+$L__BB43_39:                            // %then759
                                         //   in Loop: Header=BB43_14 Depth=2
-	st.global.v2.b16 	[%rd66], {%rs5, %rs6};
-	st.global.v2.b16 	[%rd69], {%rs7, %rs8};
+	st.global.v2.b16 	[%rd65], {%rs5, %rs6};
+	st.global.v2.b16 	[%rd67], {%rs7, %rs8};
 	bra.uni 	$L__BB43_42;
 $L__BB43_37:                            // %dt_exit
 	ret;

@@ -337,6 +337,13 @@ C))` on the kernel drops the fallback for `store-tile` (endeavour 210).  If C's 
 odd, the kernel faults; it does not write wrong values.  Measure it: fewer registers let more workgroups
 share an SM, which helped the multicast matmul 10-14% and slowed the plain cluster one.
 
+**tcgen05 accumulator stores go 16 bytes at a time (B200).**  A tcgen05 thread holds a whole row, so
+`store-tile` / `store-tile-at` of a tcgen05 accumulator writes each 32-column chunk as 16-byte vector
+stores when a run-time check finds the row contiguous and the chunk 16-byte aligned (the normal case
+for a `:row-major` C whose rows start on 16 bytes), else as 197's pairs, else element by element
+(endeavour 215).  Nothing to write: it is automatic.  On the B200 matmul it took the kernel from 226 to
+175 us; a C whose rows are only 4-byte aligned pays for it (257 us).
+
 **Store a wgmma accumulator through the TMA (H100).**  Add `:via :tma`:
 `(store-tile-at (to-half D) C (row col) :via :tma)`.  Each warp stages its rows in shared memory with
 `stmatrix` and one lane issues TMA stores, so the stores leave as full 128-byte lines and finish
@@ -357,6 +364,8 @@ under the 227 KB limit.
   - The initial value is 0.
 - **The accumulate:** `(tcgen05-accumulate-via-tile (128 N K) D A B :swizzle :128b)`.
   - A is `(128 K)` and B is `(N K)`, TMA-loaded with `:swizzle :128b`.
+  - B may instead be the row-major `(K N)` tile of a plain `a @ b`: add `:b-major :mn` (half /
+    bfloat16 only; endeavour 213).  The B200 matmul_v2 entry dropped a 34 us transpose this way.
   - K is 64 for half / bfloat16, 32 for float (tf32), and 128 for char / uchar.
   - 8-bit operands (char, uchar, a `def-qint`) need an int or `(accum Q)` accumulator:
     `(make-tcgen05-accumulator int (128 N) 0)`.  The qint and sign rules are the other MMA paths'.
