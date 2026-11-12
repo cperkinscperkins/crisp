@@ -13658,6 +13658,8 @@ a fresh accumulator.
   the storing role is 4 warps, or the kernel is 128 threads.
 - Thread t holds row t.
 - `(to-half D)` / `(to-bfloat16 D)` convert as they store.
+- Each 32-column chunk leaves as 16-byte vector stores when the row is contiguous and the chunk
+  16-byte aligned (a run-time check), else as adjacent pairs, else element by element (endeavour 215).
 - With `:via :tma` each warp stages its 32 rows in the 128-byte swizzle and sends them as TMA boxes.
 - A fused activation goes on the store: `(store-tile-at (to-bfloat16 D) C (row col) :transformF #'relu)`
   applies the function to each element as it leaves tensor memory, before the conversion (endeavour

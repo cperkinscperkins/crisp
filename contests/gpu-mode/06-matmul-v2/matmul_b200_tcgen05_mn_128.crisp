@@ -1,0 +1,47 @@
+;; matmul_v2 on the B200 (sm_100a) -- v7's tcgen05 kernel with a 128 x 128 output tile (v9, 2026-11-11).
+;;
+;; The scored 4096 x 5120 x 4096 has 640 128 x 256 tiles for 296 slots (2 workgroups x 148 SMs): 2.16
+;; waves, the last one mostly idle.  A 128 x 128 tile needs a 64 KB ring (A 128 x 64 + B 64 x 128, 2 deep)
+;; and 128 tensor-memory columns, so THREE workgroups fit an SM: 1280 tiles on 444 slots = 2.88 waves.
+;; Per tile the MMA does half the work, so full-wave shapes stay with matmul_b200_tcgen05_mn.crisp; the
+;; v9 dispatch picks by wave fill.  Warp-specialized :epilogue 4 / :producer 1 / :mma 1, 128-byte swizzle,
+;; B read as given (K N) with :b-major :mn (endeavour 213); the epilogue's stores leave 16 bytes at a time
+;; (endeavour 215).  Popcorn B200 diag 970772: 152.6 us at the scored shape (v7 175.1, both 215).
+;; Requires M % 128 = 0, N % 128 = 0, K % 64 = 0.
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+
+(def-kernel matmul (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (global-size :derive-from C :strategy :strided)
+           (local-size :set-to 192))                 ; epilogue warpgroup + producer warp + mma warp
+  (let ((A-ring    (make-scratch-matrix-ring half (128 64) :ring-count 2))
+        (B-ring    (make-scratch-matrix-ring half (64 128) :ring-count 2))   ; (K N) -- Major::MN
+        (D         (make-tcgen05-accumulator float (128 128) 0.0))
+        (K         (inner-dimension A B))
+        (empty     (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 1 :initial-state :signaled))
+        (full      (make-async-barrier-ring :ring-count 2 :mode :block :arrivals 2 :initial-state :waiting))
+        (acc-full  (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 1 :initial-state :waiting))
+        (acc-empty (make-async-barrier-ring :ring-count 1 :mode :block :arrivals 4 :initial-state :signaled)))
+    (tile-stride C (128 128) (grid-y grid-x)
+      (with-warp-specialization (:epilogue 4 :producer 1 :mma 1)
+          (:epilogue
+            (await (ring-get acc-full 0))
+            (store-tile (to-half D) C (grid-y grid-x))
+            (signal (ring-get acc-empty 0)))
+          (:producer
+            (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+              (let ((slot (mod grid-k (to-ulong 2))))
+                (await (ring-get empty slot))
+                (load-tile A (ring-get A-ring slot) (grid-y grid-k) :barrier (ring-get full slot) :swizzle :128b)
+                (load-tile B (ring-get B-ring slot) (grid-k grid-x) :barrier (ring-get full slot) :swizzle :128b))))
+          (:mma
+            (await (ring-get acc-empty 0))
+            (set! D (make-tcgen05-accumulator float (128 128) 0.0))
+            (dotimes (grid-k (/ (to-ulong K) (to-ulong 64)))
+              (let ((slot (mod grid-k (to-ulong 2))))
+                (await (ring-get full slot))
+                (tcgen05-accumulate-via-tile (128 128 64) D (ring-get A-ring slot) (ring-get B-ring slot)
+                                             :swizzle :128b :b-major :mn :on-complete (ring-get empty slot))))
+            (tcgen05-commit (ring-get acc-full 0)))))))

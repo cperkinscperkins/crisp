@@ -459,6 +459,8 @@ AMPERE4W_K32 = dict(AMPERE4W, key="ampk32", crisp="matmul_ampere_4w_k32.crisp", 
 B200_TCMN = dict(key="b200mn", crisp="matmul_b200_tcgen05_mn.crisp", arch="sm_100a", tile=(128, 256), k_step=64,
                  b_layout="row", profile="b200", profile_file="benchmarks/profiles/b200.crisp")
 
+B200_TCMN128 = dict(B200_TCMN, key="b200mn128", crisp="matmul_b200_tcgen05_mn_128.crisp", tile=(128, 128))
+
 DISPATCH_V7 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
         _load("h100tma", PTX_H100TMA)
         _mod.run_h100tma(a, b, c)
@@ -468,6 +470,28 @@ DISPATCH_V7 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K %
     elif _CAP[0] in (8, 10) and M % 128 == 0 and N % 128 == 0 and K % 16 == 0:
         _load("ampere4w", PTX_AMPERE4W)
         _mod.run_ampere4w(a, b, c)
+    else:
+        _load("small", PTX_SMALL)
+        _mod.run_small(a, b, c)"""
+
+# v9 (endeavour 215): v8's dispatch, the B200 picking its tile by wave fill.
+DISPATCH_V9 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
+        _load("h100tma", PTX_H100TMA)
+        _mod.run_h100tma(a, b, c)
+    elif _CAP == (10, 0) and M % 128 == 0 and N % 128 == 0 and K % 64 == 0:
+        # 128 x 256 tiles at 2 per SM (296 slots) vs 128 x 128 at 3 per SM (444 slots, ~0.85 the per-SM
+        # rate): take the better wave fill (scored 4096 x 5120: 2.16 waves vs 2.88 -> 128 x 128).
+        _t2 = (M // 128) * (N // 256) if N % 256 == 0 else 0
+        _t1 = (M // 128) * (N // 128)
+        if _t2 and _t2 / (296 * -(-_t2 // 296)) >= 0.85 * _t1 / (444 * -(-_t1 // 444)):
+            _load("b200mn", PTX_B200MN)
+            _mod.run_b200mn(a, b, c)
+        else:
+            _load("b200mn128", PTX_B200MN128)
+            _mod.run_b200mn128(a, b, c)
+    elif _CAP[0] in (8, 10) and M % 128 == 0 and N % 128 == 0 and K % 16 == 0:
+        _load("ampk32", PTX_AMPK32)
+        _mod.run_ampk32(a, b, c)
     else:
         _load("small", PTX_SMALL)
         _mod.run_small(a, b, c)"""
@@ -508,24 +532,20 @@ def build_all() -> None:
           "b200tc": build_kernel(KernelSpec(**B200_TC)),
           "transpose": build_kernel(KernelSpec(**TRANSPOSE)),
           "ampere4w": build_kernel(KernelSpec(**AMPERE4W))}
-    # v7 (endeavour 213): v6 with the B200 kernel reading b as given (:b-major :mn) -- no transpose.  v6
-    # (resume-gpumode; B200 265 us, 2026-11-11) and earlier are kept as submitted.
+    # v6 (265 us B200), v7 (endeavour 213: B read MN-major, 230 us) and v8 (A100 / L4 K32) are kept as
+    # SUBMITTED: rebuilding them now would change them (endeavour 215's 16-byte tcgen05 stores).
+    # v9 (endeavour 215): v8 plus the B200 epilogue's 16-byte stores and the 128 x 128 tile where it fills
+    # the waves better (the scored case).
     ks["b200mn"] = build_kernel(KernelSpec(**B200_TCMN))
-    make_submission(
-        "crisp_matmul_v7.py",
-        "matmul_v2 v7: H100 wgmma 2wg_deep, transB, stmatrix + TMA-store epilogue; B200 tcgen05 reading b MN-major (no transpose); A100 / L4 4-warp cp.async + mma.sync",
-        {k: v for k, v in ks.items() if k not in ("b200tc", "transpose")}, DISPATCH_V7,
-        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05_mn.crisp", "matmul_ampere_4w.crisp",
-         "matmul_small_mma.crisp"])
+    ks["b200mn128"] = build_kernel(KernelSpec(**B200_TCMN128))
     ks["ampk32"] = build_kernel(KernelSpec(**AMPERE4W_K32))
     make_submission(
-        "crisp_matmul_v8.py",
-        "matmul_v2 v8: H100 wgmma 2wg_deep + TMA-store epilogue; B200 tcgen05 reading b MN-major; A100 / L4 4-warp cp.async + mma.sync, K = 32 per stage",
+        "crisp_matmul_v9.py",
+        "matmul_v2 v9: H100 wgmma 2wg_deep + TMA-store epilogue; B200 tcgen05 (b MN-major, 16-byte epilogue stores, 128x256 or 128x128 tile by wave fill); A100 / L4 4-warp cp.async + mma.sync, K = 32 per stage",
         {k: v for k, v in ks.items() if k not in ("b200tc", "transpose", "ampere4w")},
-        DISPATCH_V7.replace('_load("ampere4w", PTX_AMPERE4W)', '_load("ampk32", PTX_AMPK32)')
-                   .replace("_mod.run_ampere4w(a, b, c)", "_mod.run_ampk32(a, b, c)"),
-        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05_mn.crisp", "matmul_ampere_4w_k32.crisp",
-         "matmul_small_mma.crisp"])
+        DISPATCH_V9,
+        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05_mn.crisp", "matmul_b200_tcgen05_mn_128.crisp",
+         "matmul_ampere_4w_k32.crisp", "matmul_small_mma.crisp"])
     # The beauty entry: one portable 13-line kernel for every GPU and shape.
     beauty = build_kernel(KernelSpec(key="beauty", crisp="matmul_beauty.crisp", arch="sm_80", tile=(16, 8),
                                      k_step=16, b_layout="row", profile="h100"))

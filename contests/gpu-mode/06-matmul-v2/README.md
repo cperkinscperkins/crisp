@@ -83,4 +83,33 @@ A100 / L4, 2026-11-11: the 4-warp kernel's K tile per cp.async stage, one A100 r
 (`.trans` for the row-major B) loads four fragment registers per instruction -- an endeavour in the core
 mma.sync lowering, for Chris to scope.
 
+**B200 scored-shape study (2026-11-11, popcorn B200 diags; endeavour 214's 2-SM pair parked).**  Where
+v7's 226 us goes, measured by removing or reshaping one thing at a time (all arms exact unless noted):
+| probe (diag) | 4096 x 5120 x 4096 | 9472 x 2048 x 4096 | 8192^3 |
+|---|---:|---:|---:|
+| v7 | 226 | 161 | 872 |
+| persistent, 296 CTAs (2 / SM) (970760) | 219 | 156 | 889 |
+| 128 x 128 tile, ring 2, 3 CTAs / SM (`make_n128.py`; 970754) | 208 | 182 | 1042 |
+| v7, epilogue stores REMOVED (wrong output; timing only; 970761) | 147.5 | 110.6 | 764 |
+| v7, epilogue stores as `st.global.v4.b32` (hand-edited PTX, `pair_probe/make_wide_stores.py`; 970762) | 171.0 | **119.9** | **787.5** |
+| 128 x 128 + `v4` stores (970762) | **150.5** | 148.6 | 992 |
+| cuBLAS | 118 | 95 | 674 |
+
+- **The epilogue was a third of the scored time** (78 of 226 us), not bandwidth (C is 42 MB, ~5 us of
+  HBM): the tcgen05 32x32b layout gives a thread a whole row, and it left as 128 4-byte stores per thread,
+  each warp instruction touching 32 rows.  16-byte stores take 55 us of the 78 back.  `v8` (32 B, one
+  sector) needs PTX 8.8 -- not in the CUDA 12.8 ptxas used here.
+- The scored shape also wants the 128 x 128 tile (2.16 waves of 128 x 256 tiles -> 2.88 of 128 x 128 at
+  3 CTAs / SM); full-wave shapes want 128 x 256.
+- Persistence is worth ~3% at K = 4096, nothing at 8192.
+- Hand-edited PTX is not submitted: an entry is compiler output.  The compiler change became endeavour
+  215 (tests/spec/215-tcgen05-vector-stores/): 16-byte tcgen05 epilogue stores, compiler-built v7 175.1 us
+  and 128 x 128 152.6 us (diag 970772, exact, fallback arms forced and exact too).
+
+**v9** (`crisp_matmul_v9.py`, endeavour 215; `build_all` now builds only v9 + beauty, v6-v8 are kept as
+submitted): v8's dispatch, the B200 choosing 128 x 256 (`matmul_b200_tcgen05_mn.crisp`) or 128 x 128
+(`matmul_b200_tcgen05_mn_128.crisp`) by wave fill.  B200 leaderboard 970774: **156.1 us**, rank **41 / 53**
+(v7 230.2, 48).  The board labels the score a geomean of the benchmarks.
+
+
 Beauty entry (`crisp_matmul_beauty.py`), H100 benchmark: 86.0 ms.  Full report: `../REPORT-matmul_v2.md`.

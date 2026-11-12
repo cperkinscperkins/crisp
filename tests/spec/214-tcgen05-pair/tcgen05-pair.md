@@ -1,6 +1,8 @@
-# Endeavour 214 (PROPOSED) -- tcgen05 across an SM pair (`cta_group::2`)
+# Endeavour 214 (PARKED 2026-11-11) -- tcgen05 across an SM pair (`cta_group::2`)
 
-2026-11-11, branch gpumode-convolv.  DRAFT for discussion with Chris -- nothing built.
+2026-11-11, branch gpumode-convolv.  PARKED by Chris after step 1: the pair is exact on metal but buys ~8% only on
+full-wave shapes and nothing on the contest's scored one, and a feature with no current user is not built.
+The design (agreed in review) and the step-1 protocol below are the reference if a workload needs it.
 
 ## Why
 The B200 matmul leaders (and CUTLASS's best sm100 configs, endeavour 209) run the Blackwell tensor

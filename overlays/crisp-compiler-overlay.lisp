@@ -527,3 +527,204 @@
             (llvm-build-store builder (llvm-build-add builder visit (llvm-const-int i32 1 nil) "tc_visit_next") ctr)
             (%208-asm builder "tcgen05.fence::after_thread_sync;")))
         (values (llvm-build-insert-value builder d-val (llvm-const-int i32 0 nil) 1 "tc_d_used") nil)))))
+
+;; ===================================================================================================
+;; Endeavour 215: 16-byte epilogue stores for tcgen05 accumulators (2026-11-11).
+;; tests/spec/215-tcgen05-vector-stores/.  The tcgen05 32x32b layout gives each thread a whole accumulator
+;; ROW, but the store left as endeavour 197's 4-byte pairs: 128 st.global.b32 per thread, each warp
+;; instruction touching 32 rows -- a third of the B200 matmul's scored time (226 -> 171 us with v4 stores,
+;; measured by hand-edited PTX first).  New: (%run-ok-p P0 P1) and (%store-run P0..Pn-1 V0..Vn-1), and a
+;; wide arm in front of the pair arm in %tcgen05-store-rewrite-origin.  The two nodes :include the 197
+;; structs, so the semantic-node-type / -source-location etypecases take them unchanged; only
+;; generate-node-ir has new (more specific) methods.
+;; ===================================================================================================
+
+;; src/semantic.lisp
+(defstruct (semantic-store-run (:include semantic-store-pair))
+  "Endeavour 215.  (%store-run P0 .. Pn-1 V0 .. Vn-1): the n values stored as 16-byte vector stores from
+   P0's element address.  Only legal under a (%run-ok-p P0 P1) guard -- the lowering that emits it
+   always puts it there.  Includes semantic-store-pair (PLACE-NODE = P0, LO-NODE / HI-NODE = V0 / V1,
+   ELEM-BYTES), so every etypecase that knows the 197 node knows this one; VALUE-NODES holds all n."
+  value-nodes)
+
+;; src/semantic.lisp
+(defstruct (semantic-run-ok-p (:include semantic-pair-ok-p))
+  "Endeavour 215.  (%run-ok-p P0 P1) -> int 1 when P1's address is exactly one element past P0's (so the
+   row's stride is 1 and any run from P0 is contiguous) AND P0 is 16-byte aligned, else 0.  Includes
+   semantic-pair-ok-p; only its alignment mask differs.")
+
+;; src/analysis/control.lisp
+(defun analyze-%run-ok-p-expression (expr env context location)
+  "Endeavour 215.  Analyzer for (%run-ok-p P0 P1), P0 / P1 aref forms naming adjacent elements of one
+   storage.  Type int.  An element type that does not pack (endeavour 197's rule) analyses to the
+   literal 0, so the guarded wide branch is dead and the pair / scalar arms behind it run."
+  (unless (= (length expr) 3)
+    (error 'crisp-compiler-error :message "%run-ok-p: expects two aref forms" :source-location location))
+  (let* ((p0 (analyze-expression (second expr) env context (append location '(1))))
+         (p1 (analyze-expression (third expr) env context (append location '(2))))
+         (bytes (%197-pair-elem-bytes (semantic-node-type p0))))
+    (log:debug "215 %run-ok-p: elem-type=~a bytes=~a" (semantic-node-type p0) bytes)
+    (if (and bytes (semantic-aref-p p0) (semantic-aref-p p1))
+        (make-semantic-run-ok-p :place0-node p0 :place1-node p1 :elem-bytes bytes
+                                :type 'int :source-location location)
+        (make-semantic-literal :value-type 'int :value 0 :source-location location))))
+
+;; src/analysis/control.lisp
+(defun analyze-%store-run-expression (expr env context location)
+  "Endeavour 215.  Analyzer for (%store-run P0 .. Pn-1 V0 .. Vn-1): one semantic-store-run when every
+   value already has P0's element type, that type packs, and the run is a whole number of 16-byte
+   vectors; otherwise exactly (progn (set! P0 V0) ... (set! Pn-1 Vn-1)), so conversions and type errors
+   are set!'s own.  Values are compared by their SINGLE-VALUE type (210's rule for :transformF calls).
+   The caller guards it with (%run-ok-p P0 P1)."
+  (let* ((args (rest expr))
+         (n (floor (length args) 2)))
+    (unless (and (evenp (length args)) (>= n 2))
+      (error 'crisp-compiler-error :message "%store-run: expects (%store-run P0 .. Pn-1 V0 .. Vn-1), n >= 2"
+             :source-location location))
+    (let* ((place-forms (subseq args 0 n))
+           (value-forms (subseq args n))
+           (p0 (analyze-expression (first place-forms) env context (append location '(1))))
+           (elem (semantic-node-type p0))
+           (bytes (%197-pair-elem-bytes elem))
+           (vals (loop for v in value-forms
+                       for i from (1+ n)
+                       collect (analyze-expression v env context (append location (list i))))))
+      (if (and bytes (semantic-aref-p p0)
+               (zerop (mod (* n bytes) 16))
+               (every (lambda (v) (equal (get-single-value-type v) elem)) vals))
+          (progn
+            (log:debug "215 %store-run: ~a x ~a (~a bytes) -> ~a sixteen-byte store~:p"
+                       n elem bytes (/ (* n bytes) 16))
+            (make-semantic-store-run :place-node p0 :lo-node (first vals) :hi-node (second vals)
+                                     :elem-bytes bytes :value-nodes vals
+                                     :type 'nil :source-location location))
+          (progn
+            (log:debug "215 %store-run: falling back to ~a set!s (elem ~a, bytes ~a, value types ~a)"
+                       n elem bytes (mapcar #'semantic-node-type vals))
+            (analyze-expression `(progn ,@(mapcar (lambda (p v) `(set! ,p ,v)) place-forms value-forms))
+                                env context location))))))
+
+;; src/analysis/control.lisp
+(defun register-197-pair-store-analyzers ()
+  "Endeavour 197.  Registers %store-pair and %pair-ok-p (internal forms of the accumulator store
+   lowering) in both packages, like the other % forms in register-control-analyzers.
+   Endeavour 215: also %store-run / %run-ok-p (the tcgen05 store's 16-byte arm)."
+  (dolist (entry (list (cons "%STORE-PAIR" #'analyze-%store-pair-expression)
+                       (cons "%PAIR-OK-P"  #'analyze-%pair-ok-p-expression)
+                       (cons "%STORE-RUN"  #'analyze-%store-run-expression)
+                       (cons "%RUN-OK-P"   #'analyze-%run-ok-p-expression)))
+    (let ((sym-cl (intern (car entry) (find-package :crisp-language)))
+          (sym-cc (intern (car entry) (find-package :crisp.compiler))))
+      (setf (gethash sym-cl *expression-analyzers*) (cdr entry))
+      (unless (eq sym-cl sym-cc)
+        (setf (gethash sym-cc *expression-analyzers*) (cdr entry))))))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-run-ok-p) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 215.  i32 (p1 - p0 == bytes) & ((p0 & 15) == 0), zero-extended like a comparison.  The
+   adjacency test proves the row's stride is one element, so every run starting at P0 is contiguous."
+  (let* ((bytes (semantic-run-ok-p-elem-bytes node))
+         (i64 (llvm-int64-type))
+         (p0 (%197-aref-element-pointer (semantic-run-ok-p-place0-node node) builder module var-env
+                                         di-builder di-scope location-map "%run-ok-p"))
+         (p1 (%197-aref-element-pointer (semantic-run-ok-p-place1-node node) builder module var-env
+                                         di-builder di-scope location-map "%run-ok-p"))
+         (a0 (llvm-build-ptr-to-int builder p0 i64 "run_a0"))
+         (a1 (llvm-build-ptr-to-int builder p1 i64 "run_a1"))
+         (adjacent (llvm-build-icmp builder +llvm-int-eq+ (llvm-build-sub builder a1 a0 "run_gap")
+                                    (llvm-const-int i64 bytes nil) "run_adjacent"))
+         (aligned (llvm-build-icmp builder +llvm-int-eq+
+                                   (crisp.llvm-bindings::llvm-build-and builder a0 (llvm-const-int i64 15 nil)
+                                                                         "run_misalign")
+                                   (llvm-const-int i64 0 nil) "run_aligned"))
+         (ok (crisp.llvm-bindings::llvm-build-and builder adjacent aligned "run_ok")))
+    (log:debug "215 codegen %run-ok-p: elem-bytes=~a" bytes)
+    (values (llvm-build-zext builder ok (llvm-int32-type) "run_ok_ext") nil)))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir ((node semantic-store-run) builder module var-env
+                              di-builder di-scope location-map)
+  "Endeavour 215.  The n values as n*bytes/16 stores of <16/bytes x T>, each aligned to 16, the k-th at
+   element offset k*16/bytes from P0 (NVPTX: st.global.v4.b32 for 8 halves / bf16s or 4 floats,
+   st.global.v2.b64 for 2 doubles)."
+  (let* ((bytes (semantic-store-run-elem-bytes node))
+         (per (floor 16 bytes))
+         (ptr (%197-aref-element-pointer (semantic-store-run-place-node node) builder module var-env
+                                          di-builder di-scope location-map "%store-run"))
+         (vals (mapcar (lambda (vn)
+                         (extract-primary-value builder (generate-node-ir vn builder module var-env
+                                                                          di-builder di-scope location-map)
+                                                (semantic-node-type vn)))
+                       (semantic-store-run-value-nodes node)))
+         (elem-ty (llvm-type-of (first vals)))
+         (vec-ty (llvm-vector-type elem-ty per))
+         (i32 (llvm-int32-type))
+         (i64 (llvm-int64-type)))
+    (loop for k from 0
+          for group on vals by (lambda (l) (nthcdr per l))
+          do (let ((v (llvm-get-undef vec-ty))
+                   (addr (if (zerop k)
+                             ptr
+                             (cffi:with-foreign-object (indices :pointer 1)
+                               (setf (cffi:mem-aref indices :pointer 0) (llvm-const-int i64 (* k per) nil))
+                               (llvm-build-in-bounds-gep2 builder elem-ty ptr indices 1 "run_ptr")))))
+               (loop for x in group
+                     for i below per
+                     do (setf v (llvm-build-insert-element builder v x (llvm-const-int i32 i nil) "run_elt")))
+               (crisp.llvm-bindings::llvm-set-alignment (llvm-build-store builder v addr) 16)))
+    (log:debug "215 codegen %store-run: ~a values, ~a x <~a x ~a-byte> align 16"
+               (length vals) (floor (length vals) per) per bytes)
+    (values nil nil)))
+
+;; src/mma.lisp
+(defun %tcgen05-store-rewrite-origin (tile dest row-origin col-origin n &optional convert elem)
+  "Endeavour 208.  Store the 128 x N tcgen05 accumulator TILE into DEST with its top-left element at
+   (ROW-ORIGIN COL-ORIGIN).  Thread t of the warpgroup owns row 32(warp mod 4) + lane (Layout D: row
+   m is tensor-memory lane m).  Per chunk of 32 columns: one tcgen05.ld into registers, then the
+   row's 32 elements -- Endeavour 215: as 4 runs of 8 (%store-run, 16-byte vector stores) when the
+   row is contiguous and the chunk's first element 16-byte aligned (%run-ok-p); else as 16 packed
+   pairs (endeavour 197) when the first pair is adjacent and aligned; else as scalars.  A
+   fence::after_thread_sync opens the store (the accumulator was completed by another thread's MMA)
+   and a fence::before_thread_sync closes it (the next MMA into these columns must not overtake the
+   reads).  CONVERT as in %wgmma-store-rewrite-origin.
+   Phase 3: ELEM is the accumulator's element type.  With no CONVERT, an element of a DERIVED
+   integer accumulator such as (accum q-a) is raw-cast to it (207's %store-frag-elem-cast): the s32
+   row record holds plain int, and the destination element holds exactly its own type.
+   Endeavour 210 (F-210-1): when *210-store-transform* is bound (a store's :transformF), each element
+   read from tensor memory is passed through that function first."
+  (let* ((to-int (intern "TO-INT" (find-package :crisp-language)))
+         (if-sym (intern "IF" (find-package :crisp-language)))
+         (chunks (floor n 32)))
+    (flet ((elt-of (ch j)
+             (let ((x (let ((raw `(%extract-struct-member ,ch ,j)))
+                        ;; Endeavour 210 (F-210-1): the store's :transformF, applied to the raw
+                        ;; element BEFORE any conversion or derived-integer cast.
+                        (if *210-store-transform* (%map-elements-call *210-store-transform* raw) raw))))
+               (if convert (%196-wrap-conversion convert x) (%store-frag-elem-cast elem x)))))
+      (log:debug "215 tcgen05 store rewrite: ~a chunk~:p of 32, wide arm (4 runs of 8) / pair arm / scalar arm"
+                 chunks)
+      `(let ((tcv ,tile))
+         (let ((r0 (+ (,to-int ,row-origin) (+ (* (rem (,to-int (warp-id)) 4) 32) (,to-int (warp-lane)))))
+               (c0 (,to-int ,col-origin)))
+           (%tcgen05-fence-after)
+           ,@(loop for c below chunks
+                   for ch = (intern (format nil "TCROW~d" c) (find-package :crisp.compiler))
+                   for base = (* 32 c)
+                   collect `(let ((,ch (%tcgen05-ld tcv ,c)))
+                              (,if-sym (%run-ok-p (~ ,dest r0 (+ c0 ,base)) (~ ,dest r0 (+ c0 ,(1+ base))))
+                                ;; Endeavour 215: 4 runs of 8 contiguous elements, 16-byte stores.
+                                (progn ,@(loop for j below 32 by 8
+                                               collect `(%store-run
+                                                         ,@(loop for i below 8
+                                                                 collect `(~ ,dest r0 (+ c0 ,(+ base j i))))
+                                                         ,@(loop for i below 8
+                                                                 collect (elt-of ch (+ j i))))))
+                                (,if-sym (%pair-ok-p (~ ,dest r0 (+ c0 ,base)) (~ ,dest r0 (+ c0 ,(1+ base))))
+                                  (progn ,@(loop for j below 32 by 2
+                                                 collect `(%store-pair (~ ,dest r0 (+ c0 ,(+ base j)))
+                                                                       (~ ,dest r0 (+ c0 ,(+ base j 1)))
+                                                                       ,(elt-of ch j) ,(elt-of ch (1+ j)))))
+                                  (progn ,@(loop for j below 32
+                                                 collect `(set! (~ ,dest r0 (+ c0 ,(+ base j))) ,(elt-of ch j))))))))
+           (%tcgen05-fence-before))))))

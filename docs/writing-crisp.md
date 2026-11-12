@@ -337,6 +337,13 @@ C))` on the kernel drops the fallback for `store-tile` (endeavour 210).  If C's 
 odd, the kernel faults; it does not write wrong values.  Measure it: fewer registers let more workgroups
 share an SM, which helped the multicast matmul 10-14% and slowed the plain cluster one.
 
+**tcgen05 accumulator stores go 16 bytes at a time (B200).**  A tcgen05 thread holds a whole row, so
+`store-tile` / `store-tile-at` of a tcgen05 accumulator writes each 32-column chunk as 16-byte vector
+stores when a run-time check finds the row contiguous and the chunk 16-byte aligned (the normal case
+for a `:row-major` C whose rows start on 16 bytes), else as 197's pairs, else element by element
+(endeavour 215).  Nothing to write: it is automatic.  On the B200 matmul it took the kernel from 226 to
+175 us; a C whose rows are only 4-byte aligned pays for it (257 us).
+
 **Store a wgmma accumulator through the TMA (H100).**  Add `:via :tma`:
 `(store-tile-at (to-half D) C (row col) :via :tma)`.  Each warp stages its rows in shared memory with
 `stmatrix` and one lane issues TMA stores, so the stores leave as full 128-byte lines and finish
