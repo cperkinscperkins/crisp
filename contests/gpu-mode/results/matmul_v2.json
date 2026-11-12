@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 06: Matmul (fp16 C = A B, 4096x5120x4096 scored)",
   "leaderboard_id": 540,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/540?tab=rankings",
-  "crisp_commit": "be872d6a",
+  "crisp_commit": "3def9cf0",
   "workload": {
     "description": "C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS.",
     "total_flops": 171798691840
@@ -32,7 +32,7 @@
   },
   "standings": {
     "H100": {
-      "captured_at": "2026-11-12T11:52:53Z",
+      "captured_at": "2026-11-12T17:38:44Z",
       "user_name": "cperkinscperkins",
       "rank": 29,
       "total_entrants": 44,
@@ -48,7 +48,7 @@
       "median_score_us": 222.04
     },
     "A100": {
-      "captured_at": "2026-11-12T11:52:53Z",
+      "captured_at": "2026-11-12T17:38:44Z",
       "user_name": "cperkinscperkins",
       "rank": 56,
       "total_entrants": 57,
@@ -64,23 +64,23 @@
       "median_score_us": 727.19
     },
     "L4": {
-      "captured_at": "2026-11-12T11:52:53Z",
+      "captured_at": "2026-11-12T17:38:44Z",
       "user_name": "cperkinscperkins",
       "rank": 21,
       "total_entrants": 21,
-      "file_name": "crisp_matmul_v8.py",
-      "crisp_file": "06-matmul-v2/matmul_ampere_4w_k32.crisp",
-      "py_file": "06-matmul-v2/crisp_matmul_v8.py",
-      "hardware_profile": null,
-      "public_score_us": 6661.9,
-      "secret_score_us": 6605.77,
-      "submission_id": 970705,
+      "file_name": "crisp_matmul_v10.py",
+      "crisp_file": "06-matmul-v2/matmul_ampere_4w_ring.crisp",
+      "py_file": "06-matmul-v2/crisp_matmul_v10.py",
+      "hardware_profile": "h100",
+      "public_score_us": 4359.17,
+      "secret_score_us": 4929.72,
+      "submission_id": 970973,
       "top1_score_us": 1989.62,
       "top1_user": "Fridolin Haugg",
       "median_score_us": 2240.77
     },
     "B200": {
-      "captured_at": "2026-11-12T11:52:53Z",
+      "captured_at": "2026-11-12T17:38:44Z",
       "user_name": "cperkinscperkins",
       "rank": 41,
       "total_entrants": 53,
@@ -878,6 +878,36 @@
       "per_case_us": null,
       "public_score_us": null,
       "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-11-12T17:34:40Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_matmul_v10",
+      "file_name": "crisp_matmul_v10.py",
+      "mode": "test",
+      "submission_id": 970965,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-11-12T17:38:29Z",
+      "gpu": "L4",
+      "kernel_key": "crisp_matmul_v10",
+      "file_name": "crisp_matmul_v10.py",
+      "mode": "leaderboard",
+      "submission_id": 970973,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 4359.17,
+      "secret_score_us": 4929.72
     }
   ],
   "ablation_size_label": "scored case: 4096x5120x4096 (ranking_by LAST)",

@@ -210,7 +210,7 @@
   ],
   "standings": {
     "B200": {
-      "captured_at": "2026-11-12T11:52:51Z",
+      "captured_at": "2026-11-12T17:38:41Z",
       "user_name": "cperkinscperkins",
       "rank": 20,
       "total_entrants": 25,
@@ -226,7 +226,7 @@
       "median_score_us": 6428.33
     },
     "H100": {
-      "captured_at": "2026-11-12T11:52:51Z",
+      "captured_at": "2026-11-12T17:38:41Z",
       "user_name": "cperkinscperkins",
       "rank": 25,
       "total_entrants": 34,
@@ -242,7 +242,7 @@
       "median_score_us": 47391.01
     },
     "A100": {
-      "captured_at": "2026-11-12T11:52:51Z",
+      "captured_at": "2026-11-12T17:38:41Z",
       "user_name": "cperkinscperkins",
       "rank": 6,
       "total_entrants": 23,
@@ -258,7 +258,7 @@
       "median_score_us": 4591.96
     },
     "L4": {
-      "captured_at": "2026-11-12T11:52:51Z",
+      "captured_at": "2026-11-12T17:38:41Z",
       "user_name": "cperkinscperkins",
       "rank": 10,
       "total_entrants": 15,
@@ -274,7 +274,7 @@
       "median_score_us": 114251.78
     }
   },
-  "crisp_commit": "be872d6a",
+  "crisp_commit": "3def9cf0",
   "gpu_notes": {
     "H100": {
       "top1_mark": "¹"

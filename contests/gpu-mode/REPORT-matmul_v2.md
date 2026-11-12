@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `matmul_v2`
 
-> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `be872d6a`).
+> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `3def9cf0`).
 
 **Workload:** C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS..
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#41** / 53 | **156.12 µs** | 154.66 µs | 1100 TFLOPS | 59.0% (`92.10 µs`) | [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) ([`.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp)) | `b200` | `2026-11-12 11:52` |
-| **H100** | Hopper (sm_90) | **#29** / 44 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.2% (`204.96 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-12 11:52` |
-| **A100** | Ampere (sm_80) | **#56** / 57 | **3555.33 µs** | 3556.01 µs | 48 TFLOPS | 16.8% (`595.63 µs`) | [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-12 11:52` |
-| **L4** | Ada Lovelace (sm_89) | **#21** / 21 | **6661.90 µs** | 6605.77 µs | 26 TFLOPS | 29.9% (`1989.62 µs`) | [`crisp_matmul_v8.py`](06-matmul-v2/crisp_matmul_v8.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_k32.crisp)) | — | `2026-11-12 11:52` |
+| **B200** | Blackwell (sm_100) | **#41** / 53 | **156.12 µs** | 154.66 µs | 1100 TFLOPS | 59.0% (`92.10 µs`) | [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) ([`.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp)) | `b200` | `2026-11-12 17:38` |
+| **H100** | Hopper (sm_90) | **#29** / 44 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.2% (`204.96 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-12 17:38` |
+| **A100** | Ampere (sm_80) | **#56** / 57 | **3555.33 µs** | 3556.01 µs | 48 TFLOPS | 16.8% (`595.63 µs`) | [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-12 17:38` |
+| **L4** | Ada Lovelace (sm_89) | **#21** / 21 | **4359.17 µs** | 4929.72 µs | 39 TFLOPS | 45.6% (`1989.62 µs`) | [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-12 17:38` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -80,9 +80,9 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | 5 | [`matmul_h100_2wg_tma.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp) / [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) | H100: v4 with both accumulator stores (store-tile-at ... :via :tma) -- stmatrix + per-warp TMA store (endeavour 199) | None | — | — | **`LB: 229.79`** | `LB: 4862.98` | `LB: 7055.49` |
 | 6 | [`matmul_b200_tcgen05.crisp`](06-matmul-v2/matmul_b200_tcgen05.crisp) / [`crisp_matmul_v6.py`](06-matmul-v2/crisp_matmul_v6.py) | B200: first tcgen05 entry (endeavour 208/209 kernel: accumulator in tensor memory, warp-specialized, 2-deep TMA ring, 128x256 tile) after a Crisp transpose of b -- 265 us; the transpose was 34 of it | None | `b200` | `LB: 265.44` | — | — | — |
 | 7 | [`matmul_b200_tcgen05_mn.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn.crisp) / [`crisp_matmul_v7.py`](06-matmul-v2/crisp_matmul_v7.py) | B200: v6 reading b as given via tcgen05 :b-major :mn (endeavour 213) -- transpose gone, 230 us | None | `b200` | `LB: 230.18` | — | — | — |
-| 8 | [`matmul_ampere_4w_k32.crisp`](06-matmul-v2/matmul_ampere_4w_k32.crisp) / [`crisp_matmul_v8.py`](06-matmul-v2/crisp_matmul_v8.py) | A100 / L4: the 4-warp mma.sync kernel with K = 32 per stage -- L4 7117 -> 6662 us; A100 keeps v5 on the board | None | — | — | — | `LB: 5170.52` | **`LB: 6661.90`** |
+| 8 | [`matmul_ampere_4w_k32.crisp`](06-matmul-v2/matmul_ampere_4w_k32.crisp) / [`crisp_matmul_v8.py`](06-matmul-v2/crisp_matmul_v8.py) | A100 / L4: the 4-warp mma.sync kernel with K = 32 per stage -- L4 7117 -> 6662 us; A100 keeps v5 on the board | None | — | — | — | `LB: 5170.52` | `LB: 6661.90` |
 | 9 | [`matmul_b200_tcgen05_mn_128.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp) / [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) | B200: 16-byte tcgen05 epilogue stores (endeavour 215; the 4-byte stores were a third of v7's time) and a 128x128 tile at 3 workgroups / SM where it fills the waves better (the scored shape) -- 156 us | None | `b200` | **`LB: 156.12`** | — | — | — |
-| 10 | [`matmul_ampere_4w_ring.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp) / [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) | A100 / L4 (endeavour 216): mma.sync fragments from shared memory by ldmatrix (x4 for A, x2.trans for the (K N) B) instead of 8 / 4 ld.shared.b16 each, and a 3-slot cp.async ring -- A100 4863 -> 3555 us; H100 / B200 as v9 | None | `h100` | — | — | **`LB: 3555.33`** | — |
+| 10 | [`matmul_ampere_4w_ring.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp) / [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) | A100 / L4 (endeavour 216): mma.sync fragments from shared memory by ldmatrix (x4 for A, x2.trans for the (K N) B) instead of 8 / 4 ld.shared.b16 each, and a 3-slot cp.async ring -- A100 4863 -> 3555 us; H100 / B200 as v9 | None | `h100` | — | — | **`LB: 3555.33`** | **`LB: 4359.17`** |
 
 ## § 3 — Key Architectural Takeaways
 
@@ -143,3 +143,6 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-11-12 10:21:50` | `970869` | **A100** | `leaderboard` | `crisp_matmul_v10.py` | — | **3555.33** | 3556.01 |
 | `2026-11-12 10:51:57` | `970870` | **L4** | `test` | `crisp_matmul_v10.py` | — | — | — |
 | `2026-11-12 11:52:31` | `970880` | **L4** | `test` | `crisp_matmul_v10.py` | — | — | — |
+| `2026-11-12 12:18:41` | `970884` | **L4** | `test` | `baseline_torch_matmul.py` | — | — | — |
+| `2026-11-12 17:34:40` | `970965` | **L4** | `test` | `crisp_matmul_v10.py` | — | — | — |
+| `2026-11-12 17:38:29` | `970973` | **L4** | `leaderboard` | `crisp_matmul_v10.py` | — | **4359.17** | 4929.72 |

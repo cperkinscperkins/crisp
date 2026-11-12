@@ -86,7 +86,10 @@ diag 2 measured it there at 4355 us vs v8's 6662.  A 4th L4 test (970880, after 
 a plain `torch.matmul` control (970884, `baseline_torch_matmul.py`) then SUCCEEDED -- but only after 1510 s end
 to end, just under the ~1555 s hard timeout, behind a 3-job L4 queue.  So the L4 timeouts are consistent with
 queue congestion, not a hang; not proven, since the A100 test (970864) only shows the same sm_80 PTX is right
-on sm_80.  **To do: resubmit v10 to L4 (test, then leaderboard) when the queue is short.**
+on sm_80.  A 5th L4 test (970965) timed out with 0 queued jobs: on L4, TEST mode itself runs at the limit (torch
+1510 s), while leaderboard mode is far shorter (A100 v10: test 800 s, leaderboard 195 s).  So v10 went straight
+to the L4 leaderboard: **970973 passed in 140 s, 4359.2 us public (secret 4929.7), v8's 6662 before -> 45.6% of
+#1 (was 29.9%)**; still #21 / 21.
 
 ## Decisions for review
 - **D-216-1 -- a wrapped analyzer and a `semantic-hw-op`, no new node.**  `analyze-load-fragment-a/-b` are
