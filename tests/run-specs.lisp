@@ -2451,18 +2451,12 @@
                                       (and (listp val-arg) (every #'probe-file val-arg)))
                                   (progn
                                    ;; Dispatch validator
-                                   (if (fboundp validator)
-                                       (if (funcall validator val-arg)
-                                           (progn (format t "Validator PASS. ") t)
-                                           (progn (format *error-output* "Validator FAIL. ") nil))
-                                       (progn
-                                        ;; Try finding it in crisp.compiler package if symbol has no package
-                                        (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
-                                          (if (and sym (fboundp sym))
-                                              (if (funcall sym val-arg)
-                                                  (progn (format t "Validator PASS. ") t)
-                                                  (progn (format *error-output* "Validator FAIL. ") nil))
-                                              (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
+                                   (let ((sym (%resolve-spec-validator validator)))
+                                     (if sym
+                                         (if (funcall sym val-arg)
+                                             (progn (format t "Validator PASS. ") t)
+                                             (progn (format *error-output* "Validator FAIL. ") nil))
+                                         (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))
                                   (progn (format *error-output* "FAIL (Metadata Missing: ~a)~%" val-arg) nil))))
                            (progn
                             (format t "PASS (Generated ~a)~%" (file-namestring out-path))
@@ -2478,6 +2472,19 @@
             (progn (format *error-output* "FAIL (No SPV generated)~%") nil))))))
             |#
 
+
+(defun %resolve-spec-validator (validator)
+  "Return the fbound symbol a TEST-WITH VALIDATOR names, or NIL.
+   Tries VALIDATOR itself, then the same name in :crisp.spec-runner (where most validators in this
+   file are defined), then in :crisp.compiler.  F-216-1: the --use-binary SPIR-V path looked only in
+   :crisp.compiler, so spec-runner validators (validate-spv-relaxed-load-store and friends) were
+   reported 'not found' in binary mode while passing in-process."
+  (let ((found (cond ((and (symbolp validator) (fboundp validator)) validator)
+                     (t (loop for pkg in '(:crisp.spec-runner :crisp.compiler)
+                              for sym = (find-symbol (string-upcase (string validator)) pkg)
+                              when (and sym (fboundp sym)) return sym)))))
+    (log:debug "validator ~s resolved to ~s" validator found)
+    found))
 
 (defun run-spec-spirv-in-process (file &key (emit-metadata nil) (validator nil))
   (block :runner
@@ -2503,18 +2510,12 @@
                                       (and (listp val-arg) (every #'probe-file val-arg)))
                                   (progn
                                    ;; Dispatch validator
-                                   (if (fboundp validator)
-                                       (if (funcall validator val-arg)
-                                           (progn (format t "Validator PASS. ") t)
-                                           (progn (format *error-output* "Validator FAIL. ") nil))
-                                       (progn
-                                        ;; Try finding it in crisp.compiler package if symbol has no package
-                                        (let ((sym (find-symbol (symbol-name validator) :crisp.compiler)))
-                                          (if (and sym (fboundp sym))
-                                              (if (funcall sym val-arg)
-                                                  (progn (format t "Validator PASS. ") t)
-                                                  (progn (format *error-output* "Validator FAIL. ") nil))
-                                              (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))))
+                                   (let ((sym (%resolve-spec-validator validator)))
+                                     (if sym
+                                         (if (funcall sym val-arg)
+                                             (progn (format t "Validator PASS. ") t)
+                                             (progn (format *error-output* "Validator FAIL. ") nil))
+                                         (progn (format *error-output* "Validator fn ~a not found. " validator) nil))))
                                   (progn (format *error-output* "FAIL (Metadata Missing: ~a)~%" val-arg) nil))))
                            (progn
                             (format t "PASS (Generated ~a)~%" (file-namestring out-path))
@@ -2582,8 +2583,8 @@
                                               ((= (length meta-files) 1) (first meta-files))
                                               (t meta-files))
                                              out-path))
-                                (sym (find-symbol (symbol-name validator) :crisp.compiler)))
-                           (if (and sym (fboundp sym))
+                                (sym (%resolve-spec-validator validator)))
+                           (if sym
                                (if (funcall sym val-arg)
                                    (progn (format t "Validator PASS.~%") t)
                                    (progn (format *error-output* "Validator FAIL.~%") nil))

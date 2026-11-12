@@ -127,7 +127,10 @@ to the L4 leaderboard: **970973 passed in 140 s, 4359.2 us public (secret 4929.7
   (the binary-mode SPV path) looks the validator up only in :crisp.compiler; validate-spv-relaxed-load-store,
   -200-helpers-noinline, -211-helpers-noinline and -212-vote live in the runner's package.  So CI step 11's
   command (`--use-binary --differentiate --skip-unit-tests`), run LOCALLY, fails 195/01, 200/01, 211/04, 212/05
-  with "Validator fn ... not found" (1848 / 1852; every MMA spec passes).  Not checked against an actual CI
-  run; not patched.
+  with "Validator fn ... not found" (1848 / 1852; every MMA spec passes).  **FIXED 2026-11-12** (Chris OK'd a
+  direct edit): plain `--use-binary` failed too (195/01 + 195/03, 200/01, 211/04, 212/05), so CI's E2E steps
+  were likely red since 195.  New `%resolve-spec-validator` (symbol as read, then :crisp.spec-runner, then
+  :crisp.compiler) serves the binary path and the live in-process path.  Binary, binary --differentiate and
+  in-process suites: 1852 / 1852 each.
 - **F-216-2 -- the GPU MODE B200 runner hard-timed-out every job tonight**, including a plain `torch.sort`
   control (970861), so sort_v2 on B200 timed out (970852 test, 970857 leaderboard).  A retry after the runner recovered passed: **sort_v2 B200 leaderboard 2533.6 us, #18 / 30**.

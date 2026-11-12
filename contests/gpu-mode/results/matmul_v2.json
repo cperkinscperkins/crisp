@@ -908,6 +908,21 @@
       "per_case_us": null,
       "public_score_us": 4359.17,
       "secret_score_us": 4929.72
+    },
+    {
+      "timestamp": "2026-11-12T21:47:36Z",
+      "gpu": "A100",
+      "kernel_key": "diag_ampere_217_sub",
+      "file_name": "diag_ampere_217_sub.py",
+      "mode": "test",
+      "submission_id": 971027,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
     }
   ],
   "ablation_size_label": "scored case: 4096x5120x4096 (ranking_by LAST)",
