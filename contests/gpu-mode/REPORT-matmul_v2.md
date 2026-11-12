@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `matmul_v2`
 
-> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `173f3fb1`).
+> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `be872d6a`).
 
 **Workload:** C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS..
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#41** / 53 | **156.12 µs** | 154.66 µs | 1100 TFLOPS | 59.0% (`92.10 µs`) | [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) ([`.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp)) | `b200` | `2026-11-12 10:52` |
-| **H100** | Hopper (sm_90) | **#29** / 44 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.2% (`204.96 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-12 10:52` |
-| **A100** | Ampere (sm_80) | **#56** / 57 | **3555.33 µs** | 3556.01 µs | 48 TFLOPS | 16.8% (`595.63 µs`) | [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-12 10:52` |
-| **L4** | Ada Lovelace (sm_89) | **#21** / 21 | **6661.90 µs** | 6605.77 µs | 26 TFLOPS | 29.9% (`1989.62 µs`) | [`crisp_matmul_v8.py`](06-matmul-v2/crisp_matmul_v8.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_k32.crisp)) | — | `2026-11-12 10:52` |
+| **B200** | Blackwell (sm_100) | **#41** / 53 | **156.12 µs** | 154.66 µs | 1100 TFLOPS | 59.0% (`92.10 µs`) | [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) ([`.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp)) | `b200` | `2026-11-12 11:52` |
+| **H100** | Hopper (sm_90) | **#29** / 44 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.2% (`204.96 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-12 11:52` |
+| **A100** | Ampere (sm_80) | **#56** / 57 | **3555.33 µs** | 3556.01 µs | 48 TFLOPS | 16.8% (`595.63 µs`) | [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-12 11:52` |
+| **L4** | Ada Lovelace (sm_89) | **#21** / 21 | **6661.90 µs** | 6605.77 µs | 26 TFLOPS | 29.9% (`1989.62 µs`) | [`crisp_matmul_v8.py`](06-matmul-v2/crisp_matmul_v8.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_k32.crisp)) | — | `2026-11-12 11:52` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -142,3 +142,4 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-11-12 10:18:01` | `970866` | **L4** | `test` | `diag_ampere_216c_sub.py` | — | — | — |
 | `2026-11-12 10:21:50` | `970869` | **A100** | `leaderboard` | `crisp_matmul_v10.py` | — | **3555.33** | 3556.01 |
 | `2026-11-12 10:51:57` | `970870` | **L4** | `test` | `crisp_matmul_v10.py` | — | — | — |
+| `2026-11-12 11:52:31` | `970880` | **L4** | `test` | `crisp_matmul_v10.py` | — | — | — |

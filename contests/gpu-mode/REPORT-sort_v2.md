@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `sort_v2`
 
-> Generated from [`results/sort_v2.json`](results/sort_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/542?tab=rankings](https://www.gpumode.com/leaderboard/542?tab=rankings) (Crisp commit `173f3fb1`).
+> Generated from [`results/sort_v2.json`](results/sort_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/542?tab=rankings](https://www.gpumode.com/leaderboard/542?tab=rankings) (Crisp commit `be872d6a`).
 
 **Workload:** Sort a 1-D fp32 tensor ascending; must equal torch.sort exactly. task.yml lists 5 benchmarks (100K .. 100M); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: 100,000,000 floats (seed 6252), rows of randn + seed + i -- nearly sorted by row. The traffic below is the floor: read 400 MB once and write 400 MB once..
 
@@ -8,9 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **H100** | Hopper (sm_90) | **#17** / 30 | **3156.15 µs** | 3175.36 µs | 253.5 GB/s | 10.3% (`325.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 10:52` |
-| **A100** | Ampere (sm_80) | **#24** / 33 | **5794.22 µs** | 5852.40 µs | 138.1 GB/s | 10.1% (`582.90 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 10:52` |
-| **L4** | Ada Lovelace (sm_89) | **#13** / 18 | **23639.68 µs** | 23793.05 µs | 33.8 GB/s | 15.0% (`3534.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 10:52` |
+| **B200** | Blackwell (sm_100) | **#18** / 30 | **2533.57 µs** | 2532.81 µs | 315.8 GB/s | 4.6% (`115.39 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 11:52` |
+| **H100** | Hopper (sm_90) | **#17** / 30 | **3156.15 µs** | 3175.36 µs | 253.5 GB/s | 10.3% (`325.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 11:52` |
+| **A100** | Ampere (sm_80) | **#24** / 33 | **5794.22 µs** | 5852.40 µs | 138.1 GB/s | 10.1% (`582.90 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 11:52` |
+| **L4** | Ada Lovelace (sm_89) | **#13** / 18 | **23639.68 µs** | 23793.05 µs | 33.8 GB/s | 15.0% (`3534.85 µs`) | [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) ([`.crisp`](07-sort-v2/sort_radix.crisp)) | — | `2026-11-12 11:52` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -153,7 +154,7 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | Step | Kernel (`.crisp` / `.py`) | Strategy | Regs | Profile | **B200** | **H100** | **A100** | **L4** |
 |---|---|---|---:|---|---:|---:|---:|---:|
 | 0 | [`sort_bitonic_beauty.crisp`](07-sort-v2/sort_bitonic_beauty.crisp) / [`crisp_sort_beauty.py`](07-sort-v2/crisp_sort_beauty.py) | Beauty: plain bitonic sort -- compare-and-swap, 2048-key shared-memory tiles, one global pass per large distance | None | — | — | 68900.0 | — | — |
-| 1 | [`sort_radix.crisp`](07-sort-v2/sort_radix.crisp) / [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) | LSD radix: keys = order-preserving float bits minus kmin (3 passes, not 4); per pass upsweep / digit scan / downsweep; 4096-key tiles sorted in shared memory by two 4-bit splits; keys rotated so the digit is the low byte (endeavour 200) [rev c, ranked 2026-10-30; source at git 7bec7925] | 48 | — | — | 4060.0 (`LB: 3749.47`) | `LB: 8155.72` | `LB: 25318.74` |
+| 1 | [`sort_radix.crisp`](07-sort-v2/sort_radix.crisp) / [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) | LSD radix: keys = order-preserving float bits minus kmin (3 passes, not 4); per pass upsweep / digit scan / downsweep; 4096-key tiles sorted in shared memory by two 4-bit splits; keys rotated so the digit is the low byte (endeavour 200) [rev c, ranked 2026-10-30; source at git 7bec7925] | 48 | — | **`LB: 2533.57`** | 4060.0 (`LB: 3749.47`) | `LB: 8155.72` | `LB: 25318.74` |
 | 2 | [`sort_radix.crisp`](07-sort-v2/sort_radix.crisp) / [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) | rev i: 32-bit tile index math; 128-bit minmax loads; TILE-MAJOR histograms (the digit-major layout cost 256 scattered sectors per tile); digit scan split into sort_scan_chunks + sort_scan_tiles with sqrt(tiles) chunks [source at git c2d5e26c] | 56 | — | — | `LB: 4058.28` | `LB: 7616.85` | `LB: 28000.26` |
 | 3 | [`sort_radix.crisp`](07-sort-v2/sort_radix.crisp) / [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) | rev j: run-time shifts / rotates as endeavour 211's shift-right / rotate-right / rotate-left (one funnel shift each, where a run-time ash is a select chain): downsweep SASS -15%, registers 56 -> 40 [source at git e4fa2603] | 40 | — | — | `LB: 3711.94` | `LB: 6783.83` | `LB: 24338.88` |
 | 4 | [`sort_radix.crisp`](07-sort-v2/sort_radix.crisp) / [`crisp_sort_v1.py`](07-sort-v2/crisp_sort_v1.py) | rev k: the downsweep ranks with warp ballots (endeavour 212's warp-ballot), CUB-style -- 8 ballots per key give the lanes sharing its 8-bit digit, popcount gives its rank -- in place of two 4-bit counting splits; the tile is loaded into shared memory first; per-warp counters sized by (warp-size) | None | — | — | **`LB: 3156.15`** | **`LB: 5794.22`** | **`LB: 23639.68`** |
@@ -193,3 +194,5 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-11-11 06:39:15` | `970485` | **H100** | `leaderboard` | `crisp_sort_v1.py` | — | **3156.15** | 3175.36 |
 | `2026-11-11 06:39:50` | `970486` | **A100** | `leaderboard` | `crisp_sort_v1.py` | — | **5794.22** | 5852.40 |
 | `2026-11-11 06:41:25` | `970488` | **L4** | `leaderboard` | `crisp_sort_v1.py` | — | **23639.68** | 23793.05 |
+| `2026-11-12 11:21:37` | `970872` | **B200** | `test` | `crisp_sort_v1.py` | — | — | — |
+| `2026-11-12 11:22:23` | `970879` | **B200** | `leaderboard` | `crisp_sort_v1.py` | — | **2533.57** | 2532.81 |

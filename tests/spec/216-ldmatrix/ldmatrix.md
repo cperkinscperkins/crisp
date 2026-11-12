@@ -82,7 +82,11 @@ A100 test 970864 passed (every test shape, exact -- including the small fallback
 **leaderboard 970869: 3555.3 us** public (secret 3556.0), v5's 4863 before -> 16.8% of #1 (was 12.2%); still
 #56 / 57, the field being cuBLAS at ~600-700 us.  L4: test 970865 and retry 970870 both hit GPU MODE's hard
 timeout (so did diag 3's L4 half, 970866, and every B200 job tonight), so v10 is NOT on the L4 board yet;
-diag 2 measured it there at 4355 us vs v8's 6662.
+diag 2 measured it there at 4355 us vs v8's 6662.  A 4th L4 test (970880, after the B200 runner recovered) timed out too;
+a plain `torch.matmul` control (970884, `baseline_torch_matmul.py`) then SUCCEEDED -- but only after 1510 s end
+to end, just under the ~1555 s hard timeout, behind a 3-job L4 queue.  So the L4 timeouts are consistent with
+queue congestion, not a hang; not proven, since the A100 test (970864) only shows the same sm_80 PTX is right
+on sm_80.  **To do: resubmit v10 to L4 (test, then leaderboard) when the queue is short.**
 
 ## Decisions for review
 - **D-216-1 -- a wrapped analyzer and a `semantic-hw-op`, no new node.**  `analyze-load-fragment-a/-b` are
@@ -123,4 +127,4 @@ diag 2 measured it there at 4355 us vs v8's 6662.
   with "Validator fn ... not found" (1848 / 1852; every MMA spec passes).  Not checked against an actual CI
   run; not patched.
 - **F-216-2 -- the GPU MODE B200 runner hard-timed-out every job tonight**, including a plain `torch.sort`
-  control (970861), so sort_v2 on B200 is still not submitted (970852 test, 970857 leaderboard, both timeouts).
+  control (970861), so sort_v2 on B200 timed out (970852 test, 970857 leaderboard).  A retry after the runner recovered passed: **sort_v2 B200 leaderboard 2533.6 us, #18 / 30**.

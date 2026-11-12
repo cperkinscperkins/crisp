@@ -3,7 +3,7 @@
   "title": "GPU MODE Challenge 07: Sort (fp32, 100,000,000 keys scored)",
   "leaderboard_id": 542,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/542?tab=rankings",
-  "crisp_commit": "173f3fb1",
+  "crisp_commit": "be872d6a",
   "workload": {
     "description": "Sort a 1-D fp32 tensor ascending; must equal torch.sort exactly. task.yml lists 5 benchmarks (100K .. 100M); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: 100,000,000 floats (seed 6252), rows of randn + seed + i -- nearly sorted by row. The traffic below is the floor: read 400 MB once and write 400 MB once.",
     "total_traffic_bytes": 800000000
@@ -32,7 +32,7 @@
   },
   "standings": {
     "H100": {
-      "captured_at": "2026-11-12T10:52:37Z",
+      "captured_at": "2026-11-12T11:52:54Z",
       "user_name": "cperkinscperkins",
       "rank": 17,
       "total_entrants": 30,
@@ -48,7 +48,7 @@
       "median_score_us": 2217.98
     },
     "A100": {
-      "captured_at": "2026-11-12T10:52:37Z",
+      "captured_at": "2026-11-12T11:52:54Z",
       "user_name": "cperkinscperkins",
       "rank": 24,
       "total_entrants": 33,
@@ -64,7 +64,7 @@
       "median_score_us": 3893.93
     },
     "L4": {
-      "captured_at": "2026-11-12T10:52:37Z",
+      "captured_at": "2026-11-12T11:52:54Z",
       "user_name": "cperkinscperkins",
       "rank": 13,
       "total_entrants": 18,
@@ -78,6 +78,22 @@
       "top1_score_us": 3534.85,
       "top1_user": "HariCharanK",
       "median_score_us": 15444.31
+    },
+    "B200": {
+      "captured_at": "2026-11-12T11:52:54Z",
+      "user_name": "cperkinscperkins",
+      "rank": 18,
+      "total_entrants": 30,
+      "file_name": "crisp_sort_v1.py",
+      "crisp_file": "07-sort-v2/sort_radix.crisp",
+      "py_file": "07-sort-v2/crisp_sort_v1.py",
+      "hardware_profile": null,
+      "public_score_us": 2533.57,
+      "secret_score_us": 2532.81,
+      "submission_id": 970879,
+      "top1_score_us": 115.39,
+      "top1_user": "dannywillowliu-uchi",
+      "median_score_us": 2236.66
     }
   },
   "kernels": [
@@ -416,6 +432,36 @@
       "per_case_us": null,
       "public_score_us": 23639.68,
       "secret_score_us": 23793.05
+    },
+    {
+      "timestamp": "2026-11-12T11:21:37Z",
+      "gpu": "B200",
+      "kernel_key": "crisp_sort_v1",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "test",
+      "submission_id": 970872,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": null,
+      "secret_score_us": null
+    },
+    {
+      "timestamp": "2026-11-12T11:22:23Z",
+      "gpu": "B200",
+      "kernel_key": "crisp_sort_v1",
+      "file_name": "crisp_sort_v1.py",
+      "mode": "leaderboard",
+      "submission_id": 970879,
+      "benchmark_mean_us": null,
+      "benchmark_std_us": null,
+      "benchmark_best_us": null,
+      "benchmark_worst_us": null,
+      "per_case_us": null,
+      "public_score_us": 2533.57,
+      "secret_score_us": 2532.81
     }
   ],
   "ablation_size_label": "scored case: 100,000,000 floats (ranking_by LAST)",
