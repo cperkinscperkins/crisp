@@ -1,0 +1,48 @@
+;; Endeavour 217 rung 03 -- the contest ring kernel: a swizzled RING SLOT.
+;;
+;; WHAT THIS PINS.  The tiles here are slots of 3-slot scratch rings ((ring-get A-RING slot)), filled by
+;; cp.async behind a :linear barrier ring and read by ldmatrix (216 rung 03).  The swizzle is relative to
+;; the SLOT's base, so every slot is laid out the same way and the writer (fill) and reader (ldmatrix)
+;; agree whichever slot is in flight.  A 128 x 32 half slot (64-byte pitch) takes S = 7; a 32 x 128 slot
+;; (256-byte pitch) takes S = 8.
+;;
+;; Priced before the endeavour opened: put_temp_files_here/217 probe, diag 971027 on an A100 --
+;; 3554 -> 2228 us on matmul_v2's scored shape, bit-exact (bad = 0).
+;;
+;; The validator pins presence, as 216 rung 03 does (LLVM merges the four warps' branches): the fp16 MMA,
+;; both ldmatrix forms, no scalar ld.shared.b16, the ring depth, and the swizzle's xor.b.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-217-swizzle-ring
+;; SKIP-WITH[--differentiate]: "GAP D-196-12: autodiff refuses a converted store source (store-tile (to-half D) ...) -- the accumulator backward does not yet see through the conversion"
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel ring_swz_fp16 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 128))
+  (let ((A-ring (make-scratch-matrix-ring half (128 32) :ring-count 3))
+        (B-ring (make-scratch-matrix-ring half (32 128) :ring-count 3))
+        (C-tile (make-register-tile float (128 128) 0.0 :warps '(true true true true)))
+        (K      (inner-dimension A B))
+        (bars   (make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)))
+    (tile-stride C (128 128) (grid-y grid-x)
+      (fill-tile C-tile 0.0)
+      (let ((nk (/ (to-ulong K) (to-ulong 32))))
+        (dotimes (i 3)
+          (let ((first? (to-workgroup-uniform (< (to-ulong i) nk))))
+            (when first?
+              (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get bars (to-ulong i)))
+              (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get bars (to-ulong i))))))
+        (dotimes (grid-k nk)
+          (let ((slot (mod grid-k (to-ulong 3))))
+            (await (ring-get bars slot))
+            (mma-accumulate-via-tile (16 8 16) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+            (sync-workgroup)
+            (let ((next-k (+ grid-k (to-ulong 3))))
+              (let ((more? (to-workgroup-uniform (< next-k nk))))
+                (when more?
+                  (load-tile A (ring-get A-ring slot) (grid-y next-k) :barrier (ring-get bars slot))
+                  (load-tile B (ring-get B-ring slot) (next-k grid-x) :barrier (ring-get bars slot))))))))
+      :epilogue
+      (store-tile (to-half C-tile) C (grid-y grid-x)))))

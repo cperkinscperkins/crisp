@@ -445,3 +445,376 @@
                     ((/= 0 (mod (* 2 (second dims)) 16)) "row pitch not a multiple of 16 bytes"))))
     (log:debug "216 ldmatrix ~a ~a: canon=~a dims=~a -> ~a" operand src canon dims (or why "ELIGIBLE"))
     (null why)))
+
+;;; ===================================================================================================
+;;; Endeavour 217 -- compiler-owned XOR swizzle of the shared-memory tiles an ldmatrix reads.
+;;; Plan and inventory: tests/spec/217-swizzle/swizzle.md.
+;;; ===================================================================================================
+
+;; src/mma.lisp
+(defun %217-swizzle-shift (pitch-bytes tile-bytes)
+  "Endeavour 217.  The swizzle shift S for a shared-memory tile whose rows are PITCH-BYTES apart and whose
+   whole extent is TILE-BYTES, or NIL when the tile is not swizzled.
+
+   The swizzle (see %217-swizzle-offset) XORs bits 4-6 of a byte offset with bits S..S+2, so it permutes
+   the 16-byte chunks inside every aligned 2^(S+3)-byte block.  S = max(7, log2 PITCH): from S up, the
+   offset bits count rows (or groups of rows sharing a 128-byte line), so the 8 rows an ldmatrix phase
+   reads land in 8 different 16-byte bank groups.  Requires a power-of-two PITCH of at least 32 bytes (a
+   16-byte pitch already puts 8 rows in 8 groups) and a tile that is a whole number of blocks, so the map
+   is a bijection of the tile onto itself."
+  (let ((s (and (integerp pitch-bytes) (integerp tile-bytes) (plusp tile-bytes)
+                (>= pitch-bytes 32) (= (logcount pitch-bytes) 1)
+                (max 7 (1- (integer-length pitch-bytes))))))
+    (and s (zerop (mod tile-bytes (ash 1 (+ s 3)))) s)))
+
+;; src/mma.lisp
+(defun %217-swizzle-offset (off s)
+  "Endeavour 217.  Byte offset OFF (from the tile / ring-slot base) under the swizzle with shift S:
+   OFF xor (((OFF >> S) & 7) << 4).  Only bits 4-6 change, so a 16-byte chunk stays whole and aligned.
+   The compile-time twin of the IR %217-swizzle-ptr emits; the unit spec checks its claims."
+  (logxor off (ash (ldb (byte 3 s) off) 4)))
+
+;;; ---- Endeavour 217 rungs 3-5: decide at the scratch LET, propagate through aliases, tag, address ----
+;;; Mechanism = D-217-6 (swizzle.md): decide at the scratch LET with a whitelist scan of the body, publish
+;;; ((SYM . S) ..) in *217-swizzled-names*, propagate through LET aliases (the *194-lane-index-names*
+;;; pattern), tag aref array nodes / ldmatrix hw-ops at analysis, swizzle in the two PTX choke points
+;;; (%aref-tensor-ir, %216-shared-elem-ptr) the rung-2 inventory proved.  Wrappers are marked with their
+;;; fold target; at fold they become a few lines inside the wrapped function.
+
+;; src/mma.lisp
+(defvar *217-swizzle* t
+  "Endeavour 217.  NIL turns the compiler-owned swizzle of ldmatrix scratch tiles off (twin builds).")
+
+;; src/mma.lisp
+(defvar *217-swizzled-names* nil
+  "Endeavour 217.  ((SYM . S) ...): the scratch bindings (and their LET aliases) in scope whose tiles are
+   XOR-swizzled with shift S.  Bound by analyze-let-with-tile-explosion (decisions) and
+   analyze-let-expression (aliases).")
+
+;; src/mma.lisp
+(defvar *217-node-shift* (make-hash-table :test 'eq :weakness :key)
+  "Endeavour 217.  semantic node -> S: an aref's array node, or an ldmatrix hw-op, that addresses a
+   swizzled tile.")
+
+;; src/mma.lisp
+(defvar *217-shift* nil "Endeavour 217.  Bound around an ldmatrix hw-op's codegen: its S, or NIL.")
+
+;;; ---- the shape side -------------------------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %217-tile-ref-name (form names)
+  "Endeavour 217.  The swizzled name FORM refers to -- FORM is a name in NAMES, or (ring-get NAME i) of
+   one -- or NIL."
+  (cond ((and (symbolp form) form (assoc form names)) form)
+        ((and (consp form) (%head-name-eq (first form) "RING-GET") (symbolp (second form))
+              (assoc (second form) names))
+         (second form))))
+
+;; src/mma.lisp
+(defun %217-form-shift (form)
+  "Endeavour 217.  S when FORM addresses a swizzled tile in the current scope, else NIL."
+  (let ((name (%217-tile-ref-name form *217-swizzled-names*)))
+    (and name (cdr (assoc name *217-swizzled-names*)))))
+
+;; src/mma.lisp
+(defun %217-binding-shift (binding)
+  "Endeavour 217.  S for a (V (make-scratch-matrix[-ring] ELEM (ROWS COLS) ...)) BINDING whose tile the
+   rule can swizzle, or NIL with the reason as a second value."
+  (let* ((init (second binding))
+         (elem (second init))
+         (dims (third init))
+         (bits (ignore-errors (%mma-elem-bits elem))))
+    (cond ((not (and (listp dims) (= (length dims) 2) (every #'integerp dims))) (values nil "no literal (ROWS COLS)"))
+          ((not (eql bits 16)) (values nil (format nil "~a is not a 16-bit element" elem)))
+          (t (let* ((pitch (* 2 (second dims)))
+                    (s (%217-swizzle-shift pitch (* pitch (first dims)))))
+               (if s (values s nil)
+                   (values nil (format nil "~ax~a: pitch ~a B / ~a B not swizzlable" (first dims) (second dims)
+                                       pitch (* pitch (first dims))))))))))
+
+;;; ---- the use side: whole-body scan --------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %217-block-barrier-names (bindings)
+  "Endeavour 217.  Names bound in BINDINGS to a :block / :cluster (TMA) barrier or barrier ring."
+  (loop for b in bindings
+        when (and (consp b) (symbolp (first b)) (consp (second b))
+                  (or (%head-name-eq (first (second b)) "MAKE-ASYNC-BARRIER")
+                      (%head-name-eq (first (second b)) "MAKE-ASYNC-BARRIER-RING"))
+                  (let ((m (second (member :mode (cdr (second b))))))
+                    (and m (symbolp m) (member (symbol-name m) '("BLOCK" "CLUSTER") :test #'string=))))
+          collect (first b)))
+
+;; src/mma.lisp
+(defun %217-scan-uses (form refs tma-barriers)
+  "Endeavour 217.  Walk FORM for the uses of the tile REFS (its name plus LET aliases).  Returns
+   (values READER-P REFUSAL): READER-P when an mma-accumulate-via-tile takes the tile as an operand;
+   REFUSAL a string naming the first use outside the whitelist --
+     (~ / aref TILE i..)                      element access: the aref path swizzles
+     (load-tile[-at] SRC TILE ..)             unless its barrier is :block (TMA writes the plain layout)
+     (store-tile[-at] TILE DST ..)            unless :via (TMA store)
+     (mma-accumulate-via-tile SHAPE C A B ..) the reader (ldmatrix) -- and (load-fragment-a/b TILE (i j) ..),
+                                              what the register-tile explosion has turned it into
+     (extents~ / strides~ TILE ..)            struct fields, no addressing
+     (let ((ALIAS TILE)) ..)                  the alias joins REFS
+   and (ring-get TILE i) in any of those TILE positions.  Anything else (a function call, a view, a
+   transpose, a whole-tile set!, a shadowing rebinding) refuses: the tile stays plain."
+  (let ((reader nil) (refusal nil))
+    (labels ((ref-p (x refs) (%217-tile-ref-name x (mapcar #'list refs)))
+             (refuse (fmt &rest args) (unless refusal (setf refusal (apply #'format nil fmt args))))
+             (walk-args (args refs) (dolist (a args) (walk a refs)))
+             (walk (f refs)
+               (cond
+                 (refusal nil)
+                 ((atom f) (when (and (symbolp f) (member f refs)) (refuse "bare reference to ~a" f)))
+                 ((not (symbolp (first f))) (walk-args f refs))
+                 (t
+                  (let ((h (symbol-name (first f))) (args (rest f)))
+                    (cond
+                      ((member h '("QUOTE" "DECLARE") :test #'string=) nil)
+                      ((member h '("~" "AREF" "~REF~" "EXTENTS~" "STRIDES~") :test #'string=)
+                       (if (ref-p (first args) refs) (walk-args (rest args) refs) (walk-args args refs)))
+                      ((member h '("LOAD-TILE" "LOAD-TILE-AT") :test #'string=)
+                       (when (ref-p (second args) refs)
+                         (let ((bar (getf (cdddr args) :barrier)))
+                           (when (and bar (%217-tile-ref-name bar (mapcar #'list tma-barriers)))
+                             (refuse "filled by a :block (TMA) load-tile"))))
+                       (walk (first args) refs)
+                       (unless (ref-p (second args) refs) (walk (second args) refs))
+                       (walk-args (cddr args) refs))
+                      ((member h '("STORE-TILE" "STORE-TILE-AT") :test #'string=)
+                       (when (ref-p (first args) refs)
+                         (when (getf (cdddr args) :via) (refuse "read by a store-tile :via (TMA)")))
+                       (unless (ref-p (first args) refs) (walk (first args) refs))
+                       (walk-args (rest args) refs))
+                      ((member h '("LOAD-FRAGMENT-A" "LOAD-FRAGMENT-B") :test #'string=)
+                       (if (ref-p (first args) refs) (setf reader t) (walk (first args) refs))
+                       (walk-args (rest args) refs))
+                      ((string= h "MMA-ACCUMULATE-VIA-TILE")
+                       (dolist (a (cddr args))
+                         (if (ref-p a refs) (setf reader t) (walk a refs))))
+                      ((member h '("LET" "LET*") :test #'string=)
+                       (let ((inner refs))
+                         (dolist (b (and (listp (first args)) (first args)))
+                           (let ((name (if (consp b) (first b) b)) (init (and (consp b) (second b))))
+                             (cond ((ref-p init inner) (push name inner))
+                                   (t (walk init inner)
+                                      (when (member name inner) (refuse "~a is rebound" name))))))
+                         (walk-args (rest args) inner)))
+                      (t (dolist (a args)
+                           (if (ref-p a refs)
+                               (refuse "passed to (~(~a~) ..)" h)
+                               (walk a refs))))))))))
+      (walk-args form refs))
+    (values reader refusal)))
+
+;; src/mma.lisp
+(defun %217-let-swizzle-decisions (let-expr)
+  "Endeavour 217.  ((SYM . S) ...) for the scratch bindings of LET-EXPR whose tiles are XOR-swizzled
+   (see the header and swizzle.md), every decision and refusal logged."
+  (when (and *217-swizzle* *216-ldmatrix* (eq *target-backend* :ptx)
+             (consp let-expr) (listp (second let-expr)))
+    (let* ((bindings (second let-expr))
+           (body (cddr let-expr))
+           (tma (%217-block-barrier-names bindings)))
+      (loop for b in bindings
+            when (and (consp b) (= (length b) 2) (symbolp (first b)) (consp (second b))
+                      (or (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX")
+                          (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX-RING")))
+              append (multiple-value-bind (s why) (%217-binding-shift b)
+                       (multiple-value-bind (reader refusal)
+                           (if s (%217-scan-uses body (list (first b)) tma) (values nil nil))
+                         (let ((why (or why refusal (and (not reader) "no mma-accumulate-via-tile reads it"))))
+                           (log:info "217 swizzle ~a: ~a" (first b) (if why (format nil "plain -- ~a" why)
+                                                                         (format nil "S = ~a" s)))
+                           (and (null why) (list (cons (first b) s))))))))))
+
+;;; ---- analysis hooks -----------------------------------------------------------------------------
+
+;; src/mma.lisp  (re-definition: one added binding of *217-swizzled-names*)
+(defun analyze-let-with-tile-explosion (expr env context location)
+  "let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),
+   then explode register-tile bindings into per-fragment mutable variables (register residency,
+   Endeavor 132), then defer to the normal let analysis.
+
+   Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of
+   the body analysis, so operand-shape checks in the expression analyzers can see them.
+
+   Endeavour 207: first checks the qint roles of every MMA in the LET (%qint-mma-walk), while the
+   source element types are still visible.
+
+   Endeavour 217: decides which of this LET's scratch tiles are XOR-swizzled and publishes them in
+   *217-swizzled-names* for the body (%217-let-swizzle-decisions)."
+  (%qint-mma-walk expr nil env location)
+  (let ((lowered (%explode-register-tiles
+                  (%expand-matmul-tile-stride-register-forms expr location)
+                  location context)))
+    (let ((*mma-scratch-tile-dims*
+            (append (and (consp lowered)
+                         (listp (second lowered))
+                         (%mma-scratch-tile-dims-from-bindings (second lowered)))
+                    *mma-scratch-tile-dims*))
+          ;; this LET's own names shadow any outer swizzled binding of the same name
+          (*217-swizzled-names*
+            (append (%217-let-swizzle-decisions lowered)
+                    (remove-if (lambda (e) (and (consp lowered) (listp (second lowered))
+                                                (member (car e) (second lowered)
+                                                        :key (lambda (b) (if (consp b) (first b) b)))))
+                               *217-swizzled-names*))))
+      (analyze-let-expression lowered env context location))))
+
+;; src/analysis/control.lisp  (wrapper; fold: the same few lines at the top of analyze-let-expression,
+;; beside the *194-lane-index-names* tracking)
+(defvar *217-orig-analyze-let* (fdefinition 'analyze-let-expression))
+(defun analyze-let-expression (expr env context location)
+  "Endeavour 217 wrapper around the let analyzer: a binding whose init is a swizzled tile (or a ring-get
+   of a swizzled ring) is swizzled too, for the body; rebinding a swizzled name to anything else hides it.
+   Sequential, like the let."
+  (if (null *217-swizzled-names*)
+      (funcall *217-orig-analyze-let* expr env context location)
+      (let ((names *217-swizzled-names*))
+        (dolist (b (and (consp (cdr expr)) (listp (second expr)) (second expr)))
+          (let ((name (if (consp b) (first b) b))
+                (init (and (consp b) (second b))))
+            (when (and name (symbolp name)
+                       ;; a scratch binding's own decision was made by analyze-let-with-tile-explosion
+                       (not (and (consp init)
+                                 (or (%head-name-eq (first init) "MAKE-SCRATCH-MATRIX")
+                                     (%head-name-eq (first init) "MAKE-SCRATCH-MATRIX-RING")))))
+              (let ((src (%217-tile-ref-name init names)))
+                (setf names (remove name names :key #'car))
+                (when src
+                  (log:debug "217 alias ~a -> ~a" name src)
+                  (push (cons name (cdr (assoc src names))) names))))))
+        (let ((*217-swizzled-names* names))
+          (funcall *217-orig-analyze-let* expr env context location)))))
+
+;; src/analysis/structs.lisp  (wrapper; fold: tag inside the tensor path of analyze-aref-expression)
+(defvar *217-orig-analyze-aref* (fdefinition 'analyze-aref-expression))
+(defun analyze-aref-expression (expr env context location)
+  "Endeavour 217 wrapper: an element access of a swizzled tile records S on its array node, for
+   %aref-tensor-ir."
+  (let ((node (funcall *217-orig-analyze-aref* expr env context location))
+        (s (and *217-swizzled-names* (%217-form-shift (second expr)))))
+    (when s
+      (if (semantic-aref-p node)
+          (progn (setf (gethash (semantic-aref-array-node node) *217-node-shift*) s)
+                 (log:debug "217 aref of ~a: S = ~a" (second expr) s))
+          (error 'crisp-compiler-error
+                 :message (format nil "Endeavour 217 internal: an access of the swizzled tile ~a did not analyze to an aref (~a)."
+                                  (second expr) (type-of node))
+                 :source-location location)))
+    node))
+
+;; src/mma.lisp  (wrapper; fold: in %216-ldmatrix-node)
+(defvar *217-orig-ldm-node* (fdefinition '%216-ldmatrix-node))
+(defun %216-ldmatrix-node (operand src probe elem coords env context location)
+  "Endeavour 217 wrapper: an ldmatrix of a swizzled tile records S on its hw-op node."
+  (let ((node (funcall *217-orig-ldm-node* operand src probe elem coords env context location))
+        (s (%217-form-shift src)))
+    (when s
+      (setf (gethash node *217-node-shift*) s)
+      (log:debug "217 ldmatrix ~(~a~) of ~a: S = ~a" operand src s))
+    node))
+
+;; src/analysis/control.lisp  (guard: a TMA fill of a swizzled tile is a compiler bug, never silent)
+(defvar *217-orig-tma-load* (fdefinition '%analyze-nvvm-tma-load-tile-at))
+(defun %analyze-nvvm-tma-load-tile-at (expr env context location)
+  "Endeavour 217 guard around the TMA load-tile analyzer: its destination must not be a swizzled tile."
+  (when (%217-form-shift (third expr))
+    (error 'crisp-compiler-error
+           :message (format nil "Endeavour 217 internal: TMA load-tile into the swizzled tile ~a." (third expr))
+           :source-location location))
+  (funcall *217-orig-tma-load* expr env context location))
+
+;;; ---- codegen ------------------------------------------------------------------------------------
+
+;; src/mma.lisp
+(defun %217-swizzle-gep (builder base off-bytes s)
+  "Endeavour 217.  BASE + swizzle(OFF-BYTES) as an i8 GEP: OFF xor (((OFF >> S) & 7) << 4), OFF-BYTES an
+   i64 byte offset from the tile / ring-slot base.  The IR twin of %217-swizzle-offset."
+  (let* ((i64 (llvm-int64-type))
+         (row (crisp.llvm-bindings::llvm-build-and
+               builder
+               (crisp.llvm-bindings::llvm-build-l-shr builder off-bytes (llvm-const-int i64 s nil) "swz_sh")
+               (llvm-const-int i64 7 nil) "swz_row"))
+         (off2 (crisp.llvm-bindings::llvm-build-xor
+                builder off-bytes
+                (crisp.llvm-bindings::llvm-build-shl builder row (llvm-const-int i64 4 nil) "swz_x")
+                "swz_off")))
+    (cffi:with-foreign-object (idx :pointer 1)
+      (setf (cffi:mem-aref idx :pointer 0) off2)
+      (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base idx 1 "swz_ptr"))))
+
+;; src/codegen.lisp  (re-definition: the swizzled branch)
+(defun %aref-tensor-ir (array-node cell-spec element-type index-val builder module var-env
+                        di-builder di-scope location-map)
+  "semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the
+   element pointer is a typed `getelementptr inbounds T, base, index` off the parent storage's base
+   pointer (SROA field 0 of field 0) -- typed, so a constant term of the index folds into the access's
+   immediate offset.  A read of a read-only kernel-parameter tensor gets !invariant.load.
+   Endeavour 217: when ARRAY-NODE addresses a swizzled tile (*217-node-shift*), the byte offset is
+   swizzled first (%217-swizzle-gep).
+   Returns (values loaded nil ptr)."
+  (let* ((tensor-val     (generate-node-ir array-node builder module var-env
+                                           di-builder di-scope location-map))
+         (elem-type-spec element-type)
+         (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
+         (mangled-name   (mangle-template-struct-name (first cell-spec)
+                                                      (rest cell-spec)))
+         (mark-invariant-p (%array-node-readonly-tensor-param-p array-node))
+         (swz (gethash array-node *217-node-shift*)))
+    (log:info "semantic-aref tensor: struct=~a elem=~a invariant=~a swizzle=~a"
+              mangled-name elem-type-spec mark-invariant-p swz)
+    (ensure-struct-llvm-type mangled-name)
+    (let* ((parent-val  (llvm-build-extract-value builder tensor-val 0 "t_parent_val"))
+           (base-ptr    (llvm-build-extract-value builder parent-val 0 "t_base_ptr"))
+           ;; flat element index already incorporates offsets and strides
+           (flat-i64    (llvm-build-sext builder index-val (llvm-int64-type) "t_flat_i64")))
+      (when (and swz (/= (%ptr-as base-ptr) 3))
+        (error 'crisp-compiler-error
+               :message (format nil "Endeavour 217 internal: a swizzled tile's base is in addrspace(~a), not shared memory (3)."
+                                (%ptr-as base-ptr))))
+      (cffi:with-foreign-object (indices :pointer 1)
+        (setf (cffi:mem-aref indices :pointer 0) flat-i64)
+        (let* ((t-ptr  (if swz
+                           (%217-swizzle-gep builder base-ptr
+                                             (llvm-build-mul builder flat-i64 (llvm-size-of elem-llvm-type) "swz_bytes")
+                                             swz)
+                           (llvm-build-in-bounds-gep2
+                            builder elem-llvm-type base-ptr indices 1 "t_ptr")))
+               (loaded (llvm-build-load2 builder elem-llvm-type t-ptr "t_elem")))
+          (when mark-invariant-p
+            (%attach-invariant-load loaded module))
+          (values loaded nil t-ptr))))))
+
+;; src/mma.lisp  (re-definition of the 216 overlay copy: the swizzled branch)
+(defun %216-shared-elem-ptr (builder tensor-val r c elem-llvm)
+  "Endeavour 216.  The shared-memory address of element (R, C) of the 2-D tile TENSOR-VAL: base + (R*s0 +
+   C*s1) elements.  Endeavour 217: swizzled when the ldmatrix being lowered reads a swizzled tile
+   (*217-shift*, bound by the semantic-hw-op :around)."
+  (let* ((storage (llvm-build-extract-value builder tensor-val 0 "ldm_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "ldm_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "ldm_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "ldm_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "ldm_s1"))
+         (flat (llvm-build-add builder
+                               (llvm-build-mul builder (%216-to-i64 builder r) s0 "ldm_r")
+                               (llvm-build-mul builder (%216-to-i64 builder c) s1 "ldm_c")
+                               "ldm_flat")))
+    (unless (= (%ptr-as base) 3)
+      (error 'crisp-compiler-error
+             :message (format nil "Endeavour 216 internal: ldmatrix source base is in addrspace(~a), not shared memory (3)." (%ptr-as base))))
+    (if *217-shift*
+        (%217-swizzle-gep builder base (llvm-build-mul builder flat (llvm-size-of elem-llvm) "ldm_bytes") *217-shift*)
+        (cffi:with-foreign-object (idx :pointer 1)
+          (setf (cffi:mem-aref idx :pointer 0) flat)
+          (llvm-build-gep2 builder elem-llvm base idx 1 "ldm_ptr")))))
+
+;; src/mma.lisp
+(defmethod generate-node-ir :around ((node semantic-hw-op) builder module var-env
+                                     di-builder di-scope location-map)
+  "Endeavour 217: expose a swizzled ldmatrix's shift to %216-shared-elem-ptr."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*217-shift* (gethash node *217-node-shift*)))
+    (call-next-method)))

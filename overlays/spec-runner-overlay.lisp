@@ -98,3 +98,72 @@
             (list "ld.global.nc.b16" (if d :some 12) "8 A elements + 4 B elements"))
       (unless d
         (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" 1 "one fragment MMA")))))))
+
+
+;;; ---------------------------------------------------------------------------------------------------
+;;; Endeavour 217 -- XOR-swizzled ldmatrix scratch tiles (TDD validators, written before the feature).
+;;; The swizzle's footprint in PTX is xor.b64 in the shared-memory address arithmetic; 216's kernels
+;;; have none (checked: 216 spec 01 shape, the contest ring kernel, 217 specs 02-05 on today's compiler).
+;;; ---------------------------------------------------------------------------------------------------
+
+;; tests/run-specs.lisp
+(defun validate-ptx-217-swizzle-k32 (file ptx-string)
+  "Endeavour 217 spec 02: one warp, 64x64 register tile, K = 32 per stage, tiles A 64x32 (64-byte pitch)
+   and B 32x64 (128-byte pitch) -- both swizzle-eligible.  Forward: 8 ldmatrix.x4 + 16 ldmatrix.x2.trans
+   feed 64 MMAs; no per-element ld.shared.b16; the swizzle's xor.b64 present.  Under --differentiate the
+   _grad kernel's backward GEMMs add their own (192 MMAs, 32 x4, 64 x2.trans on today's compiler), so only
+   presence, the absence of scalar reads and the xor are pinned there."
+  (declare (ignore file))
+  (let ((d (and (boundp '*compile-differentiate*) *compile-differentiate*)))
+    (%208-check-counts
+     "217-swizzle-k32" ptx-string
+     (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" (if d :some 64) "4 x 8 fragments x 2 K steps")
+           (list "ldmatrix.sync.aligned.m8n8.x4.shared.b16" (if d :some 8) "4 A row fragments x 2 K steps")
+           (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" (if d :some 16) "8 B column fragments x 2 K steps")
+           (list "ld.shared.b16" 0 "no per-element fragment reads")
+           (list "xor.b" :some "the swizzle in the tile addressing")))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-217-swizzle-ring (file ptx-string)
+  "Endeavour 217 spec 03: the contest ring kernel with swizzled ring slots.  Presence only (LLVM merges the
+   four warps' branches -- see validate-ptx-216-ldmatrix-ring), plus the swizzle's xor.b64."
+  (declare (ignore file))
+  (%208-check-counts
+   "217-swizzle-ring" ptx-string
+   (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" :some "the fp16 MMAs")
+         (list "ldmatrix.sync.aligned.m8n8.x4.shared.b16" :some "A fragments from a ring slot")
+         (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" :some "B fragments from a ring slot")
+         (list "ld.shared.b16" 0 "no per-element fragment reads")
+         (list (format nil "cp.async.wait_group ~c4" #\Tab) 1 "a 3-slot ring with 2 arrivals keeps 4 groups in flight")
+         (list "xor.b" :some "the swizzle in the slot addressing"))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-217-second-reader (file ptx-string)
+  "Endeavour 217 spec 04 (D-217-2): A-TILE is read by ldmatrix AND copied out by store-tile (per-element
+   ld.shared.b16 through the aref path).  The tile stays swizzled -- xor.b64 present -- and the echo's
+   scalar shared reads are still there.  Whether the echo reads the RIGHT elements is a metal claim."
+  (declare (ignore file))
+  (let ((d (and (boundp '*compile-differentiate*) *compile-differentiate*)))
+    (%208-check-counts
+     "217-second-reader" ptx-string
+     (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" (if d :some 64) "4 x 8 fragments x 2 K steps")
+           (list "ldmatrix.sync.aligned.m8n8.x4.shared.b16" (if d :some 8) "A fragments")
+           (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" (if d :some 16) "B fragments")
+           (list "ld.shared.b16" :some "the store-tile echo of A-TILE reads it element by element")
+           (list "xor.b" :some "A-TILE (and B-TILE) swizzled despite the second reader")))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-217-no-swizzle (file ptx-string)
+  "Endeavour 217 spec 05: neither tile is swizzle-eligible (A 48x16: 1536 bytes is not a whole number of
+   1024-byte blocks; B 16x48: 96-byte pitch is not a power of two), so no xor.b64 -- in the forward or, under
+   --differentiate, the backward (its transposes and staged dC have the same odd shapes).  Both stay
+   ldmatrix sources."
+  (declare (ignore file))
+  (let ((d (and (boundp '*compile-differentiate*) *compile-differentiate*)))
+    (%208-check-counts
+     "217-no-swizzle" ptx-string
+     (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" (if d :some 18) "3 x 6 fragments x 1 K step")
+           (list "ldmatrix.sync.aligned.m8n8.x4.shared.b16" (if d :some 3) "A fragments")
+           (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" (if d :some 6) "B fragments")
+           (list "ld.shared.b16" 0 "no per-element fragment reads")
+           (list "xor.b" 0 "nothing swizzled")))))
