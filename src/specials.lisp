@@ -51,6 +51,16 @@
           *211-SHIFT-OP-NAMES*
           *212-VOTE-OP-NAMES*
           *213-TCGEN05-B-MN*
+          *216-LDMATRIX*
+          *217-AWAIT-RING-OF*
+          *217-COMMIT-RING*
+          *217-COMMIT-RING-OF*
+          *217-COUNT-AWAIT*
+          *217-NODE-SHIFT*
+          *217-RING-COUNTERS*
+          *217-SHIFT*
+          *217-SWIZZLE*
+          *217-SWIZZLED-NAMES*
           *ACCUM-BASE-REGISTRY*
           *ACCUM-REGISTRY*
           *AD-ANY-OUTPUT-DOUBLE*

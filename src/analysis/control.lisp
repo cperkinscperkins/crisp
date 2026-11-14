@@ -1399,14 +1399,35 @@
       ((long ulong double) 2)
       (t nil))))
 
-(defun analyze-load-tile-at-expression (expr env context location)
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 217 F-217-2 -- a count-correct cp.async ring await
+;;;; See tests/spec/217-swizzle/swizzle.md (F-217-2).
+;;;; ----------------------------------------------------------------------
+
+(defvar *217-count-await* t
+  "F-217-2.  T: a :linear ring's await waits for the groups actually committed (count-correct).  NIL: the
+   old static cp.async.wait_group (ring-count - 1) x arrivals -- kept only so a twin build can price it.")
+
+(defvar *217-commit-ring* nil
+  "F-217-2.  Bound by analyze-load-tile-at-expression to the barrier RING symbol of a :linear ring load on
+   PTX while its expansion is analyzed; analyze-%cp-async-commit-expression tags its commit with it.")
+
+(defvar *217-commit-ring-of* (make-hash-table :test 'eq :weakness :key)
+  "F-217-2.  semantic-cp-async-commit node -> the barrier ring symbol whose stage it closes.")
+
+(defvar *217-await-ring-of* (make-hash-table :test 'eq :weakness :key)
+  "F-217-2.  semantic-nvvm-cp-async-wait node -> (RING-SYMBOL ARRIVALS DEPTH) for a :linear ring await.")
+
+(defun analyze-load-tile-at-expression-base (expr env context location)
   "Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).
    Rejects placement inside a thread-divergent conditional. If :barrier is provided
    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates
    codegen via %expand-load-tile-at-form.
    Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).
    Endeavour 196: a :linear barrier on PTX without :transpose takes the VECTORIZED cp.async nest
-   (%196-expand-async-load-tile-vec-form, 16-byte chunks); with :transpose the per-element one."
+   (%196-expand-async-load-tile-vec-form, 16-byte chunks); with :transpose the per-element one.
+
+   F-217-2: analyze-load-tile-at-expression (below) marks a :linear ring load's commit."
   ;; Endeavour 192: the cache hint comes from the tensor's type; a per-operation :cache is refused.
   (%refuse-per-operation-cache "load-tile-at" (nthcdr 4 expr) location)
   ;; Endeavor 139: inside a warp-spec block, %warp-spec-check-block-only (after mode resolution)
@@ -1451,6 +1472,21 @@
         (t
          (analyze-expression (%expand-load-tile-at-form expr location)
                              env context location))))))
+
+(defun analyze-load-tile-at-expression (expr env context location)
+  "F-217-2 wrapper: a load-tile-at whose :barrier is (ring-get RING i) on a :linear ring, on PTX, binds
+   *217-commit-ring* to RING while the original analyzes it, so the cp.async commit its expansion ends with
+   is counted against RING (see analyze-%cp-async-commit-expression)."
+  (let* ((barrier-form (%extract-key-arg (nthcdr 4 expr) :barrier nil))
+         (ring (and barrier-form
+                    (eq *target-backend* :ptx)
+                    (%barrier-ring-form-p barrier-form)
+                    (eq (async-barrier-mode-of barrier-form) :linear)
+                    (%barrier-ring-form-p barrier-form))))
+    (when ring
+      (log:debug "F-217-2: load-tile-at into :linear ring ~S -- its commit is counted" ring))
+    (let ((*217-commit-ring* ring))
+      (analyze-load-tile-at-expression-base expr env context location))))
 
 ;;; Endeavour 152: this function was an OVERLAY WRAPPER around the original definition,
 ;;; captured with (fdefinition ...) at load time.  That trick cannot survive the move into
@@ -1583,7 +1619,12 @@
 
 (defun %analyze-nvvm-tma-load-tile-at (expr env context location)
   "Endeavor 152 wrapper (multicast tag), plus Endeavour 198: a :128b load of a tile wider than 128
-   bytes is tagged with its box split, which codegen issues as one copy per box."
+   bytes is tagged with its box split, which codegen issues as one copy per box.
+   Endeavour 217: its destination must not be a swizzled tile (a compiler bug, never silent)."
+  (when (%217-form-shift (third expr))
+    (error 'crisp-compiler-error
+           :message (format nil "Endeavour 217 internal: TMA load-tile into the swizzled tile ~a." (third expr))
+           :source-location location))
   (let* ((node (%analyze-nvvm-tma-load-tile-at-multicast expr env context location))
          (tile-form (third expr))
          (swizzle (%extract-key-arg (nthcdr 4 expr) :swizzle nil)))
@@ -1718,13 +1759,24 @@
           :type 'nil
           :source-location location))))))
 
-(defun analyze-%cp-async-commit-expression (expr env context location)
-  "Analyzer for (%cp-async-commit) — emits cp.async.commit_group."
+(defun analyze-%cp-async-commit-expression-base (expr env context location)
+  "Analyzer for (%cp-async-commit) — emits cp.async.commit_group.
+
+   F-217-2: analyze-%cp-async-commit-expression (below) tags the node with its ring."
   (declare (ignore env context))
   (unless (= (length expr) 1)
     (error 'crisp-compiler-error :message "%cp-async-commit: takes no arguments"
       :source-location location))
   (make-semantic-cp-async-commit :type 'nil :source-location location))
+
+(defun analyze-%cp-async-commit-expression (expr env context location)
+  "Analyzer for (%cp-async-commit) -- emits cp.async.commit_group.
+   F-217-2: inside a :linear ring load (*217-commit-ring* bound) the node is tagged with the ring, so its
+   codegen also counts the group on the ring's pending counter."
+  (let ((node (analyze-%cp-async-commit-expression-base expr env context location)))
+    (when *217-commit-ring*
+      (setf (gethash node *217-commit-ring-of*) *217-commit-ring*))
+    node))
 
 
 (defun analyze-store-tile-at-expression (expr env context location)
@@ -1802,10 +1854,30 @@
       (t
        (analyze-expression nil env context location)))))
 
+(defun %217-tag-ring-await (expr node)
+  "F-217-2: NODE, the analyzed (await BARRIER) EXPR.  A cp.async await on (ring-get RING i) of a :linear ring with depth > 0, outside a
+   warp-specialized block, is tagged (RING ARRIVALS DEPTH) so codegen emits the count-correct wait."
+  (progn
+    (when (and (semantic-nvvm-cp-async-wait-p node)
+               (not *in-warp-spec-block*)
+               (plusp (semantic-nvvm-cp-async-wait-group-count node)))
+      (let ((ring (%barrier-ring-form-p (second expr))))
+        (if ring
+            (let ((info (list ring (barrier-load-count-of (second expr))
+                              (semantic-nvvm-cp-async-wait-group-count node))))
+              (log:debug "F-217-2: await on :linear ring ~S, arrivals ~a, depth ~a -- count-correct" ring
+                         (second info) (third info))
+              (setf (gethash node *217-await-ring-of*) info))
+            (log:debug "F-217-2: await ~S has depth ~a but no literal (ring-get RING i) -- static wait kept"
+                       (second expr) (semantic-nvvm-cp-async-wait-group-count node)))))
+    node))
+
 (defun analyze-await-expression (expr env context location)
   "Endeavour 196 wrapper: a cp.async await (a :linear barrier on PTX) outside a warp-specialized block
-   becomes wait_group + sync-workgroup, so every thread sees every thread's copies.  See D-196-11."
-  (let ((node (analyze-await-expression-base expr env context location)))
+   becomes wait_group + sync-workgroup, so every thread sees every thread's copies.  See D-196-11.
+   F-217-2: a :linear ring's await is tagged for the count-correct wait (%217-tag-ring-await)."
+  (let ((node (%217-tag-ring-await
+               expr (analyze-await-expression-base expr env context location))))
     (if (and (semantic-nvvm-cp-async-wait-p node) (not *in-warp-spec-block*))
         (let ((sync (analyze-expression (list (intern "SYNC-WORKGROUP" (find-package :crisp-language)))
                                         env context location)))
@@ -2033,14 +2105,35 @@
                '("TO-WARP-UNIFORM" "TO-WORKGROUP-UNIFORM")
                :test #'string=)))
 
-(defun analyze-let-expression (expr env context location)
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 217 -- swizzle state (the decisions are made in src/mma.lisp)
+;;;; See tests/spec/217-swizzle/swizzle.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *217-swizzle* t
+  "Endeavour 217.  NIL turns the compiler-owned swizzle of ldmatrix scratch tiles off (twin builds).")
+
+(defvar *217-swizzled-names* nil
+  "Endeavour 217.  ((SYM . S) ...): the scratch bindings (and their LET aliases) in scope whose tiles are
+   XOR-swizzled with shift S.  Bound by analyze-let-with-tile-explosion (decisions) and
+   analyze-let-expression (aliases).")
+
+(defvar *217-node-shift* (make-hash-table :test 'eq :weakness :key)
+  "Endeavour 217.  semantic node -> S: an aref's array node, or an ldmatrix hw-op, that addresses a
+   swizzled tile.")
+
+(defvar *217-shift* nil "Endeavour 217.  Bound around an ldmatrix hw-op's codegen: its S, or NIL.")
+
+(defun analyze-let-expression-base (expr env context location)
   "Analyzes a `(let ...)` expression.
    Extended (091): strips leading declare forms from the body, checks for
    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.
    Extended (120): propagates each binding's uniformity from its init.
    Endeavour 194 (D-194-15): tracks which bindings hold the local thread index (*194-lane-index-names*)
    for the body.  Sequential, like the let: a binding sees the ones before it, and rebinding a name
-   shadows an outer index of that name."
+   shadows an outer index of that name.
+
+   Endeavour 217: analyze-let-expression (below) carries swizzled tile names through aliases."
   (let ((%194-names *194-lane-index-names*))
     (dolist (b (and (consp (cdr expr)) (listp (second expr)) (second expr)))
       (let ((name (if (consp b) (first b) b))
@@ -2173,6 +2266,29 @@
                                        :bindings analyzed-bindings
                                        :body analyzed-body
                                        :source-location location))))))))))
+
+(defun analyze-let-expression (expr env context location)
+  "Endeavour 217 wrapper around the let analyzer: a binding whose init is a swizzled tile (or a ring-get
+   of a swizzled ring) is swizzled too, for the body; rebinding a swizzled name to anything else hides it.
+   Sequential, like the let."
+  (if (null *217-swizzled-names*)
+      (analyze-let-expression-base expr env context location)
+      (let ((names *217-swizzled-names*))
+        (dolist (b (and (consp (cdr expr)) (listp (second expr)) (second expr)))
+          (let ((name (if (consp b) (first b) b))
+                (init (and (consp b) (second b))))
+            (when (and name (symbolp name)
+                       ;; a scratch binding's own decision was made by analyze-let-with-tile-explosion
+                       (not (and (consp init)
+                                 (or (%head-name-eq (first init) "MAKE-SCRATCH-MATRIX")
+                                     (%head-name-eq (first init) "MAKE-SCRATCH-MATRIX-RING")))))
+              (let ((src (%217-tile-ref-name init names)))
+                (setf names (remove name names :key #'car))
+                (when src
+                  (log:debug "217 alias ~a -> ~a" name src)
+                  (push (cons name (cdr (assoc src names))) names))))))
+        (let ((*217-swizzled-names* names))
+          (analyze-let-expression-base expr env context location)))))
 
 (defun analyze-progn-expression (expr env context location)
   "Analyzes a `(progn ...)` expression.

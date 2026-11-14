@@ -303,6 +303,15 @@ For speed, use the tensor-core / XMX paths (register tiles and `mma`), async til
 specialization — chapters 57-60, and the tuned kernels in `performance/matmul-bmg/` and the matmul
 benchmarks.  These need `--hardware-profile`.
 
+**Scratch-tile shapes for `mma.sync` (NVIDIA).**  A 16-bit `half` / `bfloat16` scratch tile that feeds
+`mma-accumulate-via-tile` is read with `ldmatrix` when its row is a multiple of 16 bytes (endeavour 216).
+The compiler also XOR-swizzles its layout against shared-memory bank conflicts (endeavour 217) when the
+row pitch is a power of two of at least 32 bytes and the whole tile is a multiple of max(1024, 8 x pitch)
+bytes.  You write nothing for either, but other shapes silently take the slower path.  `(64 32)` and
+`(32 64)` half tiles qualify; `(48 16)` (1536 bytes) and `(16 48)` (a 96-byte pitch) stay unswizzled
+(`tests/spec/217-swizzle/02` and `05`).  A tile filled by a TMA (`:block`-barrier) `load-tile`, stored
+with `:via`, or passed to a function also stays unswizzled.
+
 **16-bit output.**  A 16-bit MMA accumulates in `float`, and an element holds exactly its own type, so
 storing the accumulator into a `half` / `bfloat16` matrix is refused.  Put the conversion on the store's
 SOURCE: `(store-tile (to-half C-tile) C (grid-y grid-x))`, `(store-tile-at (to-half D) C (row col))`, or

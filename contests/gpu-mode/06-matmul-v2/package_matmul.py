@@ -496,6 +496,37 @@ DISPATCH_V9 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K %
         _load("small", PTX_SMALL)
         _mod.run_small(a, b, c)"""
 
+# v10 (endeavour 216): v9 with the A100 / L4 lane on the 3-slot cp.async ring kernel, whose mma.sync
+# fragments now come from shared memory by ldmatrix.  The ring walks K / 32 whole stages, so K % 32.
+AMPERE4W_RING = dict(AMPERE4W, key="ampring", crisp="matmul_ampere_4w_ring.crisp", k_step=32)
+
+DISPATCH_V10 = DISPATCH_V9.replace(
+    """    elif _CAP[0] in (8, 10) and M % 128 == 0 and N % 128 == 0 and K % 16 == 0:
+        _load("ampk32", PTX_AMPK32)
+        _mod.run_ampk32(a, b, c)""",
+    """    elif _CAP[0] in (8, 10) and M % 128 == 0 and N % 128 == 0 and K % 32 == 0:
+        _load("ampring", PTX_AMPRING)
+        _mod.run_ampring(a, b, c)""")
+assert "ampring" in DISPATCH_V10
+
+
+def build_v10() -> None:
+    """Endeavour 216: crisp_matmul_v10.py.  v9's H100 and B200 kernels rebuilt by today's compiler (ldmatrix
+    touches only mma.sync fragments, so their PTX is unchanged -- compared before submitting), the A100 / L4
+    ring kernel, and the small fallback (ldmatrix too).  Kept apart from build_all so v9 stays as submitted."""
+    ks = {"small": build_kernel(KernelSpec(**SMALL)),
+          "h100tma": build_kernel(KernelSpec(**H100_TMA)),
+          "b200mn": build_kernel(KernelSpec(**B200_TCMN)),
+          "b200mn128": build_kernel(KernelSpec(**B200_TCMN128)),
+          "ampring": build_kernel(KernelSpec(**AMPERE4W_RING))}
+    make_submission(
+        "crisp_matmul_v10.py",
+        "matmul_v2 v10: H100 wgmma 2wg_deep + TMA-store epilogue; B200 tcgen05 (as v9); A100 / L4 4-warp mma.sync with ldmatrix fragments and a 3-slot cp.async ring",
+        ks, DISPATCH_V10,
+        ["matmul_h100_2wg_tma.crisp", "matmul_b200_tcgen05_mn.crisp", "matmul_b200_tcgen05_mn_128.crisp",
+         "matmul_ampere_4w_ring.crisp", "matmul_small_mma.crisp"])
+
+
 # v6: v5's dispatch with the B200 on tcgen05 (transpose b, then the tensor-memory kernel).
 DISPATCH_V6 = """    if _CAP == (9, 0) and M % 128 == 0 and N % 256 == 0 and K % 64 == 0:
         _load("h100tma", PTX_H100TMA)

@@ -83,6 +83,30 @@ A100 / L4, 2026-11-11: the 4-warp kernel's K tile per cp.async stage, one A100 r
 (`.trans` for the row-major B) loads four fragment registers per instruction -- an endeavour in the core
 mma.sync lowering, for Chris to scope.
 
+**v10 (endeavour 216, 2026-11-12): ldmatrix + a cp.async ring.**  The fragments now come from shared memory
+by `ldmatrix.x4` (A) / `ldmatrix.x2.trans` (the (K N) B), and `matmul_ampere_4w_ring.crisp` stages A / B in
+3-slot rings.  A100 twin A/B (970853): scored shape 4204 -> 3032 us; ring 2898 us (970856).  Leaderboard
+970869: **A100 3555.3 us** (v5 4863; the board's runner was an SXM4, slower than diag 2's PCIe).  L4: the ring
+measured 4355 us vs v8's 6662 (970860), but three L4 submissions (970865, 970866, 970870) hit GPU MODE's hard
+timeout (a 4th, 970880, too; a torch.matmul control 970884 squeaked in at 1510 s -- queue congestion), so v10 is
+not yet on the L4 board.  Next lever: bank conflicts (tests/spec/216-ldmatrix/ldmatrix.md,
+D-216-5).
+
+**v11 / v12 (endeavour 217, 2026-11-13): the compiler swizzles the ring's tiles; a ring-await bug found on L4.**
+v11 is v10 rebuilt with a compiler-owned XOR swizzle of the shared tiles an `ldmatrix` reads (the bank
+conflicts above; tests/spec/217-swizzle/swizzle.md).  Same Crisp source.  A100 diag 971121: ring 2887 ->
+1640 us, exact; leaderboard 971123 **A100 1646.6 us public / 2029.6 secret**.  But v11 FAILED L4 ranked
+validation (971129 timeout, 971140 "ranked validation failed"; v10 control 971139 passed, 4808.7 us).
+Ranked mode rechecks every rep (up to 100 per benchmark, fresh seeds) where test mode checks once, so a race
+passes test and fails ranked.  On a rented L4 (GPU MODE's own eval.py + a 300-rep stress,
+put_temp_files_here/217/l4) the cause was the ring's `await`: one static `cp.async.wait_group 4`, which waits
+for nothing in the last two K iterations because the refill is skipped there -- a stale K slice in 1-20 output
+tiles of 239 / 300 runs.  v10 had the same bug; the swizzle's faster reads removed its timing margin (BUG 163).
+v12 = v11 rebuilt with the compiler's count-correct ring await (only the ring kernel's PTX changes): 0 bad
+runs on the pod, and **L4 3727.4 us public / 3518.9 secret (971198)**, **A100 2016.3 / 1668.4 (971199)** --
+the A100 public / secret pair swapped against v11's, runner variance, not a regression (on one L4 pod v12 ran
+at v11's speed).
+
 **B200 scored-shape study (2026-11-11, popcorn B200 diags; endeavour 214's 2-SM pair parked).**  Where
 v7's 226 us goes, measured by removing or reshaping one thing at a time (all arms exact unless noted):
 | probe (diag) | 4096 x 5120 x 4096 | 9472 x 2048 x 4096 | 8192^3 |

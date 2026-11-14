@@ -4712,3 +4712,23 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         corpus are not; in-process spec results are.  215/01's validator accepts either spelling of the
         8-byte pair store meanwhile (comment cites this bug).
         Evidence: put_temp_files_here/215/validated-group.ptx vs validated-f32.ptx.
+
+[x] 163 A cp.async RING'S await WAITED FOR NOTHING IN THE LAST K ITERATIONS -- A SILENT STALE READ (F-217-2).
+        Found 2026-11-13 (endeavour 217): matmul_v2 v11 passed GPU MODE test mode and the A100 leaderboard
+        but failed L4 ranked validation.  (await (ring-get bars slot)) on a :linear ring lowered to ONE
+        static cp.async.wait_group (ring-count - 1) x arrivals (= 4 for the contest's 3-slot, 2-load ring),
+        which is the slot's stage only while every iteration commits a new one.  The kernel refills under
+        (when more? ..), so in the last two K iterations nothing is committed and wait_group 4 waits for
+        nothing: the slot about to be read may still be in flight.  On an L4 pod (put_temp_files_here/217/l4,
+        GPU MODE's own eval.py + a 300-rep stress): v11 had 239 / 300 bad runs at the scored shape, 1-20
+        output tiles each off by one stale K slice; the same PTX with wait_group 0 was 0 / 300 and
+        bit-identical to v10.  v10 carried the bug too -- the swizzle's faster reads removed its timing
+        margin.  Ranked mode rechecks EVERY rep (up to 100 per benchmark), test mode once, so a race like
+        this passes test and fails ranked.
+        FIXED 2026-11-13 (folded 2026-11-14): a count-correct await.  Each :linear ring keeps a per-thread
+        i32 of its committed-not-yet-awaited groups (an entry-block alloca, a register after mem2reg); a ring
+        load-tile's commit adds 1; await waits for the largest multiple of arrivals <= the groups committed
+        after the awaited stage, capped at the old depth (a compare chain over 4 / 2 / 0), then retires the
+        stage.  tests/spec/217-swizzle/06-ring-tail-await.crisp; v12 passed L4 ranked (971198, 3518.9 us) and
+        A100 (971199, 2016.3 us).  Unexplained, and moot under the fix: K = 64 / 96 (the FIRST iteration
+        under-waits there) never failed on either GPU.

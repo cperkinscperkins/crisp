@@ -1,5 +1,7 @@
 ;; overlays/spec-runner-overlay.lisp
 (in-package :crisp.spec-runner)
+;; EMPTY as of 2026-11-14 -- endeavours 216 / 217's validators (%216-check-one-warp,
+;; validate-ptx-216-*, validate-ptx-217-*) folded into tests/run-specs.lisp after the 212 validators.
 ;; EMPTY as of 2026-11-11 -- validate-ptx-tcgen05-acc-ring / -qint-ring (the "], 512;" needle),
 ;; endeavour 213's validate-ptx-tcgen05-transb(-ring) and endeavour 215's
 ;; validate-ptx-tcgen05-vector-stores-f32 / -f16 folded into tests/run-specs.lisp.

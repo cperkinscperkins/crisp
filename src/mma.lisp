@@ -761,7 +761,149 @@
       (list (intern "TO" (find-package :crisp-language)) elem (list '~ src rr cc))
       (list '~ src rr cc)))
 
-(defun analyze-load-fragment-a (expr env context location)
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 216 -- 16-bit mma.sync fragments from shared memory by ldmatrix
+;;;; See tests/spec/216-ldmatrix/ldmatrix.md.
+;;;; ----------------------------------------------------------------------
+
+(defvar *216-ldmatrix* t
+  "Endeavour 216.  When true, a 16-bit load-fragment-a / -b whose source is an eligible shared-memory
+   scratch matrix is ONE ldmatrix per fragment instead of 8 (A) / 4 (B) scalar ld.shared.b16.  NIL
+   restores the per-element reads exactly -- the switch a twin-PTX A/B build flips.")
+
+(defun %216-ldmatrix-eligible-p (src probe elem operand context)
+  "Endeavour 216.  T when load-fragment-OPERAND (:a or :b) of SRC (analyzed as PROBE, element ELEM) can
+   be one ldmatrix: PTX, a 16-bit element, SRC a :local (shared-memory) :COMPACT ROW-MAJOR matrix whose
+   static (ROWS COLS) are known and whose row is a multiple of 16 bytes -- ldmatrix takes each 8-element
+   row segment from a 16-byte-aligned address, and a fragment's segments start at multiples of 8 columns,
+   so the row pitch is the only thing that can break the alignment.
+
+   :COMPACT is checked on its own because a (transpose X) view keeps X's contiguous-term (:last) and marks
+   only its alignment slot :strided -- its rows are NOT contiguous, and ldmatrix would read X's rows
+   instead.  (Such a view also has no static scratch dims today, so it was refused already, but only by
+   accident.)  Every refusal is logged and keeps the per-element reads, which are correct for any layout."
+  (let* ((canon (ignore-errors (%ts-canonicalize-tensor-type (get-single-value-type probe))))
+         (addr (and (consp canon) (>= (length canon) 4) (fourth canon)))
+         (aln (and (consp canon) (>= (length canon) 5) (fifth canon)))
+         (ct (and canon (%get-tensor-ct canon)))
+         (dims (ignore-errors (%198-tile-static-dims src 2 context)))
+         (why (cond ((not *216-ldmatrix*) "disabled")
+                    ((eq *target-backend* :spirv) "SPIR-V")
+                    ((not (eql (%mma-elem-bits elem) 16)) "not a 16-bit element")
+                    ((not (and addr (symbolp addr) (string= (symbol-name addr) "LOCAL"))) "not shared memory")
+                    ((not (and aln (symbolp aln) (string= (symbol-name aln) "COMPACT"))) "not compact (a strided view)")
+                    ((not (and ct (symbolp ct) (string= (symbol-name ct) "LAST"))) "not row-major")
+                    ((null dims) "no static tile dims")
+                    ((/= 0 (mod (* 2 (second dims)) 16)) "row pitch not a multiple of 16 bytes"))))
+    (log:debug "216 ldmatrix ~a ~a: canon=~a dims=~a -> ~a" operand src canon dims (or why "ELIGIBLE"))
+    (null why)))
+
+(defun %216-ldmatrix-node-base (operand src probe elem coords env context location)
+  "Endeavour 216.  The semantic-hw-op for one ldmatrix fragment load.  Lane L supplies one 16-byte row
+   address; ldmatrix hands each lane, per 8x8 matrix, row L/4 columns 2(L%4), 2(L%4)+1 -- the mma.sync
+   pair (groupID, 2*tid) -- in one .b32 register, low column in the low half.
+
+     :a  x4, matrices in Ra0..Ra3 order: (rows +0, cols +0) (rows +8, cols +0) (rows +0, cols +8)
+         (rows +8, cols +8) of the 16x16 tile at (16 TY, 16 TK).  Lane L: row 16 TY + L%8 + 8((L/8)%2),
+         col 16 TK + 8(L/16).
+     :b  x2.trans on the row-major (K N) tile: matrices k +0 and k +8 at column 8 TX.  .trans gives lane
+         L rows 2(L%4), 2(L%4)+1 of column L/4 -- the B pair (2*tid, groupID).  Lane L (L%16 used):
+         row 16 TK + L%8 + 8((L/8)%2), col 8 TX.
+
+   Endeavour 217: %216-ldmatrix-node (below) records the tile's swizzle on this node."
+  (let* ((lane '(to-int (warp-lane)))
+         ;; A's row and B's K row follow the same rule: 16 per tile step, lane%8 within a matrix, and
+         ;; +8 for the odd matrices (lanes 8-15, 24-31).
+         (r-form `(+ (* ,(first coords) 16) (rem ,lane 8) (* (rem (/ ,lane 8) 2) 8)))
+         (c-form (ecase operand
+                   (:a `(+ (* ,(second coords) 16) (* (/ ,lane 16) 8)))
+                   (:b `(* ,(second coords) 8))))
+         (r-node (analyze-expression r-form env context (append location '(2))))
+         (c-node (analyze-expression c-form env context (append location '(3))))
+         (rec (%nvvm-frag-record operand elem)))
+    (log:info "216: load-fragment-~(~a~) ~a ~a -> ldmatrix (~a)" operand src coords rec)
+    (make-semantic-hw-op :op (ecase operand (:a '%216-ldmatrix-a) (:b '%216-ldmatrix-b))
+                         :args (list probe r-node c-node)
+                         :type rec
+                         :source-location location)))
+
+(defun %216-ldmatrix-node (operand src probe elem coords env context location)
+  "Endeavour 217 wrapper: an ldmatrix of a swizzled tile records S on its hw-op node."
+  (let ((node (%216-ldmatrix-node-base operand src probe elem coords env context location))
+        (s (%217-form-shift src)))
+    (when s
+      (setf (gethash node *217-node-shift*) s)
+      (log:debug "217 ldmatrix ~(~a~) of ~a: S = ~a" operand src s))
+    node))
+
+(defun %216-to-i64 (builder v)
+  "Endeavour 216.  Integer LLVM value V widened (sign-extended) to i64; an i64 passes through."
+  (let ((i64 (crisp.llvm-bindings::llvm-int64-type)))
+    (if (= (crisp.llvm-bindings::llvm-get-int-type-width (crisp.llvm-bindings::llvm-type-of v)) 64)
+        v
+        (crisp.llvm-bindings::llvm-build-sext builder v i64 "ldm_i64"))))
+
+(defun %216-ldmatrix-lower (builder module arg-vals result-type nregs trans)
+  "Endeavour 216.  One ldmatrix.sync.aligned.m8n8.{x4,x2}[.trans].shared.b16 into the fragment record
+   RESULT-TYPE: NREGS .b32 registers, each split into the record's two 16-bit fields in order (element 0
+   of the <2 x half> = the low half = the lower column / row).  %emit-nvvm-mma re-packs those pairs, and
+   LLVM folds the split and the re-pack away."
+  (destructuring-bind (tensor-val r c) arg-vals
+    (let* ((rec-ty (crisp-type-to-llvm-type result-type module))
+           (elem-llvm (llvm-type-of (llvm-build-extract-value builder (llvm-get-undef rec-ty) 0 "ldm_probe")))
+           (i32 (llvm-int32-type))
+           (ret-ty (let ((elts (cffi:foreign-alloc 'llvm-type-ref :count nregs)))
+                     (dotimes (i nregs) (setf (cffi:mem-aref elts 'llvm-type-ref i) i32))
+                     (llvm-struct-type-in-context (llvm-get-module-context module) elts nregs nil)))
+           (name (format nil "llvm.nvvm.ldmatrix.sync.aligned.m8n8.x~d~:[~;.trans~].b16.p3" nregs trans))
+           (ptr (%216-shared-elem-ptr builder tensor-val r c elem-llvm))
+           (call (%coop-call builder module name ret-ty (list (llvm-type-of ptr)) (list ptr)))
+           (v2 (llvm-vector-type elem-llvm 2))
+           (agg (llvm-get-undef rec-ty)))
+      (dotimes (i nregs)
+        (let ((pair (llvm-build-bit-cast builder (llvm-build-extract-value builder call i (format nil "ldm_r~d" i))
+                                         v2 (format nil "ldm_v~d" i))))
+          (dotimes (h 2)
+            (setf agg (llvm-build-insert-value
+                       builder agg
+                       (llvm-build-extract-element builder pair (llvm-const-int i32 h nil) (format nil "ldm_e~d~d" i h))
+                       (+ (* 2 i) h) (format nil "ldm_f~d" (+ (* 2 i) h)))))))
+      (log:debug "216 %216-ldmatrix-lower: ~a -> ~a" name result-type)
+      agg)))
+
+(defmethod %hw-lower ((op (eql '%216-ldmatrix-a)) builder module arg-vals arg-types result-type)
+  "Endeavour 216: load-fragment-a as ldmatrix.x4 (see %216-ldmatrix-node)."
+  (declare (ignore arg-types))
+  (%216-ldmatrix-lower builder module arg-vals result-type 4 nil))
+
+(defmethod %hw-lower ((op (eql '%216-ldmatrix-b)) builder module arg-vals arg-types result-type)
+  "Endeavour 216: load-fragment-b as ldmatrix.x2.trans (see %216-ldmatrix-node)."
+  (declare (ignore arg-types))
+  (%216-ldmatrix-lower builder module arg-vals result-type 2 t))
+
+(defun %216-shared-elem-ptr (builder tensor-val r c elem-llvm)
+  "Endeavour 216.  The shared-memory address of element (R, C) of the 2-D tile TENSOR-VAL: base + (R*s0 +
+   C*s1) elements.  Endeavour 217: swizzled when the ldmatrix being lowered reads a swizzled tile
+   (*217-shift*, bound by the semantic-hw-op :around)."
+  (let* ((storage (llvm-build-extract-value builder tensor-val 0 "ldm_storage"))
+         (base    (llvm-build-extract-value builder storage 0 "ldm_base"))
+         (strides (llvm-build-extract-value builder tensor-val 2 "ldm_strides"))
+         (s0 (llvm-build-extract-value builder strides 0 "ldm_s0"))
+         (s1 (llvm-build-extract-value builder strides 1 "ldm_s1"))
+         (flat (llvm-build-add builder
+                               (llvm-build-mul builder (%216-to-i64 builder r) s0 "ldm_r")
+                               (llvm-build-mul builder (%216-to-i64 builder c) s1 "ldm_c")
+                               "ldm_flat")))
+    (unless (= (%ptr-as base) 3)
+      (error 'crisp-compiler-error
+             :message (format nil "Endeavour 216 internal: ldmatrix source base is in addrspace(~a), not shared memory (3)." (%ptr-as base))))
+    (if *217-shift*
+        (%217-swizzle-gep builder base (llvm-build-mul builder flat (llvm-size-of elem-llvm) "ldm_bytes") *217-shift*)
+        (cffi:with-foreign-object (idx :pointer 1)
+          (setf (cffi:mem-aref idx :pointer 0) flat)
+          (llvm-build-gep2 builder elem-llvm base idx 1 "ldm_ptr")))))
+
+(defun analyze-load-fragment-a-base (expr env context location)
   "Endeavour 207 follow-up: a def-qint operand's int8 reads are raw-cast to the
    fragment's primitive (%frag8-read).
    P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
@@ -780,7 +922,9 @@
        Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)
        Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)
        Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)
-   Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns."
+   Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns.
+
+   Endeavour 216: analyze-load-fragment-a (below) tries ldmatrix first and falls back to this."
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((ty (first tile-id)) (tk (second tile-id)))
       (if (eq *target-backend* :spirv)
@@ -842,7 +986,20 @@
                           (~ ,src r c) (~ ,src (+ r 8) c) (~ ,src r (+ c 4)) (~ ,src (+ r 8) (+ c 4))))))
                  env context location)))))))))
 
-(defun analyze-load-fragment-b (expr env context location)
+(defun analyze-load-fragment-a (expr env context location)
+  "Endeavour 216 wrapper: a 16-bit A fragment from an eligible shared-memory scratch matrix is one
+   ldmatrix.x4 (%216-ldmatrix-node); everything else is the per-element read below it (the wrapped
+   original, analyze-load-fragment-a-base)."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (if (eq *target-backend* :spirv)
+        (analyze-load-fragment-a-base expr env context location)
+        (let* ((probe (analyze-expression src env context (append location '(1))))
+               (elem (%coop-elem-of probe)))
+          (if (%216-ldmatrix-eligible-p src probe elem :a context)
+              (%216-ldmatrix-node :a src probe elem tile-id env context location)
+              (analyze-load-fragment-a-base expr env context location))))))
+
+(defun analyze-load-fragment-b-base (expr env context location)
   "P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]
     (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,
    8x8, col-major); else the NVIDIA per-lane read.
@@ -852,7 +1009,9 @@
    the pair order is the intrinsic's B operand order:
        Rb0 = (2*tid,   groupID), (2*tid+1, groupID)
        Rb1 = (2*tid+8, groupID), (2*tid+9, groupID)
-   B is K-major here (K=16 rows, N=8 cols), so the ROW stride is what doubles, not the column."
+   B is K-major here (K=16 rows, N=8 cols), so the ROW stride is what doubles, not the column.
+
+   Endeavour 216: analyze-load-fragment-b (below) tries ldmatrix first and falls back to this."
   (destructuring-bind (src tile-id) (cdr expr)
     (let ((tk (first tile-id)) (tx (second tile-id)))
       (if (eq *target-backend* :spirv)
@@ -909,6 +1068,19 @@
                         (%construct-struct ,rec
                           (~ ,src r c) (~ ,src (+ r 4) c)))))
                  env context location)))))))))
+
+(defun analyze-load-fragment-b (expr env context location)
+  "Endeavour 216 wrapper: a 16-bit B fragment from an eligible row-major (K N) shared-memory scratch
+   matrix is one ldmatrix.x2.trans (%216-ldmatrix-node); everything else is the per-element read (the
+   wrapped original, analyze-load-fragment-b-base)."
+  (destructuring-bind (src tile-id) (cdr expr)
+    (if (eq *target-backend* :spirv)
+        (analyze-load-fragment-b-base expr env context location)
+        (let* ((probe (analyze-expression src env context (append location '(1))))
+               (elem (%coop-elem-of probe)))
+          (if (%216-ldmatrix-eligible-p src probe elem :b context)
+              (%216-ldmatrix-node :b src probe elem tile-id env context location)
+              (analyze-load-fragment-b-base expr env context location))))))
 
 
 
@@ -3255,6 +3427,175 @@
            (walk-all (cdr form) lex))
           (t (walk-all form lex)))))))
 
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 217 -- compiler-owned XOR swizzle of the shared tiles an ldmatrix reads (D-217-6)
+;;;; See tests/spec/217-swizzle/swizzle.md.
+;;;; ----------------------------------------------------------------------
+
+(defun %217-swizzle-shift (pitch-bytes tile-bytes)
+  "Endeavour 217.  The swizzle shift S for a shared-memory tile whose rows are PITCH-BYTES apart and whose
+   whole extent is TILE-BYTES, or NIL when the tile is not swizzled.
+
+   The swizzle (see %217-swizzle-offset) XORs bits 4-6 of a byte offset with bits S..S+2, so it permutes
+   the 16-byte chunks inside every aligned 2^(S+3)-byte block.  S = max(7, log2 PITCH): from S up, the
+   offset bits count rows (or groups of rows sharing a 128-byte line), so the 8 rows an ldmatrix phase
+   reads land in 8 different 16-byte bank groups.  Requires a power-of-two PITCH of at least 32 bytes (a
+   16-byte pitch already puts 8 rows in 8 groups) and a tile that is a whole number of blocks, so the map
+   is a bijection of the tile onto itself."
+  (let ((s (and (integerp pitch-bytes) (integerp tile-bytes) (plusp tile-bytes)
+                (>= pitch-bytes 32) (= (logcount pitch-bytes) 1)
+                (max 7 (1- (integer-length pitch-bytes))))))
+    (and s (zerop (mod tile-bytes (ash 1 (+ s 3)))) s)))
+
+(defun %217-swizzle-offset (off s)
+  "Endeavour 217.  Byte offset OFF (from the tile / ring-slot base) under the swizzle with shift S:
+   OFF xor (((OFF >> S) & 7) << 4).  Only bits 4-6 change, so a 16-byte chunk stays whole and aligned.
+   The compile-time twin of the IR %217-swizzle-ptr emits; the unit spec checks its claims."
+  (logxor off (ash (ldb (byte 3 s) off) 4)))
+
+(defun %217-tile-ref-name (form names)
+  "Endeavour 217.  The swizzled name FORM refers to -- FORM is a name in NAMES, or (ring-get NAME i) of
+   one -- or NIL."
+  (cond ((and (symbolp form) form (assoc form names)) form)
+        ((and (consp form) (%head-name-eq (first form) "RING-GET") (symbolp (second form))
+              (assoc (second form) names))
+         (second form))))
+
+(defun %217-form-shift (form)
+  "Endeavour 217.  S when FORM addresses a swizzled tile in the current scope, else NIL."
+  (let ((name (%217-tile-ref-name form *217-swizzled-names*)))
+    (and name (cdr (assoc name *217-swizzled-names*)))))
+
+(defun %217-binding-shift (binding)
+  "Endeavour 217.  S for a (V (make-scratch-matrix[-ring] ELEM (ROWS COLS) ...)) BINDING whose tile the
+   rule can swizzle, or NIL with the reason as a second value."
+  (let* ((init (second binding))
+         (elem (second init))
+         (dims (third init))
+         (bits (ignore-errors (%mma-elem-bits elem))))
+    (cond ((not (and (listp dims) (= (length dims) 2) (every #'integerp dims))) (values nil "no literal (ROWS COLS)"))
+          ((not (eql bits 16)) (values nil (format nil "~a is not a 16-bit element" elem)))
+          (t (let* ((pitch (* 2 (second dims)))
+                    (s (%217-swizzle-shift pitch (* pitch (first dims)))))
+               (if s (values s nil)
+                   (values nil (format nil "~ax~a: pitch ~a B / ~a B not swizzlable" (first dims) (second dims)
+                                       pitch (* pitch (first dims))))))))))
+
+(defun %217-block-barrier-names (bindings)
+  "Endeavour 217.  Names bound in BINDINGS to a :block / :cluster (TMA) barrier or barrier ring."
+  (loop for b in bindings
+        when (and (consp b) (symbolp (first b)) (consp (second b))
+                  (or (%head-name-eq (first (second b)) "MAKE-ASYNC-BARRIER")
+                      (%head-name-eq (first (second b)) "MAKE-ASYNC-BARRIER-RING"))
+                  (let ((m (second (member :mode (cdr (second b))))))
+                    (and m (symbolp m) (member (symbol-name m) '("BLOCK" "CLUSTER") :test #'string=))))
+          collect (first b)))
+
+(defun %217-scan-uses (form refs tma-barriers)
+  "Endeavour 217.  Walk FORM for the uses of the tile REFS (its name plus LET aliases).  Returns
+   (values READER-P REFUSAL): READER-P when an mma-accumulate-via-tile takes the tile as an operand;
+   REFUSAL a string naming the first use outside the whitelist --
+     (~ / aref TILE i..)                      element access: the aref path swizzles
+     (load-tile[-at] SRC TILE ..)             unless its barrier is :block (TMA writes the plain layout)
+     (store-tile[-at] TILE DST ..)            unless :via (TMA store)
+     (mma-accumulate-via-tile SHAPE C A B ..) the reader (ldmatrix) -- and (load-fragment-a/b TILE (i j) ..),
+                                              what the register-tile explosion has turned it into
+     (extents~ / strides~ TILE ..)            struct fields, no addressing
+     (let ((ALIAS TILE)) ..)                  the alias joins REFS
+   and (ring-get TILE i) in any of those TILE positions.  Anything else (a function call, a view, a
+   transpose, a whole-tile set!, a shadowing rebinding) refuses: the tile stays plain."
+  (let ((reader nil) (refusal nil))
+    (labels ((ref-p (x refs) (%217-tile-ref-name x (mapcar #'list refs)))
+             (refuse (fmt &rest args) (unless refusal (setf refusal (apply #'format nil fmt args))))
+             (walk-args (args refs) (dolist (a args) (walk a refs)))
+             (walk (f refs)
+               (cond
+                 (refusal nil)
+                 ((atom f) (when (and (symbolp f) (member f refs)) (refuse "bare reference to ~a" f)))
+                 ((not (symbolp (first f))) (walk-args f refs))
+                 (t
+                  (let ((h (symbol-name (first f))) (args (rest f)))
+                    (cond
+                      ((member h '("QUOTE" "DECLARE") :test #'string=) nil)
+                      ((member h '("~" "AREF" "~REF~" "EXTENTS~" "STRIDES~") :test #'string=)
+                       (if (ref-p (first args) refs) (walk-args (rest args) refs) (walk-args args refs)))
+                      ((member h '("LOAD-TILE" "LOAD-TILE-AT") :test #'string=)
+                       (when (ref-p (second args) refs)
+                         (let ((bar (getf (cdddr args) :barrier)))
+                           (when (and bar (%217-tile-ref-name bar (mapcar #'list tma-barriers)))
+                             (refuse "filled by a :block (TMA) load-tile"))))
+                       (walk (first args) refs)
+                       (unless (ref-p (second args) refs) (walk (second args) refs))
+                       (walk-args (cddr args) refs))
+                      ((member h '("STORE-TILE" "STORE-TILE-AT") :test #'string=)
+                       (when (ref-p (first args) refs)
+                         (when (getf (cdddr args) :via) (refuse "read by a store-tile :via (TMA)")))
+                       (unless (ref-p (first args) refs) (walk (first args) refs))
+                       (walk-args (rest args) refs))
+                      ((member h '("LOAD-FRAGMENT-A" "LOAD-FRAGMENT-B") :test #'string=)
+                       (if (ref-p (first args) refs) (setf reader t) (walk (first args) refs))
+                       (walk-args (rest args) refs))
+                      ((string= h "MMA-ACCUMULATE-VIA-TILE")
+                       (dolist (a (cddr args))
+                         (if (ref-p a refs) (setf reader t) (walk a refs))))
+                      ((member h '("LET" "LET*") :test #'string=)
+                       (let ((inner refs))
+                         (dolist (b (and (listp (first args)) (first args)))
+                           (let ((name (if (consp b) (first b) b)) (init (and (consp b) (second b))))
+                             (cond ((ref-p init inner) (push name inner))
+                                   (t (walk init inner)
+                                      (when (member name inner) (refuse "~a is rebound" name))))))
+                         (walk-args (rest args) inner)))
+                      (t (dolist (a args)
+                           (if (ref-p a refs)
+                               (refuse "passed to (~(~a~) ..)" h)
+                               (walk a refs))))))))))
+      (walk-args form refs))
+    (values reader refusal)))
+
+(defun %217-let-swizzle-decisions (let-expr)
+  "Endeavour 217.  ((SYM . S) ...) for the scratch bindings of LET-EXPR whose tiles are XOR-swizzled
+   (see the header and swizzle.md), every decision and refusal logged."
+  (when (and *217-swizzle* *216-ldmatrix* (eq *target-backend* :ptx)
+             (consp let-expr) (listp (second let-expr)))
+    (let* ((bindings (second let-expr))
+           (body (cddr let-expr))
+           (tma (%217-block-barrier-names bindings)))
+      (loop for b in bindings
+            when (and (consp b) (= (length b) 2) (symbolp (first b)) (consp (second b))
+                      (or (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX")
+                          (%head-name-eq (first (second b)) "MAKE-SCRATCH-MATRIX-RING")))
+              append (multiple-value-bind (s why) (%217-binding-shift b)
+                       (multiple-value-bind (reader refusal)
+                           (if s (%217-scan-uses body (list (first b)) tma) (values nil nil))
+                         (let ((why (or why refusal (and (not reader) "no mma-accumulate-via-tile reads it"))))
+                           (log:info "217 swizzle ~a: ~a" (first b) (if why (format nil "plain -- ~a" why)
+                                                                         (format nil "S = ~a" s)))
+                           (and (null why) (list (cons (first b) s))))))))))
+
+(defun %217-swizzle-gep (builder base off-bytes s)
+  "Endeavour 217.  BASE + swizzle(OFF-BYTES) as an i8 GEP: OFF xor (((OFF >> S) & 7) << 4), OFF-BYTES an
+   i64 byte offset from the tile / ring-slot base.  The IR twin of %217-swizzle-offset."
+  (let* ((i64 (llvm-int64-type))
+         (row (crisp.llvm-bindings::llvm-build-and
+               builder
+               (crisp.llvm-bindings::llvm-build-l-shr builder off-bytes (llvm-const-int i64 s nil) "swz_sh")
+               (llvm-const-int i64 7 nil) "swz_row"))
+         (off2 (crisp.llvm-bindings::llvm-build-xor
+                builder off-bytes
+                (crisp.llvm-bindings::llvm-build-shl builder row (llvm-const-int i64 4 nil) "swz_x")
+                "swz_off")))
+    (cffi:with-foreign-object (idx :pointer 1)
+      (setf (cffi:mem-aref idx :pointer 0) off2)
+      (llvm-build-in-bounds-gep2 builder (llvm-int8-type) base idx 1 "swz_ptr"))))
+
+(defmethod generate-node-ir :around ((node semantic-hw-op) builder module var-env
+                                     di-builder di-scope location-map)
+  "Endeavour 217: expose a swizzled ldmatrix's shift to %216-shared-elem-ptr."
+  (declare (ignore builder module var-env di-builder di-scope location-map))
+  (let ((*217-shift* (gethash node *217-node-shift*)))
+    (call-next-method)))
+
 (defun analyze-let-with-tile-explosion (expr env context location)
   "let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),
    then explode register-tile bindings into per-fragment mutable variables (register residency,
@@ -3264,7 +3605,10 @@
    the body analysis, so operand-shape checks in the expression analyzers can see them.
 
    Endeavour 207: first checks the qint roles of every MMA in the LET (%qint-mma-walk), while the
-   source element types are still visible."
+   source element types are still visible.
+
+   Endeavour 217: decides which of this LET's scratch tiles are XOR-swizzled and publishes them in
+   *217-swizzled-names* for the body (%217-let-swizzle-decisions)."
   (%qint-mma-walk expr nil env location)
   (let ((lowered (%explode-register-tiles
                   (%expand-matmul-tile-stride-register-forms expr location)
@@ -3273,7 +3617,14 @@
             (append (and (consp lowered)
                          (listp (second lowered))
                          (%mma-scratch-tile-dims-from-bindings (second lowered)))
-                    *mma-scratch-tile-dims*)))
+                    *mma-scratch-tile-dims*))
+          ;; this LET's own names shadow any outer swizzled binding of the same name
+          (*217-swizzled-names*
+            (append (%217-let-swizzle-decisions lowered)
+                    (remove-if (lambda (e) (and (consp lowered) (listp (second lowered))
+                                                (member (car e) (second lowered)
+                                                        :key (lambda (b) (if (consp b) (first b) b)))))
+                               *217-swizzled-names*))))
       (analyze-let-expression lowered env context location))))
 
 

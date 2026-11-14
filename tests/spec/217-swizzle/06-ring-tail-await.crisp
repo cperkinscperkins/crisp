@@ -1,0 +1,52 @@
+;; Endeavour 217 F-217-2 -- a cp.async ring's await must count the groups actually committed.
+;;
+;; THE BUG.  (await (ring-get bars slot)) on a :linear ring lowered to ONE static cp.async.wait_group N,
+;; N = (ring-count - 1) x arrivals = 4 here: "all but the 4 newest groups are done".  That is the slot's
+;; stage only while every iteration commits a new stage.  This kernel (the matmul_v2 contest ring) refills
+;; under (when more? ..), so the last two K iterations commit nothing -- and wait_group 4 then waits for
+;; NOTHING: the slot about to be read is among the 4 allowed to be pending.  On metal it was a silent wrong
+;; answer: L4, 4096 x 5120 x 4096, 239 of 300 fresh-seed runs had 1-20 output tiles off by one stale K
+;; slice (put_temp_files_here/217/l4, swizzle.md F-217-2).  The same PTX with wait_group 0 was 0 / 300.
+;;
+;; THE FIX.  Each :linear ring keeps a per-thread count of its committed-but-not-yet-awaited groups (an i32
+;; the compiler allocates; every ring load-tile's commit adds 1).  await takes the slot's ARRIVALS groups
+;; off it and waits for the largest multiple of ARRIVALS, at most N, that is <= the groups committed after
+;; them -- 4 in the steady state (unchanged), 2 in the next-to-last iteration, 0 in the last.  wait_group
+;; takes an immediate, so the await is a short compare chain over {4, 2, 0}.  Awaits are taken in the order
+;; the stages were loaded (the ring's FIFO; the static N assumed that too).
+;;
+;; The validator pins the chain: one wait_group of each of 4, 2 and 0.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-217-ring-tail-await
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel ring_tail_await (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 128))
+  (let ((A-ring (make-scratch-matrix-ring half (128 32) :ring-count 3))
+        (B-ring (make-scratch-matrix-ring half (32 128) :ring-count 3))
+        (C-tile (make-register-tile float (128 128) 0.0 :warps '(true true true true)))
+        (K      (inner-dimension A B))
+        (bars   (make-async-barrier-ring :ring-count 3 :mode :linear :arrivals 2)))
+    (tile-stride C (128 128) (grid-y grid-x)
+      (fill-tile C-tile 0.0)
+      (let ((nk (/ (to-ulong K) (to-ulong 32))))
+        (dotimes (i 3)
+          (let ((first? (to-workgroup-uniform (< (to-ulong i) nk))))
+            (when first?
+              (load-tile A (ring-get A-ring (to-ulong i)) (grid-y (to-ulong i)) :barrier (ring-get bars (to-ulong i)))
+              (load-tile B (ring-get B-ring (to-ulong i)) ((to-ulong i) grid-x) :barrier (ring-get bars (to-ulong i))))))
+        (dotimes (grid-k nk)
+          (let ((slot (mod grid-k (to-ulong 3))))
+            (await (ring-get bars slot))
+            (mma-accumulate-via-tile (16 8 16) C-tile (ring-get A-ring slot) (ring-get B-ring slot))
+            (sync-workgroup)
+            (let ((next-k (+ grid-k (to-ulong 3))))
+              (let ((more? (to-workgroup-uniform (< next-k nk))))
+                (when more?
+                  (load-tile A (ring-get A-ring slot) (grid-y next-k) :barrier (ring-get bars slot))
+                  (load-tile B (ring-get B-ring slot) (next-k grid-x) :barrier (ring-get bars slot))))))))
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

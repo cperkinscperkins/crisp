@@ -12057,6 +12057,10 @@ The values form a ladder, each rung strictly more capable than the one below it:
   address is 16-byte aligned.  `await` on a `:linear` barrier is `cp.async.wait_group` **plus a
   workgroup barrier**: `wait_group` covers only the calling thread's own copies, and every thread
   reads chunks other threads copied (endeavour 196).
+  On a `:linear` **ring**, `await` waits for exactly the stage it names: the compiler counts each
+  ring's committed copy groups, so the other stages stay in flight, and a refill you skip near the
+  end of the loop — `(when more? (load-tile ...))` — is safe.  Stages are awaited in the order
+  they were loaded (endeavour 217, BUG 163).
 - `:block` — `CuTensorMap` (TMA) on PTX.  A bulk descriptor-driven 2D copy global→SLM,
   completing on a **workgroup-local** mbarrier (`mbarrier.arrive.expect_tx.shared::cta` /
   `mbarrier.try_wait.parity.shared::cta`).  **NVIDIA sm_90+ only.**  On an older NVIDIA arch it
@@ -13061,6 +13065,11 @@ Two further compile-time constraints, both checked from information you already 
 
 Physical SLM *swizzling* (bank-conflict avoidance) is a separate performance optimization, not
 a correctness requirement — a plain row/col-major staging feeds the fragment loads correctly.
+On NVIDIA the compiler does both for you, invisibly: 16-bit fragments are read from a scratch
+tile with `ldmatrix` (endeavour 216), and such a tile is stored with a compiler-owned XOR
+swizzle when its row pitch is a power of two of at least 32 bytes and every use of it is one the
+compiler can see — loads, fragment reads, element access, stores (endeavour 217).  A tile you
+pass to a function or take a view of simply stays plain.
 
 The baseline kernel above passes `(16 8 8)` — the **tf32** shape (K=8), matching tf32/`float`
 operands. The same M×N with **fp16** operands is `(16 8 16)`, which is the variant the expansion

@@ -417,7 +417,7 @@
                                     (to-ulong ,(nth k index-forms)))))
           `(+ ,horner ,offset-sum)))))
 
-(defun analyze-aref-expression (expr env context location)
+(defun analyze-aref-expression-base (expr env context location)
   "Analyzes (~ target [index...]) or (~ref~ ...) expressions.
    Tensor path dispatches on resolved :align:
      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)
@@ -426,12 +426,14 @@
 
    BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of
    silently discarding all but the first.
-   Endeavour 206: (~ w i) on a microfloat block is the raw code at element i."
+   Endeavour 206: (~ w i) on a microfloat block is the raw code at element i.
+
+   Endeavour 217: analyze-aref-expression (below) records a swizzled tile's S on the node."
   ;; Endeavour 206: (~ w i) on a microfloat block.
   (let ((block-type (and (= (length expr) 3)
                          (%mf-block-of (second expr) env context (append location '(1))))))
     (when block-type
-      (return-from analyze-aref-expression
+      (return-from analyze-aref-expression-base
         (analyze-expression (list (%mf-sym "to") (getf (microfloat-block-p block-type) :base)
                                   (list (%mf-sym "~a-code" block-type) (second expr)
                                         (list (%mf-sym "to-ulong") (third expr))))
@@ -534,6 +536,21 @@
           (if (or (string= op-name "~") (string= op-name "~REF~"))
               (analyze-function-call op expr env context location)
               (error "Invalid type for aref: ~a" (semantic-node-type array-node)))))))
+
+(defun analyze-aref-expression (expr env context location)
+  "Endeavour 217 wrapper: an element access of a swizzled tile records S on its array node, for
+   %aref-tensor-ir."
+  (let ((node (analyze-aref-expression-base expr env context location))
+        (s (and *217-swizzled-names* (%217-form-shift (second expr)))))
+    (when s
+      (if (semantic-aref-p node)
+          (progn (setf (gethash (semantic-aref-array-node node) *217-node-shift*) s)
+                 (log:debug "217 aref of ~a: S = ~a" (second expr) s))
+          (error 'crisp-compiler-error
+                 :message (format nil "Endeavour 217 internal: an access of the swizzled tile ~a did not analyze to an aref (~a)."
+                                  (second expr) (type-of node))
+                 :source-location location)))
+    node))
 
 
 

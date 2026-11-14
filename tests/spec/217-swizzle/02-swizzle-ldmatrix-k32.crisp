@@ -1,0 +1,40 @@
+;; Endeavour 217 rung 02 -- the scratch tiles an ldmatrix reads are XOR-swizzled, writer and reader alike.
+;;
+;; WHAT THIS PINS.  After 216 every 16-bit fragment comes from shared memory by ldmatrix, and the tiles keep
+;; the plain row-major layout load-tile writes: an ldmatrix phase reads 8 rows x 16 bytes, and at a 64-byte
+;; pitch (A here, 64 x 32 half) rows r and r + 2 share banks (4-way conflict); at 128 bytes (B, 32 x 64)
+;; every row starts in the same bank group (8-way).  The compiler now places each 16-byte chunk of such a
+;; tile at   OFF xor (((OFF >> S) & 7) << 4),   S = max(7, log2 pitch)   -- on the cp.async WRITE (196's
+;; vectorized load-tile) and on the ldmatrix READ, so the data is where the reader looks for it and each
+;; phase's 8 rows hit 8 different bank groups.  No syntax and no shared-memory cost: same bytes, permuted.
+;;
+;; One warp, a 64x64 register tile, K = 32 per stage: 8 ldmatrix.x4 (A) and 16 ldmatrix.x2.trans (B) feed
+;; 64 m16n8k16 MMAs.  The validator: those counts, no per-element ld.shared.b16, and the swizzle's
+;; xor.b in the address arithmetic (today's compiler emits none for this kernel -- checked).
+;;
+;; A PTX validator can see THAT addresses are swizzled, not that writer and reader agree.  Agreement is
+;; a metal claim: GPU MODE's bit-exact matmul_v2 (diag_ampere_217_sub.py; plan in swizzle.md).
+;;
+;; C is float, so the kernel differentiates (the backward's materialized transposes are shared tiles too).
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-217-swizzle-k32
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel swz_k32 (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix half (64 32)))
+        (B-tile (make-scratch-matrix half (32 64)))
+        (C-tile (make-register-tile float (64 64) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier)))
+    (matrix-multiply-tile-stride C C-tile K 32 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

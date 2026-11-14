@@ -1,0 +1,30 @@
+;; Endeavour 217 rung 05 -- the refusal side: tiles the swizzle cannot take stay plain (and stay ldmatrix).
+;;
+;; The swizzle permutes 16-byte chunks inside aligned 2^(S+3)-byte blocks, so it needs a power-of-two row
+;; pitch of at least 32 bytes and a tile that is a whole number of blocks.  Here neither tile qualifies:
+;;   A-TILE 48 x 16 half: 32-byte pitch (S = 7), but 1536 bytes is not a multiple of the 1024-byte block;
+;;   B-TILE 16 x 48 half: 96-byte pitch, not a power of two.
+;; Both remain ldmatrix sources (216: compact, row-major, 16-byte-multiple pitch), so the validator wants
+;; ldmatrix present, no per-element fragment reads, and NO xor.b anywhere.
+;;
+;; SKIP-DEFAULT-PASS
+;; TEST-WITH[--ir-target=ptx --ir-target-arch=sm_80 --hardware-profile=h100] : validate-ptx-217-no-swizzle
+(def-type a-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type b-mat (matrix half :address-space :global :align :compact :contiguous-term :row-major))
+(def-type c-mat (matrix float :address-space :global :align :compact :contiguous-term :row-major))
+(def-kernel noswz_odd (A B &out C)
+  (declare #'(a-mat b-mat &out c-mat)
+           (local-size :set-to 32))
+  (let ((A-tile (make-scratch-matrix half (48 16)))
+        (B-tile (make-scratch-matrix half (16 48)))
+        (C-tile (make-register-tile float (48 48) 0.0))
+        (K      (inner-dimension A B))
+        (bar    (make-async-barrier)))
+    (matrix-multiply-tile-stride C C-tile K 16 (grid-y grid-x grid-k)
+      (load-tile A A-tile (grid-y grid-k) :barrier bar)
+      (load-tile B B-tile (grid-k grid-x) :barrier bar)
+      (await bar)
+      (mma-accumulate-via-tile (16 8 16) C-tile A-tile B-tile)
+      (sync-workgroup)
+      :epilogue
+      (store-tile C-tile C (grid-y grid-x)))))

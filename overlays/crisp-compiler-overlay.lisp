@@ -5,6 +5,21 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-11-14 -- endeavours 216 (ldmatrix for 16-bit mma.sync fragments) and 217 (compiler-owned
+;;;; XOR swizzle of ldmatrix scratch tiles, D-217-6; F-217-2 count-correct cp.async ring await) folded into
+;;;; src/ by script (put_temp_files_here/217-fold/fold.py: LIVE copies by offset):
+;;;;   * new      -> 216 block before analyze-load-fragment-a-base (mma); 217 swizzle block before
+;;;;                 analyze-let-with-tile-explosion (mma); swizzle state + F-217-2 state (analysis/control);
+;;;;                 %217-tag-ring-await (control); *217-ring-counters*, %217-ring-counter,
+;;;;                 %217-emit-counted-wait and the commit / wait :around methods (codegen)
+;;;;   * replaced -> analyze-let-with-tile-explosion (mma), %aref-tensor-ir (codegen)
+;;;;   * wrapped  -> NAME-base + NAME: analyze-load-fragment-a/-b, %216-ldmatrix-node (mma);
+;;;;                 analyze-let-expression, analyze-load-tile-at-expression, analyze-%cp-async-commit-expression
+;;;;                 (control); analyze-aref-expression (structs); generate-function-body (codegen)
+;;;;   * merged   -> the TMA guard prepended to %analyze-nvvm-tma-load-tile-at; the ring-await tag called
+;;;;                 in analyze-await-expression
+;;;;   * dropped  -> dead copies, capture defvars, the overlay-only re-registration hook
+;;;;
 ;;;; EMPTY as of 2026-11-11 -- the typed-GEP tensor addressing, endeavour 213 (tcgen05 :b-major :mn) and
 ;;;; endeavour 215 (16-byte tcgen05 epilogue stores) folded into src/ by script
 ;;;; (put_temp_files_here/215-fold/fold.py: LIVE copies by offset; no capture wrappers):

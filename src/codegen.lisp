@@ -992,14 +992,20 @@
       (t syms))))
 
 
-(defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
+(defvar *217-ring-counters* nil
+  "F-217-2.  Bound per function by generate-function-body: ring symbol -> the i32 alloca holding that
+   ring's committed-not-yet-awaited cp.async group count.")
+
+(defun generate-function-body-base (semantic-function func di-subprogram builder module di-builder location-map)
   "Generates the body of the function.
    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the
    PTX kernel-entry receive site can inttoptr demoted i64 params back
    to their original-addrspace pointer.
    Binds *kernel-readonly-tensor-syms* around the body codegen so the
    semantic-aref tensor case can attach !invariant.load to direct
-   reads of read-only kernel-param tensors."
+   reads of read-only kernel-param tensors.
+
+   F-217-2: generate-function-body (below) gives each function a fresh ring-counter table."
   (let ((entry-block (llvm-append-basic-block func "entry"))
         (var-env (make-hash-table))
         (param-nodes (semantic-function-param-list semantic-function))
@@ -1083,6 +1089,13 @@
                                   (llvm-build-ret builder (llvm-build-load2 builder expected-type last-val "ret_val"))
                                   (llvm-build-ret builder last-val))))))
           (when last-loc (llvm-instruction-set-debug-loc ret-inst last-loc)))))))
+
+(defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
+  "F-217-2 wrapper: a fresh ring-counter table per function, so a counter alloca never outlives its
+   function.  See the original for everything else."
+  (let ((*217-ring-counters* (make-hash-table :test 'eq)))
+    (generate-function-body-base
+             semantic-function func di-subprogram builder module di-builder location-map)))
 
 (defun %lookup-field-physical-index (struct-def field-name-str)
   "Returns the physical (LLVM struct) index of a field identified by
@@ -3974,6 +3987,8 @@
    element pointer is a typed `getelementptr inbounds T, base, index` off the parent storage's base
    pointer (SROA field 0 of field 0) -- typed, so a constant term of the index folds into the access's
    immediate offset.  A read of a read-only kernel-parameter tensor gets !invariant.load.
+   Endeavour 217: when ARRAY-NODE addresses a swizzled tile (*217-node-shift*), the byte offset is
+   swizzled first (%217-swizzle-gep).
    Returns (values loaded nil ptr)."
   (let* ((tensor-val     (generate-node-ir array-node builder module var-env
                                            di-builder di-scope location-map))
@@ -3981,18 +3996,27 @@
          (elem-llvm-type (crisp-type-to-llvm-type elem-type-spec module))
          (mangled-name   (mangle-template-struct-name (first cell-spec)
                                                       (rest cell-spec)))
-         (mark-invariant-p (%array-node-readonly-tensor-param-p array-node)))
-    (log:info "semantic-aref tensor: struct=~a elem=~a invariant=~a"
-              mangled-name elem-type-spec mark-invariant-p)
+         (mark-invariant-p (%array-node-readonly-tensor-param-p array-node))
+         (swz (gethash array-node *217-node-shift*)))
+    (log:info "semantic-aref tensor: struct=~a elem=~a invariant=~a swizzle=~a"
+              mangled-name elem-type-spec mark-invariant-p swz)
     (ensure-struct-llvm-type mangled-name)
     (let* ((parent-val  (llvm-build-extract-value builder tensor-val 0 "t_parent_val"))
            (base-ptr    (llvm-build-extract-value builder parent-val 0 "t_base_ptr"))
            ;; flat element index already incorporates offsets and strides
            (flat-i64    (llvm-build-sext builder index-val (llvm-int64-type) "t_flat_i64")))
+      (when (and swz (/= (%ptr-as base-ptr) 3))
+        (error 'crisp-compiler-error
+               :message (format nil "Endeavour 217 internal: a swizzled tile's base is in addrspace(~a), not shared memory (3)."
+                                (%ptr-as base-ptr))))
       (cffi:with-foreign-object (indices :pointer 1)
         (setf (cffi:mem-aref indices :pointer 0) flat-i64)
-        (let* ((t-ptr  (llvm-build-in-bounds-gep2
-                        builder elem-llvm-type base-ptr indices 1 "t_ptr"))
+        (let* ((t-ptr  (if swz
+                           (%217-swizzle-gep builder base-ptr
+                                             (llvm-build-mul builder flat-i64 (llvm-size-of elem-llvm-type) "swz_bytes")
+                                             swz)
+                           (llvm-build-in-bounds-gep2
+                            builder elem-llvm-type base-ptr indices 1 "t_ptr")))
                (loaded (llvm-build-load2 builder elem-llvm-type t-ptr "t_elem")))
           (when mark-invariant-p
             (%attach-invariant-load loaded module))
@@ -6474,6 +6498,86 @@ become `load atomic` / `store atomic`, built by %195-build-atomic-load / -store,
   (%gen-nvvm-cp-async-wait-group builder module
                                  (max 0 (semantic-nvvm-cp-async-wait-group-count node)))
   (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
+
+;;;; ----------------------------------------------------------------------
+;;;; Endeavour 217 F-217-2 -- the count-correct cp.async ring await (codegen)
+;;;; See tests/spec/217-swizzle/swizzle.md (F-217-2).
+;;;; ----------------------------------------------------------------------
+
+(defun %217-ring-counter (builder ring)
+  "F-217-2: the i32 alloca counting RING's committed-not-yet-awaited groups in the current function --
+   created on first use at the top of the entry block and zeroed there (mem2reg makes it a register)."
+  (or (gethash ring *217-ring-counters*)
+      (let* ((here  (llvm-get-insert-block builder))
+             (fn    (llvm-get-basic-block-parent here))
+             (entry (crisp.llvm-bindings::llvm-get-entry-basic-block fn))
+             (first (crisp.llvm-bindings::llvm-get-first-instruction entry))
+             (i32   (llvm-int32-type)))
+        (if (and first (not (cffi:null-pointer-p first)))
+            (crisp.llvm-bindings::llvm-position-builder-before builder first)
+            (llvm-position-builder-at-end builder entry))
+        (let ((a (llvm-build-alloca builder i32 (format nil "ring_pending_~(~a~)" ring))))
+          (llvm-build-store builder (llvm-const-int i32 0 0) a)
+          (llvm-position-builder-at-end builder here)
+          (log:debug "F-217-2: pending-group counter for ring ~S" ring)
+          (setf (gethash ring *217-ring-counters*) a)))))
+
+(defun %217-emit-counted-wait (builder module ring arrivals depth)
+  "F-217-2: the count-correct await.  NEWER = pending - ARRIVALS is how many of RING's groups were committed
+   after the stage being awaited; wait for the largest multiple of ARRIVALS, at most DEPTH, not above NEWER
+   (wait_group takes an immediate, hence the compare chain: DEPTH, DEPTH - ARRIVALS, ..., then 0).  The
+   stage is then retired: pending = max(NEWER, 0)."
+  (let* ((i32     (llvm-int32-type))
+         (zero    (llvm-const-int i32 0 0))
+         (ctr     (%217-ring-counter builder ring))
+         (d       (llvm-build-load2 builder i32 ctr "ring_pending"))
+         (newer   (llvm-build-sub builder d (llvm-const-int i32 arrivals 0) "ring_newer"))
+         (fn      (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (done    (llvm-append-basic-block fn "ring_wait_done"))
+         (steps   (loop for k from depth above 0 by (max 1 arrivals) collect k)))
+    (log:debug "F-217-2: counted await on ring ~S: waits ~{~a~^, ~}, 0" ring steps)
+    (dolist (k steps)
+      (let ((wait-bb (llvm-append-basic-block fn (format nil "ring_wait_~d" k)))
+            (next-bb (llvm-append-basic-block fn (format nil "ring_wait_lt~d" k))))
+        (llvm-build-cond-br builder
+                            (llvm-build-icmp builder +llvm-int-sge+ newer (llvm-const-int i32 k 0) "ring_ge")
+                            wait-bb next-bb)
+        (llvm-position-builder-at-end builder wait-bb)
+        (%gen-nvvm-cp-async-wait-group builder module k)
+        (llvm-build-br builder done)
+        (llvm-position-builder-at-end builder next-bb)))
+    (%gen-nvvm-cp-async-wait-group builder module 0)
+    (llvm-build-br builder done)
+    (llvm-position-builder-at-end builder done)
+    (llvm-build-store builder
+                      (crisp.llvm-bindings::llvm-build-select builder (llvm-build-icmp builder +llvm-int-sgt+ newer zero "ring_pos")
+                                         newer zero "ring_retired")
+                      ctr)))
+
+(defmethod generate-node-ir :around ((node semantic-cp-async-commit) builder module var-env
+                                     di-builder di-scope location-map)
+  "F-217-2: a commit that closes a :linear ring's load also counts one group on the ring's counter."
+  (declare (ignore module var-env di-builder di-scope location-map))
+  (multiple-value-prog1 (call-next-method)
+    (let ((ring (gethash node *217-commit-ring-of*)))
+      (when (and ring *217-count-await* *217-ring-counters*)
+        (let* ((i32 (llvm-int32-type))
+               (ctr (%217-ring-counter builder ring))
+               (d   (llvm-build-load2 builder i32 ctr "ring_pending")))
+          (llvm-build-store builder (llvm-build-add builder d (llvm-const-int i32 1 0) "ring_pending_inc")
+                            ctr))))))
+
+(defmethod generate-node-ir :around ((node semantic-nvvm-cp-async-wait) builder module var-env
+                                     di-builder di-scope location-map)
+  "F-217-2: a tagged :linear ring await emits the count-correct wait (%217-emit-counted-wait); any other
+   cp.async await keeps its static wait_group."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let ((info (gethash node *217-await-ring-of*)))
+    (if (and info *217-count-await* *217-ring-counters*)
+        (destructuring-bind (ring arrivals depth) info
+          (%217-emit-counted-wait builder module ring arrivals depth)
+          (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
+        (call-next-method))))
 
 ;;;; ----------------------------------------------------------------------
 ;;;; Endeavour 198 -- a wide :128b TMA load issues one copy per box
