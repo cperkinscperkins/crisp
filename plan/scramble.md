@@ -96,6 +96,7 @@ OPEN
 - [/] RunPod as a GitHub Actions target (hoist tests only? separate .yml) (L985)
 - [ ] int8 follow-ups from endeavour 207 (details: tests/spec/207-int8-mma-bench/int8-mma-bench.md "Next"):
   - [ ] packed int8 operand loads / `ldmatrix` for `mma.sync` (A100 at 15% of cuBLASLt; 24 byte loads per MMA)
+        (the 16-bit half is done: 216/217 -- int8 still reads byte by byte)
   - [ ] packed narrowing store for `store-tile-at (to-q D m)` (requantize at 53-68% of cuBLASLt vs 76-80% plain)
   - [ ] `:xe-native` int8 on BMG (16-bit only today; BMG int8 at 87% of oneMKL without it)
   - [ ] SPIR-V integer epilogues (narrow / dequantize in the register tile; today a second global pass)
@@ -257,7 +258,8 @@ OPEN
       A compiler feature: discuss first.
 - [ ] `:via :tma` for an f32 C (the benchmark suite's wgmma kernels): stmatrix is b16-only, so it needs a
       st.shared.v2.f32 staging write with its own swizzle.  D-199-5.
-- [ ] ldmatrix for load-fragment-a / -b on PTX.  The mma.sync path reads every operand fragment from
+- [x] DONE 2026-11-14 (216 ldmatrix + 217 XOR swizzle, folded; A100 matmul_v2 v12 1668-2016 us).
+      ldmatrix for load-fragment-a / -b on PTX.  The mma.sync path reads every operand fragment from
       shared memory one 2-byte element at a time (ld.shared.b16 + packing; no ldmatrix anywhere).  The
       A100 matmul_v2 entry (4-warp, vectorized cp.async) is 4.7 ms vs cuBLAS 0.67 ms.  ldmatrix.x4 for A
       and ldmatrix.x2.trans for a (K N) B, plus a padded or swizzled scratch layout against bank
