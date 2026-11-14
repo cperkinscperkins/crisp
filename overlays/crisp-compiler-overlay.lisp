@@ -818,3 +818,264 @@
   (declare (ignore builder module var-env di-builder di-scope location-map))
   (let ((*217-shift* (gethash node *217-node-shift*)))
     (call-next-method)))
+
+;;;; ======================================================================
+;;;; Endeavour 217 F-217-2 -- a count-correct cp.async ring await.
+;;;; tests/spec/217-swizzle/swizzle.md (F-217-2), spec 06.
+;;;;
+;;;; (await (ring-get RING slot)) on a :linear ring was ONE static cp.async.wait_group N, N = (ring-count
+;;;; - 1) x arrivals -- right only while every iteration commits a new stage.  A kernel that refills under
+;;;; (when more? ..) commits nothing in its last iterations, and there wait_group N waits for nothing: a
+;;;; silent stale read (L4, 239 / 300 bad runs).  Now each ring keeps a per-thread i32 count of its
+;;;; committed-not-yet-awaited groups: every commit of a ring load-tile adds 1; an await takes ARRIVALS off
+;;;; and waits for the largest multiple of ARRIVALS (at most N) not above what is left -- the groups
+;;;; committed AFTER the awaited stage.  Steady state is unchanged (N); the tail gets N - arrivals, ..., 0.
+;;;; Awaits are assumed to come in load order (the ring's FIFO -- the static N assumed it too).  Another
+;;;; ring's groups are not counted, so with two rings the wait is only ever deeper than needed (safe).
+;;;; ======================================================================
+
+;; src/analysis/control.lisp
+(defvar *217-count-await* t
+  "F-217-2.  T: a :linear ring's await waits for the groups actually committed (count-correct).  NIL: the
+   old static cp.async.wait_group (ring-count - 1) x arrivals -- kept only so a twin build can price it.")
+
+;; src/analysis/control.lisp
+(defvar *217-commit-ring* nil
+  "F-217-2.  Bound by analyze-load-tile-at-expression to the barrier RING symbol of a :linear ring load on
+   PTX while its expansion is analyzed; analyze-%cp-async-commit-expression tags its commit with it.")
+
+;; src/analysis/control.lisp
+(defvar *217-commit-ring-of* (make-hash-table :test 'eq :weakness :key)
+  "F-217-2.  semantic-cp-async-commit node -> the barrier ring symbol whose stage it closes.")
+
+;; src/analysis/control.lisp
+(defvar *217-await-ring-of* (make-hash-table :test 'eq :weakness :key)
+  "F-217-2.  semantic-nvvm-cp-async-wait node -> (RING-SYMBOL ARRIVALS DEPTH) for a :linear ring await.")
+
+;; src/analysis/control.lisp
+(defvar *217-orig-analyze-load-tile-at* (fdefinition 'analyze-load-tile-at-expression))
+
+;; src/analysis/control.lisp  (fold: bind *217-commit-ring* around the :linear PTX branch)
+(defun analyze-load-tile-at-expression (expr env context location)
+  "F-217-2 wrapper: a load-tile-at whose :barrier is (ring-get RING i) on a :linear ring, on PTX, binds
+   *217-commit-ring* to RING while the original analyzes it, so the cp.async commit its expansion ends with
+   is counted against RING (see analyze-%cp-async-commit-expression)."
+  (let* ((barrier-form (%extract-key-arg (nthcdr 4 expr) :barrier nil))
+         (ring (and barrier-form
+                    (eq *target-backend* :ptx)
+                    (%barrier-ring-form-p barrier-form)
+                    (eq (async-barrier-mode-of barrier-form) :linear)
+                    (%barrier-ring-form-p barrier-form))))
+    (when ring
+      (log:debug "F-217-2: load-tile-at into :linear ring ~S -- its commit is counted" ring))
+    (let ((*217-commit-ring* ring))
+      (funcall *217-orig-analyze-load-tile-at* expr env context location))))
+
+;; src/analysis/control.lisp
+(defvar *217-orig-analyze-commit* (fdefinition 'analyze-%cp-async-commit-expression))
+
+;; src/analysis/control.lisp  (fold: tag the node in the original)
+(defun analyze-%cp-async-commit-expression (expr env context location)
+  "Analyzer for (%cp-async-commit) -- emits cp.async.commit_group.
+   F-217-2: inside a :linear ring load (*217-commit-ring* bound) the node is tagged with the ring, so its
+   codegen also counts the group on the ring's pending counter."
+  (let ((node (funcall *217-orig-analyze-commit* expr env context location)))
+    (when *217-commit-ring*
+      (setf (gethash node *217-commit-ring-of*) *217-commit-ring*))
+    node))
+
+;; src/analysis/control.lisp
+(defvar *217-orig-await-base* (fdefinition 'analyze-await-expression-base))
+
+;; src/analysis/control.lisp  (fold: tag the :ptx cp.async branch in the original)
+(defun analyze-await-expression-base (expr env context location)
+  "F-217-2 wrapper: a cp.async await on (ring-get RING i) of a :linear ring with depth > 0, outside a
+   warp-specialized block, is tagged (RING ARRIVALS DEPTH) so codegen emits the count-correct wait."
+  (let ((node (funcall *217-orig-await-base* expr env context location)))
+    (when (and (semantic-nvvm-cp-async-wait-p node)
+               (not *in-warp-spec-block*)
+               (plusp (semantic-nvvm-cp-async-wait-group-count node)))
+      (let ((ring (%barrier-ring-form-p (second expr))))
+        (if ring
+            (let ((info (list ring (barrier-load-count-of (second expr))
+                              (semantic-nvvm-cp-async-wait-group-count node))))
+              (log:debug "F-217-2: await on :linear ring ~S, arrivals ~a, depth ~a -- count-correct" ring
+                         (second info) (third info))
+              (setf (gethash node *217-await-ring-of*) info))
+            (log:debug "F-217-2: await ~S has depth ~a but no literal (ring-get RING i) -- static wait kept"
+                       (second expr) (semantic-nvvm-cp-async-wait-group-count node)))))
+    node))
+
+;; src/analysis/control.lisp  (fold: nothing -- register-control-analyzers already registers both by name)
+(defun %217-register-ring-count-analyzers ()
+  "F-217-2: LOAD-TILE-AT and %CP-ASYNC-COMMIT are registered as function OBJECTS by
+   register-control-analyzers, so the overlay redefinitions above are dead until re-registered here."
+  (dolist (entry (list (cons "LOAD-TILE-AT" #'analyze-load-tile-at-expression)
+                       (cons "%CP-ASYNC-COMMIT" #'analyze-%cp-async-commit-expression)))
+    (dolist (pkg (list (find-package :crisp-language) (find-package :crisp.compiler)))
+      (when pkg
+        (setf (gethash (intern (car entry) pkg) *expression-analyzers*) (cdr entry)))))
+  (log:debug "F-217-2: re-registered LOAD-TILE-AT and %CP-ASYNC-COMMIT"))
+
+;; src/analysis/control.lisp
+(defvar *217-orig-register-197* (fdefinition 'register-197-pair-store-analyzers))
+
+;; src/analysis/control.lisp  (fold: drop -- see %217-register-ring-count-analyzers)
+(defun register-197-pair-store-analyzers ()
+  "Endeavour 197's registrations, then (F-217-2, overlay only) the ring-count analyzers.  This is the last
+   call in register-control-analyzers, so it survives initialize-compiler's clrhash."
+  (funcall *217-orig-register-197*)
+  (%217-register-ring-count-analyzers))
+
+(when (boundp '*expression-analyzers*)
+  (%217-register-ring-count-analyzers))
+
+;; src/codegen.lisp
+(defvar *217-ring-counters* nil
+  "F-217-2.  Bound per function by generate-function-body: ring symbol -> the i32 alloca holding that
+   ring's committed-not-yet-awaited cp.async group count.")
+
+;; src/codegen.lisp
+(defvar *217-orig-generate-function-body* (fdefinition 'generate-function-body))
+
+;; src/codegen.lisp  (fold: bind *217-ring-counters* in the original)
+(defun generate-function-body (semantic-function func di-subprogram builder module di-builder location-map)
+  "F-217-2 wrapper: a fresh ring-counter table per function, so a counter alloca never outlives its
+   function.  See the original for everything else."
+  (let ((*217-ring-counters* (make-hash-table :test 'eq)))
+    (funcall *217-orig-generate-function-body*
+             semantic-function func di-subprogram builder module di-builder location-map)))
+
+;; src/codegen.lisp
+(defun %217-ring-counter (builder ring)
+  "F-217-2: the i32 alloca counting RING's committed-not-yet-awaited groups in the current function --
+   created on first use at the top of the entry block and zeroed there (mem2reg makes it a register)."
+  (or (gethash ring *217-ring-counters*)
+      (let* ((here  (llvm-get-insert-block builder))
+             (fn    (llvm-get-basic-block-parent here))
+             (entry (llvm-get-entry-basic-block fn))
+             (first (llvm-get-first-instruction entry))
+             (i32   (llvm-int32-type)))
+        (if (and first (not (cffi:null-pointer-p first)))
+            (llvm-position-builder-before builder first)
+            (llvm-position-builder-at-end builder entry))
+        (let ((a (llvm-build-alloca builder i32 (format nil "ring_pending_~(~a~)" ring))))
+          (llvm-build-store builder (llvm-const-int i32 0 0) a)
+          (llvm-position-builder-at-end builder here)
+          (log:debug "F-217-2: pending-group counter for ring ~S" ring)
+          (setf (gethash ring *217-ring-counters*) a)))))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir :around ((node semantic-cp-async-commit) builder module var-env
+                                     di-builder di-scope location-map)
+  "F-217-2: a commit that closes a :linear ring's load also counts one group on the ring's counter."
+  (declare (ignore module var-env di-builder di-scope location-map))
+  (multiple-value-prog1 (call-next-method)
+    (let ((ring (gethash node *217-commit-ring-of*)))
+      (when (and ring *217-count-await* *217-ring-counters*)
+        (let* ((i32 (llvm-int32-type))
+               (ctr (%217-ring-counter builder ring))
+               (d   (llvm-build-load2 builder i32 ctr "ring_pending")))
+          (llvm-build-store builder (llvm-build-add builder d (llvm-const-int i32 1 0) "ring_pending_inc")
+                            ctr))))))
+
+;; src/codegen.lisp
+(defun %217-emit-counted-wait (builder module ring arrivals depth)
+  "F-217-2: the count-correct await.  NEWER = pending - ARRIVALS is how many of RING's groups were committed
+   after the stage being awaited; wait for the largest multiple of ARRIVALS, at most DEPTH, not above NEWER
+   (wait_group takes an immediate, hence the compare chain: DEPTH, DEPTH - ARRIVALS, ..., then 0).  The
+   stage is then retired: pending = max(NEWER, 0)."
+  (let* ((i32     (llvm-int32-type))
+         (zero    (llvm-const-int i32 0 0))
+         (ctr     (%217-ring-counter builder ring))
+         (d       (llvm-build-load2 builder i32 ctr "ring_pending"))
+         (newer   (llvm-build-sub builder d (llvm-const-int i32 arrivals 0) "ring_newer"))
+         (fn      (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (done    (llvm-append-basic-block fn "ring_wait_done"))
+         (steps   (loop for k from depth above 0 by (max 1 arrivals) collect k)))
+    (log:debug "F-217-2: counted await on ring ~S: waits ~{~a~^, ~}, 0" ring steps)
+    (dolist (k steps)
+      (let ((wait-bb (llvm-append-basic-block fn (format nil "ring_wait_~d" k)))
+            (next-bb (llvm-append-basic-block fn (format nil "ring_wait_lt~d" k))))
+        (llvm-build-cond-br builder
+                            (llvm-build-icmp builder +llvm-int-sge+ newer (llvm-const-int i32 k 0) "ring_ge")
+                            wait-bb next-bb)
+        (llvm-position-builder-at-end builder wait-bb)
+        (%gen-nvvm-cp-async-wait-group builder module k)
+        (llvm-build-br builder done)
+        (llvm-position-builder-at-end builder next-bb)))
+    (%gen-nvvm-cp-async-wait-group builder module 0)
+    (llvm-build-br builder done)
+    (llvm-position-builder-at-end builder done)
+    (llvm-build-store builder
+                      (llvm-build-select builder (llvm-build-icmp builder +llvm-int-sgt+ newer zero "ring_pos")
+                                         newer zero "ring_retired")
+                      ctr)))
+
+;; src/codegen.lisp
+(defmethod generate-node-ir :around ((node semantic-nvvm-cp-async-wait) builder module var-env
+                                     di-builder di-scope location-map)
+  "F-217-2: a tagged :linear ring await emits the count-correct wait (%217-emit-counted-wait); any other
+   cp.async await keeps its static wait_group."
+  (declare (ignore var-env di-builder di-scope location-map))
+  (let ((info (gethash node *217-await-ring-of*)))
+    (if (and info *217-count-await* *217-ring-counters*)
+        (destructuring-bind (ring arrivals depth) info
+          (%217-emit-counted-wait builder module ring arrivals depth)
+          (values (llvm-const-int (llvm-int64-type) 0 nil) nil))
+        (call-next-method))))
+
+;; src/codegen.lisp  (F-217-2: replaces the %217-ring-counter above -- the entry-block helpers are not exported
+;; from crisp.llvm-bindings; on fold, export them or keep the package prefix)
+(defun %217-ring-counter (builder ring)
+  "F-217-2: the i32 alloca counting RING's committed-not-yet-awaited groups in the current function --
+   created on first use at the top of the entry block and zeroed there (mem2reg makes it a register)."
+  (or (gethash ring *217-ring-counters*)
+      (let* ((here  (llvm-get-insert-block builder))
+             (fn    (llvm-get-basic-block-parent here))
+             (entry (crisp.llvm-bindings::llvm-get-entry-basic-block fn))
+             (first (crisp.llvm-bindings::llvm-get-first-instruction entry))
+             (i32   (llvm-int32-type)))
+        (if (and first (not (cffi:null-pointer-p first)))
+            (crisp.llvm-bindings::llvm-position-builder-before builder first)
+            (llvm-position-builder-at-end builder entry))
+        (let ((a (llvm-build-alloca builder i32 (format nil "ring_pending_~(~a~)" ring))))
+          (llvm-build-store builder (llvm-const-int i32 0 0) a)
+          (llvm-position-builder-at-end builder here)
+          (log:debug "F-217-2: pending-group counter for ring ~S" ring)
+          (setf (gethash ring *217-ring-counters*) a)))))
+
+;; src/codegen.lisp  (F-217-2: replaces the %217-emit-counted-wait above -- llvm-build-select is not exported
+;; from crisp.llvm-bindings; on fold, export it or keep the package prefix)
+(defun %217-emit-counted-wait (builder module ring arrivals depth)
+  "F-217-2: the count-correct await.  NEWER = pending - ARRIVALS is how many of RING's groups were committed
+   after the stage being awaited; wait for the largest multiple of ARRIVALS, at most DEPTH, not above NEWER
+   (wait_group takes an immediate, hence the compare chain: DEPTH, DEPTH - ARRIVALS, ..., then 0).  The
+   stage is then retired: pending = max(NEWER, 0)."
+  (let* ((i32     (llvm-int32-type))
+         (zero    (llvm-const-int i32 0 0))
+         (ctr     (%217-ring-counter builder ring))
+         (d       (llvm-build-load2 builder i32 ctr "ring_pending"))
+         (newer   (llvm-build-sub builder d (llvm-const-int i32 arrivals 0) "ring_newer"))
+         (fn      (llvm-get-basic-block-parent (llvm-get-insert-block builder)))
+         (done    (llvm-append-basic-block fn "ring_wait_done"))
+         (steps   (loop for k from depth above 0 by (max 1 arrivals) collect k)))
+    (log:debug "F-217-2: counted await on ring ~S: waits ~{~a~^, ~}, 0" ring steps)
+    (dolist (k steps)
+      (let ((wait-bb (llvm-append-basic-block fn (format nil "ring_wait_~d" k)))
+            (next-bb (llvm-append-basic-block fn (format nil "ring_wait_lt~d" k))))
+        (llvm-build-cond-br builder
+                            (llvm-build-icmp builder +llvm-int-sge+ newer (llvm-const-int i32 k 0) "ring_ge")
+                            wait-bb next-bb)
+        (llvm-position-builder-at-end builder wait-bb)
+        (%gen-nvvm-cp-async-wait-group builder module k)
+        (llvm-build-br builder done)
+        (llvm-position-builder-at-end builder next-bb)))
+    (%gen-nvvm-cp-async-wait-group builder module 0)
+    (llvm-build-br builder done)
+    (llvm-position-builder-at-end builder done)
+    (llvm-build-store builder
+                      (crisp.llvm-bindings::llvm-build-select builder (llvm-build-icmp builder +llvm-int-sgt+ newer zero "ring_pos")
+                                         newer zero "ring_retired")
+                      ctr)))
+

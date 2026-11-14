@@ -167,3 +167,16 @@
            (list "ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16" (if d :some 6) "B fragments")
            (list "ld.shared.b16" 0 "no per-element fragment reads")
            (list "xor.b" 0 "nothing swizzled")))))
+
+;; tests/run-specs.lisp
+(defun validate-ptx-217-ring-tail-await (file ptx-string)
+  "Endeavour 217 F-217-2 spec 06: a :linear ring's await waits for the groups actually committed.  The
+   contest ring (3 slots, 2 arrivals, refills under (when more? ..)) gets a compare chain over the counted
+   pending groups: one wait_group each of 4 (steady state), 2 (next-to-last stage) and 0 (last stage)."
+  (declare (ignore file))
+  (%208-check-counts
+   "217-ring-tail-await" ptx-string
+   (list (list "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32" :some "the fp16 MMAs")
+         (list (format nil "cp.async.wait_group ~c4" #\Tab) 1 "steady state: 4 newer groups may stay in flight")
+         (list (format nil "cp.async.wait_group ~c2" #\Tab) 1 "next-to-last stage: only 2 newer groups exist")
+         (list (format nil "cp.async.wait_group ~c0" #\Tab) 1 "last stage: nothing newer, wait for all"))))

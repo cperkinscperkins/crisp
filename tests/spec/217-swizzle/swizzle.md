@@ -242,3 +242,64 @@ functions, then rungs 3-5 per D-217-6).  `tests/ci-stop.txt` = `217-swizzle`.
   closing -- but that is an argument, not evidence.  Candidate fixes (decision for Chris): the compiler
   commits an empty group where a ring load-tile is skipped / the kernel drops `(when more? ..)` and lets an
   out-of-range load-tile zero-fill and commit; or per-slot mbarrier tracking (cp.async.mbarrier.arrive).
+
+  **L4 pod, 2026-11-13 (pod-session, ~5 min; batch in put_temp_files_here/217/l4/, results_run2/).**  stress.py
+  calls each submission's `custom_kernel` with a fresh seed per rep (what eval.py leaderboard does: recheck
+  every rep, up to 100 reps per benchmark -- test mode checks each case ONCE, which is why v11 passed test and
+  failed ranked).  On L4 all 8 benchmarks dispatch to the ring.
+
+  | shape | v11 (swizzled) bad reps | v10 (plain) bad reps |
+  |---|---|---|
+  | 128^3, 256^3, 512^3 | 0 / 300 | 0 / 150 |
+  | 1024 x 1536 x 1024 | **46 / 300** | 0 / 150 |
+  | 2048 x 3072 x 2048 | 0 / 300 | 0 / 150 |
+  | 4096 x 5120 x 4096 (scored) | **260 / 300** | 0 / 150 |
+  | 4096^2 x 64, 4096^2 x 96, 8192^2 x 64 | 0 / 300 | 0 / 150 |
+  | 1024^3, 2048^3 | 300 / 300 | 150 / 150 -- identical 1-ulp mismatches in both: the pod's torch 2.4.1 cuBLAS, not ours |
+
+  v11's failures are 1-20 whole 128 x 128 output tiles (or a 32-column strip of one) per rep, max rel error
+  0.3-1.1 %, median ~0.1 %.  That is the size of ONE K slice replaced by stale data: a stale slot holds the
+  slice from 3 iterations earlier, so the error is the difference of two random 32-term slices (sd ~1.8 on
+  a sum of ~1024 -> median ~0.12 %, max ~0.6 % predicted at the scored shape; 0.096 % / 0.64 % observed).
+  The PTX agrees with the mechanism: in both v10 and v11 the refill's two `commit_group`s sit on the
+  `more?` branch, and the loop's only wait is `cp.async.wait_group 4`.  Not yet explained: why the K = 64 / 96
+  shapes (where the FIRST iteration under-waits) are clean.
+
+  **CONFIRMED (L4 pod run 4, torch 2.8 / CUDA 12.8 image; results_run4 = results/).**  v11w0 = v11 with ONE PTX
+  line changed, the ring's `cp.async.wait_group 4` -> `wait_group 0` (every ldmatrix address, swizzle
+  included, unchanged).  300 fresh-seed reps each:
+
+  | shape | v11 | v11w0 | v10 |
+  |---|---|---|---|
+  | 1024 x 1536 x 1024 | 86 bad | **0** | 0 |
+  | 4096 x 5120 x 4096 (scored) | 239 bad | **0** | 0 |
+  | 2048 x 3072 x 2048 | 1 bad | 0 | 0 |
+  | 1024^3 / 2048^3 (pod cuBLAS 1 ulp off everyone) | 83.9 M / 168.61 M bad elems | 64,657,935 / 168,564,935 | **identical** to v11w0 |
+
+  So the swizzle map is exonerated -- v11w0's output is bit-identical to v10's wherever both can be compared
+  -- and F-217-2 is a bug in the ring's `await` lowering that v10 carries too (its passing L4 is a timing
+  margin the faster swizzled loop removed).  Price of the blunt wait on the scored shape (L4, min of 300):
+  v11 3108 us (wrong), v11w0 3199 us, v10 3824 us -- even fully serialized the swizzled ring beats v10 by 16 %.
+  Still unexplained: why K = 64 / 96 (first iteration under-waits) never failed.  The pod's reference
+  disagreeing at 1024^3 / 2048^3 is the pod's cuBLAS (both torch 2.4.1 and 2.8.0), not GPU MODE's: v10
+  passed ranked there (971139).
+
+  **FIXED (2026-11-13, Chris chose the count-correct await; overlay block "Endeavour 217 F-217-2").**  Each
+  :linear ring keeps a per-thread i32 of its committed-not-yet-awaited groups (an entry-block alloca, so a
+  register after mem2reg): a ring load-tile's commit adds 1; an await sets NEWER = pending - arrivals,
+  waits for the largest multiple of arrivals <= NEWER, capped at the old depth (wait_group takes an
+  immediate, so it is a compare chain: 4 / 2 / 0 here), and leaves pending = max(NEWER, 0).  Awaits are
+  taken in load order (the ring's FIFO, which the static depth already assumed); another ring's groups are
+  not counted, so two rings only ever over-wait.  Warp-specialized awaits and non-ring barriers keep their
+  static wait.  `*217-count-await*` NIL restores the old lowering for a twin.  The contest kernel's PTX:
+  `mov 0` at entry, `add 2` at each stage's commit, the 4 / 2 / 0 chain, `max.s32` retire (hand-read).
+  Spec 06 (`06-ring-tail-await.crisp`) pins the chain; red before, green after.
+
+  Metal, v12 = v11 rebuilt (only the ring's PTX differs; the other four kernels byte-identical):
+
+  | run | result |
+  |---|---|
+  | L4 pod, 300 reps x 11 shapes (8 benchmarks + K = 64 / 96 tails) | v12 **0 bad** everywhere checkable; at 1024^3 / 2048^3 bit-identical to the wait_group 0 twin.  Same session: v11 117 / 300 and 244 / 300 (the race was live) |
+  | L4 pod speed, scored shape (min of 300) | v12 3098 us = v11 3022 (wrong) ~ wait_group 0 3115; 1024 x 1536 x 1024 median v12 94.3 vs wait_group 0 111.6 -- the overlap is kept |
+  | GPU MODE L4 leaderboard 971198 | **passed, 3518.9 us** (v10 4808) |
+  | GPU MODE A100 leaderboard 971199 | **passed, 2016.3 us** (v11 2029.6, v10 3555) |
