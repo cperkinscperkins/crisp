@@ -4,7 +4,7 @@
   "leaderboard_id": 544,
   "leaderboard_url": "https://www.gpumode.com/leaderboard/544?tab=rankings",
   "directory": "02-vectorsum-v2",
-  "crisp_commit": "3def9cf0",
+  "crisp_commit": "1a5fe4d5",
   "workload": {
     "dtype": "float32",
     "sizes": [
@@ -47,10 +47,10 @@
   },
   "standings": {
     "B200": {
-      "captured_at": "2026-11-12T17:38:47Z",
+      "captured_at": "2026-11-14T17:04:47Z",
       "user_name": "cperkinscperkins",
-      "rank": 39,
-      "total_entrants": 84,
+      "rank": 40,
+      "total_entrants": 85,
       "file_name": "crisp_vectorsum_lastman_wg_occ1.py",
       "crisp_file": "02-vectorsum-v2/vectorsum_lastman_wg.crisp",
       "py_file": "02-vectorsum-v2/crisp_vectorsum_lastman_wg_occ1.py",
@@ -60,10 +60,10 @@
       "submission_id": null,
       "top1_score_us": 37.03,
       "top1_user": "Nebius Applied AI Team",
-      "median_score_us": 50.59
+      "median_score_us": 50.3
     },
     "H100": {
-      "captured_at": "2026-11-12T17:38:47Z",
+      "captured_at": "2026-11-14T17:04:47Z",
       "user_name": "cperkinscperkins",
       "rank": 34,
       "total_entrants": 71,
@@ -79,7 +79,7 @@
       "median_score_us": 83.32
     },
     "A100": {
-      "captured_at": "2026-11-12T17:38:47Z",
+      "captured_at": "2026-11-14T17:04:47Z",
       "user_name": "cperkinscperkins",
       "rank": 69,
       "total_entrants": 126,
@@ -95,7 +95,7 @@
       "median_score_us": 143.45
     },
     "L4": {
-      "captured_at": "2026-11-12T17:38:47Z",
+      "captured_at": "2026-11-14T17:04:47Z",
       "user_name": "cperkinscperkins",
       "rank": 13,
       "total_entrants": 47,

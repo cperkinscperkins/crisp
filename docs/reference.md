@@ -1,6 +1,6 @@
 # Crisp Codebase Reference
 
-Generated on 2026-11-12T04:23:54.132617Z
+Generated on 2026-11-14T17:23:42.236070Z
 
 ## File: `C:\Users\cperk\Documents\crisp-man\src\analysis\control.lisp`
 
@@ -374,10 +374,41 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFVAR `*217-COUNT-AWAIT*`
+
+  > F-217-2.  T: a :linear ring's await waits for the groups actually committed (count-correct).  NIL: the  >    old static cp.async.wait_group (ring-count - 1) x arrivals -- kept only so a twin build can price it.
+
+
+---
+### DEFVAR `*217-COMMIT-RING*`
+
+  > F-217-2.  Bound by analyze-load-tile-at-expression to the barrier RING symbol of a :linear ring load on  >    PTX while its expansion is analyzed; analyze-%cp-async-commit-expression tags its commit with it.
+
+
+---
+### DEFVAR `*217-COMMIT-RING-OF*`
+
+  > F-217-2.  semantic-cp-async-commit node -> the barrier ring symbol whose stage it closes.
+
+
+---
+### DEFVAR `*217-AWAIT-RING-OF*`
+
+  > F-217-2.  semantic-nvvm-cp-async-wait node -> (RING-SYMBOL ARRIVALS DEPTH) for a :linear ring await.
+
+
+---
+### DEFUN `ANALYZE-LOAD-TILE-AT-EXPRESSION-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.  >    Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).  >    Endeavour 196: a :linear barrier on PTX without :transpose takes the VECTORIZED cp.async nest  >    (%196-expand-async-load-tile-vec-form, 16-byte chunks); with :transpose the per-element one.  >   >    F-217-2: analyze-load-tile-at-expression (below) marks a :linear ring load's commit.
+
+
+---
 ### DEFUN `ANALYZE-LOAD-TILE-AT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (load-tile-at SRC TILE (ORIGIN...) &key (identity 0) transpose barrier).  >    Rejects placement inside a thread-divergent conditional. If :barrier is provided  >    and target is :ptx, emits semantic-nvvm-cp-async-tile-copy. Otherwise, delegates  >    codegen via %expand-load-tile-at-form.  >    Endeavour 192: a per-operation :cache key is refused (the hint comes from the tensor's type).  >    Endeavour 196: a :linear barrier on PTX without :transpose takes the VECTORIZED cp.async nest  >    (%196-expand-async-load-tile-vec-form, 16-byte chunks); with :transpose the per-element one.
+  > F-217-2 wrapper: a load-tile-at whose :barrier is (ring-get RING i) on a :linear ring, on PTX, binds  >    *217-commit-ring* to RING while the original analyzes it, so the cp.async commit its expansion ends with  >    is counted against RING (see analyze-%cp-async-commit-expression).
 
 
 ---
@@ -432,7 +463,7 @@ Generated on 2026-11-12T04:23:54.132617Z
 ### DEFUN `%ANALYZE-NVVM-TMA-LOAD-TILE-AT`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavor 152 wrapper (multicast tag), plus Endeavour 198: a :128b load of a tile wider than 128  >    bytes is tagged with its box split, which codegen issues as one copy per box.
+  > Endeavor 152 wrapper (multicast tag), plus Endeavour 198: a :128b load of a tile wider than 128  >    bytes is tagged with its box split, which codegen issues as one copy per box.  >    Endeavour 217: its destination must not be a swizzled tile (a compiler bug, never silent).
 
 
 ---
@@ -457,10 +488,17 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFUN `ANALYZE-%CP-ASYNC-COMMIT-EXPRESSION-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzer for (%cp-async-commit) — emits cp.async.commit_group.  >   >    F-217-2: analyze-%cp-async-commit-expression (below) tags the node with its ring.
+
+
+---
 ### DEFUN `ANALYZE-%CP-ASYNC-COMMIT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzer for (%cp-async-commit) — emits cp.async.commit_group.
+  > Analyzer for (%cp-async-commit) -- emits cp.async.commit_group.  >    F-217-2: inside a :linear ring load (*217-commit-ring* bound) the node is tagged with the ring, so its  >    codegen also counts the group on the ring's pending counter.
 
 
 ---
@@ -478,10 +516,17 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFUN `%217-TAG-RING-AWAIT`
+- **Args**: `(EXPR NODE)`
+
+  > F-217-2: NODE, the analyzed (await BARRIER) EXPR.  A cp.async await on (ring-get RING i) of a :linear ring with depth > 0, outside a  >    warp-specialized block, is tagged (RING ARRIVALS DEPTH) so codegen emits the count-correct wait.
+
+
+---
 ### DEFUN `ANALYZE-AWAIT-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 196 wrapper: a cp.async await (a :linear barrier on PTX) outside a warp-specialized block  >    becomes wait_group + sync-workgroup, so every thread sees every thread's copies.  See D-196-11.
+  > Endeavour 196 wrapper: a cp.async await (a :linear barrier on PTX) outside a warp-specialized block  >    becomes wait_group + sync-workgroup, so every thread sees every thread's copies.  See D-196-11.  >    F-217-2: a :linear ring's await is tagged for the count-correct wait (%217-tag-ring-await).
 
 
 ---
@@ -568,10 +613,41 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFVAR `*217-SWIZZLE*`
+
+  > Endeavour 217.  NIL turns the compiler-owned swizzle of ldmatrix scratch tiles off (twin builds).
+
+
+---
+### DEFVAR `*217-SWIZZLED-NAMES*`
+
+  > Endeavour 217.  ((SYM . S) ...): the scratch bindings (and their LET aliases) in scope whose tiles are  >    XOR-swizzled with shift S.  Bound by analyze-let-with-tile-explosion (decisions) and  >    analyze-let-expression (aliases).
+
+
+---
+### DEFVAR `*217-NODE-SHIFT*`
+
+  > Endeavour 217.  semantic node -> S: an aref's array node, or an ldmatrix hw-op, that addresses a  >    swizzled tile.
+
+
+---
+### DEFVAR `*217-SHIFT*`
+
+  > Endeavour 217.  Bound around an ldmatrix hw-op's codegen: its S, or NIL.
+
+
+---
+### DEFUN `ANALYZE-LET-EXPRESSION-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.  >    Extended (120): propagates each binding's uniformity from its init.  >    Endeavour 194 (D-194-15): tracks which bindings hold the local thread index (*194-lane-index-names*)  >    for the body.  Sequential, like the let: a binding sees the ones before it, and rebinding a name  >    shadows an outer index of that name.  >   >    Endeavour 217: analyze-let-expression (below) carries swizzled tile names through aliases.
+
+
+---
 ### DEFUN `ANALYZE-LET-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes a `(let ...)` expression.  >    Extended (091): strips leading declare forms from the body, checks for  >    (grid-level) and (workgroup-level) declarations, and enforces nesting rules.  >    Extended (120): propagates each binding's uniformity from its init.  >    Endeavour 194 (D-194-15): tracks which bindings hold the local thread index (*194-lane-index-names*)  >    for the body.  Sequential, like the let: a binding sees the ones before it, and rebinding a name  >    shadows an outer index of that name.
+  > Endeavour 217 wrapper around the let analyzer: a binding whose init is a swizzled tile (or a ring-get  >    of a swizzled ring) is swizzled too, for the body; rebinding a swizzled name to anything else hides it.  >    Sequential, like the let.
 
 
 ---
@@ -3701,10 +3777,17 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFUN `ANALYZE-AREF-EXPRESSION-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)  >   >    BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of  >    silently discarding all but the first.  >    Endeavour 206: (~ w i) on a microfloat block is the raw code at element i.  >   >    Endeavour 217: analyze-aref-expression (below) records a swizzled tile's S on the node.
+
+
+---
 ### DEFUN `ANALYZE-AREF-EXPRESSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Analyzes (~ target [index...]) or (~ref~ ...) expressions.  >    Tensor path dispatches on resolved :align:  >      :compact        → %build-tensor-compact-flat-index-form  (no offset, no stride)  >      :compact-offset → %build-tensor-compact-offset-flat-index-form (offset, no stride)  >      :strided / NIL  → %build-tensor-flat-index-form (offset + stride, safe fallback)  >   >    BUG 039: the cell / single-index fall-through now REJECTS multiple indices instead of  >    silently discarding all but the first.  >    Endeavour 206: (~ w i) on a microfloat block is the raw code at element i.
+  > Endeavour 217 wrapper: an element access of a swizzled tile records S on its array node, for  >    %aref-tensor-ir.
 
 
 ---
@@ -6502,11 +6585,25 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFVAR `*217-RING-COUNTERS*`
+
+  > F-217-2.  Bound per function by generate-function-body: ring symbol -> the i32 alloca holding that  >    ring's committed-not-yet-awaited cp.async group count.
+
+
+---
+### DEFUN `GENERATE-FUNCTION-BODY-BASE`
+- **Args**: `(SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER
+              LOCATION-MAP)`
+
+  > Generates the body of the function.  >    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the  >    PTX kernel-entry receive site can inttoptr demoted i64 params back  >    to their original-addrspace pointer.  >    Binds *kernel-readonly-tensor-syms* around the body codegen so the  >    semantic-aref tensor case can attach !invariant.load to direct  >    reads of read-only kernel-param tensors.  >   >    F-217-2: generate-function-body (below) gives each function a fresh ring-counter table.
+
+
+---
 ### DEFUN `GENERATE-FUNCTION-BODY`
 - **Args**: `(SEMANTIC-FUNCTION FUNC DI-SUBPROGRAM BUILDER MODULE DI-BUILDER
               LOCATION-MAP)`
 
-  > Generates the body of the function.  >    Threads IS-ENTRY-POINT into INITIALIZE-FUNCTION-PARAMETERS so the  >    PTX kernel-entry receive site can inttoptr demoted i64 params back  >    to their original-addrspace pointer.  >    Binds *kernel-readonly-tensor-syms* around the body codegen so the  >    semantic-aref tensor case can attach !invariant.load to direct  >    reads of read-only kernel-param tensors.
+  > F-217-2 wrapper: a fresh ring-counter table per function, so a counter alloca never outlives its  >    function.  See the original for everything else.
 
 
 ---
@@ -7093,7 +7190,7 @@ Generated on 2026-11-12T04:23:54.132617Z
 - **Args**: `(ARRAY-NODE CELL-SPEC ELEMENT-TYPE INDEX-VAL BUILDER MODULE
               VAR-ENV DI-BUILDER DI-SCOPE LOCATION-MAP)`
 
-  > semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the  >    element pointer is a typed `getelementptr inbounds T, base, index` off the parent storage's base  >    pointer (SROA field 0 of field 0) -- typed, so a constant term of the index folds into the access's  >    immediate offset.  A read of a read-only kernel-parameter tensor gets !invariant.load.  >    Returns (values loaded nil ptr).
+  > semantic-aref Case 3: a TENSOR.  The flat element index already folds in offsets and strides; the  >    element pointer is a typed `getelementptr inbounds T, base, index` off the parent storage's base  >    pointer (SROA field 0 of field 0) -- typed, so a constant term of the index folds into the access's  >    immediate offset.  A read of a read-only kernel-parameter tensor gets !invariant.load.  >    Endeavour 217: when ARRAY-NODE addresses a swizzled tile (*217-node-shift*), the byte offset is  >    swizzled first (%217-swizzle-gep).  >    Returns (values loaded nil ptr).
 
 
 ---
@@ -7673,6 +7770,20 @@ Generated on 2026-11-12T04:23:54.132617Z
 - **Args**: `(BUILDER MODULE EVENTS-AS4-PTR)`
 
   > Emit call wait_group_events(1, events) -> void.  Lowers to OpGroupWaitEvents.
+
+
+---
+### DEFUN `%217-RING-COUNTER`
+- **Args**: `(BUILDER RING)`
+
+  > F-217-2: the i32 alloca counting RING's committed-not-yet-awaited groups in the current function --  >    created on first use at the top of the entry block and zeroed there (mem2reg makes it a register).
+
+
+---
+### DEFUN `%217-EMIT-COUNTED-WAIT`
+- **Args**: `(BUILDER MODULE RING ARRIVALS DEPTH)`
+
+  > F-217-2: the count-correct await.  NEWER = pending - ARRIVALS is how many of RING's groups were committed  >    after the stage being awaited; wait for the largest multiple of ARRIVALS, at most DEPTH, not above NEWER  >    (wait_group takes an immediate, hence the compare chain: DEPTH, DEPTH - ARRIVALS, ..., then 0).  The  >    stage is then retired: pending = max(NEWER, 0).
 
 
 ---
@@ -13185,17 +13296,79 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFVAR `*216-LDMATRIX*`
+
+  > Endeavour 216.  When true, a 16-bit load-fragment-a / -b whose source is an eligible shared-memory  >    scratch matrix is ONE ldmatrix per fragment instead of 8 (A) / 4 (B) scalar ld.shared.b16.  NIL  >    restores the per-element reads exactly -- the switch a twin-PTX A/B build flips.
+
+
+---
+### DEFUN `%216-LDMATRIX-ELIGIBLE-P`
+- **Args**: `(SRC PROBE ELEM OPERAND CONTEXT)`
+
+  > Endeavour 216.  T when load-fragment-OPERAND (:a or :b) of SRC (analyzed as PROBE, element ELEM) can  >    be one ldmatrix: PTX, a 16-bit element, SRC a :local (shared-memory) :COMPACT ROW-MAJOR matrix whose  >    static (ROWS COLS) are known and whose row is a multiple of 16 bytes -- ldmatrix takes each 8-element  >    row segment from a 16-byte-aligned address, and a fragment's segments start at multiples of 8 columns,  >    so the row pitch is the only thing that can break the alignment.  >   >    :COMPACT is checked on its own because a (transpose X) view keeps X's contiguous-term (:last) and marks  >    only its alignment slot :strided -- its rows are NOT contiguous, and ldmatrix would read X's rows  >    instead.  (Such a view also has no static scratch dims today, so it was refused already, but only by  >    accident.)  Every refusal is logged and keeps the per-element reads, which are correct for any layout.
+
+
+---
+### DEFUN `%216-LDMATRIX-NODE-BASE`
+- **Args**: `(OPERAND SRC PROBE ELEM COORDS ENV CONTEXT LOCATION)`
+
+  > Endeavour 216.  The semantic-hw-op for one ldmatrix fragment load.  Lane L supplies one 16-byte row  >    address; ldmatrix hands each lane, per 8x8 matrix, row L/4 columns 2(L%4), 2(L%4)+1 -- the mma.sync  >    pair (groupID, 2*tid) -- in one .b32 register, low column in the low half.  >   >      :a  x4, matrices in Ra0..Ra3 order: (rows +0, cols +0) (rows +8, cols +0) (rows +0, cols +8)  >          (rows +8, cols +8) of the 16x16 tile at (16 TY, 16 TK).  Lane L: row 16 TY + L%8 + 8((L/8)%2),  >          col 16 TK + 8(L/16).  >      :b  x2.trans on the row-major (K N) tile: matrices k +0 and k +8 at column 8 TX.  .trans gives lane  >          L rows 2(L%4), 2(L%4)+1 of column L/4 -- the B pair (2*tid, groupID).  Lane L (L%16 used):  >          row 16 TK + L%8 + 8((L/8)%2), col 8 TX.  >   >    Endeavour 217: %216-ldmatrix-node (below) records the tile's swizzle on this node.
+
+
+---
+### DEFUN `%216-LDMATRIX-NODE`
+- **Args**: `(OPERAND SRC PROBE ELEM COORDS ENV CONTEXT LOCATION)`
+
+  > Endeavour 217 wrapper: an ldmatrix of a swizzled tile records S on its hw-op node.
+
+
+---
+### DEFUN `%216-TO-I64`
+- **Args**: `(BUILDER V)`
+
+  > Endeavour 216.  Integer LLVM value V widened (sign-extended) to i64; an i64 passes through.
+
+
+---
+### DEFUN `%216-LDMATRIX-LOWER`
+- **Args**: `(BUILDER MODULE ARG-VALS RESULT-TYPE NREGS TRANS)`
+
+  > Endeavour 216.  One ldmatrix.sync.aligned.m8n8.{x4,x2}[.trans].shared.b16 into the fragment record  >    RESULT-TYPE: NREGS .b32 registers, each split into the record's two 16-bit fields in order (element 0  >    of the <2 x half> = the low half = the lower column / row).  %emit-nvvm-mma re-packs those pairs, and  >    LLVM folds the split and the re-pack away.
+
+
+---
+### DEFUN `%216-SHARED-ELEM-PTR`
+- **Args**: `(BUILDER TENSOR-VAL R C ELEM-LLVM)`
+
+  > Endeavour 216.  The shared-memory address of element (R, C) of the 2-D tile TENSOR-VAL: base + (R*s0 +  >    C*s1) elements.  Endeavour 217: swizzled when the ldmatrix being lowered reads a swizzled tile  >    (*217-shift*, bound by the semantic-hw-op :around).
+
+
+---
+### DEFUN `ANALYZE-LOAD-FRAGMENT-A-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > Endeavour 207 follow-up: a def-qint operand's int8 reads are raw-cast to the  >    fragment's primitive (%frag8-read).  >    P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,  >    16x8, row-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: the NVIDIA branch DISPATCHES ON THE OPERAND'S ELEMENT WIDTH, using the same  >    %coop-elem-of the SPV branch already used.  A 16-bit operand reads the m16n8k16 A layout  >    (8 elements/lane) instead of the m16n8k8 tf32 one (4 floats/lane); fp16 and bf16 share that  >    layout exactly and differ only in which record they fill.  >   >    PTX ISA mma.m16n8k16 A layout, 32 lanes, groupID = lane/4, tid = lane%4.  Each lane holds  >    8 elements as 4 register pairs, and the PAIR ORDER IS LOAD-BEARING -- it is the order the  >    intrinsic's 4 A operands are consumed in:  >        Ra0 = (groupID,   2*tid), (groupID,   2*tid+1)  >        Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)  >        Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)  >        Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)  >    Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns.  >   >    Endeavour 216: analyze-load-fragment-a (below) tries ldmatrix first and falls back to this.
+
+
+---
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-A`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > Endeavour 207 follow-up: a def-qint operand's int8 reads are raw-cast to the  >    fragment's primitive (%frag8-read).  >    P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-a SRC (TY TK)).  :spirv -> CooperativeMatrixLoadKHR (A,  >    16x8, row-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: the NVIDIA branch DISPATCHES ON THE OPERAND'S ELEMENT WIDTH, using the same  >    %coop-elem-of the SPV branch already used.  A 16-bit operand reads the m16n8k16 A layout  >    (8 elements/lane) instead of the m16n8k8 tf32 one (4 floats/lane); fp16 and bf16 share that  >    layout exactly and differ only in which record they fill.  >   >    PTX ISA mma.m16n8k16 A layout, 32 lanes, groupID = lane/4, tid = lane%4.  Each lane holds  >    8 elements as 4 register pairs, and the PAIR ORDER IS LOAD-BEARING -- it is the order the  >    intrinsic's 4 A operands are consumed in:  >        Ra0 = (groupID,   2*tid), (groupID,   2*tid+1)  >        Ra1 = (groupID+8, 2*tid), (groupID+8, 2*tid+1)  >        Ra2 = (groupID,   2*tid+8), (groupID,   2*tid+9)  >        Ra3 = (groupID+8, 2*tid+8), (groupID+8, 2*tid+9)  >    Note the K stride is 16 (not 8) and each lane spans TWO adjacent columns.
+  > Endeavour 216 wrapper: a 16-bit A fragment from an eligible shared-memory scratch matrix is one  >    ldmatrix.x4 (%216-ldmatrix-node); everything else is the per-element read below it (the wrapped  >    original, analyze-load-fragment-a-base).
+
+
+---
+### DEFUN `ANALYZE-LOAD-FRAGMENT-B-BASE`
+- **Args**: `(EXPR ENV CONTEXT LOCATION)`
+
+  > P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,  >    8x8, col-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: 16-bit dispatch, mirroring load-fragment-a.  PTX ISA mma.m16n8k16 B layout  >    (16x8), 32 lanes, groupID = lane/4, tid = lane%4; each lane holds 4 elements as 2 pairs, and  >    the pair order is the intrinsic's B operand order:  >        Rb0 = (2*tid,   groupID), (2*tid+1, groupID)  >        Rb1 = (2*tid+8, groupID), (2*tid+9, groupID)  >    B is K-major here (K=16 rows, N=8 cols), so the ROW stride is what doubles, not the column.  >   >    Endeavour 216: analyze-load-fragment-b (below) tries ldmatrix first and falls back to this.
 
 
 ---
 ### DEFUN `ANALYZE-LOAD-FRAGMENT-B`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > P2 / F-SPV: [155: component type derived from the operand, not hardcoded float]  >     (load-fragment-b SRC (TK TX)).  :spirv -> CooperativeMatrixLoadKHR (B,  >    8x8, col-major); else the NVIDIA per-lane read.  >   >    Endeavour 159: 16-bit dispatch, mirroring load-fragment-a.  PTX ISA mma.m16n8k16 B layout  >    (16x8), 32 lanes, groupID = lane/4, tid = lane%4; each lane holds 4 elements as 2 pairs, and  >    the pair order is the intrinsic's B operand order:  >        Rb0 = (2*tid,   groupID), (2*tid+1, groupID)  >        Rb1 = (2*tid+8, groupID), (2*tid+9, groupID)  >    B is K-major here (K=16 rows, N=8 cols), so the ROW stride is what doubles, not the column.
+  > Endeavour 216 wrapper: a 16-bit B fragment from an eligible row-major (K N) shared-memory scratch  >    matrix is one ldmatrix.x2.trans (%216-ldmatrix-node); everything else is the per-element read (the  >    wrapped original, analyze-load-fragment-b-base).
 
 
 ---
@@ -13771,10 +13944,73 @@ Generated on 2026-11-12T04:23:54.132617Z
 
 
 ---
+### DEFUN `%217-SWIZZLE-SHIFT`
+- **Args**: `(PITCH-BYTES TILE-BYTES)`
+
+  > Endeavour 217.  The swizzle shift S for a shared-memory tile whose rows are PITCH-BYTES apart and whose  >    whole extent is TILE-BYTES, or NIL when the tile is not swizzled.  >   >    The swizzle (see %217-swizzle-offset) XORs bits 4-6 of a byte offset with bits S..S+2, so it permutes  >    the 16-byte chunks inside every aligned 2^(S+3)-byte block.  S = max(7, log2 PITCH): from S up, the  >    offset bits count rows (or groups of rows sharing a 128-byte line), so the 8 rows an ldmatrix phase  >    reads land in 8 different 16-byte bank groups.  Requires a power-of-two PITCH of at least 32 bytes (a  >    16-byte pitch already puts 8 rows in 8 groups) and a tile that is a whole number of blocks, so the map  >    is a bijection of the tile onto itself.
+
+
+---
+### DEFUN `%217-SWIZZLE-OFFSET`
+- **Args**: `(OFF S)`
+
+  > Endeavour 217.  Byte offset OFF (from the tile / ring-slot base) under the swizzle with shift S:  >    OFF xor (((OFF >> S) & 7) << 4).  Only bits 4-6 change, so a 16-byte chunk stays whole and aligned.  >    The compile-time twin of the IR %217-swizzle-ptr emits; the unit spec checks its claims.
+
+
+---
+### DEFUN `%217-TILE-REF-NAME`
+- **Args**: `(FORM NAMES)`
+
+  > Endeavour 217.  The swizzled name FORM refers to -- FORM is a name in NAMES, or (ring-get NAME i) of  >    one -- or NIL.
+
+
+---
+### DEFUN `%217-FORM-SHIFT`
+- **Args**: `(FORM)`
+
+  > Endeavour 217.  S when FORM addresses a swizzled tile in the current scope, else NIL.
+
+
+---
+### DEFUN `%217-BINDING-SHIFT`
+- **Args**: `(BINDING)`
+
+  > Endeavour 217.  S for a (V (make-scratch-matrix[-ring] ELEM (ROWS COLS) ...)) BINDING whose tile the  >    rule can swizzle, or NIL with the reason as a second value.
+
+
+---
+### DEFUN `%217-BLOCK-BARRIER-NAMES`
+- **Args**: `(BINDINGS)`
+
+  > Endeavour 217.  Names bound in BINDINGS to a :block / :cluster (TMA) barrier or barrier ring.
+
+
+---
+### DEFUN `%217-SCAN-USES`
+- **Args**: `(FORM REFS TMA-BARRIERS)`
+
+  > Endeavour 217.  Walk FORM for the uses of the tile REFS (its name plus LET aliases).  Returns  >    (values READER-P REFUSAL): READER-P when an mma-accumulate-via-tile takes the tile as an operand;  >    REFUSAL a string naming the first use outside the whitelist --  >      (~ / aref TILE i..)                      element access: the aref path swizzles  >      (load-tile[-at] SRC TILE ..)             unless its barrier is :block (TMA writes the plain layout)  >      (store-tile[-at] TILE DST ..)            unless :via (TMA store)  >      (mma-accumulate-via-tile SHAPE C A B ..) the reader (ldmatrix) -- and (load-fragment-a/b TILE (i j) ..),  >                                               what the register-tile explosion has turned it into  >      (extents~ / strides~ TILE ..)            struct fields, no addressing  >      (let ((ALIAS TILE)) ..)                  the alias joins REFS  >    and (ring-get TILE i) in any of those TILE positions.  Anything else (a function call, a view, a  >    transpose, a whole-tile set!, a shadowing rebinding) refuses: the tile stays plain.
+
+
+---
+### DEFUN `%217-LET-SWIZZLE-DECISIONS`
+- **Args**: `(LET-EXPR)`
+
+  > Endeavour 217.  ((SYM . S) ...) for the scratch bindings of LET-EXPR whose tiles are XOR-swizzled  >    (see the header and swizzle.md), every decision and refusal logged.
+
+
+---
+### DEFUN `%217-SWIZZLE-GEP`
+- **Args**: `(BUILDER BASE OFF-BYTES S)`
+
+  > Endeavour 217.  BASE + swizzle(OFF-BYTES) as an i8 GEP: OFF xor (((OFF >> S) & 7) << 4), OFF-BYTES an  >    i64 byte offset from the tile / ring-slot base.  The IR twin of %217-swizzle-offset.
+
+
+---
 ### DEFUN `ANALYZE-LET-WITH-TILE-EXPLOSION`
 - **Args**: `(EXPR ENV CONTEXT LOCATION)`
 
-  > let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),  >    then explode register-tile bindings into per-fragment mutable variables (register residency,  >    Endeavor 132), then defer to the normal let analysis.  >   >    Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of  >    the body analysis, so operand-shape checks in the expression analyzers can see them.  >   >    Endeavour 207: first checks the qint roles of every MMA in the LET (%qint-mma-walk), while the  >    source element types are still visible.
+  > let/let* analyzer wrapper: pre-lower register-tile matrix-multiply-tile-stride (endeavor 135),  >    then explode register-tile bindings into per-fragment mutable variables (register residency,  >    Endeavor 132), then defer to the normal let analysis.  >   >    Endeavour 161: publishes this LET's compile-time SLM scratch-tile shapes for the duration of  >    the body analysis, so operand-shape checks in the expression analyzers can see them.  >   >    Endeavour 207: first checks the qint roles of every MMA in the LET (%qint-mma-walk), while the  >    source element types are still visible.  >   >    Endeavour 217: decides which of this LET's scratch tiles are XOR-swizzled and publishes them in  >    *217-swizzled-names* for the body (%217-let-swizzle-decisions).
 
 
 ---

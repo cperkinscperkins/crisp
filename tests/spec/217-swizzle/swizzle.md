@@ -96,8 +96,8 @@ worth naming in the inventory.
 
 ## Design decisions
 Chris agreed D-217-1..5 as recommended on 2026-11-13 (the "T" was the option's letter, not a template
-parameter: nothing is author-visible).  **D-217-1 then changed at rung 2 -- see D-217-6; awaiting Chris's
-review.**
+parameter: nothing is author-visible).  **D-217-1 then changed at rung 2 -- see D-217-6; reviewed and
+approved by Chris 2026-11-14.**
 
 - **D-217-6 (rung 2, 2026-11-13) -- D-217-1's (T) replaced by a scoped name list with alias propagation.**
   Reading the code for (T) found that a scratch tile's canonical type IS its implicit kernel parameter's type
@@ -179,9 +179,15 @@ the xor into an add on disjoint bits, the validators must change, not the featur
 8. **Definition of done** -- plan/definition-of-done.md; reference.md; the full suites (unit / E2E / negative,
    plus one filtered --differentiate); bump `tests/ci-stop.txt` to `217-swizzle` (CRLF); fold after review.
 
-## Status (2026-11-13)
-Implementation: `overlays/crisp-compiler-overlay.lisp`, the "Endeavour 217" block at the end (the rule
-functions, then rungs 3-5 per D-217-6).  `tests/ci-stop.txt` = `217-swizzle`.
+## Status (2026-11-14: DONE, folded)
+**Folded into src/ on 2026-11-14 together with endeavour 216** (put_temp_files_here/217-fold/fold.py): the
+216 and 217 swizzle blocks in `src/mma.lisp`, the swizzle and F-217-2 state in `src/analysis/control.lisp`,
+the F-217-2 codegen in `src/codegen.lisp`, the validators in `tests/run-specs.lisp`; overlays empty.  Proof:
+a 2443-job IR corpus (every non-error spec with its TEST-WITH flags, plus --differentiate, plus the benchmark
+kernels) byte-identical before / after (two parallel-run "Access is denied" tool flakes, one per side,
+re-run alone: identical); suites green (unit; E2E 1857/1857; negative 507/507); gen-specials added exactly
+the ten 216 / 217 specials.  D-217-6 approved by Chris 2026-11-14.  BUG 163 = F-217-2.  `tests/ci-stop.txt`
+= `217-swizzle`.
 
 | rung | result |
 |---|---|

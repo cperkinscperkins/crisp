@@ -1,6 +1,6 @@
 # GPU MODE Contest Report: `matmul_v2`
 
-> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `3def9cf0`).
+> Generated from [`results/matmul_v2.json`](results/matmul_v2.json) by `python contests/gpu-mode/report.py --all`. Live leaderboard: [https://www.gpumode.com/leaderboard/540?tab=rankings](https://www.gpumode.com/leaderboard/540?tab=rankings) (Crisp commit `1a5fe4d5`).
 
 **Workload:** C = A @ B with A (M K) and B (K N) row-major fp16, C fp16. task.yml lists 8 benchmarks (128^3 .. 4096x5120x4096); kernelbot ranks by RankCriterion.LAST, so the score is the LAST case only: m=4096 n=5120 k=4096 (171.8 GFLOP). Correctness is checked on the benchmark inputs too at rtol 1e-5: bit-exact fp16 against cuBLAS..
 
@@ -8,10 +8,10 @@
 
 | GPU | Architecture | Rank | Public Score | Secret Score | Achieved BW / TFLOPS | % of #1 (`top1`) | Winning Crisp Kernel | Hardware Profile | Captured (UTC) |
 |---|---|---:|---:|---:|---:|---:|---|---|---|
-| **B200** | Blackwell (sm_100) | **#41** / 53 | **156.12 µs** | 154.66 µs | 1100 TFLOPS | 59.0% (`92.10 µs`) | [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) ([`.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp)) | `b200` | `2026-11-12 17:38` |
-| **H100** | Hopper (sm_90) | **#29** / 44 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.2% (`204.96 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-12 17:38` |
-| **A100** | Ampere (sm_80) | **#56** / 57 | **3555.33 µs** | 3556.01 µs | 48 TFLOPS | 16.8% (`595.63 µs`) | [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-12 17:38` |
-| **L4** | Ada Lovelace (sm_89) | **#21** / 21 | **4359.17 µs** | 4929.72 µs | 39 TFLOPS | 45.6% (`1989.62 µs`) | [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-12 17:38` |
+| **B200** | Blackwell (sm_100) | **#41** / 53 | **156.12 µs** | 154.66 µs | 1100 TFLOPS | 59.0% (`92.04 µs`) | [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) ([`.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp)) | `b200` | `2026-11-14 17:04` |
+| **H100** | Hopper (sm_90) | **#31** / 46 | **229.79 µs** | 228.67 µs | 748 TFLOPS | 89.1% (`204.81 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) ([`.crisp`](06-matmul-v2/matmul_h100_2wg_tma.crisp)) | — | `2026-11-14 17:04` |
+| **A100** | Ampere (sm_80) | **#57** / 58 | **1646.59 µs** | 2029.57 µs | 104 TFLOPS | 36.2% (`595.63 µs`) | [`crisp_matmul_v11.py`](06-matmul-v2/crisp_matmul_v11.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-14 17:04` |
+| **L4** | Ada Lovelace (sm_89) | **#21** / 21 | **3727.40 µs** | 3518.95 µs | 46 TFLOPS | 53.4% (`1989.62 µs`) | [`crisp_matmul_v12.py`](06-matmul-v2/crisp_matmul_v12.py) ([`.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp)) | `h100` | `2026-11-14 17:04` |
 
 ## § 1b — Beauty Contestant Showcase (Idiomatic Crisp)
 
@@ -34,7 +34,7 @@
 
 | GPU | Architecture | Beauty Score | Achieved BW / TFLOPS | % of #1 (`top1`) | % of Tuned Crisp | Winning Tuned Kernel | Mode | Submission ID |
 |---|---|---:|---:|---:|---:|---|---|---:|
-| **H100** | Hopper (sm_90) | **86000.00 µs** | 2 TFLOPS | **0.2%** (`204.96 µs`) | 0.3% (`229.79 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) | `benchmark` | `#968316` |
+| **H100** | Hopper (sm_90) | **86000.00 µs** | 2 TFLOPS | **0.2%** (`204.81 µs`) | 0.3% (`229.79 µs`) | [`crisp_matmul_v5.py`](06-matmul-v2/crisp_matmul_v5.py) | `benchmark` | `#968316` |
 
 ### Crisp Implementation ([`06-matmul-v2/matmul_beauty.crisp`](06-matmul-v2/matmul_beauty.crisp))
 
@@ -82,7 +82,9 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | 7 | [`matmul_b200_tcgen05_mn.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn.crisp) / [`crisp_matmul_v7.py`](06-matmul-v2/crisp_matmul_v7.py) | B200: v6 reading b as given via tcgen05 :b-major :mn (endeavour 213) -- transpose gone, 230 us | None | `b200` | `LB: 230.18` | — | — | — |
 | 8 | [`matmul_ampere_4w_k32.crisp`](06-matmul-v2/matmul_ampere_4w_k32.crisp) / [`crisp_matmul_v8.py`](06-matmul-v2/crisp_matmul_v8.py) | A100 / L4: the 4-warp mma.sync kernel with K = 32 per stage -- L4 7117 -> 6662 us; A100 keeps v5 on the board | None | — | — | — | `LB: 5170.52` | `LB: 6661.90` |
 | 9 | [`matmul_b200_tcgen05_mn_128.crisp`](06-matmul-v2/matmul_b200_tcgen05_mn_128.crisp) / [`crisp_matmul_v9.py`](06-matmul-v2/crisp_matmul_v9.py) | B200: 16-byte tcgen05 epilogue stores (endeavour 215; the 4-byte stores were a third of v7's time) and a 128x128 tile at 3 workgroups / SM where it fills the waves better (the scored shape) -- 156 us | None | `b200` | **`LB: 156.12`** | — | — | — |
-| 10 | [`matmul_ampere_4w_ring.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp) / [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) | A100 / L4 (endeavour 216): mma.sync fragments from shared memory by ldmatrix (x4 for A, x2.trans for the (K N) B) instead of 8 / 4 ld.shared.b16 each, and a 3-slot cp.async ring -- A100 4863 -> 3555 us; H100 / B200 as v9 | None | `h100` | — | — | **`LB: 3555.33`** | **`LB: 4359.17`** |
+| 10 | [`matmul_ampere_4w_ring.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp) / [`crisp_matmul_v10.py`](06-matmul-v2/crisp_matmul_v10.py) | A100 / L4 (endeavour 216): mma.sync fragments from shared memory by ldmatrix (x4 for A, x2.trans for the (K N) B) instead of 8 / 4 ld.shared.b16 each, and a 3-slot cp.async ring -- A100 4863 -> 3555 us; H100 / B200 as v9 | None | `h100` | — | — | `LB: 3555.33` | `LB: 4808.67` |
+| 11 | [`matmul_ampere_4w_ring.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp) / [`crisp_matmul_v11.py`](06-matmul-v2/crisp_matmul_v11.py) | A100 / L4 (endeavour 217): v10 with the compiler-owned XOR swizzle of the ring's shared tiles (bank conflicts were the A100 wall) -- A100 3555 -> 1647 us public (2030 secret); FAILED L4 ranked validation: the ring's static cp.async.wait_group 4 waited for nothing in the last two K iterations (BUG 163 / F-217-2; v10 had it too) | None | `h100` | — | — | **`LB: 1646.59`** | — |
+| 12 | [`matmul_ampere_4w_ring.crisp`](06-matmul-v2/matmul_ampere_4w_ring.crisp) / [`crisp_matmul_v12.py`](06-matmul-v2/crisp_matmul_v12.py) | v11 rebuilt with the count-correct cp.async ring await (BUG 163 fixed) -- passes ranked on L4 and A100; L4 3727 us public (v10 4359); A100 2016 us public / 1668 secret (v11 1647 / 2030: the A100 runners differ ~20%, and on one L4 pod v12 ran at v11's speed) | None | `h100` | — | — | `LB: 2016.31` | **`LB: 3727.40`** |
 
 ## § 3 — Key Architectural Takeaways
 
@@ -94,6 +96,7 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 6. **Packaging:** a TMA kernel takes 65 parameters, more than an inline `asm` statement accepts, so this entry loads the PTX through the CUDA driver API (`dlopen` libcuda, `cuModuleLoadDataEx`) with the launch ABI read out of the CUDA hoist. `CU_JIT_THREADS_PER_BLOCK` stands in for `__launch_bounds__`; without it the 288-thread wgmma block failed to launch.
 7. **B200 -- tcgen05, then the epilogue:** the B200 path is Crisp's tcgen05 kernel (endeavours 208/209: accumulator in tensor memory, warp-specialized producer / MMA / epilogue). v6 transposed b first (265 us); tcgen05 `:b-major :mn` (endeavour 213) read it as given (230 us). Pricing v7 one piece at a time on popcorn (no rental) found the real cost: with the epilogue's stores removed it ran 147.5 us -- the tcgen05 layout hands each thread a whole row, and it left as 4-byte stores, 32 rows per warp instruction. 16-byte stores (endeavour 215) plus a 128x128 tile for the scored shape's 2.16-wave quantization: **156 us**, rank 41/53. Measured and rejected on the way: persistent scheduling (~3%), and a 2-SM `cta_group::2` pair (exact on metal, +7-9% only on full-wave shapes; endeavour 214, parked).
 8. **ldmatrix closed a third of the A100 gap (endeavour 216):** a twin A/B on one A100 (same compiler, ldmatrix switched off) took the scored shape from 4204 to 3032 us, bit-exact; the 3-slot cp.async ring adds ~5%. What is left (A100 ~2.9 ms vs cuBLAS ~0.64) is, by arithmetic, shared-memory bank conflicts: the scratch tiles' 64 B / 256 B row pitches make the ldmatrix reads 4- and 8-way conflicted. A padded or swizzled scratch layout is the next lever (tests/spec/216-ldmatrix/ldmatrix.md, D-216-5).
+9. **The swizzle took the next 43 % -- and exposed a ring bug that only ranked mode could see (endeavour 217):** the compiler now XOR-swizzles the shared tiles an ldmatrix reads, invisibly to the kernel (A100 diag: ring 2887 -> 1640 us, exact).  v11 then passed test mode and the A100 board but failed L4 ranked validation: ranked mode rechecks every rep with fresh seeds, test mode once.  A rented L4 found the cause -- the ring's await was one static cp.async.wait_group 4, which waits for nothing in the last two K iterations because the refill is skipped there.  v10 had it too; the faster swizzled loop removed its timing margin.  The compiler's await now counts the groups actually committed (BUG 163); v12 passes ranked on L4 (3727 us public, v10 4359) and A100.
 
 ## § 4 — Verified Submission & Benchmark Log
 
@@ -146,3 +149,14 @@ Cells show **`benchmark` mean µs** (and **`[LB: public µs]`** when submitted t
 | `2026-11-12 12:18:41` | `970884` | **L4** | `test` | `baseline_torch_matmul.py` | — | — | — |
 | `2026-11-12 17:34:40` | `970965` | **L4** | `test` | `crisp_matmul_v10.py` | — | — | — |
 | `2026-11-12 17:38:29` | `970973` | **L4** | `leaderboard` | `crisp_matmul_v10.py` | — | **4359.17** | 4929.72 |
+| `2026-11-12 21:47:36` | `971027` | **A100** | `test` | `diag_ampere_217_sub.py` | — | — | — |
+| `2026-11-13 18:13:42` | `971121` | **A100** | `test` | `diag_ampere_217b_sub.py` | — | — | — |
+| `2026-11-13 18:20:02` | `971122` | **A100** | `test` | `crisp_matmul_v11.py` | — | — | — |
+| `2026-11-13 18:23:39` | `971123` | **A100** | `leaderboard` | `crisp_matmul_v11.py` | — | **1646.59** | 2029.57 |
+| `2026-11-13 18:53:46` | `971129` | **L4** | `leaderboard` | `crisp_matmul_v11.py` | — | — | — |
+| `2026-11-13 18:58:25` | `971139` | **L4** | `leaderboard` | `crisp_matmul_v10.py` | — | **4808.67** | 4807.98 |
+| `2026-11-13 19:09:23` | `971140` | **L4** | `leaderboard` | `crisp_matmul_v11.py` | — | — | — |
+| `2026-11-13 19:40:27` | `971141` | **L4** | `test` | `diag_ampere_217c_sub.py` | — | — | — |
+| `2026-11-13 19:43:47` | `971150` | **A100** | `test` | `diag_ampere_217d_sub.py` | — | — | — |
+| `2026-11-13 23:35:46` | `971198` | **L4** | `leaderboard` | `crisp_matmul_v12.py` | — | **3727.40** | 3518.95 |
+| `2026-11-13 23:38:49` | `971199` | **A100** | `leaderboard` | `crisp_matmul_v12.py` | — | **2016.31** | 1668.44 |

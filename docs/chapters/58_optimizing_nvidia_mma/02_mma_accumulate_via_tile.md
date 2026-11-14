@@ -26,6 +26,11 @@ Two further compile-time constraints, both checked from information you already 
 
 Physical SLM *swizzling* (bank-conflict avoidance) is a separate performance optimization, not
 a correctness requirement — a plain row/col-major staging feeds the fragment loads correctly.
+On NVIDIA the compiler does both for you, invisibly: 16-bit fragments are read from a scratch
+tile with `ldmatrix` (endeavour 216), and such a tile is stored with a compiler-owned XOR
+swizzle when its row pitch is a power of two of at least 32 bytes and every use of it is one the
+compiler can see — loads, fragment reads, element access, stores (endeavour 217).  A tile you
+pass to a function or take a view of simply stays plain.
 
 The baseline kernel above passes `(16 8 8)` — the **tf32** shape (K=8), matching tf32/`float`
 operands. The same M×N with **fp16** operands is `(16 8 16)`, which is the variant the expansion
