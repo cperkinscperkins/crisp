@@ -207,7 +207,7 @@ Implementation assisted by Claude Code and Google AntiGravity.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License v2.0 with LLVM Exceptions (`Apache-2.0 WITH LLVM-exception`, the same terms as LLVM) - see the [LICENSE](LICENSE) and [NOTICE](NOTICE) files.  The LLVM exception covers what the compiler emits: portions of Crisp that end up in your compiled kernels or generated hoist code can be redistributed without the license's notice requirements.
 
 ## Third-Party Tools
 

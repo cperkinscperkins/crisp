@@ -75,12 +75,15 @@ OPEN
 ### Release / distribution
 - [x] opt-windows.exe / opt-linux: OBSOLETE -- opt runs in-process via libLLVM (%opt-available-p is never called) (L728)
 - [x] script for bundling a release: package_prerelease.py --version + build-linux-release.sh (L937) -- 2026-10-13
-- [ ] Quicklisp distribution (L22, L67)
+- [ ] Quicklisp or ultralisp distribution (L22, L67)
 - [ ] SEO: logo; confirm discoverable at https://cperkinscperkins.github.io/crisp/ ; search console (L1186-1190)
 - [ ] proper bug tracker -- GitHub Issues? (L1200)
 - [ ] .whl and Python Wheel <== 
 - [ ] apache with llvm exception license?
-- [ ] update intro, runtime compilation
+- [ ] update intro (readme.md/ideal_0001.md), runtime compilation, link to colab
+- [ ] Colab notebook?
+- [ ] update install.md, python and colab?
+- [ ] tidy up root directory
 
 
 ### Benchmarks ("above reproach")
