@@ -79,6 +79,9 @@ OPEN
 - [ ] SEO: logo; confirm discoverable at https://cperkinscperkins.github.io/crisp/ ; search console (L1186-1190)
 - [ ] proper bug tracker -- GitHub Issues? (L1200)
 - [ ] .whl and Python Wheel <== 
+- [ ] apache with llvm exception license?
+- [ ] update intro, runtime compilation
+
 
 ### Benchmarks ("above reproach")
 - [ ] MMA and reduction reports BOTH: (a) measure/report vendor device compile time (MKL, cuBLAS ...)
