@@ -266,3 +266,83 @@
 
 
 (in-package :crisp.compiler)
+
+
+;;; ==============================================================================================
+;;; 0.5 wheel (2026-11-14): find the install root from the running executable, not the current
+;;; directory.  libLLVM, the LLVM tools (bin/llc ...) and the hoist programs were all resolved as
+;;; bin/<x> against the CWD, so crisp-compile worked only when started from its install root (the C
+;;; API's helper is started there; a pip-installed crisp-compile on PATH is not).
+;;; ==============================================================================================
+
+;; src/compiler.lisp  (new; place before resolve-tool-executable)
+(defun crisp-install-root ()
+  "The directory that holds Crisp's bin/ (libLLVM, llc, llvm-as, llvm-spirv, crisp-hoist-*).
+   When this process is a saved crisp-* executable living in a directory named bin -- the release
+   zip, the wheel, or this repo's own bin/ -- that is the parent of the executable's directory, so
+   crisp-compile works from any current directory.  Otherwise (an interactive SBCL, the test
+   runners, scripts) it is *default-pathname-defaults*, the current directory, as before.
+   Computed on every call: a value cached at build time would bake in the build machine's path."
+  (let* ((rt sb-ext:*runtime-pathname*)
+         (exe (and rt (ignore-errors (probe-file (sb-ext:parse-native-namestring rt)))))
+         (name (and exe (pathname-name exe)))
+         (dir (and exe (pathname-directory exe)))
+         (root (if (and (stringp name)
+                        (alexandria:starts-with-subseq "crisp-" (string-downcase name))
+                        (consp dir) (stringp (car (last dir)))
+                        (string-equal (car (last dir)) "bin"))
+                   (make-pathname :directory (butlast dir) :name nil :type nil :version nil
+                                  :defaults exe)
+                   *default-pathname-defaults*)))
+    (log:debug "crisp-install-root: runtime ~a -> ~a" rt root)
+    root))
+
+;; src/llvm-bindings.lisp or src/compiler.lisp (top level, after crisp-install-root): CFFI tries
+;; "bin/libLLVM.so" against the CWD first and, when that fails, against each entry here; a
+;; function-call form is evaluated at load time, i.e. in the running executable, not at build time.
+(pushnew '(crisp-install-root) cffi:*foreign-library-directories* :test #'equal)
+
+;; src/compiler.lisp  (replaces resolve-tool-executable: bundled-path merges with crisp-install-root)
+(defun resolve-tool-executable (tool-base)
+  "Resolves the path to a tool executable.
+   Prefers bundled version in bin/ (under crisp-install-root), falls back to system PATH.
+   Robustness:
+   - Checks versioned suffixes (e.g. llc-21) if base name not in path.
+   - Falls back to bundled tool if system tool is missing even if CRISP_USE_SYSTEM_TOOLS is set."
+  (let* ((env-key (format nil "CRISP_~a" (string-upcase (substitute #\_ #\- tool-base))))
+         (env-override (uiop:getenv env-key))
+         (use-system (uiop:getenv "CRISP_USE_SYSTEM_TOOLS"))
+         (ext (if (uiop:os-windows-p) ".exe" ""))
+         (bundled-name (format nil "bin/~a~a" tool-base ext))
+         (bundled-path (merge-pathnames bundled-name (crisp-install-root))))
+    (log:debug "resolve-tool-executable ~a: bundled ~a" tool-base bundled-path)
+    (cond
+     (env-override env-override)
+     ((and use-system (string-not-equal use-system "false"))
+       (let ((versioned (unless (uiop:os-windows-p)
+                          (loop for ver in '("-21" "-20" "-19" "-18" "-17" "-16" "-15" "-14" "")
+                                for v-name = (format nil "~a~a" tool-base ver)
+                                  ;; Manual PATH check or similar? Let's use which but ONLY on Unix.
+                                  when (zerop (nth-value 2 (uiop:run-program (list "which" v-name) :ignore-error-status t)))
+                                  return v-name))))
+         (or versioned
+             (if (probe-file bundled-path)
+                 (namestring bundled-path)
+                 tool-base))))
+     (t
+       (if (probe-file bundled-path)
+           (namestring bundled-path)
+           tool-base)))))
+
+;; src/main.lisp  (replaces crisp.main::get-hoister-binary-path: crisp-install-root, not uiop:getcwd)
+(defun crisp.main::get-hoister-binary-path (hoist-id)
+  "Returns path to crisp-hoist-{id}.exe on Windows or crisp-hoist-{id} on Unix, in the bin/ under
+   crisp-install-root (beside the running crisp-compile; the current directory in a dev session)."
+  (let* ((bin-name (format nil "crisp-hoist-~(~a~)" hoist-id))
+         (target-path (merge-pathnames (format nil "bin/~a~a" bin-name (if (uiop:os-windows-p) ".exe" ""))
+                                       (crisp-install-root))))
+    (log:debug "get-hoister-binary-path ~a -> ~a" hoist-id target-path)
+    (cond
+     ((probe-file target-path) target-path)
+     (t (format *error-output* "~&ERROR: Hoister binary not found: ~a~%" target-path)
+        nil))))
