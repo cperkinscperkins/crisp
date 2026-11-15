@@ -1,0 +1,9 @@
+Crisp - Lisp for Developing GPU Kernels
+Copyright (c) 2025 Christopher Perkins
+
+Licensed under the Apache License v2.0 with LLVM Exceptions (see LICENSE).
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+Binary distributions of Crisp include third-party components, each under its own license:
+  LLVM (LLVM-C shared library, llc, llvm-as)  Apache-2.0 WITH LLVM-exception  LICENSE-llc.txt
+  SPIRV-LLVM-Translator (llvm-spirv)         University of Illinois/NCSA     LICENSE-llvm-spirv.txt
