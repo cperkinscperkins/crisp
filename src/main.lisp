@@ -249,10 +249,12 @@ Supports one or more .crisp source files: the last file is treated as the primar
                   collect (format nil "--kernel-flag=~a" a))))
 
 (defun get-hoister-binary-path (hoist-id)
-  "Returns path to crisp-hoist-{id}.exe on Windows or crisp-hoist-{id} on Unix"
+  "Returns path to crisp-hoist-{id}.exe on Windows or crisp-hoist-{id} on Unix, in the bin/ under
+   crisp-install-root (beside the running crisp-compile; the current directory in a dev session)."
   (let* ((bin-name (format nil "crisp-hoist-~(~a~)" hoist-id))
          (target-path (merge-pathnames (format nil "bin/~a~a" bin-name (if (uiop:os-windows-p) ".exe" ""))
-                                       (uiop:getcwd))))
+                                       (crisp.compiler::crisp-install-root))))
+    (log:debug "get-hoister-binary-path ~a -> ~a" hoist-id target-path)
     (cond
      ((probe-file target-path) target-path)
      (t (format *error-output* "~&ERROR: Hoister binary not found: ~a~%" target-path)

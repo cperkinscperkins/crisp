@@ -24,12 +24,14 @@ print(mod.kernels)          # square_scale and its gradient kernel
 mod.binary                  # PTX, ready for cuModuleLoadData
 ```
 
-With PyTorch (`pip install crisp-gpu[torch]`), `crisp_gpu.torch` runs the kernels on CUDA tensors,
-and turns a forward kernel and its Crisp-made gradient into an autograd function:
+With PyTorch (`pip install crisp-gpu[torch]`), `crisp_gpu.torch` compiles for the GPU you have, runs
+the kernels on CUDA tensors, and turns a forward kernel and its Crisp-made gradient into an autograd
+function:
 
 ```python
 import torch, crisp_gpu.torch as ct
-f = ct.autograd_function(ct.load(mod), "square_scale")
+mod = ct.compile(src, flags=["--differentiate"])      # PTX for this GPU (sm_75 on a T4 ...)
+f = ct.autograd_function(mod, "square_scale")
 x = torch.randn(1 << 20, device="cuda", requires_grad=True)
 w = torch.randn(1 << 20, device="cuda", requires_grad=True)
 f(x, w).sum().backward()    # x.grad and w.grad computed by Crisp's gradient kernel

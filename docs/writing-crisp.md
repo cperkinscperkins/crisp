@@ -34,9 +34,9 @@ bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
 `libdevice.10.bc`: pass it as an extra input (`$CUDA_HOME/nvvm/libdevice/libdevice.10.bc`).  Without it
 the compiler stops with a clear message naming the missing `__nv_*` function.  SPIR-V needs nothing.
 
-The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative to there).  Run from
-anywhere else it fails -- and a script that does not check the exit code then reads the PREVIOUS `.ptx`
-or `.spv` and reports stale results.
+`crisp-compile` finds what it needs (LLVM, `llc` / `llvm-spirv`, the hoist programs) in the `bin/` it lives
+in, so it runs from any directory.  A script should still check its exit code: a failed compile writes no
+output, and a script that does not check then reads the PREVIOUS `.ptx` or `.spv` and reports stale results.
 
 ---
 

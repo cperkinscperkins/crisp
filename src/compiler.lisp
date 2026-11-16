@@ -32,10 +32,37 @@
           (error "Tool invocation failed: ~{~a~^ ~} (Reason: ~a)" args e))))
     (get-output-stream-string output)))
 
+(defun crisp-install-root ()
+  "The directory that holds Crisp's bin/ (libLLVM, llc, llvm-as, llvm-spirv, crisp-hoist-*).
+   When this process is a saved crisp-* executable living in a directory named bin -- the release
+   zip, the wheel, or this repo's own bin/ -- that is the parent of the executable's directory, so
+   crisp-compile works from any current directory.  Otherwise (an interactive SBCL, the test
+   runners, scripts) it is *default-pathname-defaults*, the current directory, as before.
+   Computed on every call: a value cached at build time would bake in the build machine's path."
+  (let* ((rt sb-ext:*runtime-pathname*)
+         (exe (and rt (ignore-errors (probe-file (sb-ext:parse-native-namestring rt)))))
+         (name (and exe (pathname-name exe)))
+         (dir (and exe (pathname-directory exe)))
+         (root (if (and (stringp name)
+                        (alexandria:starts-with-subseq "crisp-" (string-downcase name))
+                        (consp dir) (stringp (car (last dir)))
+                        (string-equal (car (last dir)) "bin"))
+                   (make-pathname :directory (butlast dir) :name nil :type nil :version nil
+                                  :defaults exe)
+                   *default-pathname-defaults*)))
+    (log:debug "crisp-install-root: runtime ~a -> ~a" rt root)
+    root))
+
+;; CFFI tries "bin/libLLVM.so" against the current directory first and, when that fails, against
+;; each entry here.  The function-call form is evaluated when initialize-compiler calls
+;; use-foreign-library, i.e. in the running executable, not at build time, so the wheel's and the
+;; release zip's crisp-compile find the libLLVM beside them from any current directory.
+(pushnew '(crisp-install-root) cffi:*foreign-library-directories* :test #'equal)
+
 (defun resolve-tool-executable (tool-base)
-  "Resolves the path to a tool executable. 
-   Prefers bundled version in bin/, falls back to system PATH.
-   Robustness: 
+  "Resolves the path to a tool executable.
+   Prefers bundled version in bin/ (under crisp-install-root), falls back to system PATH.
+   Robustness:
    - Checks versioned suffixes (e.g. llc-21) if base name not in path.
    - Falls back to bundled tool if system tool is missing even if CRISP_USE_SYSTEM_TOOLS is set."
   (let* ((env-key (format nil "CRISP_~a" (string-upcase (substitute #\_ #\- tool-base))))
@@ -43,7 +70,8 @@
          (use-system (uiop:getenv "CRISP_USE_SYSTEM_TOOLS"))
          (ext (if (uiop:os-windows-p) ".exe" ""))
          (bundled-name (format nil "bin/~a~a" tool-base ext))
-         (bundled-path (merge-pathnames bundled-name *default-pathname-defaults*)))
+         (bundled-path (merge-pathnames bundled-name (crisp-install-root))))
+    (log:debug "resolve-tool-executable ~a: bundled ~a" tool-base bundled-path)
     (cond
      (env-override env-override)
      ((and use-system (string-not-equal use-system "false"))

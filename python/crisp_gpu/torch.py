@@ -1,7 +1,7 @@
 """crisp_gpu.torch -- run compiled Crisp kernels on PyTorch CUDA tensors.
 
-    import torch, crisp_gpu, crisp_gpu.torch as ct
-    mod = ct.load(crisp_gpu.compile(src, flags=["--differentiate"]))
+    import torch, crisp_gpu.torch as ct
+    mod = ct.compile(src, flags=["--differentiate"])        # PTX for this GPU, loaded
     mod.launch("square_scale", x=x, w=w, y=y)              # by parameter name
     f = ct.autograd_function(mod, "square_scale")           # forward AND gradient are Crisp kernels
     y = f(x, w); y.sum().backward()
@@ -14,11 +14,13 @@ compiler's implicit scratch buffers.  Thread-block clusters (sm_90 DSMEM kernels
 from here yet.
 """
 import ctypes
+import re
 import struct
 
 import torch
 
 from . import _capi, Module
+from . import compile as _compile
 
 _P, _U = ctypes.c_void_p, ctypes.c_uint
 _cuda = None
@@ -85,6 +87,12 @@ class CudaModule:
         pctx = _P()
         _cu(cuda.cuDevicePrimaryCtxRetain(ctypes.byref(pctx), dev), "cuDevicePrimaryCtxRetain")
         _cu(cuda.cuCtxSetCurrent(pctx), "cuCtxSetCurrent")
+        # PTX for a newer architecture than the device fails to load with an opaque CUresult; say why
+        target = re.search(rb"\.target\s+sm_(\d+)", module.binary)
+        have = arch(self.device)
+        if target and int(target.group(1)) > int(have[3:]):
+            raise RuntimeError(f"this PTX targets sm_{target.group(1).decode()} but {self.device} is {have}: "
+                               f"compile with flags=['--ir-target-arch={have}'], or use crisp_gpu.torch.compile")
         self._handle = _P()
         _cu(cuda.cuModuleLoadData(ctypes.byref(self._handle), module.binary + b"\0"), "cuModuleLoadData")
         self._fns = {}
@@ -212,9 +220,25 @@ def _enum(table, value):
     return None
 
 
+def arch(device=None):
+    """The --ir-target-arch for a CUDA device (default: the current one): 'sm_75' on a T4, 'sm_90' on
+    an H100.  (Kernels using sm_90a / sm_100a features name that arch in their own flags.)"""
+    major, minor = torch.cuda.get_device_capability(device)
+    return f"sm_{major}{minor}"
+
+
 def load(module, device=None):
     """Load a ptx Module into PyTorch's CUDA context: returns a CudaModule."""
     return CudaModule(module, device)
+
+
+def compile(source, flags=(), device=None, name="kernel.crisp"):
+    """crisp_gpu.compile to PTX for DEVICE's architecture (unless FLAGS give --ir-target-arch),
+    loaded into PyTorch's CUDA context: returns a CudaModule.  Raises crisp_gpu.CompileError."""
+    flags = list(flags)
+    if not any(f.startswith("--ir-target-arch=") for f in flags):
+        flags.append(f"--ir-target-arch={arch(device)}")
+    return load(_compile(source, target="ptx", flags=flags, name=name), device)
 
 
 def autograd_function(cmod, forward, outputs=None):

@@ -51,6 +51,10 @@ MSYS_NO_PATHCONV=1 docker run --rm -e VERSION="$VERSION" -e PLAT="$PLAT" -v "${S
   S=/tmp/stage; P=$S/crisp_gpu; B=$P/bin
   rm -rf $S; mkdir -p $B
   cp python/crisp_gpu/*.py $P/
+  # the wheel version (0.5.0rc1 for a TestPyPI candidate) becomes crisp_gpu.__version__
+  # (no apostrophes in this script: it is one single-quoted bash -c argument)
+  sed -i "s/^__version__ = .*/__version__ = \"$VERSION\"/" $P/__init__.py
+  grep -q "^__version__ = \"$VERSION\"$" $P/__init__.py || { echo "could not set __version__"; exit 1; }
   cp c-api/python/crisp_ctypes.py $P/_capi.py
   cp LICENSE NOTICE $S/
   test -f python/README-pypi.md && cp python/README-pypi.md $S/
