@@ -3303,7 +3303,7 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         FOUND BY.  Endeavour 175, inspecting the PTX of the new CUDA twins (spec 42) BEFORE renting
         an NVIDIA box -- the compile-time check the rental was supposed to depend on.
 
-[ ] 089 LIBDEVICE IS LINKED WHOLE AND NEVER DEAD-STRIPPED, so one unlowerable intrinsic in a
+[x] 089 FIXED (0.5 prep, 2026-11-15) -- LIBDEVICE IS LINKED WHOLE AND NEVER DEAD-STRIPPED, so one unlowerable intrinsic in a
         function nobody calls makes the entire module unloadable.
 
         SYMPTOM.  On an H100 pod run, four specs failed at RUNTIME with "a PTX JIT compilation
@@ -3353,6 +3353,19 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
 
         FOUND BY.  Reading the emitted PTX on the pod -- four ssh round-trips and one compile, no
         suite run.
+
+        FIXED 2026-11-15 (0.5 prep, with --link-bitcode=, the compile API's way to pass a .bc).  The
+        LIKELY FIX above was right, and it was worse than recorded: with CUDA 12.8's libdevice the
+        stock PTX failed ptxas at sm_80 AND sm_75 (the stock .version was 6.3 at sm_75), so EVERY
+        PTX transcendental module was unloadable, CLI included.  %link-bitcode-file (main.lisp)
+        now, after LLVMLinkModules2: gives every function the library defined internal linkage;
+        deletes, to a fixpoint, every function the link added that nothing uses; and restores the
+        module's own data layout (Crisp's modules have none; libdevice's changed -O3's choices in
+        unrelated kernels).  Measured: a softplus kernel (exp + log) 882 KB / 379 functions / ptxas
+        FAIL -> 23.5 KB / no __nv_ left / ptxas OK at sm_75 and sm_80; a kernel with no
+        transcendental linked against libdevice is byte-identical to one compiled without it (CLI
+        cold and API warm).  Metal: the Colab T4 GELU cell of notebooks/crisp-gpu-intro.ipynb.
+        Evidence: put_temp_files_here/libdevice/ (internalize.lisp twin, residue.lisp).
 
 [x] 090 LAZY &optional / &key FUNCTION VARIANTS ARE ANALYZED BUT NEVER CODE-GENERATED -- the call
         CLOSED 2026-10-13 (housekeeping review): the fix below is folded (%generate-lazy-variant-ir, %lazy-variant-name in src/); 016/07-10 run on metal in the E2E suite.
@@ -4712,6 +4725,15 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         corpus are not; in-process spec results are.  215/01's validator accepts either spelling of the
         8-byte pair store meanwhile (comment cites this bug).
         Evidence: put_temp_files_here/215/validated-group.ptx vs validated-f32.ptx.
+        MORE, 2026-11-15 (0.5 prep): it is not only spec-ordering, and it now reaches USERS -- the
+        compile API's helper is a long-lived process, so Python compiles are "in-process".  The SAME
+        source compiled repeatedly: the FIRST compile in a process (= every CLI run = the first API
+        compile) differs from every later one, which are stable.  square_scale (sm_75): first 25210
+        bytes / 112 .b64 regs / 10 ld.global + 5 st.global (looks unrolled ~4x); later 22396 bytes /
+        33 regs / 2 + 1.  Here the FRESH process makes the heavier code, so "the exe is the reference"
+        is not established either.  Reproduces in-process via compile-sources
+        (put_temp_files_here/libdevice/residue.lisp), so it is compiler state, not the API layer.
+        Evidence: put_temp_files_here/warmcold/ (NOTES.md, sq.cold.ptx, sq.warm.ptx).
 
 [x] 163 A cp.async RING'S await WAITED FOR NOTHING IN THE LAST K ITERATIONS -- A SILENT STALE READ (F-217-2).
         Found 2026-11-13 (endeavour 217): matmul_v2 v11 passed GPU MODE test mode and the A100 leaderboard

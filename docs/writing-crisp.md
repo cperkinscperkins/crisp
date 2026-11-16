@@ -31,8 +31,10 @@ bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
 | `--logging-size=4M` | The log's size in bytes (`K`/`M`/`G` suffixes; default `4M`). |
 
 **PTX + transcendentals** (`exp log sin cos tan asin acos atan pow atan2 log2 tanh erf exp2`) need NVIDIA's
-`libdevice.10.bc`: pass it as an extra input (`$CUDA_HOME/nvvm/libdevice/libdevice.10.bc`).  Without it
-the compiler stops with a clear message naming the missing `__nv_*` function.  SPIR-V needs nothing.
+`libdevice.10.bc`: pass it as an extra input (`$CUDA_HOME/nvvm/libdevice/libdevice.10.bc`), or as
+`--link-bitcode=<path>` (the compile API's spelling; there the path must be absolute).  Python's
+`crisp_gpu.compile` finds and links it by itself.  Without it the compiler stops with a clear message naming
+the missing `__nv_*` function.  Only the routines a kernel calls reach the PTX.  SPIR-V needs nothing.
 
 `crisp-compile` finds what it needs (LLVM, `llc` / `llvm-spirv`, the hoist programs) in the `bin/` it lives
 in, so it runs from any directory.  A script should still check its exit code: a failed compile writes no

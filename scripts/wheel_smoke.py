@@ -55,6 +55,18 @@ try:
 except crisp_gpu.CompileError as e:
     check(bool(e.diagnostics) and e.diagnostics[0].severity == "error", f"CompileError: {e.diagnostics[0].message[:60]!r}")
 
+# PTX transcendentals need libdevice; these containers have none, so the error must say how to get one
+SOFTPLUS = SRC.replace("(* (~ X i) (~ X i) (~ W i))", "(log (+ 1.0 (exp (~ X i))))")
+if crisp_gpu.find_libdevice() is None:
+    try:
+        crisp_gpu.compile(SOFTPLUS, target="ptx")
+        check(False, "a transcendental without libdevice should not compile")
+    except crisp_gpu.CompileError as e:
+        check("requires libdevice" in str(e) and "CRISP_LIBDEVICE" in str(e), "no libdevice -> CompileError naming CRISP_LIBDEVICE")
+else:
+    m = crisp_gpu.compile(SOFTPLUS, target="ptx")
+    check(b"__nv_expf" not in m.binary, f"transcendental with libdevice {crisp_gpu.find_libdevice()}")
+
 with tempfile.TemporaryDirectory() as d:
     with open(os.path.join(d, "k.crisp"), "w") as f:
         f.write(SRC)

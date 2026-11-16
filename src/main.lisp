@@ -289,32 +289,81 @@ Supports one or more .crisp source files: the last file is treated as the primar
 
 
 
-(defun link-foreign-bitcode (module bc-files)
-  "Endeavor 122 (FFI): parse each .bc in BC-FILES and link it into MODULE so
-   that def-foreign-function calls resolve to real definitions at compile time.
-   Quits with a clear error on read/parse/link failure."
-  (when bc-files
-    (let ((ctx (crisp.llvm-bindings::llvm-get-module-context module)))
-      (flet ((msg-string (msg)
+(defun %link-bitcode-file (module path)
+  "Parse the bitcode file PATH and link it into MODULE so that linking a library changes the
+   module only by the functions its kernels CALL:
+     * every function the library defined gets internal linkage -- what clang's
+       -mlink-builtin-bitcode does -- so opt -O3 inlines what is called (BUG 089: otherwise every
+       libdevice function reached the PTX, and one never called made the module unloadable);
+     * every function the link added that nothing uses is deleted at once (repeatedly: library
+       functions call each other), so later passes -- %ptx-finalize-libdevice's 'uses libdevice'
+       test, the nvvm-reflect-ftz flag -- see only what is used;
+     * the module keeps its OWN data layout (Crisp's modules have none; libdevice's would change
+       how -O3 optimizes the kernels).
+   Kernels and Crisp's own functions are defined before the link and are never touched.
+   Returns NIL, or a message saying what failed (callers decide: the CLI quits, the API reports)."
+  (let ((ctx (crisp.llvm-bindings::llvm-get-module-context module))
+        (layout (or (crisp.llvm-bindings::llvm-get-data-layout-str module) ""))
+        (before (make-hash-table :test #'equal)))   ; name -> :definition | :declaration
+    (labels ((msg-string (msg)
                (let ((p (cffi:mem-ref msg :pointer)))
                  (if (cffi:null-pointer-p p)
                      "<no message>"
                      (prog1 (cffi:foreign-string-to-lisp p)
-                       (crisp.llvm-bindings::llvm-dispose-message p))))))
-        (dolist (bc bc-files)
-          (let ((path (namestring (uiop:truename* bc))))
-            (log:info "Linking foreign bitcode: ~a" path)
-            (cffi:with-foreign-objects ((mbuf :pointer) (msg :pointer) (srcmod :pointer))
-              (unless (zerop (crisp.llvm-bindings::llvm-create-memory-buffer-with-contents-of-file path mbuf msg))
-                (format *error-output* "ERROR: FFI cannot read bitcode ~a: ~a~%" path (msg-string msg))
-                (uiop:quit 1))
-              ;; parse-ir consumes the memory buffer; link-modules2 consumes srcmod.
-              (unless (zerop (crisp.llvm-bindings::llvm-parse-ir-in-context ctx (cffi:mem-ref mbuf :pointer) srcmod msg))
-                (format *error-output* "ERROR: FFI cannot parse bitcode ~a: ~a~%" path (msg-string msg))
-                (uiop:quit 1))
-              (unless (zerop (crisp.llvm-bindings::llvm-link-modules2 module (cffi:mem-ref srcmod :pointer)))
-                (format *error-output* "ERROR: FFI cannot link bitcode ~a into the kernel module.~%" path)
-                (uiop:quit 1)))))))))
+                       (crisp.llvm-bindings::llvm-dispose-message p)))))
+             (fname (fn) (or (crisp.llvm-bindings::llvm-get-value-name fn) ""))
+             (definition-p (fn) (plusp (crisp.llvm-bindings::llvm-count-basic-blocks fn)))
+             (functions ()
+               (loop for fn = (crisp.llvm-bindings::llvm-get-first-function module)
+                       then (crisp.llvm-bindings::llvm-get-next-function fn)
+                     until (cffi:null-pointer-p fn) collect fn)))
+      (dolist (fn (functions))
+        (setf (gethash (fname fn) before) (if (definition-p fn) :definition :declaration)))
+      (log:info "Linking bitcode: ~a (~d functions before)" path (hash-table-count before))
+      (cffi:with-foreign-objects ((mbuf :pointer) (msg :pointer) (srcmod :pointer))
+        (setf (cffi:mem-ref msg :pointer) (cffi:null-pointer))
+        (unless (zerop (crisp.llvm-bindings::llvm-create-memory-buffer-with-contents-of-file path mbuf msg))
+          (return-from %link-bitcode-file (format nil "cannot read bitcode ~a: ~a" path (msg-string msg))))
+        ;; parse-ir consumes the memory buffer; link-modules2 consumes srcmod.
+        (unless (zerop (crisp.llvm-bindings::llvm-parse-ir-in-context ctx (cffi:mem-ref mbuf :pointer) srcmod msg))
+          (return-from %link-bitcode-file (format nil "cannot parse bitcode ~a: ~a" path (msg-string msg))))
+        (unless (zerop (crisp.llvm-bindings::llvm-link-modules2 module (cffi:mem-ref srcmod :pointer)))
+          (return-from %link-bitcode-file (format nil "cannot link bitcode ~a into the kernel module" path))))
+      (crisp.llvm-bindings::llvm-set-data-layout module layout)
+      ;; ADDED = what the library brought: functions new to the module, and definitions of what was
+      ;; only declared before (__nv_expf, a def-foreign-function callee).
+      (let ((added (remove-if-not (lambda (fn)
+                                    (let ((was (gethash (fname fn) before)))
+                                      (or (null was) (and (eq was :declaration) (definition-p fn)))))
+                                  (functions)))
+            (internal 0) (deleted 0))
+        (dolist (fn added)
+          (when (definition-p fn)
+            (crisp.llvm-bindings::llvm-set-linkage fn 8)   ; LLVMInternalLinkage
+            (incf internal)))
+        (loop for unused = (remove-if-not (lambda (fn) (cffi:null-pointer-p (crisp.llvm-bindings::llvm-get-first-use fn)))
+                                          added)
+              while unused
+              do (dolist (fn unused)
+                   (crisp.llvm-bindings::llvm-delete-function fn)
+                   (incf deleted))
+                 (setf added (set-difference added unused :test #'cffi:pointer-eq)))
+        (log:info "Linked bitcode ~a: ~d definition(s) made internal, ~d unused function(s) deleted, ~d kept; data layout kept as ~s"
+                  path internal deleted (length added) layout))
+      nil)))
+
+(defun link-foreign-bitcode (module bc-files)
+  "Endeavor 122 (FFI): link each .bc in BC-FILES into MODULE (%link-bitcode-file: its definitions
+   become internal) so def-foreign-function calls and libdevice transcendentals resolve at compile
+   time.  Quits with a clear error when a file is missing or cannot be read, parsed or linked."
+  (dolist (bc bc-files)
+    (let* ((true (uiop:truename* bc))
+           (problem (if true
+                        (%link-bitcode-file module (namestring true))
+                        (format nil "cannot find bitcode ~a" bc))))
+      (when problem
+        (format *error-output* "ERROR: FFI ~a~%" problem)
+        (uiop:quit 1)))))
 
 (defun %output-base-name (filepath)
   "The name every output of FILEPATH is written under: its own name, or <name>_grad under --differentiate."
@@ -479,10 +528,24 @@ compile-unit filepath."
       (when hoist-targets
             (%run-hoisters hoist-targets generated-metacrisp-files)))))
 
+(defun %expand-link-bitcode-flags (args)
+  "ARGS with each --link-bitcode=PATH replaced by PATH: the flag is another spelling of a positional
+   .bc library (the compile API's only spelling), so every rule about .bc arguments applies to both.
+   Quits when PATH is empty or not a .bc file."
+  (loop for a in args
+        collect (if (alexandria:starts-with-subseq "--link-bitcode=" a)
+                    (let ((path (subseq a (length "--link-bitcode="))))
+                      (unless (and (plusp (length path)) (string-equal (pathname-type path) "bc"))
+                        (format *error-output* "ERROR: ~a: expected a .bc file~%" a)
+                        (uiop:quit 1))
+                      (log:debug "--link-bitcode= -> ~a" path)
+                      path)
+                    a)))
+
 (defun main ()
   "Main entry point for the crisp-compile executable.  `crisp-compile --serve` runs the compile
    server instead (endeavour 190; serve-main, in src/api.lisp)."
-  (let ((args (uiop:command-line-arguments)))
+  (let ((args (%expand-link-bitcode-flags (uiop:command-line-arguments))))
     (if (equal (first args) "--serve")
         (serve-main)
         ;; Endeavour 190: --hoist-kernel=file|source.  `source` makes the launcher embed the .crisp

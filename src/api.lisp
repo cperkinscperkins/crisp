@@ -57,7 +57,9 @@
 (defun %api-parse-flags (flags)
   "FLAGS (a list of strings, as crisp-compile takes them) as a settings plist.
    Returns (values SETTINGS NIL) or (values NIL MESSAGE) -- MESSAGE names the offending flag.
-   Unknown flags are REJECTED (the CLI ignores them; an API caller deserves to hear about a typo)."
+   Unknown flags are REJECTED (the CLI ignores them; an API caller deserves to hear about a typo).
+   --link-bitcode=PATH (repeatable) collects under :link-bitcode, in order; PATH must be absolute,
+   because the compiler runs in its own directory, not the caller's."
   (let ((settings (list :math-precision :ieee :force-math-precision nil :denormal-handling :preserve)))
     (dolist (flag flags)
       (let ((rejected (find-if (lambda (r) (alexandria:starts-with-subseq (car r) flag))
@@ -69,6 +71,17 @@
           (rejected
            (return-from %api-parse-flags
              (values nil (format nil "flag ~a is not accepted: ~a" flag (cdr rejected)))))
+          ((alexandria:starts-with-subseq "--link-bitcode=" flag)
+           (let* ((path (subseq flag (length "--link-bitcode=")))
+                  (p (and (plusp (length path)) (uiop:parse-native-namestring path))))
+             (cond ((null p)
+                    (return-from %api-parse-flags (values nil "flag --link-bitcode= needs a path")))
+                   ((not (uiop:absolute-pathname-p p))
+                    (return-from %api-parse-flags
+                      (values nil (format nil "flag ~a: the path must be absolute (the compiler does not run in the caller's directory)" flag))))
+                   ((not (probe-file p))
+                    (return-from %api-parse-flags (values nil (format nil "flag ~a: no such file" flag))))
+                   (t (setf (getf settings :link-bitcode) (append (getf settings :link-bitcode) (list path)))))))
           (choice
            (destructuring-bind (prefix key choices) choice
              (let* ((value (subseq flag (length prefix)))
@@ -582,6 +595,11 @@
                             (location-map (when debug-p (crisp.compiler:generate-location-map forms))))
                        (setf captured-forms forms)
                        (crisp.compiler:compile-module forms module builder di-builder di-compile-unit location-map)))
+                 ;; --link-bitcode: link each library (its definitions made internal) before the
+                 ;; backend; a library that cannot be read, parsed or linked is a compile error
+                 (dolist (bc (getf settings :link-bitcode))
+                   (let ((problem (%link-bitcode-file module bc)))
+                     (when problem (error "~a" problem))))
                  (setf output (%emit-target-output backend module filepath debug-p)))
              ;; A reader error knows its stream, so its file; anything else is charged to the primary.
              (stream-error (c)

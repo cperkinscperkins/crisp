@@ -537,6 +537,76 @@
     (is equal '("internal-error") (records-text recs "status"))
     (is = 1 (count "end" recs :key #'car :test #'string=))))
 
+
+;;; ------------------------------------------------------------------------------------------------
+;;; 0.5: --link-bitcode=PATH (the API's way to link libdevice / a foreign library) and BUG 089
+;;; ------------------------------------------------------------------------------------------------
+
+(defparameter +softplus+
+  "(def-type fvec (vector float :address-space :global :align :compact))
+(def-kernel softplus (X &out Y)
+  (declare #'(fvec &out fvec => nil)
+           (global-size :derive-from X :strategy :one-thread-per)
+           (local-size  :set-to 256))
+  (loop-vector-stride X (i)
+    (set! (~ Y i) (log (+ 1.0 (exp (~ X i)))))))
+")
+
+(defun libdevice-path ()
+  "$CUDA_HOME/nvvm/libdevice/libdevice.10.bc as a native namestring, or NIL."
+  (let ((home (uiop:getenv "CUDA_HOME")))
+    (and home (plusp (length home))
+         (let ((p (probe-file (merge-pathnames "nvvm/libdevice/libdevice.10.bc"
+                                               (uiop:ensure-directory-pathname (uiop:parse-native-namestring home))))))
+           (and p (uiop:native-namestring p))))))
+
+;; The flag's own checks need no libdevice: a relative, missing or empty path is an invalid
+;; argument naming the flag; a file that is not bitcode is a compile error, and the server goes on.
+(define-test (compile-api link-bitcode-flag-checks)
+  (dolist (case '(("--link-bitcode=lib/libdevice.10.bc" "absolute")
+                  ("--link-bitcode=" "needs a path")))
+    (let ((r (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx" :flags (list (first case)))))
+      (is eq :invalid-argument (getf r :status) "~a is rejected" (first case))
+      (true (some (lambda (d) (search (second case) (getf d :message))) (getf r :diagnostics))
+            "~a: the diagnostic says ~s" (first case) (second case))))
+  (let* ((missing (uiop:native-namestring (merge-pathnames "no-such-library.bc" *190-temp-root*)))
+         (r (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx"
+                             :flags (list (format nil "--link-bitcode=~a" missing)))))
+    (is eq :invalid-argument (getf r :status))
+    (true (some (lambda (d) (search "no such file" (getf d :message))) (getf r :diagnostics))))
+  (let ((garbage (merge-pathnames "190-not-bitcode.bc" (uiop:ensure-directory-pathname (uiop:temporary-directory)))))
+    (with-open-file (o garbage :direction :output :if-exists :supersede) (write-line "not bitcode" o))
+    (unwind-protect
+         (let ((r (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx"
+                                   :flags (list (format nil "--link-bitcode=~a" (uiop:native-namestring garbage))))))
+           (is eq :compile-error (getf r :status))
+           (true (some (lambda (d) (search "cannot parse bitcode" (getf d :message))) (getf r :diagnostics)))
+           (true (temp-root-empty-p) "no files left behind after a failed link"))
+      (delete-file garbage)))
+  (is eq :ok (getf (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx") :status)
+      "the next compile works"))
+
+;; BUG 089: only what a kernel calls reaches the PTX, and an unused libdevice leaves no trace.
+;; Needs libdevice ($CUDA_HOME/nvvm/libdevice/libdevice.10.bc); without it the test only says so.
+(define-test (compile-api link-bitcode-libdevice)
+  (let ((ld (libdevice-path)))
+    (if (null ld)
+        (true t "SKIPPED: no libdevice under $CUDA_HOME")
+        (let* ((flag (format nil "--link-bitcode=~a" ld))
+               (bare (compile-quietly (list (cons +softplus+ "sp.crisp")) :target "ptx"))
+               (r (compile-quietly (list (cons +softplus+ "sp.crisp")) :target "ptx" :flags (list flag))))
+          (is eq :compile-error (getf bare :status) "a transcendental without libdevice is a compile error")
+          (is eq :ok (getf r :status))
+          (false (search "__nv_" (binary-text r)) "every libdevice routine was inlined or deleted")
+          (true (< (length (getf (first (modules r)) :binary)) 100000)
+                "not the whole library (was about 880 KB)")
+          ;; warm both sides first: the first compile in an image differs (BUG 162)
+          (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx")
+          (let ((plain (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx"))
+                (linked (compile-quietly (list (cons +two-kernels+ "two.crisp")) :target "ptx" :flags (list flag))))
+            (is equalp (getf (first (modules plain)) :binary) (getf (first (modules linked)) :binary)
+                "linking an unused libdevice changes nothing"))))))
+
 ;;; Gate: a quiet `is` failure does not abort the load, so the runner would call this file PASS.
 (let* ((report (test 'compile-api))
        (failures (parachute:results-with-status :failed report)))

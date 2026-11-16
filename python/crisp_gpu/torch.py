@@ -232,13 +232,14 @@ def load(module, device=None):
     return CudaModule(module, device)
 
 
-def compile(source, flags=(), device=None, name="kernel.crisp"):
+def compile(source, flags=(), device=None, name="kernel.crisp", libdevice="auto"):
     """crisp_gpu.compile to PTX for DEVICE's architecture (unless FLAGS give --ir-target-arch),
-    loaded into PyTorch's CUDA context: returns a CudaModule.  Raises crisp_gpu.CompileError."""
+    loaded into PyTorch's CUDA context: returns a CudaModule.  Raises crisp_gpu.CompileError.
+    LIBDEVICE: see crisp_gpu.compile (on Colab, Triton's copy is found)."""
     flags = list(flags)
     if not any(f.startswith("--ir-target-arch=") for f in flags):
         flags.append(f"--ir-target-arch={arch(device)}")
-    return load(_compile(source, target="ptx", flags=flags, name=name), device)
+    return load(_compile(source, target="ptx", flags=flags, name=name, libdevice=libdevice), device)
 
 
 def autograd_function(cmod, forward, outputs=None):

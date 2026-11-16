@@ -5,6 +5,11 @@
 ;;;; 2. Add a comment naming the original file (e.g. ;; src/compiler.lisp).
 ;;;; 3. Do not modify the original file in src/ until cleanup time.
 ;;;;
+;;;; EMPTY as of 2026-11-15 (2) -- 0.5 --link-bitcode= and BUG 089 folded into src/ by script
+;;;; (put_temp_files_here/libdevice/fold2.py: LIVE copies):
+;;;;   * new      -> %link-bitcode-file (before link-foreign-bitcode), %expand-link-bitcode-flags (before main) (main)
+;;;;   * replaced -> link-foreign-bitcode, main (main); %api-parse-flags, %api-compile-in-dir (api)
+;;;;
 ;;;; EMPTY as of 2026-11-15 -- the 0.5 wheel's install-root fix folded into src/ by script
 ;;;; (put_temp_files_here/wheel/fold.py):
 ;;;;   * new      -> crisp-install-root + (pushnew '(crisp-install-root) cffi:*foreign-library-directories*)

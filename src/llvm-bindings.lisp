@@ -968,6 +968,16 @@
   (dest :pointer)
   (src :pointer))          ; LLVMModuleRef (consumed)
 
+;; 0.5 --link-bitcode keeps the module's own data layout (%link-bitcode-file)
+(defcfun ("LLVMGetDataLayoutStr" llvm-get-data-layout-str) :string
+  "The data layout string of MODULE (\"\" when it has none).  The string belongs to the module."
+  (module :pointer))
+
+(defcfun ("LLVMSetDataLayout" llvm-set-data-layout) :void
+  "Sets MODULE's data layout string (\"\" for none)."
+  (module :pointer)
+  (layout :string))
+
 
 ;; --- Precision controls (Endeavor 126): fast-math flags + FP attributes ---
 ;; Confirmed present in LLVM-C.dll (LLVM 21) on 2026-07-01.

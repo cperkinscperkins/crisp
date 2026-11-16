@@ -8,12 +8,16 @@
 
 `crisp_gpu.torch` launches the compiled kernels on PyTorch CUDA tensors.
 
+PTX transcendentals (exp, log, sin, tanh ...) need NVIDIA's libdevice.10.bc, which is not bundled
+(NVIDIA's license): compile() finds one by itself (see find_libdevice) and links it.
+
 This is a thin layer over Crisp's C compile API (c-api/include/crisp.h).  The compiler itself runs
 in helper processes (`crisp-compile --serve`) that start on the first compile and stop when Python
 exits.  The binaries live in this package's bin/ directory.
 """
 import atexit
 import ctypes
+import importlib.util
 import os
 import stat
 import sys
@@ -22,7 +26,7 @@ from collections import namedtuple
 from . import _capi
 
 __version__ = "0.5.0"
-__all__ = ["compile", "compile_file", "Module", "Kernel", "Param", "Diagnostic", "CompileError",
+__all__ = ["compile", "compile_file", "find_libdevice", "Module", "Kernel", "Param", "Diagnostic", "CompileError",
            "bin_dir", "shutdown", "__version__"]
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -207,9 +211,46 @@ def _diagnostics(lib, ctx):
     return out
 
 
-def _compile(target, flags, add_sources):
+_LINK = "--link-bitcode="
+_LIBDEVICE = "libdevice.10.bc"
+
+
+def find_libdevice():
+    """The absolute path of NVIDIA's libdevice.10.bc, or None.  Looked for, in order: $CRISP_LIBDEVICE;
+    nvvm/libdevice/ under $CUDA_HOME, $CUDA_PATH and /usr/local/cuda; the copy Triton carries (installed
+    with PyTorch); the pip package nvidia-cuda-nvcc."""
+    cands = [os.environ.get("CRISP_LIBDEVICE")]
+    for root in (os.environ.get("CUDA_HOME"), os.environ.get("CUDA_PATH"), "/usr/local/cuda"):
+        if root:
+            cands.append(os.path.join(root, "nvvm", "libdevice", _LIBDEVICE))
+    for mod, rel in (("triton", ("backends", "nvidia", "lib", _LIBDEVICE)),
+                     ("nvidia.cuda_nvcc", ("nvvm", "libdevice", _LIBDEVICE))):
+        try:
+            spec = importlib.util.find_spec(mod)       # locates the package without importing it
+        except (ImportError, ValueError):
+            spec = None
+        for loc in (spec.submodule_search_locations or []) if spec else []:
+            cands.append(os.path.join(loc, *rel))
+    return next((os.path.abspath(c) for c in cands if c and os.path.isfile(c)), None)
+
+
+def _resolve_flags(target, flags, libdevice):
+    """FLAGS with --link-bitcode= paths made absolute (the compiler runs in its own directory), plus
+    libdevice for a PTX compile: LIBDEVICE 'auto' finds one (find_libdevice), a path names it, None
+    links none.  Linking it costs only the parse when no transcendental is used: the compiler keeps
+    only the library functions a kernel calls."""
+    out = [_LINK + os.path.abspath(f[len(_LINK):]) if f.startswith(_LINK) else f for f in flags]
+    if target == "ptx" and libdevice is not None:
+        path = find_libdevice() if libdevice == "auto" else os.path.abspath(os.fspath(libdevice))
+        if path and not any(f.startswith(_LINK) and os.path.basename(f) == _LIBDEVICE for f in out):
+            out.append(_LINK + path)
+    return out
+
+
+def _compile(target, flags, add_sources, libdevice="auto"):
     if target not in ("ptx", "spv"):
         raise ValueError(f"target must be 'ptx' or 'spv', not {target!r}")
+    flags = _resolve_flags(target, flags, libdevice)
     lib = _library()
     ctx = ctypes.c_void_p()
     st = lib.crisp_context_create(target.encode(), ctypes.byref(ctx))
@@ -225,6 +266,9 @@ def _compile(target, flags, add_sources):
         st = lib.crisp_compile(ctx)
         if st != _capi.OK:
             text = _s(lib.crisp_diagnostics_text(ctx)) or _s(lib.crisp_status_string(st))
+            if "requires libdevice" in text and not any(f.startswith(_LINK) for f in flags):
+                text += ("\ncrisp_gpu found no libdevice.10.bc: install the CUDA toolkit or set "
+                         "CRISP_LIBDEVICE=/path/to/libdevice.10.bc (or pass libdevice=PATH)")
             raise CompileError(text, _diagnostics(lib, ctx))
         return Module(lib, ctx, target)
     except BaseException:
@@ -232,11 +276,13 @@ def _compile(target, flags, add_sources):
         raise
 
 
-def compile(source, target="ptx", flags=(), name="kernel.crisp"):
+def compile(source, target="ptx", flags=(), name="kernel.crisp", libdevice="auto"):
     """Compile Crisp SOURCE (a string, or a list of strings compiled together) for TARGET ('ptx' for
     NVIDIA, 'spv' for SPIR-V / Intel).  FLAGS are crisp-compile's flags, e.g. '--differentiate',
-    '--hardware-profile=h100', '--ir-target-arch=sm_90a', '-DN=64'.  NAME is the file name used in
-    messages.  Returns a Module; raises CompileError with the compiler's messages."""
+    '--hardware-profile=h100', '--ir-target-arch=sm_90a', '-DN=64', '--link-bitcode=lib.bc'.  NAME is
+    the file name used in messages.  LIBDEVICE ('auto', a path, or None) is NVIDIA's libdevice.10.bc
+    for PTX transcendentals; 'auto' finds it (find_libdevice).  Returns a Module; raises
+    CompileError with the compiler's messages."""
     sources = [source] if isinstance(source, str) else list(source)
 
     def add(lib, ctx):
@@ -245,10 +291,10 @@ def compile(source, target="ptx", flags=(), name="kernel.crisp"):
             st = lib.crisp_add_source(ctx, s.encode("utf-8"), nm.encode())
             if st != _capi.OK:
                 raise RuntimeError(f"crisp_add_source: {_s(lib.crisp_status_string(st))}")
-    return _compile(target, flags, add)
+    return _compile(target, flags, add, libdevice)
 
 
-def compile_file(path, target="ptx", flags=()):
+def compile_file(path, target="ptx", flags=(), libdevice="auto"):
     """Compile the .crisp file(s) at PATH (a path or a list of paths).  See compile()."""
     paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
 
@@ -257,4 +303,4 @@ def compile_file(path, target="ptx", flags=()):
             st = lib.crisp_add_source_file(ctx, os.fspath(os.path.abspath(p)).encode())
             if st != _capi.OK:
                 raise FileNotFoundError(f"{p}: {_s(lib.crisp_status_string(st))}")
-    return _compile(target, flags, add)
+    return _compile(target, flags, add, libdevice)

@@ -5,6 +5,7 @@
 ;;; 2. Add a comment referencing the original file (e.g. ;;; FROM: src/environment.lisp)
 ;;; 3. Do not modify the original file in src/ until cleanup time.
 
+;;; EMPTY as of 2026-11-15 -- 0.5 folded LLVMGetDataLayoutStr / LLVMSetDataLayout into src/llvm-bindings.lisp.
 ;;; EMPTY as of 2026-11-09 -- endeavour 210 folded LLVMCreateTypeAttribute into src/llvm-bindings.lisp.
 ;;; EMPTY as of 2026-10-27 -- endeavour 195 folded LLVMSetAtomicSyncScopeID into src/llvm-bindings.lisp.
 
