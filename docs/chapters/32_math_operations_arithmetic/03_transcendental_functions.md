@@ -44,11 +44,16 @@ Transcendentals honor the precision axis (`fast` vs `ieee`, chosen by `--math-pr
 
 NVIDIA GPUs have no *native* instruction for the transcendentals — the hardware offers only a few approximate primitives. To compile a transcendental for `--ir-target=ptx`, Crisp links NVIDIA's math library, **`libdevice.10.bc`**, and specializes the routine into the kernel at compile time — the correctly-rounded `__nv_*` under `ieee`, or the approximate `__nv_fast_*` under `fast`. The emitted `.ptx` is self-contained; nothing special is needed at run time.
 
-You supply `libdevice.10.bc` the same way as any foreign bitcode — as a positional argument on the command line:
+You supply `libdevice.10.bc` the same way as any foreign bitcode — as a positional argument on the command line, or with `--link-bitcode=` (the same thing; the only spelling the runtime compile API accepts, where the path must be absolute):
 
 ```
 crisp-compile --ir-target=ptx  $CUDA_HOME/nvvm/libdevice/libdevice.10.bc  my_kernel.crisp
+crisp-compile --ir-target=ptx  --link-bitcode=$CUDA_HOME/nvvm/libdevice/libdevice.10.bc  my_kernel.crisp
 ```
+
+From Python, `crisp_gpu.compile` finds a libdevice by itself (`$CRISP_LIBDEVICE`, the CUDA Toolkit, or the copy Triton ships with PyTorch) and links it for every PTX compile.
+
+Only the routines a kernel actually calls end up in the PTX: everything a linked library defines is given internal linkage, so the optimizer inlines what is used, and whatever is unused is deleted at link time. Linking libdevice into a kernel that uses no transcendental therefore changes nothing — the PTX is byte-identical to compiling without it.
 
 **If a kernel uses a transcendental for the PTX target and `libdevice.10.bc` is not provided, compilation fails with an error.** The library ships with the CUDA Toolkit (under `nvvm/libdevice/`). The requirement applies whenever *both* hold: PTX target and at least one transcendental — **under either precision** (`fast` → `__nv_fast_*`, `ieee` → `__nv_*`; both live in libdevice). Pure arithmetic, `sqrt`/`rsqrt`, and division still compile without it. SPIR-V never needs it.
 

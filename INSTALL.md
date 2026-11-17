@@ -2,7 +2,46 @@
 INSTALL and BUILD
 =================
 
-You can install Crisp using pre-built binaries (quickest) or build from source using SBCL.
+There are three ways to get Crisp:
+- **`pip install crisp-gpu`**: Linux x86_64 only, and the quickest. Covered next.
+- **Pre-built binaries**: Windows and Linux x86_64.
+- **Build from source** using SBCL.
+
+To try Crisp without installing anything, open the
+[Colab notebook](https://colab.research.google.com/github/cperkinscperkins/crisp/blob/main/notebooks/crisp-gpu-intro.ipynb)
+on a free T4.
+
+INSTALL WITH PIP (Linux x86_64)
+===============================
+
+Needs Python 3 and glibc 2.35 or newer (Ubuntu 22.04, Debian 12, or anything more recent).
+A GPU is needed only to *run* kernels; compiling works anywhere.
+```
+pip install crisp-gpu            # the compiler, its C API and the crisp_gpu Python package
+pip install crisp-gpu[torch]     # the same, plus PyTorch, for crisp_gpu.torch
+```
+
+This installs:
+- **The `crisp_gpu` Python package.** It compiles a kernel held in a string at run time, to PTX or SPIR-V
+  (`crisp_gpu.compile(...)`), and reports its kernels and parameters.
+- **`crisp_gpu.torch`.** It compiles for the GPU you have, launches kernels on CUDA tensors, and turns a
+  `--differentiate` module into a `torch.autograd` function.
+- **The `crisp-compile` command.** It takes the same flags as the binary release described below.
+- **`crisp-gpu-hoist`**, pulled in automatically. It is what `--hoist=cuda` / `--hoist=l0` use.
+
+Check the install:
+```
+python -c "import crisp_gpu; print(crisp_gpu.__version__)"
+```
+
+**Transcendentals on NVIDIA.** Kernels that call `exp`, `log`, `tanh` and the like need NVIDIA's
+`libdevice.10.bc` when compiling to PTX. `crisp_gpu` finds it by itself in the CUDA toolkit
+(`CUDA_HOME`, `/usr/local/cuda`) or in Triton's copy. Without a toolkit, set
+`CRISP_LIBDEVICE=/path/to/libdevice.10.bc`. On the command line, name the `.bc` file before the kernel:
+`crisp-compile --ir-target=ptx $CUDA_HOME/nvvm/libdevice/libdevice.10.bc my_kernel.crisp`.
+
+To learn the language, read [Writing Crisp](./docs/writing-crisp.md). Everything below is for the
+binary release and for building from source.
 
 Clone This
 ----------

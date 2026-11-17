@@ -2,13 +2,47 @@
 
 **A new programming language for developing GPGPU kernels**
 
-Crisp is a Lisp for writing GPU kernels.  It is quite different than existing solutions and quite difficult to easily sum up in a paragraph or two. Kernels written in Crisp can be compiled to both PTX and SPIR-V, to support NVidia and Intel hardware. There is no Crisp runtime, instead the Crisp compiler can optionally generate "hoisting" example code. This is .cu / .cpp code that uses CUDA / LevelZero to load, enqueue, and read back results for the specified kernel.
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cperkinscperkins/crisp/blob/main/notebooks/crisp-gpu-intro.ipynb) &nbsp; `pip install crisp-gpu`
 
-Reading the preceding paragraph you might conclude that portability is a primary goal of Crisp, but that is mistaken. Crisp has several key intersecting goals and their sum is greater than their parts. Here are some of the more unique goals:
+Crisp is a Lisp for writing GPU kernels.  It is quite different than existing solutions and quite difficult to easily sum up in a paragraph or two. Crisp gives particular attention to surfacing common GPU memes as directly usable language constructs. The Crisp compiler can compile kernels FAST and it supports auto differentiation. It is itself invokable from Python or from C/C++. Through its C API a kernel held in a string is compiled, loaded and launched in a fraction of a second, so a kernel can be specialized to the shapes and constants of the moment. This means Crisp is a great solution for doing runtime compilation.   Kernels written in Crisp can be compiled to both PTX and SPIR-V, to support NVidia and Intel hardware. There is no Crisp runtime library to link against, instead the compiler can also generate "hoisting" example code. This is .cu / .cpp code that uses CUDA / LevelZero to load, enqueue, and read back results for the specified kernel.
+
+### Try It
+
+The quickest way in is the [Colab notebook](https://colab.research.google.com/github/cperkinscperkins/crisp/blob/main/notebooks/crisp-gpu-intro.ipynb). It installs Crisp with `pip` on a free T4 and, in a handful of cells, compiles kernels from Python strings, runs them on PyTorch tensors, and uses the gradient kernel Crisp derives as a `torch.autograd` backward.
+
+Or, on Linux x86_64 (glibc 2.35+, e.g. Ubuntu 22.04) with an NVIDIA GPU:
+
+```
+pip install crisp-gpu[torch]
+```
+
+```python
+import torch, crisp_gpu.torch as ct
+
+src = """
+(def-type vec-t (vector float :address-space :global :align :compact))
+
+(def-kernel square_scale (X W &out Y)
+  (declare #'(vec-t vec-t &out vec-t => nil)
+           (global-size :derive-from X :strategy :one-thread-per)
+           (local-size  :set-to 256))
+  (loop-vector-stride X (i)
+    (set! (~ Y i) (* (~ X i) (~ X i) (~ W i)))))
+"""
+mod = ct.compile(src, flags=["--differentiate"])   # PTX for this GPU: square_scale and square_scale_grad
+f = ct.autograd_function(mod, "square_scale")
+x = torch.randn(1 << 20, device="cuda", requires_grad=True)
+w = torch.randn(1 << 20, device="cuda", requires_grad=True)
+f(x, w).sum().backward()                           # x.grad and w.grad come from Crisp's gradient kernel
+```
+
+The package also installs the `crisp-compile` command.  Windows, Intel GPUs and building from source are covered in [INSTALL](./INSTALL.md).
+
+Reading the opening paragraph you might conclude that portability is a primary goal of Crisp, but that is mistaken. Crisp has several key intersecting goals and their sum is greater than their parts. Here are some of the more unique goals:
 
 - Auto Differentiation.  Crisp can automatically output the backward derivative of a kernel. Simply pass the `--differentiate` flag when compiling to generate the derivative kernel.  
 - Explicit hardware profiles for high performance. In addition to the kernel code, the exact profile and capabilities of GPU hardware can be provided to the Crisp compiler for maximum optimization. This aids in MMA shapes, loop unrolling, and countless other optimizations. See `def-hardware-profile` and related.
-- Common GPU memes explicitly provided by the Crisp language. Crisp directly exposes several different GPU memes like  grid strides, reductions, and warp specializations as macros that are directly usable. This both reduces errors and helps the compiler maximally optimize the code.
+- Common GPU memes explicitly provided by the Crisp language. Crisp directly exposes several different GPU idioms like  grid strides, reductions, and warp specializations as macros that are directly usable. This both reduces errors and helps the compiler maximally optimize the code.
 - Meaningful meta declarations. Crisp code can declare certain variables or parameters as tunable, uniform in a workgroup, or constexpr, and more. Additionally kernels and functions can declare their desired enqueue "strategy". All of which serve to not only make the kernel code safe and correct, but also the hoisting example code more useful and, above all, the compilation optimal for performance.
 - Template types.  Crisp has C++ like type templating including type functions and constraints (ie C++ "concepts"), as well as advanced derived and branded types that have no comparable in C++.
 - Macros.  Crisp gives the user nearly full access to Common Lisp macros in their Crisp code. This is vastly superior to C++ SFINAE both in its power and ease of use. Furthermore, macros mean Crisp developers can write their own GPU memes, strides, reductions, strategies, etc. Crisp has many compile time inspection routines.
@@ -18,9 +52,11 @@ OK, that is getting a little long. I'm trying to summarize Crisp goals, not give
 
 
 
-### Current Status: Active Implementation & E2E Validation
+### Current Status: 0.5
 
-Crisp has moved far beyond the initial design phase. The core architecture—including reverse-mode auto-differentiation, topological machine-aware compilation, and native C API/FFI integration—is implemented and actively undergoing cross-backend validation (CUDA, SPIR-V). This repository contains the living design document for the language and its tooling ecosystem.
+Crisp is pre-1.0, but far past the design phase. Implemented and tested on both backends (1,857 end-to-end specs and 507 error specs): reverse-mode auto-differentiation, tensor-core MMA (`mma.sync`, `wgmma` and `tcgen05` on NVIDIA, XMX on Intel), TMA and pipelined rings, warp specialization, quantized types, a foreign-function interface that differentiates across C calls, and run-time compilation through the C API and the Python package. Topology-aware compilation across many GPUs is designed but not yet built. The design document marks every feature ✅ implemented, ⚠️ partial or 📝 planned.
+
+Crisp kernels are entered on all eight open [GPU MODE](https://www.gpumode.com) leaderboards on four GPUs. [The results](./contests/gpu-mode/README.md) show where they stand, including the boards where they are far from the top.
 
 [Code Coverage Report](https://cperkinscperkins.github.io/crisp/coverage/)
 
@@ -28,7 +64,7 @@ Crisp has moved far beyond the initial design phase. The core architecture—inc
 
 ### Getting Started
 
-Crisp can be downloaded as a release, or built from source. For either see [INSTALL](./INSTALL.md)
+On Linux, `pip install crisp-gpu` (see [Try It](#try-it) above). Crisp can also be downloaded as a release, or built from source. For any of these see [INSTALL](./INSTALL.md)
 
 To start writing kernels, read [Writing Crisp](./docs/writing-crisp.md): the toolchain, a first kernel, the rules that trip people up, and what the language provides today.
 
@@ -207,7 +243,7 @@ Implementation assisted by Claude Code and Google AntiGravity.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License v2.0 with LLVM Exceptions (`Apache-2.0 WITH LLVM-exception`, the same terms as LLVM) - see the [LICENSE](LICENSE) and [NOTICE](NOTICE) files.  The LLVM exception covers what the compiler emits: portions of Crisp that end up in your compiled kernels or generated hoist code can be redistributed without the license's notice requirements.
 
 ## Third-Party Tools
 

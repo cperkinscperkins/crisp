@@ -2,7 +2,7 @@
            :description "Common infrastructure for Crisp hoisting tools"
            :author "Chris Perkins"
            :version "0.1.0"
-           :license "MIT"
+           :license "Apache-2.0 WITH LLVM-exception"
            :depends-on (:uiop)
            :serial t
            :components ((:module "hoist"

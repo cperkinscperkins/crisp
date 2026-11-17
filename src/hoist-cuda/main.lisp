@@ -650,7 +650,11 @@ overrides the runtime SM-count query in the grid-size heuristic."
 
 
 (defun emit-cuda-init (stream)
-  "Emit CUDA Driver API initialization."
+  "Emit CUDA Driver API initialization.  The context is the device's PRIMARY context
+   (cuDevicePrimaryCtxRetain + cuCtxSetCurrent), not cuCtxCreate: CUDA 13's cuda.h maps cuCtxCreate
+   to cuCtxCreate_v4, which takes a CUctxCreateParams* as well, so the 12.x three-argument call no
+   longer compiles (Colab, 2026-11-15).  The primary-context calls are the same in every CUDA since 7,
+   and it is the context the CUDA runtime and PyTorch use."
   (format stream "    // Initialize CUDA Driver API~%")
   (format stream "    CUDA_CHECK(cuInit(0));~%~%")
 
@@ -661,7 +665,8 @@ overrides the runtime SM-count query in the grid-size heuristic."
   (format stream "    std::cout << \"Device: \" << devName << std::endl;~%~%")
 
   (format stream "    CUcontext context;~%")
-  (format stream "    CUDA_CHECK(cuCtxCreate(&context, 0, device));~%~%"))
+  (format stream "    CUDA_CHECK(cuDevicePrimaryCtxRetain(&context, device));~%")
+  (format stream "    CUDA_CHECK(cuCtxSetCurrent(context));~%~%"))
 
 ;;; ------------------------------------------------------------------------------------------------
 ;;; Endeavour 190: --hoist-kernel=source, the CUDA parts.  (Shared parts: src/hoist/source-mode.lisp.)

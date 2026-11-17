@@ -2,7 +2,7 @@
            :description "CUDA C++ launcher generator for Crisp kernels (Driver API)"
            :author "Chris Perkins"
            :version "0.1.0"
-           :license "MIT"
+           :license "Apache-2.0 WITH LLVM-exception"
            :depends-on (:uiop :crisp-hoist-common)
            :serial t
            :components ((:module "hoist-cuda"

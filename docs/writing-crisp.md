@@ -25,18 +25,20 @@ bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
 | `--hardware-profile=NAME` | `bmg` (Intel Arc B580) and `h100` are built in; others are `def-hardware-profile` forms (see `benchmarks/profiles/`). Required for warp collectives on SPIR-V and for the MMA paths. |
 | `--math-precision=ieee\|fast` | `ieee` (default): correctly rounded. `fast`: approximate hardware paths. |
 | `--hoist=L0` / `--hoist=CUDA` | Also write a host `.cpp` that loads and runs the kernel (Level Zero / CUDA). |
-| `--differentiate` | Compile the BACKWARD (gradient) kernels instead — see §12. |
+| `--differentiate` | Also compile the BACKWARD (gradient) kernels: the output holds each kernel followed by its `_grad` (file `name_grad.*`) — see §12. |
 | `--runtime-checks` | Compile the runtime asserts and bounds checks; a failure stops the thread — see §16. |
 | `--logging-output` | Compile `r-t-output` into the log (implies `--runtime-checks`) — see §16. |
 | `--logging-size=4M` | The log's size in bytes (`K`/`M`/`G` suffixes; default `4M`). |
 
 **PTX + transcendentals** (`exp log sin cos tan asin acos atan pow atan2 log2 tanh erf exp2`) need NVIDIA's
-`libdevice.10.bc`: pass it as an extra input (`$CUDA_HOME/nvvm/libdevice/libdevice.10.bc`).  Without it
-the compiler stops with a clear message naming the missing `__nv_*` function.  SPIR-V needs nothing.
+`libdevice.10.bc`: pass it as an extra input (`$CUDA_HOME/nvvm/libdevice/libdevice.10.bc`), or as
+`--link-bitcode=<path>` (the compile API's spelling; there the path must be absolute).  Python's
+`crisp_gpu.compile` finds and links it by itself.  Without it the compiler stops with a clear message naming
+the missing `__nv_*` function.  Only the routines a kernel calls reach the PTX.  SPIR-V needs nothing.
 
-The compiler is run from the repository root (it finds `bin/LLVM-C.dll` relative to there).  Run from
-anywhere else it fails -- and a script that does not check the exit code then reads the PREVIOUS `.ptx`
-or `.spv` and reports stale results.
+`crisp-compile` finds what it needs (LLVM, `llc` / `llvm-spirv`, the hoist programs) in the `bin/` it lives
+in, so it runs from any directory.  A script should still check its exit code: a failed compile writes no
+output, and a script that does not check then reads the PREVIOUS `.ptx` or `.spv` and reports stale results.
 
 ---
 

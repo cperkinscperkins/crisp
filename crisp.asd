@@ -1,7 +1,7 @@
 (defsystem "crisp"
            :description "A Lisp-based compiler for GPGPU programming."
            :author "Chris Perkins cperkins.mobile@gmail.com"
-           :license "MIT"
+           :license "Apache-2.0 WITH LLVM-exception"
            :version "0.0.1"
 
            ;; --- Dependencies ---

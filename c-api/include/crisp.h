@@ -109,7 +109,10 @@ CRISP_API void crisp_context_destroy(crisp_context* context);
    (it is not additive).  The flags are checked by the COMPILER, so a bad one surfaces from
    crisp_compile as CRISP_ERROR_INVALID_ARGUMENT with a diagnostic naming it: unknown flags, bad
    values, flags that name output files or hoisting (--hoist..., --metadata), --log-level, and
-   --ir-target (the target is fixed at context creation).  This call itself fails only on NULLs. */
+   --ir-target (the target is fixed at context creation).  This call itself fails only on NULLs.
+   --link-bitcode=PATH (repeatable) links a bitcode library -- libdevice.10.bc for PTX
+   transcendentals, or a foreign-function library; PATH must be ABSOLUTE (the compiler does not run in
+   the caller's directory) and must exist.  Only the library functions a kernel calls reach the output. */
 CRISP_API crisp_status crisp_set_flags(crisp_context* context, const char* const* flags, size_t count);
 
 /* Adds Crisp source text (NUL-terminated, UTF-8).  VIRTUAL_NAME (e.g. "my_kernel.crisp") is what

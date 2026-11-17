@@ -1,0 +1,49 @@
+# Builds the Linux x86_64 binaries for the crisp-gpu Python wheels (scripts/build-wheel.sh).
+#
+# Ubuntu 22.04, not 24.04 like Dockerfile.linux-release: the wheel's floor is glibc 2.35 (Colab,
+# and the CUDA images GPU MODE runs on), and LLVM 21 from apt.llvm.org's noble repo needs glibc 2.38.
+# jammy's own SBCL (2.1.11) is too old and the upstream 2.5.11 binary needs glibc 2.38 as well, so
+# SBCL 2.5.11 (the version the compiler is developed on) is built from source here, bootstrapped by
+# jammy's SBCL -- the saved crisp-* executables embed this runtime, so it sets their glibc floor.
+# gcc builds SBCL and libcrisp.so (build/build-c-api.lisp); patchelf relinks the bundled LLVM
+# binaries to the libraries beside them; python3 runs scripts/make_wheel.py.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget gnupg lsb-release curl ca-certificates git patchelf bzip2 make gcc libc6-dev \
+        zlib1g-dev libzstd-dev python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# SBCL 2.5.11 from source.  jammy's SBCL 2.1.11 is too old to build 2.5.11 directly (genesis fails),
+# so it builds 2.3.11 first, which builds 2.5.11; the intermediate hosts are removed afterwards.
+RUN apt-get update && apt-get install -y --no-install-recommends sbcl \
+    && for v in 2.3.11 2.5.11; do \
+         curl -sL -o /tmp/sbcl.tar.bz2 \
+           https://downloads.sourceforge.net/project/sbcl/sbcl/$v/sbcl-$v-source.tar.bz2 \
+         && tar -C /tmp -xjf /tmp/sbcl.tar.bz2 \
+         && cd /tmp/sbcl-$v \
+         && { sh make.sh --with-sb-core-compression > /tmp/sbcl-make.log 2>&1 \
+              || { grep -n -i -B2 -A6 "warning" /tmp/sbcl-make.log | head -60; tail -30 /tmp/sbcl-make.log; exit 1; }; } \
+         && if [ "$v" = 2.3.11 ]; then apt-get remove -y sbcl && apt-get autoremove -y; fi \
+         && if [ "$v" = 2.5.11 ]; then rm -rf /usr/local/lib/sbcl /usr/local/bin/sbcl; fi \
+         && sh install.sh > /dev/null \
+         && cd / && rm -rf /tmp/sbcl.tar.bz2 /tmp/sbcl-$v /tmp/sbcl-make.log \
+         && sbcl --version || exit 1; \
+       done \
+    && rm -rf /var/lib/apt/lists/*
+
+# LLVM 21 for jammy (the compiler's libLLVM, plus the thin llc / llvm-as launchers over it)
+RUN wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" \
+         > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update && apt-get install -y --no-install-recommends llvm-21 llvm-21-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Quicklisp, installed into the image so the build does not re-download it
+RUN curl -sO https://beta.quicklisp.org/quicklisp.lisp \
+    && echo "" | sbcl --non-interactive --load quicklisp.lisp \
+         --eval '(quicklisp-quickstart:install)' --eval '(ql:add-to-init-file)' --eval '(quit)' \
+    && rm quicklisp.lisp
+
+WORKDIR /build
