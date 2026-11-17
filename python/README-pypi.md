@@ -1,8 +1,11 @@
 # crisp-gpu
 
 **Crisp** is a Lisp for writing GPU kernels.  It compiles to PTX (NVIDIA) and SPIR-V (Intel), and
-it can differentiate a kernel automatically: one `--differentiate` compile gives you the forward
-kernel *and* its gradient kernel.
+it can differentiate a kernel automatically: compiling with `--differentiate` adds the gradient
+(backward) kernel alongside the forward one, so a single module holds both.
+
+Try it on a free Colab GPU first:
+<https://colab.research.google.com/github/cperkinscperkins/crisp/blob/main/notebooks/crisp-gpu-intro.ipynb>
 
 This package is the Crisp compiler plus a Python layer for compiling kernels **at run time**:
 
@@ -36,6 +39,10 @@ x = torch.randn(1 << 20, device="cuda", requires_grad=True)
 w = torch.randn(1 << 20, device="cuda", requires_grad=True)
 f(x, w).sum().backward()    # x.grad and w.grad computed by Crisp's gradient kernel
 ```
+
+Kernels that call `exp`, `log`, `tanh` and the other transcendentals need NVIDIA's `libdevice.10.bc`
+on the PTX target.  `crisp_gpu` finds it by itself in the CUDA toolkit (`CUDA_HOME`, `/usr/local/cuda`)
+or in Triton's copy; set `CRISP_LIBDEVICE=/path/to/libdevice.10.bc` to point at another.
 
 The `crisp-compile` command is installed too.  Linux x86_64, glibc 2.35+ (Ubuntu 22.04 or newer).
 

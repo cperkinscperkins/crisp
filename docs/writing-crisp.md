@@ -25,7 +25,7 @@ bin/crisp-compile.exe [flags] kernel.crisp [libdevice.10.bc]
 | `--hardware-profile=NAME` | `bmg` (Intel Arc B580) and `h100` are built in; others are `def-hardware-profile` forms (see `benchmarks/profiles/`). Required for warp collectives on SPIR-V and for the MMA paths. |
 | `--math-precision=ieee\|fast` | `ieee` (default): correctly rounded. `fast`: approximate hardware paths. |
 | `--hoist=L0` / `--hoist=CUDA` | Also write a host `.cpp` that loads and runs the kernel (Level Zero / CUDA). |
-| `--differentiate` | Compile the BACKWARD (gradient) kernels instead — see §12. |
+| `--differentiate` | Also compile the BACKWARD (gradient) kernels: the output holds each kernel followed by its `_grad` (file `name_grad.*`) — see §12. |
 | `--runtime-checks` | Compile the runtime asserts and bounds checks; a failure stops the thread — see §16. |
 | `--logging-output` | Compile `r-t-output` into the log (implies `--runtime-checks`) — see §16. |
 | `--logging-size=4M` | The log's size in bytes (`K`/`M`/`G` suffixes; default `4M`). |
