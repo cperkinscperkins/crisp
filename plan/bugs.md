@@ -4754,3 +4754,23 @@ backup leading to a freeze. It exhausts memory during teardown ( LLVM objects by
         stage.  tests/spec/217-swizzle/06-ring-tail-await.crisp; v12 passed L4 ranked (971198, 3518.9 us) and
         A100 (971199, 2016.3 us).  Unexplained, and moot under the fix: K = 64 / 96 (the FIRST iteration
         under-waits there) never failed on either GPU.
+
+[ ] 164 A FLOAT USED AS A CONDITION EMITS INVALID IR -- llc DIES INSTEAD OF A PUN OR A DIAGNOSTIC.
+        Found 2026-11-18 (bool audit of ideal_001 "Other Basic Types"):
+            (def-function f (x) (declare #'(float => int)) (if x 1 2))
+        emits `%ifcond = icmp ne float %x1, i32 0` and the compile fails inside llc ("expected value
+        token"); --ir-target=spv fails too.  Integers pun correctly (icmp ne i32 %x, 0).  The design doc
+        says any zero number puns as false, so the likely intent is `fcmp une x, 0.0` (NaN puns true, as
+        in C) -- or, if floats should not pun, an analyzer refusal.  Either way a user never sees llc.
+        The truthiness test is probably shared by if / when / unless / cond / and / or -- check them all.
+        Repro: put_temp_files_here/bool-probe/07-float-pun.crisp (07-float-pun.temp.ll has the bad line).
+
+[ ] 165 `nil` IN RUNTIME CODE CRASHES THE COMPILER WITH AN SBCL TYPE ERROR, NOT A DIAGNOSTIC.
+        Found 2026-11-18 (bool audit):
+            (def-function f (x) (declare #'(int => int)) (if nil 1 2))
+        fails with "The value NIL is not of type SB-SYS:SYSTEM-AREA-POINTER" -- an internal error leaking
+        out (NIL reached an LLVM binding as a value ref).  Plan agreed 2026-11-18: runtime `nil` is
+        ACCEPTED as `false` (macros produce it: a CL-side `(if ,flag ..)` whose flag computed to NIL),
+        alongside the new bool / true / false / not work; `T` stays refused (it is the template type
+        name) with a message pointing to `true`.  Until then, at minimum a real diagnostic.
+        Repro: put_temp_files_here/bool-probe/04-nil-runtime.crisp.

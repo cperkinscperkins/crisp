@@ -9,17 +9,13 @@
 
 GPUs with their lockstep parallelism are absolutely amazing at delivering blistering performance for certain types of algorithms. But they are also brittle and finicky. Data coherence, occupancy, branch divergence, register spilling, workgroup and warp coordination, and much more all conspire to make reaching optimal performance tricky. Heck, just basic _correctness_ is tricky. My thought was that the language and tooling should guide users away from mistakes, away from sub-optimal decisions and towards correctness and optimal performance, without nannying. I didn't want to make a new language. I really didn't. I  was just collecting some ideas that I couldn't figure out how to realize and Crisp is the shape they took.
 
-Crisp is a Lisp for writing GPU kernels.  It is quite different than existing solutions and quite difficult to easily sum up in a paragraph or two. Crisp gives particular attention to surfacing common GPU memes as directly usable language constructs. The Crisp compiler can compile kernels FAST and it supports auto differentiation. It is itself invokable from Python or from C/C++. Through its C API a kernel held in a string is compiled, loaded and launched in a fraction of a second, so a kernel can be specialized to the shapes and constants of the moment. This means Crisp is a great solution for doing runtime compilation.   Kernels written in Crisp can be compiled to both PTX and SPIR-V, to support NVidia and Intel hardware.   There is no Crisp runtime library to link against, instead the compiler can also generate "hoisting" example code. This is .cu / .cpp code that uses CUDA / LevelZero to load, enqueue, and read back results for the specified kernel. Python hoisting is planned.
+Crisp is a Lisp for writing GPU kernels.  It is quite different than existing solutions and quite difficult to easily sum up in a paragraph or two. Crisp gives particular attention to surfacing common GPU memes as directly usable language constructs. The Crisp compiler can compile kernels FAST and it supports auto differentiation. It is itself invokable from Python or from C/C++. Through its C API a kernel held in a string is compiled, loaded and launched in a fraction of a second, so a kernel can be specialized to the shapes and constants of the moment. This means Crisp is a great solution for doing runtime compilation.   Kernels written in Crisp can be compiled to both PTX and SPIR-V, to support NVidia and Intel hardware.   There is no Crisp runtime library to link against, instead the compiler can also generate "hoisting" example code. This is .cu / .cpp code that uses CUDA / LevelZero to load, enqueue, and read back results for the specified kernel. From Python, Crisp compiles and launches kernels directly on framework tensors (via PyTorch or any DLPack producer)
 
  The quickest way to try it is the [Colab notebook](https://colab.research.google.com/github/cperkinscperkins/crisp/blob/main/notebooks/crisp-gpu-intro.ipynb), which runs on a free T4. 
 
 Crisp code is often portable, but portability for its own sake is not a primary goal. The primary goals for Crisp are performance, correctness and expressiveness. Crisp aims to bring GPU programming memes and concerns closer to the programmer, and in so doing guide the user towards performance and correctness and away from suboptimal patterns.   
 
 
-### Focus
-
-The focus is on performance, compiliation speed, correctness, and expressivity.
-GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-arrays, quantized integers, and more are directly exposed by the Crisp language.
 
 ### Major Features of the Crisp language and tools
 
@@ -27,17 +23,15 @@ GPU idioms like tensors, shuffles, memory addressing, grid strides, structs-of-a
 
 - **Guaranteed Termination**  Crisp is intentionally not Turing-complete: no unbounded recursion, no unbounded loops. That single decision guarantees kernels always finish (no GPU hangs), but more importantly it's what makes everything else possible — whole-program static analysis that can actually *prove* things about your code: termination, uniformity, activity. Auto-differentiation, divergence-checking, and topology-aware lowering aren't so much separate features as they are consequences of this one. (✅ implemented)
 
-- **Topological-Aware Compilation.**  Write a kernel once and retarget it from a single GPU to a torus mesh or a fat-tree supercomputer without touching the kernel code. `def-topology` and `def-orchestration` describe the machine; the compiler then lowers the *same* `load-tile` into a local address-space copy, a PCIe transfer, or an NVSHMEM/RDMA network pull, depending on which memory boundary it actually crosses. You reason about the algorithm; Crisp reasons about the fabric. (📝 planned)
-
 - **One Language, One Substrate.**  Because Crisp is a Lisp, there's no wall between "language" and "library." Tiles, precision regions, derivatives, and topologies are all s-expressions in one semantic model, added *as* the language through `defmacro` and templates rather than bolted beside it. This is the mechanism behind the whole being greater than the sum of its parts: the features compose because they share one model instead of colliding across five disjoint tools. (✅ implemented)
 
 - **Correctness by Construction.**  A formal execution-context system (thread / grid / dispatch), the `&out` output-only contract, and uniformity-checked control forms (`if+`, `dotimes+`) turn whole classes of parallel bug into compile-time errors — nesting a grid operation inside per-thread code, reading an uninitialized output buffer, or branching divergently where you promised uniform execution. The footguns become type errors, caught before the kernel ever runs. (✅ implemented)
 
-- **Performance With a Capital P.**  The primitives that make GEMM and Flash-Attention tractable are first-class citizens, not things you hand-roll: async tile loads (`load-tile`), pipeline `rings`, `with-warp-specialization`, and `mma-accumulate-via-tile` for tensor-core / DPAS matrix units. You get high-level abstraction without the usual performance tax — and the very same tile machinery is what goes topology-aware on a cluster. (⚠️ partially implemented)
+- **Performance With a Capital P.**  The primitives that make GEMM and Flash-Attention tractable are first-class citizens, not things you hand-roll: async tile loads (`load-tile`), pipeline `rings`, `with-warp-specialization`, and `mma-accumulate-via-tile` for tensor-core / DPAS matrix units. You get high-level abstraction without the usual performance tax — and the very same tile machinery is what goes topology-aware on a cluster. (✅ implemented)
 
-- **Precision and Numerics as a First-Class Axis.**  Numerical precision is a scoped language construct, not a global switch: `with-precision` carves `ieee` or `fast` regions lexically, `--denormal-handling` selects flush-to-zero versus preserve, and all of it composes cleanly with auto-differentiation. Quantized integers and low-precision "microfloat" blocks are first-class, nominal, overflow-safe types: integer MMA through the specialized AI hardware (wgmma / XMX), block-scaled fp4 and fp8 formats, and straight-through gradients for training. (`with-precision` ✅ / quantized & microfloat ✅ / native block-scaled MMA 📝)
+- **Precision and Numerics as a First-Class Axis.**  Numerical precision is a scoped language construct, not a global switch: `with-precision` carves `ieee` or `fast` regions lexically, `--denormal-handling` selects flush-to-zero versus preserve, and all of it composes cleanly with auto-differentiation. Quantized integers and low-precision "microfloat" blocks are first-class, nominal, overflow-safe types: integer MMA through the specialized AI hardware (wgmma / tcgen05/ XMX), block-scaled fp4 and fp8 formats, and straight-through gradients for training. (`with-precision` ✅ / quantized & microfloat ✅ / native block-scaled MMA  ✅ (Blackwell))
 
-- **Broad Reach.**  One source compiles to both Intel (SPIR-V / Level Zero) and NVIDIA (PTX / CUDA). A foreign-function interface lets you call C — and *differentiate across it* via a supplied vector-Jacobian product. The compiler doesn't stop at the kernel, either: it can emit the host-side `main()` (C++ or Python) that allocates, binds arguments, and launches. And it all compiles fast enough that the compile time itself is a measured advantage over the C++ toolchains it competes with. (✅ implemented / hoisting ⚠️)
+- **Broad Reach.**  One source compiles to both Intel (SPIR-V / Level Zero) and NVIDIA (PTX / CUDA). A foreign-function interface lets you call C — and *differentiate across it* via a supplied vector-Jacobian product. The compiler doesn't stop at the kernel, either: it can emit the host-side `main()` (C++) that allocates, binds arguments, and launches. And it all compiles fast enough that the compile time itself is a measured advantage over the C++ toolchains it competes with. On the Python side of things, the `crisp_gpu` Python wheel compiles a kernel and launches it directly on the tensors you already have. Any DLPack producer works (PyTorch, JAX, CuPy, NumPy), with zero copies and no generated host code.  (✅ implemented / DLPack ⚠️)
 
 
 
@@ -363,9 +357,8 @@ The normal practice is that the kernel function has its parameter list for incom
 needs is present in its calling interface, and it passes those arguments down to subfunctions, as appropriate. 
 
 
-There are two specialized categories of Crisp constructs that can help with this: `make-scratch-XXXX` and `make-implicit-XXXX` (where `XXXX` names a type of Storage Handle )  These operations, discussed in detail below, allow you to "pretend" to allocate memory
-in your  kernel.   Each invocation of `make-implicit-XXXX` results in an extra allocation of memory appearing in the example
-hoisting code, with a matching pointer passed implicitly as a kernel argument. Uses of `make-scratch-XXXX` are collected
+There is a specialized category of Crisp constructs that can help with this: `make-scratch-XXXX` (where `XXXX` names a type of Storage Handle )  These operations, discussed in detail below, allow you to "pretend" to allocate memory
+in your  kernel.   Uses of `make-scratch-XXXX` are collected
 by the compiler and are combined into a single scratch memory pool, which is similarly added as an implicit kernel argument.  These are conveniences.  The compiler calculates the size requirements for these and outputs them to the hoisting example code, but it's ultimately up to your final hoisting code to ensure the memory is sufficient.
 
 The die record and the log (`--logging-output`) are NOT side-channel arguments: both are module-scope globals that the host reads by name after the kernel, so neither changes a kernel's signature.  See [Logging and Debugging](#logging-and-debugging).
@@ -471,7 +464,7 @@ A simple way to make the type clear is use a type literal suffix on the first el
   ...)
 ```
 
-#### Dereferencing 📝
+#### Dereferencing ✅
 The subelements can be dereferences with the `x~`, `y~`, `z~` and `w~` functions, 
 and those can be used for `set!` as well.
 
@@ -481,19 +474,7 @@ and those can be used for `set!` as well.
     (set! (w~ my-svec) six)) ;; last element is now '6' instead of '8'
 ```
 
-#### Swizzles 📝
-Furthermore, Crisp supports "swizzles" (like `xyyy~`)
 
-```
-(let ((my-svec ##(5 6 7 9))
-      (all-six          (yyyy~ my-svec))
-      (tail-part      #(0 0)))
-  (declare (type my-svec short4) (type tail-part short2))
-  (set! (xy~ tail-part) (zw~ my-svec))
-  ; OR
-  (set! tail-part (zw~ my-svec))
-   ...  )
-```
 
 ### Numeric Type Promotion, Casting, Conversion ✅
 
@@ -586,19 +567,14 @@ and [Complex Numbers](#complex-numbers) below.
 
 
 
-### Other Basic Types ⚠️
+### Other Basic Types
 
-> NOTE: this section needs work
-
-#### bool    
+#### bool  ⚠️  
 - `bool` is a type
 - its values are `true` and `false`
 - any zero number value puns as `false`
 - any non-zero number value puns as `true`
-- `nil` is a compile-time expression (not runtime). It also puns as `false`.
-- an instance of any other Crisp type (struct, vector, etc) puns as `true`.
-
-Currently under debate whether `bool` is an instantiable value.
+- `nil` puns as `false`.
 
 
 #### symbols ✅
@@ -685,7 +661,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
   (declare #'(&key :birds int :fish int :zombies int => NIL))
 
   (if (is-set? birds)    ;; <-- use is-set? to check if a variable is set or not.
-  ...)
+  ...))
 
 (def-function addSome (x &optional y)
   (declare (return-type NIL) (type x y int))
@@ -693,7 +669,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
   (declare #'(int &optional int => NIL))
 
   (when (is-set? y)    ;; <-- is-set? to check 
-  ...)
+  ...))
 
 ; default values do not appear in type signature
 (def-function addSome (x &optional (y 30))
@@ -709,6 +685,7 @@ There are various mechanisms for declaring parameter and return types.  Easiest 
   (declare #'(float => nil))   ; nil is return type
   ; OR
   (declare #'(float))          ; no need for return type
+  ...)
 
 ;; J - &out -- write-only-vectors
 (def-grid-function vector-add (A B &out C)
@@ -796,7 +773,6 @@ There are four different cases where this happens:
  - records directly passed at kernel boundary. 
  - debug communication channel
  - scratch memory
- - user defined "implicit" Storage Handles
 
  Crisp lets you put Storage Handles directly into the kernel parameter list, 
  but in practice the hoisting code will often need to set MULTIPLE arguments: 
@@ -809,8 +785,6 @@ for the debug data channel data pointer and size, etc.
 
 If the kernel or any of the functions it calls invoke `make-scratch-XXXX`, then then kernel
 will accept additional arguments for the scratch memory Storage Handle. 
-
-Similarly, every invocation of `make-implicit-XXXX` adds at least two implicit args to the kernel.
 
 
 
@@ -920,11 +894,10 @@ In reality even `(def-kernel k (someVector) ...)` just expands to
 #### implicit Storage Handle arguments
 
 If the kernel or any of its subfunctions use the Crisp side channel convenience functions
-like `make-scratch-XXXX` or `make-implicit-XXXX`, then these Storage Handles will have
+like `make-scratch-XXXX`, then these Storage Handles will have
 to be  explicitly passed by the host and marshalled.  
 
 - `marshall-scratch-XXXX`
-- `marshall-implicit-XXXX`
 
 Note that both the metadata and the example hoisting code that the compiler outputs will have size expressions gathered 
 by the compiler for all of these. Be sure to incorporate them into your own enqueueing/hoisting code.
@@ -2844,39 +2817,6 @@ Possible Implementation
 ```
 
 
-
-#### make-implicit-XXXX 📝
-
-```
-(make-implicit-cell <ID> cellType &key name msg)
-(make-implicit-vector <ID> vectorType &key name msg)
-(make-implicit-matrix <ID> matrixType &key name msg)
-(make-implicit-tensor <ID> tensorType &key name msg)
-```
-
-Do you think the Crisp scratch memory or logging systems are cool, but you could do better?
-Knock yourself out, deviant!  The `make-implicit-XXXX` allows you to Side Channel any Storage Handle for any 
-purpose.  The `<vectorType>` et al must be complete, but it doesn't otherwise need to capture any particular
-size requirement.
-
-The `<ID>` are tracked. If the Crisp compiler sees two `make-implicit-XXXX` invocations with the same
-`<ID>` for a given Storage Handle type, it will assume they are the same and only side channel enqueue one thing.
-
-In the example below, this function, if called by a kernel, would cause two additional float array pointer to 
-be hoisted, plus a pointer to a unsigned long array.  
-
-```
-(def-type float-vec (vector float :align :compact :address-space :global))
-(def-type ulong-vec (vector ulong :align :compact :address-space :global))
-
-;; -- calc-final-result --
-(def-grid-function calc-final-result (x y &out A)
-  (declare #( ulong unlong &out float-vec => nil))
-  (let ((gamma-1 (make-implicit-vector :gamma-1 float-vec :msg "Gamma Squad should provide these"))
-        (gamma-2 (make-implicit-vector :gamma-2 float-vec))
-        (haversine-3 (make-implicit-vector :haversine ulong-vec  :name "haversine")))
-      ...))
-```
 
 
 
@@ -14984,13 +14924,8 @@ Lastly, I'd like to thank Gemini for being a great sounding board, helping me un
 - load-local
 - store-global
 
-- make-implicit-cell
-- make-implicit-vector
-- make-implicit-matrix
-- make-implicit-tensor
 - marshall-vector
 - marshall-scratch-vector
-- marshall-implicit-vector
 - voidp
 - #(1 2 3)
 - use                   [DP]

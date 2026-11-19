@@ -1,3 +1,71 @@
+Future Directions
+=================
+
+The original Crisp design had some features and ideas that did not make the cut for inclusion
+into the 1.0 version. They are recorded here. Some of them will appear in later versions of Crisp,
+and others can be held up as examples of my idiocy or serve as warnings to fools entertaining the folly
+of designing their own programming language. As if the world needs another. 
+
+
+
+
+#### make-implicit-XXXX 📝
+
+```
+(make-implicit-cell <ID> cellType &key name msg)
+(make-implicit-vector <ID> vectorType &key name msg)
+(make-implicit-matrix <ID> matrixType &key name msg)
+(make-implicit-tensor <ID> tensorType &key name msg)
+```
+
+Do you think the Crisp scratch memory or logging systems are cool, but you could do better?
+Knock yourself out, deviant!  The `make-implicit-XXXX` allows you to Side Channel any Storage Handle for any 
+purpose.  The `<vectorType>` et al must be complete, but it doesn't otherwise need to capture any particular
+size requirement.
+
+The `<ID>` are tracked. If the Crisp compiler sees two `make-implicit-XXXX` invocations with the same
+`<ID>` for a given Storage Handle type, it will assume they are the same and only side channel enqueue one thing.
+
+In the example below, this function, if called by a kernel, would cause two additional float array pointer to 
+be hoisted, plus a pointer to a unsigned long array.  
+
+```
+(def-type float-vec (vector float :align :compact :address-space :global))
+(def-type ulong-vec (vector ulong :align :compact :address-space :global))
+
+;; -- calc-final-result --
+(def-grid-function calc-final-result (x y &out A)
+  (declare #( ulong unlong &out float-vec => nil))
+  (let ((gamma-1 (make-implicit-vector :gamma-1 float-vec :msg "Gamma Squad should provide these"))
+        (gamma-2 (make-implicit-vector :gamma-2 float-vec))
+        (haversine-3 (make-implicit-vector :haversine ulong-vec  :name "haversine")))
+      ...))
+```
+
+Note that there is a matching `marshall-implicit-XXXX` for marshalling these. It is comparable to `marshall-scratch-XXXX`.
+
+
+## Device Vector Swizzles.
+
+Device Vectors use the `##(...)` notation ( `##(x y z w)` ) and they ARE part of Crisp 1.0
+
+But Swizzles have not yet been realized. They are low priority:
+
+#### Swizzles 📝
+Furthermore, Crisp supports "swizzles" (like `xyyy~`)
+
+```
+(let ((my-svec ##(5 6 7 9))
+      (all-six          (yyyy~ my-svec))
+      (tail-part      ##(0 0)))
+  (declare (type my-svec short4) (type tail-part short2))
+  (set! (xy~ tail-part) (zw~ my-svec))
+  ; OR
+  (set! tail-part (zw~ my-svec))
+   ...  )
+```
+
+
 Crisp: Deferred Cluster-Scale Topology
 --------------------------------------
 
@@ -30,6 +98,8 @@ Topologies
 > single-GPU MMA optimization arcs (see "Matrix Multiplication Optimization") do not depend on it,
 > and `make-async-barrier` no longer takes a `:type` key.  Read this section as design intent, not
 > current behavior.
+
+- **Topological-Aware Compilation.**  Write a kernel once and retarget it from a single GPU to a torus mesh or a fat-tree supercomputer without touching the kernel code. `def-topology` and `def-orchestration` describe the machine; the compiler then lowers the *same* `load-tile` into a local address-space copy, a PCIe transfer, or an NVSHMEM/RDMA network pull, depending on which memory boundary it actually crosses. You reason about the algorithm; Crisp reasons about the fabric.
 
 A topology can be defined with `def-topology`. We'll go over it in a second, but it is essentially a function that returns an `interconnect`. These three examples of a typical single user workstation, a 10 node cluster of a supercomputer, and a mesh might help:
 

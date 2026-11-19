@@ -45,10 +45,20 @@ NEXT  (housekeeping-oct)
 - [ ] tcgen05 for B200 
 - [x] MMA benchmarking of new quantized ints and microfloat bloacks
 - - PLAN ??
-- - [ ] complex
-- - [ ] FFI
+- - HouseKeeping
+- - - [ ] make a future-directions.md.  Or maybe rename topology.md
+- - - [ ] move all the "after 1.0" sections out of ideal_001.md into future-directions.md
+- - - [ ] go through idea_001.csv/.md and audit the markings. Remove when not relevant. Update.
+- - - [ ] rerun extract script.
+- - [ ] Plan out SOA Vector and SOA Matrix
+- - [ ] Plan out Segmented Reduction API
+- - [ ] Plan out DLPack interop ( API? )
 - - [ ] SOA Vector / Matrix <-- do this BEFORE complex. We might want to use them to represent banks of complexes
+- - [ ] complex
+- - [ ] FFT 
 - - [ ] bitonic and radix sort
+- - [ ] DLPack support
+- - [ ] type constraints
 
 
 
